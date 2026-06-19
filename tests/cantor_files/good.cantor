@@ -1,0 +1,8 @@
+abs : Int -> Nat
+abs(x) = if x >= 0 then x else -x
+
+double : Nat -> Nat
+double(x) = x + x
+
+quad : Nat -> Nat
+quad(x) = double(double(x))

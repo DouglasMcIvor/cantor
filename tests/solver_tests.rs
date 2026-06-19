@@ -213,3 +213,103 @@ sum3(a, b, c) = add_nat(add_nat(a, b), c)
         }
     }
 }
+
+// ── Set expressions in signatures ─────────────────────────────────────────────
+
+#[test]
+fn set_difference_domain_proved() {
+    // Division is safe when the divisor is guaranteed non-zero.
+    proved("
+safe_div : Int * (Int - {0}) -> Int
+safe_div(x, y) = x / y
+");
+}
+
+#[test]
+fn set_difference_single_arg_proved() {
+    // A function from (Int - {0}) that always returns 1 or -1 stays in NatPos
+    // only if we restrict to NatPos domain.
+    proved("
+sign : NatPos - {0} -> NatPos
+sign(x) = 1
+");
+}
+
+#[test]
+fn singleton_set_range_proved() {
+    // A constant function f(x) = 42 always lands in {42}.
+    proved("
+constant42 : Int -> {42}
+constant42(x) = 42
+");
+}
+
+#[test]
+fn singleton_set_range_counterexample() {
+    // f(x) = x does NOT always land in {42}.
+    counterexample("
+not_constant : Int -> {42}
+not_constant(x) = x
+");
+}
+
+#[test]
+fn singleton_domain_proved() {
+    // If the domain is {0}, the body x + 1 is always 1, which is in NatPos.
+    proved("
+succ_zero : {0} -> NatPos
+succ_zero(x) = x + 1
+");
+}
+
+#[test]
+fn set_union_domain_proved() {
+    // Int8 | Int16 is just Int16 (Int8 ⊆ Int16), but the checker only needs
+    // to know that the output is in Int (trivially true range).
+    proved("
+widen : Int8 | Int16 -> Int
+widen(x) = x
+");
+}
+
+#[test]
+fn set_intersection_domain_proved() {
+    // Nat & Int16 = { 0..32767 }; x + 1 ≤ 32768, still in Int.
+    proved("
+narrow : Nat & Int16 -> Nat
+narrow(x) = x
+");
+}
+
+#[test]
+fn multi_element_set_lit_range_proved() {
+    proved("
+bool_to_bit : Int -> {0, 1}
+bool_to_bit(x) = if x == 0 then 0 else 1
+");
+}
+
+#[test]
+fn multi_element_set_lit_range_counterexample() {
+    counterexample("
+bad_bit : Int -> {0, 1}
+bad_bit(x) = x + x
+");
+}
+
+#[test]
+fn safe_div_fixture_all_proved() {
+    // Matches tests/cantor_files/safe_div.cantor.
+    let src = "
+safe_div : Int * (Int - {0}) -> Int
+safe_div(x, y) = x / y
+
+positive_div : NatPos * NatPos -> Nat
+positive_div(x, y) = x / y
+";
+    for (_fn_name, sig_results) in check_all(src) {
+        for (label, result) in sig_results {
+            assert_eq!(result, CheckResult::Proved, "`{label}` should be Proved");
+        }
+    }
+}

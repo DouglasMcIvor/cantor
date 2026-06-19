@@ -122,6 +122,9 @@ impl<'ctx> Compiler<'ctx> {
             ExprKind::If { cond, then_expr, else_expr } => {
                 self.compile_if(cond, then_expr, else_expr, env)
             }
+            ExprKind::SetLit(_) => Err(CompileError::Internal(
+                "set literals are only valid in signature position, not as values".into(),
+            )),
         }
     }
 

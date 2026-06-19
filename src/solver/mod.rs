@@ -131,8 +131,8 @@ fn check_sig(
 
     let int_sort = tm.integer_sort();
 
-    // Flatten the domain into one named-set per parameter.
-    let domain_sets: Vec<NamedSet> = match &sig.domain {
+    // Flatten domain into one set-expr per parameter.
+    let domain_parts: Vec<&Expr> = match &sig.domain {
         None => vec![], // zero-arg function
         Some(domain_expr) => {
             let parts = flatten_product(domain_expr);
@@ -143,17 +143,8 @@ fn check_sig(
                     param_names.len()
                 ));
             }
-            match parts.iter().map(|e| named_set(e)).collect::<Option<Vec<_>>>() {
-                Some(sets) => sets,
-                None => return CheckResult::Unknown("unsupported domain set expression".into()),
-            }
+            parts
         }
-    };
-
-    // Resolve range.
-    let range_set = match named_set(&sig.range) {
-        Some(s) => s,
-        None => return CheckResult::Unknown("unsupported range set expression".into()),
     };
 
     // Declare one unconstrained integer variable per parameter.
@@ -162,20 +153,23 @@ fn check_sig(
         .map(|n| tm.mk_const(int_sort.clone(), &n.0))
         .collect();
 
+    // Assert domain membership for each parameter.
+    for (term, part) in param_terms.iter().zip(domain_parts.iter()) {
+        match membership_constraint(&tm, term.clone(), part) {
+            Membership::Unconstrained => {}
+            Membership::Constrained(c) => solver.assert_formula(c),
+            Membership::Unsupported => {
+                return CheckResult::Unknown("unsupported domain set expression".into())
+            }
+        }
+    }
+
     // Build local variable environment: symbol → Term.
     let env: Env<'_> = param_names
         .iter()
         .cloned()
         .zip(param_terms.iter().cloned())
         .collect();
-
-    // Assert domain membership for each parameter.
-    for (term, set) in param_terms.iter().zip(domain_sets.iter()) {
-        if let Some(constraint) = set_membership_constraint(&tm, term.clone(), set) {
-            solver.assert_formula(constraint);
-        }
-        // `Int` has no constraint — nothing to assert.
-    }
 
     // Encode the body as a cvc5 term, asserting call contracts along the way.
     let mut call_counter = 0usize;
@@ -185,14 +179,17 @@ fn check_sig(
     };
 
     // Assert the negation of `body_term ∈ range`.
-    match set_membership_constraint(&tm, body_term.clone(), &range_set) {
-        None => {
-            // Range is `Int` — any integer result qualifies, trivially proved.
+    match membership_constraint(&tm, body_term.clone(), &sig.range) {
+        Membership::Unconstrained => {
+            // Range is `Int` — any integer output qualifies; trivially proved.
             return CheckResult::Proved;
         }
-        Some(range_holds) => {
+        Membership::Constrained(range_holds) => {
             let negated = tm.mk_term(Kind::Not, &[range_holds]);
             solver.assert_formula(negated);
+        }
+        Membership::Unsupported => {
+            return CheckResult::Unknown("unsupported range set expression".into())
         }
     }
 
@@ -213,58 +210,134 @@ fn check_sig(
     }
 }
 
-// ── Named sets ────────────────────────────────────────────────────────────────
+// ── Set membership ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-enum NamedSet {
-    /// ℤ — all integers; no constraint.
-    Int,
-    /// { n ∈ ℤ | n ≥ 0 }
-    Nat,
-    /// { n ∈ ℤ | n > 0 }
-    NatPos,
-    /// { n ∈ ℤ | min ≤ n ≤ max }
-    IntN { min: i64, max: i64 },
+/// The result of asking "what does `t ∈ set_expr` look like as a cvc5 term?"
+enum Membership<'tm> {
+    /// The set is ℤ — every integer qualifies; no assertion needed.
+    Unconstrained,
+    /// A concrete cvc5 predicate that holds iff `t` is in the set.
+    Constrained(Term<'tm>),
+    /// The set expression uses syntax we don't yet encode.
+    Unsupported,
 }
 
-fn named_set(expr: &Expr) -> Option<NamedSet> {
-    let ExprKind::Var(sym) = &expr.kind else { return None };
-    Some(match sym.0.as_str() {
-        "Int"    => NamedSet::Int,
-        "Nat"    => NamedSet::Nat,
-        "NatPos" => NamedSet::NatPos,
-        "Int8"   => NamedSet::IntN { min: i8::MIN  as i64, max: i8::MAX  as i64 },
-        "Int16"  => NamedSet::IntN { min: i16::MIN as i64, max: i16::MAX as i64 },
-        "Int32"  => NamedSet::IntN { min: i32::MIN as i64, max: i32::MAX as i64 },
-        "Int64"  => NamedSet::IntN { min: i64::MIN,        max: i64::MAX        },
-        _ => return None,
-    })
-}
-
-/// Build a cvc5 Term asserting `t ∈ set`, or `None` if no constraint (Int).
-fn set_membership_constraint<'tm>(
+/// Recursively build a membership predicate for structured set expressions.
+///
+/// Handles named built-in sets, set literals `{n, …}`, set difference `A - B`,
+/// set union `A | B`, and set intersection `A & B`.
+fn membership_constraint<'tm>(
     tm: &'tm TermManager,
     t: Term<'tm>,
-    set: &NamedSet,
-) -> Option<Term<'tm>> {
-    match set {
-        NamedSet::Int => None,
-        NamedSet::Nat => {
-            let zero = tm.mk_integer(0);
-            Some(tm.mk_term(Kind::Geq, &[t, zero]))
+    set_expr: &Expr,
+) -> Membership<'tm> {
+    match &set_expr.kind {
+        ExprKind::Var(sym) => match sym.0.as_str() {
+            "Int"    => Membership::Unconstrained,
+            "Nat"    => {
+                let zero = tm.mk_integer(0);
+                Membership::Constrained(tm.mk_term(Kind::Geq, &[t, zero]))
+            }
+            "NatPos" => {
+                let zero = tm.mk_integer(0);
+                Membership::Constrained(tm.mk_term(Kind::Gt, &[t, zero]))
+            }
+            "Int8"   => bounded(tm, t, i8::MIN  as i64, i8::MAX  as i64),
+            "Int16"  => bounded(tm, t, i16::MIN as i64, i16::MAX as i64),
+            "Int32"  => bounded(tm, t, i32::MIN as i64, i32::MAX as i64),
+            "Int64"  => bounded(tm, t, i64::MIN,        i64::MAX        ),
+            _ => Membership::Unsupported,
+        },
+
+        ExprKind::SetLit(elements) => {
+            if elements.is_empty() {
+                return Membership::Unsupported; // empty set — caller gets Unknown
+            }
+            // t ∈ {v₁, v₂, …}  ↔  t == v₁  ∨  t == v₂  ∨  …
+            // Only integer literals are supported inside set literals for now.
+            let eqs: Option<Vec<Term<'_>>> = elements
+                .iter()
+                .map(|e| match &e.kind {
+                    ExprKind::IntLit(n) => {
+                        let n_term = tm.mk_integer(*n);
+                        Some(tm.mk_term(Kind::Equal, &[t.clone(), n_term]))
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            match eqs {
+                None => Membership::Unsupported,
+                Some(mut eqs) => {
+                    let term = if eqs.len() == 1 {
+                        eqs.remove(0)
+                    } else {
+                        tm.mk_term(Kind::Or, &eqs)
+                    };
+                    Membership::Constrained(term)
+                }
+            }
         }
-        NamedSet::NatPos => {
-            let zero = tm.mk_integer(0);
-            Some(tm.mk_term(Kind::Gt, &[t, zero]))
+
+        // `-` in signature position means set difference (A ∖ B).
+        ExprKind::BinOp { op: BinOp::Sub, lhs, rhs } => {
+            // t ∈ A - B  ↔  (t ∈ A) ∧ ¬(t ∈ B)
+            let not_in_b = match membership_constraint(tm, t.clone(), rhs) {
+                Membership::Unsupported => return Membership::Unsupported,
+                Membership::Unconstrained => {
+                    // B is ℤ, so A - B = ∅; nothing is a member.
+                    return Membership::Unsupported;
+                }
+                Membership::Constrained(c) => tm.mk_term(Kind::Not, &[c]),
+            };
+            match membership_constraint(tm, t, lhs) {
+                Membership::Unsupported => Membership::Unsupported,
+                Membership::Unconstrained => Membership::Constrained(not_in_b),
+                Membership::Constrained(c) => {
+                    Membership::Constrained(tm.mk_term(Kind::And, &[c, not_in_b]))
+                }
+            }
         }
-        NamedSet::IntN { min, max } => {
-            let lo  = tm.mk_integer(*min);
-            let hi  = tm.mk_integer(*max);
-            let geq = tm.mk_term(Kind::Geq, &[t.clone(), lo]);
-            let leq = tm.mk_term(Kind::Leq, &[t, hi]);
-            Some(tm.mk_term(Kind::And, &[geq, leq]))
+
+        // `|` in signature position means set union.
+        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+            // t ∈ A | B  ↔  (t ∈ A) ∨ (t ∈ B)
+            let in_a = membership_constraint(tm, t.clone(), lhs);
+            let in_b = membership_constraint(tm, t, rhs);
+            match (in_a, in_b) {
+                (Membership::Unsupported, _) | (_, Membership::Unsupported) => Membership::Unsupported,
+                (Membership::Unconstrained, _) | (_, Membership::Unconstrained) => Membership::Unconstrained,
+                (Membership::Constrained(a), Membership::Constrained(b)) => {
+                    Membership::Constrained(tm.mk_term(Kind::Or, &[a, b]))
+                }
+            }
         }
+
+        // `&` in signature position means set intersection.
+        ExprKind::BinOp { op: BinOp::Intersect, lhs, rhs } => {
+            // t ∈ A & B  ↔  (t ∈ A) ∧ (t ∈ B)
+            let in_a = membership_constraint(tm, t.clone(), lhs);
+            let in_b = membership_constraint(tm, t, rhs);
+            match (in_a, in_b) {
+                (Membership::Unsupported, _) | (_, Membership::Unsupported) => Membership::Unsupported,
+                (Membership::Unconstrained, other) => other,
+                (other, Membership::Unconstrained) => other,
+                (Membership::Constrained(a), Membership::Constrained(b)) => {
+                    Membership::Constrained(tm.mk_term(Kind::And, &[a, b]))
+                }
+            }
+        }
+
+        _ => Membership::Unsupported,
     }
+}
+
+fn bounded<'tm>(tm: &'tm TermManager, t: Term<'tm>, min: i64, max: i64) -> Membership<'tm> {
+    let lo  = tm.mk_integer(min);
+    let hi  = tm.mk_integer(max);
+    let geq = tm.mk_term(Kind::Geq, &[t.clone(), lo]);
+    let leq = tm.mk_term(Kind::Leq, &[t, hi]);
+    Membership::Constrained(tm.mk_term(Kind::And, &[geq, leq]))
 }
 
 // ── Expression encoding ───────────────────────────────────────────────────────
@@ -363,14 +436,17 @@ fn encode_expr<'tm>(
 
             Ok(result_var)
         }
+
+        ExprKind::SetLit(_) => {
+            Err("set literals cannot appear in function bodies".into())
+        }
     }
 }
 
 /// Assert `args ∈ domain → result ∈ range` for one callee signature.
 ///
-/// If the domain or range is unsupported (non-integer named set), the
-/// implication is silently skipped — the solver simply has less information,
-/// which is safe (may produce Unknown rather than Proved, never a false Proved).
+/// If any part of the domain or range is unsupported, the implication is
+/// silently skipped — the solver has less information but never incorrect info.
 fn assert_call_contract<'tm>(
     sig: &FunctionSig,
     arg_terms: &[Term<'tm>],
@@ -378,45 +454,34 @@ fn assert_call_contract<'tm>(
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
 ) {
-    // Resolve per-argument domain sets.
-    let domain_sets: Vec<NamedSet> = match &sig.domain {
-        None => vec![], // zero-arg callee
+    // Build the antecedent: per-arg domain constraints (unconstrained args skipped).
+    let mut antecedents: Vec<Term<'_>> = Vec::new();
+    match &sig.domain {
+        None => {} // zero-arg callee
         Some(domain_expr) => {
             let parts = flatten_product(domain_expr);
             if parts.len() != arg_terms.len() {
                 return; // arity mismatch — skip
             }
-            match parts.iter().map(|e| named_set(e)).collect::<Option<Vec<_>>>() {
-                Some(sets) => sets,
-                None => return, // unsupported domain — skip
+            for (part, arg) in parts.iter().zip(arg_terms.iter()) {
+                match membership_constraint(tm, arg.clone(), part) {
+                    Membership::Unconstrained => {}
+                    Membership::Constrained(c) => antecedents.push(c),
+                    Membership::Unsupported => return, // unsupported domain — skip sig
+                }
             }
         }
-    };
-
-    // Resolve range set.
-    let range_set = match named_set(&sig.range) {
-        Some(s) => s,
-        None => return, // unsupported range — skip
-    };
-
-    // Build the antecedent: conjunction of per-arg domain constraints.
-    // Constraints that are `None` (the arg is in `Int`) are dropped — they
-    // contribute no information and would make the conjunction trivially false.
-    let antecedents: Vec<Term<'_>> = domain_sets
-        .iter()
-        .zip(arg_terms.iter())
-        .filter_map(|(set, term)| set_membership_constraint(tm, term.clone(), set))
-        .collect();
+    }
 
     // Build the consequent: result ∈ range.
-    let consequent = match set_membership_constraint(tm, result, &range_set) {
-        Some(c) => c,
-        None => return, // range is `Int` — trivially true, nothing to assert
+    let consequent = match membership_constraint(tm, result, &sig.range) {
+        Membership::Unconstrained => return, // range is `Int` — trivially true
+        Membership::Constrained(c) => c,
+        Membership::Unsupported => return, // unsupported range — skip sig
     };
 
     // Combine into an implication (or bare consequent if domain is unconstrained).
     let formula = if antecedents.is_empty() {
-        // No domain constraints → always applies → assert consequent directly.
         consequent
     } else {
         let antecedent = if antecedents.len() == 1 {

@@ -56,6 +56,10 @@ impl Expr {
             Span::dummy(),
         )
     }
+
+    pub fn set_lit(elements: Vec<Expr>) -> Self {
+        Self::new(ExprKind::SetLit(elements), Span::dummy())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +71,9 @@ pub enum ExprKind {
     UnOp { op: UnOp, expr: Box<Expr> },
     Call { callee: Symbol, args: Vec<Expr> },
     If { cond: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
-    // Future: SetLit, Comprehension, Membership
+    /// `{ expr, expr, … }` — explicit set literal; used in signature position.
+    SetLit(Vec<Expr>),
+    // Future: Comprehension
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +221,14 @@ impl fmt::Display for ExprKind {
             }
             Self::If { cond, then_expr, else_expr } => {
                 write!(f, "if {cond} then {then_expr} else {else_expr}")
+            }
+            Self::SetLit(elements) => {
+                write!(f, "{{")?;
+                for (i, e) in elements.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{e}")?;
+                }
+                write!(f, "}}")
             }
         }
     }

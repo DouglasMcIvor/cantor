@@ -170,3 +170,70 @@ fn missing_body() {
     let msg = parse_err("f : Int -> Int\nf(x)");
     assert!(!msg.is_empty(), "expected error for missing body");
 }
+
+// ── Set literal syntax ────────────────────────────────────────────────────────
+
+#[test]
+fn singleton_set_as_range() {
+    let def = parse_one("f : Int -> {42}\nf(x) = 42");
+    let sig = &def.sigs[0];
+    let ExprKind::SetLit(elems) = &sig.range.kind else { panic!("expected SetLit") };
+    assert_eq!(elems.len(), 1);
+    assert!(matches!(elems[0].kind, ExprKind::IntLit(42)));
+}
+
+#[test]
+fn multi_element_set_as_range() {
+    let def = parse_one("f : Int -> {0, 1, 2}\nf(x) = 0");
+    let sig = &def.sigs[0];
+    let ExprKind::SetLit(elems) = &sig.range.kind else { panic!("expected SetLit") };
+    assert_eq!(elems.len(), 3);
+}
+
+#[test]
+fn set_difference_in_domain() {
+    let def = parse_one("f : Int - {0} -> Int\nf(x) = x");
+    let sig = &def.sigs[0];
+    let domain = sig.domain.as_ref().unwrap();
+    let ExprKind::BinOp { op: BinOp::Sub, lhs, rhs } = &domain.kind
+        else { panic!("expected BinOp::Sub, got {:?}", domain.kind) };
+    assert!(matches!(lhs.kind, ExprKind::Var(_)));
+    let ExprKind::SetLit(elems) = &rhs.kind else { panic!("expected SetLit on rhs") };
+    assert_eq!(elems.len(), 1);
+    assert!(matches!(elems[0].kind, ExprKind::IntLit(0)));
+}
+
+#[test]
+fn set_lit_in_expression_body() {
+    // {0} in expression position should parse as a SetLit.
+    let def = parse_one("f : Int -> {0}\nf(x) = {0}");
+    let FunctionBody::Expr(body) = &def.body else { panic!("expected Expr body") };
+    assert!(matches!(body.kind, ExprKind::SetLit(_)));
+}
+
+#[test]
+fn empty_set_lit() {
+    // {} should parse without error (empty SetLit).
+    let def = parse_one("f : Int -> {}\nf(x) = {}");
+    let sig = &def.sigs[0];
+    let ExprKind::SetLit(elems) = &sig.range.kind else { panic!("expected SetLit") };
+    assert_eq!(elems.len(), 0);
+}
+
+#[test]
+fn set_lit_trailing_comma() {
+    let def = parse_one("f : Int -> {1, 2,}\nf(x) = 1");
+    let sig = &def.sigs[0];
+    let ExprKind::SetLit(elems) = &sig.range.kind else { panic!("expected SetLit") };
+    assert_eq!(elems.len(), 2);
+}
+
+#[test]
+fn cartesian_product_with_set_difference() {
+    let def = parse_one("f : Int * (Int - {0}) -> Int\nf(x, y) = x");
+    let sig = &def.sigs[0];
+    let domain = sig.domain.as_ref().unwrap();
+    let ExprKind::BinOp { op: BinOp::Mul, .. } = &domain.kind
+        else { panic!("expected Mul (Cartesian product) at top level") };
+    assert_eq!(def.params.len(), 2);
+}

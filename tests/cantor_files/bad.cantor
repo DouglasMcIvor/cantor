@@ -1,0 +1,5 @@
+double16 : Int16 -> Int16
+double16(x) = x + x
+
+negate : Nat -> Nat
+negate(x) = -x

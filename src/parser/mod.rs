@@ -350,6 +350,21 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RParen)?;
                 Ok(Expr::new(expr.kind, Span::new(span.start, end_span.end)))
             }
+            Token::LBrace => {
+                self.advance()?;
+                let mut elements = Vec::new();
+                if self.peek() != &Token::RBrace {
+                    elements.push(self.parse_expr(0)?);
+                    while self.peek() == &Token::Comma {
+                        self.advance()?;
+                        if self.peek() == &Token::RBrace { break; } // trailing comma
+                        elements.push(self.parse_expr(0)?);
+                    }
+                }
+                let end_span = self.peek_span();
+                self.expect(&Token::RBrace)?;
+                Ok(Expr::new(ExprKind::SetLit(elements), Span::new(span.start, end_span.end)))
+            }
             Token::For => Err(CompileError::UnexpectedToken {
                 expected: "expression".into(),
                 found: format!("`for` (comprehensions not yet implemented)"),
