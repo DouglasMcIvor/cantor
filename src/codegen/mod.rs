@@ -10,7 +10,7 @@ use inkwell::{
 };
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, Param, UnOp},
+    ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, Item, Param, UnOp},
     error::CompileError,
     span::{Span, Symbol},
 };
@@ -45,19 +45,27 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    /// Compile a named function. All parameters are `i64` for now; the return
-    /// value is always `i64` (booleans are zero-extended so the JIT harness
-    /// can use a uniform `fn() -> i64` signature).
-    pub fn compile_function(
-        &mut self,
-        name: &str,
-        params: &[Param],
-        body: &Expr,
-    ) -> Result<FunctionValue<'ctx>, CompileError> {
+    /// Add a function declaration to the module (no body yet).
+    ///
+    /// All parameters and the return value are `i64`. Call
+    /// [`compile_function_body`] afterwards to fill in the implementation.
+    pub fn declare_function(&mut self, name: &str, params: &[Param]) -> FunctionValue<'ctx> {
         let i64_type = self.context.i64_type();
         let param_types: Vec<_> = params.iter().map(|_| i64_type.into()).collect();
         let fn_type = i64_type.fn_type(&param_types, false);
-        let function = self.module.add_function(name, fn_type, None);
+        self.module.add_function(name, fn_type, None)
+    }
+
+    /// Compile the body of an already-declared function.
+    ///
+    /// Booleans are zero-extended to `i64` so callers always use a uniform
+    /// `fn(i64, …) -> i64` signature.
+    pub fn compile_function_body(
+        &mut self,
+        function: FunctionValue<'ctx>,
+        params: &[Param],
+        body: &Expr,
+    ) -> Result<FunctionValue<'ctx>, CompileError> {
         self.current_fn = Some(function);
 
         let entry = self.context.append_basic_block(function, "entry");
@@ -71,7 +79,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let (val, ty) = self.compile_expr(body, &env)?;
 
-        // Bool results are zero-extended to i64 so callers always see i64.
+        let i64_type = self.context.i64_type();
         let ret_val = if ty == ValType::Bool {
             self.builder
                 .build_int_z_extend(val.into_int_value(), i64_type, "bool_to_i64")
@@ -86,6 +94,21 @@ impl<'ctx> Compiler<'ctx> {
             .map_err(|e| CompileError::Internal(e.to_string()))?;
 
         Ok(function)
+    }
+
+    /// Declare and compile a function in one step.
+    ///
+    /// Convenience wrapper used by tests; prefer [`declare_function`] +
+    /// [`compile_function_body`] when compiling multiple mutually-calling
+    /// functions.
+    pub fn compile_function(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        body: &Expr,
+    ) -> Result<FunctionValue<'ctx>, CompileError> {
+        let function = self.declare_function(name, params);
+        self.compile_function_body(function, params, body)
     }
 
     /// Emit LLVM IR for an expression, returning the value and its Cantor type.
@@ -303,4 +326,46 @@ impl<'ctx> Compiler<'ctx> {
     pub fn print_ir(&self) {
         self.module.print_to_stderr();
     }
+}
+
+/// Compile every function in `items` into a single JIT module.
+///
+/// Two-pass: all functions are declared first so that forward and mutual
+/// calls resolve, then bodies are compiled in order.
+///
+/// Returns an error if any function has a block body (not yet supported)
+/// or if a codegen error occurs.
+pub fn compile_file<'ctx>(
+    ctx: &'ctx Context,
+    items: &[Item],
+) -> Result<ExecutionEngine<'ctx>, CompileError> {
+    let mut compiler = Compiler::new(ctx, "cantor");
+
+    // Pass 1 — declare all signatures so forward calls resolve in pass 2.
+    let decls: Vec<(FunctionValue<'ctx>, &FunctionDef)> = items
+        .iter()
+        .map(|item| {
+            let Item::FunctionDef(def) = item;
+            let fn_val = compiler.declare_function(&def.name.0, &def.params);
+            (fn_val, def)
+        })
+        .collect();
+
+    // Pass 2 — compile bodies.
+    for (fn_val, def) in decls {
+        let body = match &def.body {
+            FunctionBody::Expr(e) => e,
+            FunctionBody::Block(_) => {
+                return Err(CompileError::Internal(format!(
+                    "function `{}`: block bodies are not yet compiled",
+                    def.name.0
+                )))
+            }
+        };
+        compiler.compile_function_body(fn_val, &def.params, body)?;
+    }
+
+    compiler
+        .into_jit_engine()
+        .map_err(|e| CompileError::Internal(e))
 }

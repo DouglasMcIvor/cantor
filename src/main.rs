@@ -1,17 +1,23 @@
 use std::process;
 
+use inkwell::context::Context;
+
 use cantor::{
     ast::Item,
+    codegen::compile_file,
     parser::parse_file,
     solver::{CheckResult, check_file},
 };
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let path = match args.get(1) {
-        Some(p) => p.as_str(),
-        None => {
+
+    let (do_run, path) = match args.len() {
+        2 if args[1] != "run" => (false, args[1].as_str()),
+        3 if args[1] == "run" => (true, args[2].as_str()),
+        _ => {
             eprintln!("usage: cantor <file.cantor>");
+            eprintln!("       cantor run <file.cantor>");
             process::exit(2);
         }
     };
@@ -52,7 +58,6 @@ fn main() {
     let mut n_counter = 0usize;
     let mut n_unknown = 0usize;
 
-    // `check_file` preserves item order, so we can zip.
     for (item, (_fn_name, sig_results)) in items.iter().zip(all_results.iter()) {
         let Item::FunctionDef(def) = item;
 
@@ -92,7 +97,57 @@ fn main() {
         n_proved, n_counter, n_unknown
     );
 
-    if n_counter > 0 || n_unknown > 0 {
+    if do_run {
+        run_main(&items, n_counter, n_unknown, path);
+    } else if n_counter > 0 || n_unknown > 0 {
         process::exit(1);
     }
+}
+
+fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
+    let has_main = items.iter().any(|item| {
+        let Item::FunctionDef(def) = item;
+        def.name.0 == "main" && def.params.is_empty()
+    });
+
+    if !has_main {
+        eprintln!("error: `cantor run` requires a zero-argument `main` function");
+        process::exit(1);
+    }
+
+    if n_counter > 0 {
+        eprintln!(
+            "error: not running — {} counterexample(s) found above",
+            n_counter
+        );
+        process::exit(1);
+    }
+
+    if n_unknown > 0 {
+        eprintln!(
+            "warning: {} signature(s) could not be fully verified — running anyway",
+            n_unknown
+        );
+    }
+
+    let ctx = Context::create();
+    let engine = match compile_file(&ctx, items) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("{path}: compile error: {e}");
+            process::exit(1);
+        }
+    };
+
+    let result = unsafe {
+        let f = engine
+            .get_function::<unsafe extern "C" fn() -> i64>("main")
+            .unwrap_or_else(|e| {
+                eprintln!("internal error: could not find `main` in compiled module: {e}");
+                process::exit(1);
+            });
+        f.call()
+    };
+
+    println!("\nmain() = {result}");
 }

@@ -44,6 +44,11 @@ fn run_file(name: &str) -> Output {
     run(&[path.to_str().unwrap()])
 }
 
+fn run_subcommand(name: &str) -> Output {
+    let path = fixture(name);
+    run(&["run", path.to_str().unwrap()])
+}
+
 // ── No-arg / usage ────────────────────────────────────────────────────────────
 
 #[test]
@@ -184,4 +189,63 @@ fn counterexample_output_shows_witness_and_range() {
     // Specific range names should appear.
     assert!(out.stdout.contains("Int16"), "expected Int16 range:\n{}", out.stdout);
     assert!(out.stdout.contains("Nat"),   "expected Nat range:\n{}", out.stdout);
+}
+
+// ── cantor run ────────────────────────────────────────────────────────────────
+
+#[test]
+fn run_executes_main_and_prints_result() {
+    // run_demo.cantor: abs(-21) = 21, double(21) = 42
+    let out = run_subcommand("run_demo.cantor");
+    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("main() = 42"),
+        "expected 'main() = 42' in output:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn run_also_shows_proof_results() {
+    let out = run_subcommand("run_demo.cantor");
+    assert!(out.stdout.contains("  proved  "), "expected proved lines:\n{}", out.stdout);
+    assert!(out.stdout.contains("3 proved"),   "expected summary:\n{}", out.stdout);
+}
+
+#[test]
+fn run_refuses_when_counterexample_found() {
+    // bad_with_main.cantor: `broken : Nat -> Nat` has a counterexample.
+    let out = run_subcommand("bad_with_main.cantor");
+    assert_ne!(out.code, 0, "should refuse to run on counterexample");
+    assert!(
+        out.stderr.contains("not running"),
+        "expected refusal message on stderr:\n{}", out.stderr
+    );
+}
+
+#[test]
+fn run_still_prints_check_results_before_refusing() {
+    let out = run_subcommand("bad_with_main.cantor");
+    assert!(
+        out.stdout.contains("  counterexample  "),
+        "expected counterexample result line in stdout:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn run_no_main_function_exits_nonzero() {
+    // good.cantor has no `main` function.
+    let out = run_subcommand("good.cantor");
+    assert_ne!(out.code, 0, "should fail without main");
+    assert!(
+        out.stderr.contains("main"),
+        "expected error about missing main:\n{}", out.stderr
+    );
+}
+
+#[test]
+fn run_usage_shown_for_missing_arg() {
+    // `cantor run` with no file should show usage.
+    let out = run(&["run"]);
+    assert_eq!(out.code, 2);
+    assert!(out.stderr.contains("usage"), "expected usage hint:\n{}", out.stderr);
 }
