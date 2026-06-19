@@ -1,0 +1,14 @@
+[package]
+name = "cantor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "v18-ci", features = ["llvm18-0"] }
+# Force dynamic linking against the system libLLVM-18.so (avoids pulling in
+# libPolly.a which is a separate apt package and we don't need Polly).
+llvm-sys = { version = "180", features = ["prefer-dynamic"] }
+
+[dev-dependencies]
+# (nothing yet)
+
