@@ -8,6 +8,9 @@ inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "v18-ci", feat
 # Force dynamic linking against the system libLLVM-18.so (avoids pulling in
 # libPolly.a which is a separate apt package and we don't need Polly).
 llvm-sys = { version = "180", features = ["prefer-dynamic"] }
+# cvc5 SMT solver — domain/range constraint checking.
+# Requires system packages: libcvc5-1 libcvc5-dev (apt).
+cvc5 = "0.4"
 
 [dev-dependencies]
 # (nothing yet)
