@@ -81,11 +81,21 @@ Tagline: "Types without Types" / "Who needs types anyway?"
 ## 4. Error handling — three classes
 
 1. **Class 1 — domain/range violations ("normal" errors).**
-   - Implicit `Option` wrapping: if the compiler can't prove a function's
-     output stays in range (or input in domain), the return type is
-     automatically wrapped in Option.
-   - Short-circuit (monadic, not exception-like) semantics, explicit `?`
-     marking at each fallible call site for local visibility.
+   - **`Fail` as built-in set, explicit `| Fail` in range**: a function
+     that can fail at runtime declares this in its range: `f : Int -> Nat | Fail`.
+     `Fail` is a named built-in singleton set (the failure sentinel); it
+     is not a generic `Option`/`Result` wrapper from a type system.
+     Using set union (`| Fail`) is the natural Cantor idiom and extends
+     cleanly to named domain-specific error sets:
+     `fetch : Request -> Response | HTTPError` where `HTTPError = {400, 503, …}`.
+     These are just set unions — no new language mechanism is needed for
+     richer error types, only the appropriate named sets.
+   - **Short-circuit (monadic) semantics**, explicit postfix `?` at each
+     fallible call site for local visibility: `f(x)?` propagates `Fail`
+     (or the relevant error set) from the callee up to the caller.
+     The caller must also declare `Fail` (or a compatible set) in its range.
+     Using `?` in an infallible function (range without `Fail`) is a
+     compile error.
    - Three narrowing statements (not function calls); syntax and semantics
      detailed in §10:
      - `require` — static-only proof obligation: must be provable at compile
@@ -458,29 +468,37 @@ implemented.
 Statement form only — not function calls (see §4 for semantics).
 
 ```
-require expr in S   -- compile-time proof obligation; compile error if unprovable
-assert  expr in S   -- graduated: elide if proved, compile error if disproved,
+require predicate   -- compile-time proof obligation; compile error if unprovable
+assert  predicate   -- graduated: elide if proved, compile error if disproved,
                     --            runtime check + Class 1 error if unknown
-assume  expr in S   -- no check, no proof; compiler accepts the claim as a fact
+assume  predicate   -- no check, no proof; compiler accepts the claim as a fact
 ```
 
-`expr` must be a named variable (not an arbitrary temporary). The
-statement narrows the compiler's knowledge of that variable's domain to
-`S` for all subsequent code within the enclosing scope.
+`predicate` is any boolean expression: `x in Nat`, `lo < hi`, `x != 0`,
+`a > 0 and b > 0`, etc. The statement adds the predicate as a fact for
+the solver in all subsequent code within the enclosing scope.
 
 The three-way distinction by outcome:
 
-| | Proved (UNSAT ¬P) | Disproved (SAT ¬P) | Unknown |
+| | Proved (UNSAT ¬P) | Disproved (SAT ¬P, P never true) | Sometimes false |
 |---|---|---|---|
 | `require` | elide + add fact | compile error | compile error |
 | `assert`  | elide + add fact | compile error | runtime check → `?` |
 | `assume`  | add fact         | add fact      | add fact |
 
+The "sometimes false" column covers the common `assert` case: the solver
+finds a counter-model (¬P is satisfiable) but P itself is also satisfiable
+(there exist inputs where it holds). The checker distinguishes "sometimes
+false" from "always false" by running a second query: if ¬P is provable
+(i.e. P is UNSAT), the assertion always fails → compile error. If P is
+satisfiable, runtime behaviour decides → runtime check.
+
 `require` is the right default when you know the invariant must hold
 statically — it gives you a compile error rather than silently falling
 through to runtime. Use `assert` when the invariant is program-input-
-dependent and an unknown is acceptable. Use `assume` only when you are
-certain the solver cannot prove it but you are sure it is true.
+dependent (e.g. validating user input) and an unknown is acceptable.
+Use `assume` only when you are certain the solver cannot prove it but you
+are sure it is true.
 
 Examples:
 
@@ -496,11 +514,17 @@ clamp(x, lo, hi) {
     result
 }
 
-parse_age : Int -> Nat
-parse_age(n) {
+safe_to_nat : Int -> Nat | Fail
+safe_to_nat(n) {
     assert n in Nat        -- unknown at compile time (n is any Int);
-                           -- emits runtime check, returns error if n < 0
+                           -- emits runtime check, returns Fail if n < 0
     n
+}
+
+caller : Int -> Nat | Fail
+caller(n) {
+    mut x = safe_to_nat(n)?   -- `?` propagates Fail if safe_to_nat fails
+    x + 1
 }
 ```
 
@@ -508,10 +532,14 @@ parse_age(n) {
 output value — their effect is on the proof state (and optionally the
 runtime), not on a value.
 
-**Implementation order**: `assume` and `require` are purely static (no
-runtime code) and can be implemented before the monadic error-propagation
-machinery. `assert`'s runtime fallback path requires `?`-propagation and
-is deferred until Class 1 error handling is designed.
+**TODO (future syntax)**: `assert` with a custom error value:
+```
+assert x in Nat, TerriblePunError("how unnatural!")
+```
+The error set would be inferred from the literal (`TerriblePunError` must
+be a named error set), and the function's range would need to include it:
+`f : Int -> Nat | TerriblePunError`. Design deferred until named error sets
+and the associated syntax are worked out.
 
 ## 11. Open questions
 
@@ -613,6 +641,17 @@ Three mechanisms in order of increasing programmer responsibility:
    cannot prove containment but the programmer is certain. Unsound if
    wrong — produces silently incorrect results at runtime, same as
    `assume` everywhere else in the language (§4).
+
+### Error sentinel
+
+- **`Fail`** — built-in singleton set `{⊥}` used as the failure sentinel
+  for Class 1 errors. No integer value is ever in `Fail`; it is an
+  out-of-band signal returned when an `assert` fails at runtime.
+  A fallible function declares `Fail` in its range: `f : Int -> Nat | Fail`.
+  The runtime representation is a sentinel integer (`i64::MIN` in v0 — see
+  implementation notes). Named domain-specific error sets (e.g.
+  `HTTPError = {400, 503}`) are just user-defined sets; `T | HTTPError`
+  works by the same set-union mechanism with no new language primitives.
 
 ### Natural numbers and other named subsets
 

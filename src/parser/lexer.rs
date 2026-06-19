@@ -54,11 +54,12 @@ pub enum Token {
     Colon,  // :   (signature type separator)
 
     // Punctuation
-    LParen, // (
-    RParen, // )
-    LBrace, // {
-    RBrace, // }
-    Comma,  // ,
+    LParen,   // (
+    RParen,   // )
+    LBrace,   // {
+    RBrace,   // }
+    Comma,    // ,
+    Question, // ?  (postfix propagate-failure operator)
 
     Eof,
 }
@@ -103,6 +104,7 @@ impl fmt::Display for Token {
             Token::LBrace   => f.write_str("{"),
             Token::RBrace   => f.write_str("}"),
             Token::Comma    => f.write_str(","),
+            Token::Question => f.write_str("?"),
             Token::Eof      => f.write_str("<eof>"),
         }
     }
@@ -198,6 +200,7 @@ impl<'src> Lexer<'src> {
             '{' => Token::LBrace,
             '}' => Token::RBrace,
             ',' => Token::Comma,
+            '?' => Token::Question,
             ':' => Token::Colon,
             '-' => {
                 if self.peek_char() == Some('>') {

@@ -26,6 +26,15 @@ fn proved(src: &str) {
     }
 }
 
+/// Assert that every signature in a multi-function source is Proved.
+fn proved_all(src: &str) {
+    for (_fn_name, sig_results) in &check_all(src) {
+        for (label, result) in sig_results {
+            assert_eq!(result, &CheckResult::Proved, "`{label}` should be Proved, got {result:?}");
+        }
+    }
+}
+
 /// Assert that the single-function source produces at least one Counterexample.
 fn counterexample(src: &str) {
     let results = check(src);
@@ -631,4 +640,121 @@ bad_recip(x) {
         matches!(result, CheckResult::Counterexample { .. }),
         "require with Int domain should give counterexample, got {result:?}"
     );
+}
+
+// ── Block body: assert ────────────────────────────────────────────────────────
+
+#[test]
+fn assert_proved_statically() {
+    // NatPos domain makes `assert x in NatPos` statically provable — same as require.
+    proved("
+f : NatPos -> NatPos | Fail
+f(x) {
+    assert x in NatPos
+    x
+}
+");
+}
+
+#[test]
+fn assert_always_false_counterexample() {
+    // `assert false` is always false — the checker catches it as a compile error.
+    let results = check("
+always_fails : Int -> Int | Fail
+always_fails(x) {
+    assert false
+    x
+}
+");
+    let (_, result) = results.into_iter().next().unwrap();
+    let CheckResult::Counterexample { reason, .. } = result else {
+        panic!("expected counterexample, got {result:?}");
+    };
+    assert_eq!(reason, "assertion always fails");
+}
+
+#[test]
+fn assert_unknown_enables_downstream_proof() {
+    // `assert x in Nat` with Int domain is unknown (x might be negative).
+    // The checker adds it as a fact anyway; the range check then passes.
+    // Codegen will emit a runtime check.
+    proved("
+safe_to_nat : Int -> Nat | Fail
+safe_to_nat(x) {
+    assert x in Nat
+    x
+}
+");
+}
+
+#[test]
+fn assert_enables_division_safety() {
+    // assert narrows x to NonZeroInt; division obligation is then satisfiable.
+    proved("
+safe_recip : Int -> Int | Fail
+safe_recip(x) {
+    assert x in NonZeroInt
+    1 / x
+}
+");
+}
+
+#[test]
+fn assert_after_let_proved() {
+    // assert can reference SSA-bound variables.
+    proved("
+bounded : Int -> Nat | Fail
+bounded(x) {
+    mut y = x + 1
+    assert y > 0
+    y
+}
+");
+}
+
+// ── Try operator (?) ──────────────────────────────────────────────────────────
+
+#[test]
+fn try_propagates_fail_proved() {
+    // caller delegates to a fallible function via `?` and adds 1.
+    // The callee's contract (_call_0 >= 0) lets us prove the range (>= 1 >= 0).
+    proved_all("
+safe_to_nat : Int -> Nat | Fail
+safe_to_nat(x) {
+    assert x in Nat
+    x
+}
+
+caller : Int -> Nat | Fail
+caller(n) {
+    mut x = safe_to_nat(n)?
+    x + 1
+}
+");
+}
+
+#[test]
+fn try_in_expression_body_proved() {
+    // `?` is also valid in expression bodies when the range includes Fail.
+    proved_all("
+safe_to_nat : Int -> Nat | Fail
+safe_to_nat(x) {
+    assert x in Nat
+    x
+}
+
+wrap : Int -> Nat | Fail
+wrap(n) = safe_to_nat(n)?
+");
+}
+
+#[test]
+fn fail_set_in_membership_is_false() {
+    // Nat | Fail as a range correctly constrains the integer part to Nat.
+    // If the body can be negative, the checker still gives a counterexample
+    // (proving Fail doesn't absorb bad integer values).
+    counterexample("
+bad : Int -> Nat | Fail
+bad(x) = x
+");
 }

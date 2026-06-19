@@ -325,10 +325,50 @@ fn encode_block<'tm>(
                 }
             }
 
-            Stmt::Assert { .. } => {
-                return Err(CheckResult::Unknown(
-                    "`assert` in block bodies not yet supported".into(),
-                ));
+            Stmt::Assert { predicate, .. } => {
+                let pred = encode_expr(
+                    predicate, env, fn_env, tm, solver,
+                    call_counter, builtin_obligs, top_guard.clone(),
+                )
+                .map_err(CheckResult::Unknown)?;
+
+                match check_require(pred.clone(), tm, accumulated_facts, param_names, param_terms) {
+                    CheckResult::Proved => {
+                        // Statically proved — no runtime check needed.
+                        solver.assert_formula(pred.clone());
+                        accumulated_facts.push(pred);
+                    }
+                    CheckResult::Counterexample { params, output, .. } => {
+                        // pred is not always true.  Check whether it can EVER be
+                        // true (in context of accumulated_facts).  If NOT(pred) is
+                        // provable then pred is always false → compile error.
+                        // Otherwise pred is sometimes true → runtime check needed.
+                        let not_pred = tm.mk_term(Kind::Not, &[pred.clone()]);
+                        match check_require(not_pred, tm, accumulated_facts, param_names, param_terms) {
+                            CheckResult::Proved => {
+                                // NOT(pred) always holds → pred never holds.
+                                return Err(CheckResult::Counterexample {
+                                    params,
+                                    output,
+                                    reason: "assertion always fails".to_string(),
+                                });
+                            }
+                            _ => {
+                                // pred is sometimes true — codegen emits a runtime
+                                // check.  Add as a fact so downstream proofs can
+                                // assume the assert passed (the code path where it
+                                // didn't pass exits early at runtime).
+                                solver.assert_formula(pred.clone());
+                                accumulated_facts.push(pred);
+                            }
+                        }
+                    }
+                    CheckResult::Unknown(_) => {
+                        // Can't determine statically; codegen emits a runtime check.
+                        solver.assert_formula(pred.clone());
+                        accumulated_facts.push(pred);
+                    }
+                }
             }
 
             Stmt::Expr(e) => {
@@ -555,6 +595,11 @@ fn membership_constraint<'tm>(
     match &set_expr.kind {
         ExprKind::Var(sym) => match sym.0.as_str() {
             "Int"        => Membership::Unconstrained,
+            // Fail is the out-of-band failure sentinel — no integer value is ever
+            // in Fail.  Constrained(false) means "this predicate never holds for
+            // an integer t", which causes Nat | Fail to simplify to Nat >= 0
+            // correctly: (t >= 0) || false = (t >= 0).
+            "Fail"       => Membership::Constrained(tm.mk_boolean(false)),
             "Nat"        => {
                 let zero = tm.mk_integer(0);
                 Membership::Constrained(tm.mk_term(Kind::Geq, &[t, zero]))
@@ -881,6 +926,20 @@ fn encode_expr<'tm>(
         ExprKind::SetLit(_) => {
             Err("set literals cannot appear in function bodies".into())
         }
+
+        // At the SMT level `?` is transparent: we reason only about the success
+        // path, so the callee's contract (domain → range) already constrains the
+        // result variable.  Runtime failure propagation is a codegen concern.
+        //
+        // This holds cleanly because `Fail` contributes Constrained(false) —
+        // no integer is in it — so the callee's contract is purely about the
+        // success type T.  When named error sets (e.g. `T | HTTPError`) are
+        // added, they carry real integer constraints, weakening the contract to
+        // `T | HTTPError`.  The fix is a tagged-union ABI: value and error live
+        // in separate fields so the SMT for the value field stays `∈ T` and
+        // `?` remains transparent.  Until then, named error sets will require
+        // a narrowing fact `_call_0 ∉ E` to be added here after propagation.
+        ExprKind::Try(inner) => enc!(inner),
     }
 }
 

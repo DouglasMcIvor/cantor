@@ -60,6 +60,10 @@ impl Expr {
     pub fn set_lit(elements: Vec<Expr>) -> Self {
         Self::new(ExprKind::SetLit(elements), Span::dummy())
     }
+
+    pub fn try_op(expr: Expr) -> Self {
+        Self::new(ExprKind::Try(Box::new(expr)), Span::dummy())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +77,8 @@ pub enum ExprKind {
     If { cond: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
     /// `{ expr, expr, … }` — explicit set literal; used in signature position.
     SetLit(Vec<Expr>),
+    /// `expr?` — propagate `Fail` from a fallible call up to the caller.
+    Try(Box<Expr>),
     // Future: Comprehension
 }
 
@@ -233,6 +239,7 @@ impl fmt::Display for ExprKind {
                 }
                 write!(f, "}}")
             }
+            Self::Try(inner) => write!(f, "{inner}?"),
         }
     }
 }

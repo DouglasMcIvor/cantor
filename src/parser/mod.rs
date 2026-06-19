@@ -247,6 +247,15 @@ impl<'src> Parser<'src> {
         let mut lhs = self.parse_prefix()?;
 
         loop {
+            // Postfix `?` — highest precedence, applied immediately to lhs.
+            if self.peek() == &Token::Question {
+                let q_span = self.peek_span();
+                self.advance()?;
+                let span = Span::new(lhs.span.start, q_span.end);
+                lhs = Expr::new(ExprKind::Try(Box::new(lhs)), span);
+                continue;
+            }
+
             // Two-token `not in` binary operator.
             if self.peek() == &Token::Not && self.peek2() == &Token::In {
                 let (left_bp, right_bp) = infix_bp_not_in();

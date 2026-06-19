@@ -249,3 +249,37 @@ fn run_usage_shown_for_missing_arg() {
     assert_eq!(out.code, 2);
     assert!(out.stderr.contains("usage"), "expected usage hint:\n{}", out.stderr);
 }
+
+// ── assert / Fail / ? runtime behaviour ──────────────────────────────────────
+
+#[test]
+fn assert_pass_prints_value() {
+    // assert_pass.cantor: safe_to_nat(42)? succeeds, main() = 43.
+    let out = run_subcommand("assert_pass.cantor");
+    assert_eq!(out.code, 0, "expected success:\n{}\n{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("43"),
+        "expected main() = 43 in output:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn assert_fail_exits_nonzero() {
+    // assert_fail.cantor: safe_to_nat(-5)? fails at runtime.
+    let out = run_subcommand("assert_fail.cantor");
+    assert_ne!(out.code, 0, "expected failure:\n{}\n{}", out.stdout, out.stderr);
+    assert!(
+        out.stderr.contains("assertion failed"),
+        "expected assertion-failed message on stderr:\n{}", out.stderr
+    );
+}
+
+#[test]
+fn assert_pass_still_proves_sigs() {
+    // The checker runs before codegen: both sigs should say `proved`.
+    let out = run_subcommand("assert_pass.cantor");
+    assert!(
+        out.stdout.contains("proved"),
+        "expected `proved` in checker output:\n{}", out.stdout
+    );
+}

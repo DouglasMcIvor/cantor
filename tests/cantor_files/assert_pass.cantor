@@ -1,0 +1,11 @@
+safe_to_nat : Int -> Nat | Fail
+safe_to_nat(x) {
+    assert x in Nat
+    x
+}
+
+main : -> Nat | Fail
+main() {
+    mut n = safe_to_nat(42)?
+    n + 1
+}

@@ -4,7 +4,7 @@ use inkwell::context::Context;
 
 use cantor::{
     ast::Item,
-    codegen::compile_file,
+    codegen::{FAIL_SENTINEL, compile_file},
     parser::parse_file,
     solver::{CheckResult, check_file},
 };
@@ -149,5 +149,10 @@ fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
         f.call()
     };
 
-    println!("\nmain() = {result}");
+    if result == FAIL_SENTINEL {
+        eprintln!("\nmain() failed: assertion failed at runtime");
+        process::exit(1);
+    } else {
+        println!("\nmain() = {result}");
+    }
 }
