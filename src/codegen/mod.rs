@@ -197,6 +197,11 @@ impl<'ctx> Compiler<'ctx> {
             BinOp::Ge  => cmp_op!(SGE, "ge"),
             BinOp::And => bool_op!(build_and, "and"),
             BinOp::Or  => bool_op!(build_or,  "or"),
+            // Set operations: implemented when static-set runtime is added.
+            BinOp::In | BinOp::NotIn
+            | BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
+                Err(CompileError::Internal("set operations not yet implemented".into()))
+            }
         }
     }
 

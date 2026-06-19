@@ -1,0 +1,230 @@
+use std::fmt;
+
+use crate::{error::CompileError, span::Span};
+
+/// A single lexical token. Carries data for the variants that need it;
+/// everything else is a unit variant so pattern matching stays concise.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Token {
+    // Literals
+    Int(i64),
+
+    // Keywords
+    True,
+    False,
+    Not,
+    And,
+    Or,
+    In,
+    // Reserved for comprehensions — recognised by the lexer but the
+    // expression parser rejects them with a clear "not yet" error.
+    For,
+    If,
+
+    // Identifiers (anything that isn't a keyword)
+    Ident(String),
+
+    // Arithmetic / set-difference
+    Plus,   // +
+    Minus,  // -  (also set difference; disambiguation is semantic)
+    Star,   // *
+    Slash,  // /
+
+    // Set operators
+    Pipe,   // |  union
+    Caret,  // ^  symmetric difference
+    Amp,    // &  intersection
+
+    // Comparison
+    EqEq,   // ==
+    BangEq, // !=
+    Lt,     // <
+    LtEq,   // <=
+    Gt,     // >
+    GtEq,   // >=
+
+    // Punctuation
+    LParen, // (
+    RParen, // )
+    LBrace, // {
+    RBrace, // }
+    Comma,  // ,
+
+    Eof,
+}
+
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Token::Int(n)      => write!(f, "{n}"),
+            Token::Ident(s)    => write!(f, "`{s}`"),
+            Token::True        => f.write_str("true"),
+            Token::False       => f.write_str("false"),
+            Token::Not         => f.write_str("not"),
+            Token::And         => f.write_str("and"),
+            Token::Or          => f.write_str("or"),
+            Token::In          => f.write_str("in"),
+            Token::For         => f.write_str("for"),
+            Token::If          => f.write_str("if"),
+            Token::Plus        => f.write_str("+"),
+            Token::Minus       => f.write_str("-"),
+            Token::Star        => f.write_str("*"),
+            Token::Slash       => f.write_str("/"),
+            Token::Pipe        => f.write_str("|"),
+            Token::Caret       => f.write_str("^"),
+            Token::Amp         => f.write_str("&"),
+            Token::EqEq        => f.write_str("=="),
+            Token::BangEq      => f.write_str("!="),
+            Token::Lt          => f.write_str("<"),
+            Token::LtEq        => f.write_str("<="),
+            Token::Gt          => f.write_str(">"),
+            Token::GtEq        => f.write_str(">="),
+            Token::LParen      => f.write_str("("),
+            Token::RParen      => f.write_str(")"),
+            Token::LBrace      => f.write_str("{"),
+            Token::RBrace      => f.write_str("}"),
+            Token::Comma       => f.write_str(","),
+            Token::Eof         => f.write_str("<eof>"),
+        }
+    }
+}
+
+/// Stateful lexer. Call `next_token()` repeatedly until `Token::Eof`.
+pub struct Lexer<'src> {
+    src: &'src str,
+    pos: usize,
+}
+
+impl<'src> Lexer<'src> {
+    pub fn new(src: &'src str) -> Self {
+        Self { src, pos: 0 }
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.src[self.pos..].chars().next()
+    }
+
+    fn advance_char(&mut self) -> Option<char> {
+        let ch = self.peek_char()?;
+        self.pos += ch.len_utf8();
+        Some(ch)
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek_char(), Some(c) if c.is_whitespace()) {
+            self.advance_char();
+        }
+    }
+
+    fn scan_int(&mut self, start: usize) -> Result<(Token, Span), CompileError> {
+        while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
+            self.advance_char();
+        }
+        let text = &self.src[start..self.pos];
+        let n = text.parse::<i64>().map_err(|_| CompileError::InvalidIntLiteral {
+            text: text.to_owned(),
+            span: Span::new(start as u32, self.pos as u32),
+        })?;
+        Ok((Token::Int(n), Span::new(start as u32, self.pos as u32)))
+    }
+
+    fn scan_ident_or_keyword(&mut self, start: usize) -> (Token, Span) {
+        while matches!(self.peek_char(), Some(c) if c.is_alphanumeric() || c == '_') {
+            self.advance_char();
+        }
+        let word = &self.src[start..self.pos];
+        let tok = match word {
+            "true"  => Token::True,
+            "false" => Token::False,
+            "not"   => Token::Not,
+            "and"   => Token::And,
+            "or"    => Token::Or,
+            "in"    => Token::In,
+            "for"   => Token::For,
+            "if"    => Token::If,
+            _       => Token::Ident(word.to_owned()),
+        };
+        (tok, Span::new(start as u32, self.pos as u32))
+    }
+
+    /// Consume and return the next token with its source span.
+    pub fn next_token(&mut self) -> Result<(Token, Span), CompileError> {
+        self.skip_whitespace();
+        let start = self.pos;
+
+        let ch = match self.advance_char() {
+            None => return Ok((Token::Eof, Span::new(start as u32, start as u32))),
+            Some(c) => c,
+        };
+
+        let tok = match ch {
+            '0'..='9' => {
+                return self.scan_int(start);
+            }
+            c if c.is_alphabetic() || c == '_' => {
+                return Ok(self.scan_ident_or_keyword(start));
+            }
+            '+' => Token::Plus,
+            '-' => Token::Minus,
+            '*' => Token::Star,
+            '/' => Token::Slash,
+            '|' => Token::Pipe,
+            '^' => Token::Caret,
+            '&' => Token::Amp,
+            '(' => Token::LParen,
+            ')' => Token::RParen,
+            '{' => Token::LBrace,
+            '}' => Token::RBrace,
+            ',' => Token::Comma,
+            '=' => {
+                if self.peek_char() == Some('=') {
+                    self.advance_char();
+                    Token::EqEq
+                } else {
+                    return Err(CompileError::UnexpectedToken {
+                        expected: "==".into(),
+                        found: "=".into(),
+                        span: Span::new(start as u32, self.pos as u32),
+                    });
+                }
+            }
+            '!' => {
+                if self.peek_char() == Some('=') {
+                    self.advance_char();
+                    Token::BangEq
+                } else {
+                    return Err(CompileError::UnexpectedToken {
+                        expected: "!=".into(),
+                        found: "!".into(),
+                        span: Span::new(start as u32, self.pos as u32),
+                    });
+                }
+            }
+            '<' => {
+                if self.peek_char() == Some('=') {
+                    self.advance_char();
+                    Token::LtEq
+                } else {
+                    Token::Lt
+                }
+            }
+            '>' => {
+                if self.peek_char() == Some('=') {
+                    self.advance_char();
+                    Token::GtEq
+                } else {
+                    Token::Gt
+                }
+            }
+            other => {
+                return Err(CompileError::UnexpectedToken {
+                    expected: "a valid token".into(),
+                    found: format!("`{other}`"),
+                    span: Span::new(start as u32, self.pos as u32),
+                });
+            }
+        };
+
+        Ok((tok, Span::new(start as u32, self.pos as u32)))
+    }
+}

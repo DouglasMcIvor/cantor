@@ -58,7 +58,7 @@ pub enum ExprKind {
 pub enum BinOp {
     // Arithmetic
     Add,
-    Sub,
+    Sub, // also set difference at the semantic level; type checker disambiguates
     Mul,
     Div,
     // Comparison (produce Bool)
@@ -68,6 +68,13 @@ pub enum BinOp {
     Le,
     Gt,
     Ge,
+    // Membership (produce Bool)
+    In,
+    NotIn,
+    // Set operations (operands must be sets; codegen stubs until sets are implemented)
+    Union,    // |
+    Intersect, // &
+    SymDiff,  // ^
     // Logical (expect Bool operands)
     And,
     Or,

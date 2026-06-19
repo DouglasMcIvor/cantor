@@ -286,6 +286,12 @@ Tagline: "Types without Types" / "Who needs types anyway?"
 - `==` is always **structural** set equality, never reference/identity
   equality — relevant since other languages in many devs'/LLMs' background
   knowledge default to reference equality for compound values.
+- `Bool` is **not** an integer and cannot be used in arithmetic or numeric
+  comparisons. `true` is not `1`; `false` is not `0`. No implicit coercion
+  exists. This bites developers coming from C, Python, or JavaScript.
+- `a < b < c` is a domain violation, not Python-style chained comparison.
+  It parses as `(a < b) < c`, where `a < b : Bool` and `Bool` is disjoint
+  from the domain of `<`. The intended idiom is `a < b and b < c`.
 
 ### Set operators (Unicode primary, ASCII equivalent required for all)
 | Concept | Unicode | ASCII |
@@ -344,7 +350,77 @@ Other open items (lower priority, not blocking):
 - Emit handlers written in Cantor itself
 - Solver-capability versioning
 
-## 13. Prototype approach
+## 13. Primitive types and numeric tower
+
+### Bool
+
+- `Bool = {true, false}` — a generative set with exactly two elements.
+- **Disjoint from all integer types.** No implicit coercion between `Bool`
+  and any integer exists anywhere in the language (see §10 gotchas).
+- `==` on `Bool` is structural set equality (same as everything else —
+  no special case).
+
+### Integers
+
+- **`Int`** — the mathematical integers ℤ, unbounded. The default integer
+  type. All integer literals have domain `Int` unless a narrower domain is
+  imposed by context (function signature, `assert`, etc.).
+- **`Int8`, `Int16`, `Int32`, `Int64`** — generative subsets of `Int`:
+  `Int16 = { n ∈ ℤ | -32768 ≤ n ≤ 32767 }`, and analogously for other
+  widths. These are not distinct types — they are named generative sets
+  used as domain/range annotations.
+- At runtime, a value whose domain is proven ⊆ `IntN` is stored in the
+  corresponding LLVM integer type (`i8`, `i16`, `i32`, `i64`) for
+  performance. Domain is `Int` (unbounded) → `i64` for v0; full BigInt
+  is deferred.
+
+### Arithmetic widening
+
+- `+`, `-`, `*` operate in ℤ — exact and never overflow at the semantic
+  level.
+- The solver automatically proves: `a ∈ IntN ∧ b ∈ IntN → a + b ∈ Int(2N)`.
+- **Cap at Int64**: `Int64 + Int64 → Int` (not `Int128`). 128-bit
+  hardware support is inconsistent; `Int` (BigInt) is the correct
+  mathematical fallback. Same cap applies to the other arithmetic operators.
+- `/` is integer division (truncates toward zero). Domain excludes zero in
+  the denominator — standard domain-check machinery handles this.
+
+### Narrowing back to IntN
+
+Three mechanisms in order of increasing programmer responsibility:
+
+1. **`assert expr in Int16`** — inserts a runtime range check; failure is
+   a Class 1 domain-violation error. The solver may statically eliminate
+   the check if it can prove the assertion holds (or reject compilation if
+   it can prove it doesn't).
+
+2. **`truncate16(x)`** — a built-in with declared type `Int → Int16`,
+   defined as 2's-complement modular reduction. The solver always proves
+   its range is `Int16` — no `assert`/`assume` needed at the call site.
+   This is the correct tool when **wrapping behaviour is semantically
+   intended** (e.g. fixed-width hardware arithmetic, hash functions).
+   Codegen: `truncate16(a + b)` where `a, b : Int16` lowers to a single
+   native `i16 add` with overflow. `assert (a + b) in Int16` lowers to
+   `i32 add` + a bounds check (two instructions, no wrap).
+
+3. **`assume expr in Int16`** — no runtime check; the programmer asserts
+   domain membership to the proof system only. Use only when the solver
+   cannot prove containment but the programmer is certain. Unsound if
+   wrong — produces silently incorrect results at runtime, same as
+   `assume` everywhere else in the language (§4).
+
+### Chained comparisons (resolved)
+
+`a < b < c` parses as `(a < b) < c` (left-associative per §10). The
+domain of `<` requires both arguments to be in a numeric set; `a < b`
+produces `Bool`, which is disjoint from all numeric sets (above). The
+domain checker rejects this as a domain violation — there is no implicit
+`Bool → Int` coercion to rescue it. The intended idiom is
+`a < b and b < c`.
+Future diagnostic (not v0): detect the chained-comparison pattern and
+suggest the `and` form explicitly.
+
+## 14. Prototype approach
 
 - Build via a **unit-test suite for the compiler** rather than a polished
   first syntax — syntax is expected to be reworked multiple times before
