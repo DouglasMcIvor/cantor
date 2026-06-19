@@ -1,7 +1,6 @@
 # Cantor
 
-> *A statically verified language without any types.*
-> *"Who needs types anyway?"*
+> *A statically typed language without any types.*
 
 Named after [Georg Cantor](https://en.wikipedia.org/wiki/Georg_Cantor), the mathematician who built the foundations of modern set theory.
 
@@ -55,7 +54,7 @@ The result is a language where `safe_div : Int * (Int - {0}) -> Int` is not a ty
 
 Of course, nothing in the world is free. The trade off we expect to make here is:
 
-* Complex claims can take a *really* long time to prove. Boolean SAT is infamously NP-complete.
+* Complex claims can take a *really* long time to prove. SAT is infamously NP-complete.
 * ...so we should expect to need a *lot* of `assert`s. The simplest way to provide a proof? Tell the compiler what to do when it's false!
 
 But there are some really good SAT solvers out there, so maybe we can get away without needing "asserts where it hurts"?
@@ -163,7 +162,7 @@ The compiler proves that when neither `safe_to_nat` call fails, `a + b` is in `N
 
 ### Helping the compiler out (or lying to it): `assert`, `require` and `assume`
 
-```
+```cantor
 clamp : Int * Nat * NatPos -> Nat
 clamp(x, lo, hi) {
     assert lo < hi        -- runtime check: caller's responsibility
@@ -207,7 +206,7 @@ The question "what if we threw out the type system and only kept sets?" is fun t
 
 I would have done it _years_ ago (the inspiration was back in 2014 after all!), but until our silicon friends showed up and could help me out it had seemed like a vast and daunting prospect to attempt.
 
-If you find any of it interesting or want to argue about ~type~set theory, feel free to fork or open an issue!
+If you find any of it interesting or want to argue about ~type~ set theory, feel free to fork or open an issue!
 
 ## Building
 
