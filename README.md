@@ -1,4 +1,4 @@
-# Cantor
+# Cantor - ℵ
 
 > *A statically typed language without any types.*
 
