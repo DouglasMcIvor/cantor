@@ -3,16 +3,20 @@ You probably don't want to read this unless you're me.
 
 # To do
 
-imperative blocks
-assume/require
 monadic errors
-assert
+constants
+basic values that aren't integers:
+- float
+- char, string (unicode I guess)
+- byte
+runtime sets of course
+more containers! gotta have me some vectors and maps, not just sets!
 loops
 outer IO loop
 compiled binaries
 linker integration
 README with examples, human intro and LLM intro
-constants
+"named types" or whatever the thingy is called but in set language. I want to be able to make Litres that are numbers but form a distinct set.
 
 # To learn
 
@@ -42,10 +46,13 @@ constants
 
 # Things that surprised me
 
-
+- How hard it is to stop typing "types" everywhere instead of sets etc.
+- SMT solvers are branch heavy so aren't very SIMD/multi-thread friendly. Implication, I guess, is that we can at least try and run multiple solvers in parallel while compiling to make use of multi-threading in a simple way. Shame we can't just throw the problem at some beefy GPUs.
 
 # Open questions
 
+- Should we have a compiletime/runtime distinction baked in? Like `Foo` vs `foo`?
+- Should we have an early `return` statement? Seems expected in imperative languages.
 - How to define exception handlers?
 - More generally, how to define the IO loop?
 - Should we have a way to write programs without the IO loop runtime? If so how?
