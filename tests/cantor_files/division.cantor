@@ -1,0 +1,11 @@
+safe_recip : Int - {0} -> Int
+safe_recip(x) = 1 / x
+
+half : Int -> Int
+half(x) = x / 2
+
+safe_div : Int * (Int - {0}) -> Int
+safe_div(x, y) = x / y
+
+main : -> Int
+main() = half(84)

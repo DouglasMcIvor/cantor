@@ -313,3 +313,150 @@ positive_div(x, y) = x / y
         }
     }
 }
+
+// ── Division safety ───────────────────────────────────────────────────────────
+
+#[test]
+fn division_by_literal_proved() {
+    // 2 is always non-zero; no counterexample possible.
+    proved("
+half : Int -> Int
+half(x) = x / 2
+");
+}
+
+#[test]
+fn division_unconstrained_denominator_counterexample() {
+    // y is unconstrained — solver finds y = 0.
+    counterexample("
+unsafe_div : Int * Int -> Int
+unsafe_div(x, y) = x / y
+");
+}
+
+#[test]
+fn division_unconstrained_single_param_counterexample() {
+    // x could be 0.
+    counterexample("
+recip : Int -> Int
+recip(x) = 1 / x
+");
+}
+
+#[test]
+fn division_by_zero_reason_in_result() {
+    let results = check("
+unsafe_div : Int * Int -> Int
+unsafe_div(x, y) = x / y
+");
+    let (_, result) = results.into_iter().next().unwrap();
+    let CheckResult::Counterexample { reason, .. } = result else {
+        panic!("expected counterexample");
+    };
+    assert_eq!(reason, "division by zero", "reason should say 'division by zero'");
+}
+
+#[test]
+fn range_violation_reason_in_result() {
+    // No division; reason should name the violated range.
+    let results = check("
+negate : Nat -> Nat
+negate(x) = -x
+");
+    let (_, result) = results.into_iter().next().unwrap();
+    let CheckResult::Counterexample { reason, .. } = result else {
+        panic!("expected counterexample");
+    };
+    assert!(reason.contains("not in"), "reason should say 'not in …': {reason}");
+    assert!(reason.contains("Nat"), "reason should name the range: {reason}");
+}
+
+#[test]
+fn division_excluded_zero_domain_proved() {
+    proved("
+safe_recip : Int - {0} -> Int
+safe_recip(x) = 1 / x
+");
+}
+
+#[test]
+fn division_two_arg_excluded_zero_proved() {
+    proved("
+safe_div : Int * (Int - {0}) -> Int
+safe_div(x, y) = x / y
+");
+}
+
+// ── NonZeroInt named set ──────────────────────────────────────────────────────
+
+#[test]
+fn nonzeroint_domain_proved() {
+    proved("
+safe_recip : NonZeroInt -> Int
+safe_recip(x) = 1 / x
+");
+}
+
+#[test]
+fn nonzeroint_two_arg_proved() {
+    proved("
+safe_div : Int * NonZeroInt -> Int
+safe_div(x, y) = x / y
+");
+}
+
+#[test]
+fn nonzeroint_range_proved() {
+    proved("
+nonzero_shift : Int -> NonZeroInt
+nonzero_shift(x) = x + 1 + (if x >= 0 then 1 else -1)
+");
+}
+
+#[test]
+fn nonzeroint_range_counterexample() {
+    // x could be 0, which is not in NonZeroInt.
+    counterexample("
+bad_range : Int -> NonZeroInt
+bad_range(x) = x
+");
+}
+
+#[test]
+fn nonzeroint_equivalent_to_set_diff() {
+    // NonZeroInt and Int - {0} should accept exactly the same domains.
+    // Both of these should be proved:
+    let src_named = "safe_div : Int * NonZeroInt -> Int\nsafe_div(x, y) = x / y";
+    let src_inline = "safe_div : Int * (Int - {0}) -> Int\nsafe_div(x, y) = x / y";
+    proved(src_named);
+    proved(src_inline);
+}
+
+#[test]
+fn division_natpos_domain_proved() {
+    // NatPos guarantees x > 0, so 10 / x is safe (no div-by-zero, result >= 0).
+    // Range is Nat, not NatPos, because 10 / 11 = 0 (integer truncation).
+    proved("
+inv_floor : NatPos -> Nat
+inv_floor(x) = 10 / x
+");
+}
+
+#[test]
+fn division_guarded_by_if_proved() {
+    // `x != 0` guards the division: the checker narrows the path condition to
+    // `x != 0` inside the then-branch, so `x ≠ 0` is trivially proved there.
+    proved("
+guarded_div : Int -> Int
+guarded_div(x) = if x != 0 then 10 / x else 0
+");
+}
+
+#[test]
+fn division_guarded_wrong_branch_counterexample() {
+    // Guard is in the else-branch, not the then-branch where division happens.
+    counterexample("
+bad_guard : Int -> Int
+bad_guard(x) = if x == 0 then 10 / x else 0
+");
+}

@@ -16,7 +16,7 @@
 //!
 //! Current limitations (lifted as the language grows):
 //! - Only `= expr` (pure) bodies; `{ block }` bodies return `Unknown`.
-//! - Only named built-in sets as domain/range (`Int`, `Nat`, `NatPos`, `IntN`).
+//! - Only named built-in sets as domain/range (`Int`, `Nat`, `NatPos`, `NonZeroInt`, `IntN`).
 //! - Only integer-sorted parameters and return values.
 
 use std::collections::HashMap;
@@ -26,17 +26,20 @@ use cvc5::{Kind, Solver, Term, TermManager};
 use crate::{
     ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, UnOp},
     error::CompileError,
-    span::Symbol,
+    span::{Span, Symbol},
 };
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CheckResult {
-    /// Every input satisfying the domain maps to an output in the range.
+    /// Every input satisfying the domain maps to an output in the range,
+    /// and no built-in operation can produce undefined behaviour.
     Proved,
-    /// The solver found concrete parameter values that violate the range.
-    Counterexample { params: HashMap<String, i64>, output: i64 },
+    /// The solver found concrete parameter values that violate a safety
+    /// obligation.  `reason` is a human-readable explanation such as
+    /// `"not in Nat"` (range violation) or `"division by zero"`.
+    Counterexample { params: HashMap<String, i64>, output: i64, reason: String },
     /// Could not determine (unsupported construct, solver timeout, etc.).
     Unknown(String),
 }
@@ -171,29 +174,59 @@ fn check_sig(
         .zip(param_terms.iter().cloned())
         .collect();
 
-    // Encode the body as a cvc5 term, asserting call contracts along the way.
+    // Encode the body, collecting built-in argument domain obligations as we go.
     let mut call_counter = 0usize;
-    let body_term = match encode_expr(body, &env, fn_env, &tm, &mut solver, &mut call_counter) {
+    let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
+    let top_guard = tm.mk_boolean(true);
+    let body_term = match encode_expr(
+        body, &env, fn_env, &tm, &mut solver, &mut call_counter,
+        &mut builtin_obligs, top_guard,
+    ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
     };
 
-    // Assert the negation of `body_term ∈ range`.
-    match membership_constraint(&tm, body_term.clone(), &sig.range) {
-        Membership::Unconstrained => {
-            // Range is `Int` — any integer output qualifies; trivially proved.
-            return CheckResult::Proved;
-        }
-        Membership::Constrained(range_holds) => {
-            let negated = tm.mk_term(Kind::Not, &[range_holds]);
-            solver.assert_formula(negated);
-        }
+    // Range obligation: body_term ∈ sig.range.
+    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range) {
+        Membership::Unconstrained => None,
+        Membership::Constrained(c) => Some(c),
         Membership::Unsupported => {
             return CheckResult::Unknown("unsupported range set expression".into())
         }
+    };
+
+    // Built-in argument domain obligations, each guarded by the path condition
+    // under which the operation is reachable:  path_cond → obligation.
+    let builtin_formulas: Vec<Term<'_>> = builtin_obligs
+        .iter()
+        .map(|o| {
+            if o.path_cond.to_string().trim() == "true" {
+                o.obligation.clone()
+            } else {
+                tm.mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
+            }
+        })
+        .collect();
+
+    // Combine everything, negate, and ask the solver.
+    // UNSAT → all obligations always hold → Proved.
+    // SAT   → some obligation can be falsified → Counterexample.
+    let mut all_obligations: Vec<Term<'_>> = builtin_formulas;
+    if let Some(rc) = range_obligation {
+        all_obligations.push(rc);
     }
 
-    // Ask the solver.
+    if all_obligations.is_empty() {
+        return CheckResult::Proved;
+    }
+
+    let combined = if all_obligations.len() == 1 {
+        all_obligations.remove(0)
+    } else {
+        tm.mk_term(Kind::And, &all_obligations)
+    };
+    solver.assert_formula(tm.mk_term(Kind::Not, &[combined]));
+
     let sat = solver.check_sat();
     if sat.is_unsat() {
         CheckResult::Proved
@@ -203,8 +236,24 @@ fn check_sig(
             let val = solver.get_value(term.clone());
             cex_params.insert(name.0.clone(), integer_value(&val));
         }
+
+        // Find the first built-in obligation that fails in this model.
+        // An obligation fails when its guard holds AND its predicate is false.
+        let reason = builtin_obligs
+            .iter()
+            .find(|o| {
+                boolean_value(&solver.get_value(o.path_cond.clone()))
+                    && !boolean_value(&solver.get_value(o.obligation.clone()))
+            })
+            .map(|o| o.violated_reason.to_string())
+            .unwrap_or_else(|| format!("not in {}", sig.range));
+
         let output_term = solver.get_value(body_term);
-        CheckResult::Counterexample { params: cex_params, output: integer_value(&output_term) }
+        CheckResult::Counterexample {
+            params: cex_params,
+            output: integer_value(&output_term),
+            reason,
+        }
     } else {
         CheckResult::Unknown("solver returned unknown".into())
     }
@@ -233,14 +282,18 @@ fn membership_constraint<'tm>(
 ) -> Membership<'tm> {
     match &set_expr.kind {
         ExprKind::Var(sym) => match sym.0.as_str() {
-            "Int"    => Membership::Unconstrained,
-            "Nat"    => {
+            "Int"        => Membership::Unconstrained,
+            "Nat"        => {
                 let zero = tm.mk_integer(0);
                 Membership::Constrained(tm.mk_term(Kind::Geq, &[t, zero]))
             }
-            "NatPos" => {
+            "NatPos"     => {
                 let zero = tm.mk_integer(0);
                 Membership::Constrained(tm.mk_term(Kind::Gt, &[t, zero]))
+            }
+            "NonZeroInt" => {
+                let zero = tm.mk_integer(0);
+                Membership::Constrained(tm.mk_term(Kind::Distinct, &[t, zero]))
             }
             "Int8"   => bounded(tm, t, i8::MIN  as i64, i8::MAX  as i64),
             "Int16"  => bounded(tm, t, i16::MIN as i64, i16::MAX as i64),
@@ -344,11 +397,60 @@ fn bounded<'tm>(tm: &'tm TermManager, t: Term<'tm>, min: i64, max: i64) -> Membe
 
 type Env<'tm> = HashMap<Symbol, Term<'tm>>;
 
+// ── Built-in operator domain table ───────────────────────────────────────────
+
+/// A proof obligation produced when encoding a built-in operator argument.
+///
+/// `check_sig` asserts `path_cond → obligation` and, on a SAT result,
+/// inspects the model to report `violated_reason` in the counterexample.
+struct BuiltinObligation<'tm> {
+    path_cond: Term<'tm>,
+    obligation: Term<'tm>,
+    violated_reason: &'static str,
+}
+
+/// Domain constraint for argument `arg_idx` (0-based) of a binary built-in,
+/// expressed as a named Cantor set + a human-readable violation reason.
+///
+/// This is the authoritative table of every binary operator's argument types.
+/// `None` means the argument is unconstrained (accepts any `Int`).
+/// When `Bool` is added as a type, `And`/`Or` rows will appear here.
+fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Option<(Expr, &'static str)> {
+    match (op, arg_idx) {
+        (BinOp::Div, 1) => Some((named_set("NonZeroInt"), "division by zero")),
+        _ => None,
+    }
+}
+
+/// Domain constraint for the operand of a unary built-in.
+///
+/// `None` means unconstrained.  `Not` will reference `Bool` once that type
+/// is visible to the solver.
+fn unary_builtin_domain(op: &UnOp) -> Option<(Expr, &'static str)> {
+    match op {
+        UnOp::Neg => None, // Int -> Int
+        UnOp::Not => None, // Bool -> Bool (Bool not yet a solver-visible type)
+    }
+}
+
+/// Build a `Var` expression that refers to a named built-in set.
+fn named_set(name: &'static str) -> Expr {
+    Expr::new(ExprKind::Var(Symbol::new(name)), Span::dummy())
+}
+
+// ── Expression encoder ────────────────────────────────────────────────────────
+
 /// Recursively encode a Cantor expression as a cvc5 `Term`.
 ///
 /// When a function call is encountered, a fresh integer variable is introduced
 /// for the return value, and the callee's per-signature contracts are asserted
 /// as implications: `args ∈ domain → result ∈ range`.
+///
+/// `path_cond` is the conjunction of all branch conditions required to reach
+/// this point in the expression.  `builtin_obligs` accumulates one entry per
+/// built-in operator argument that has a domain constraint; `check_sig` then
+/// asserts `path_cond → obligation` for each, giving fully path-sensitive
+/// safety checking for every built-in.
 fn encode_expr<'tm>(
     expr: &Expr,
     env: &Env<'tm>,
@@ -356,7 +458,16 @@ fn encode_expr<'tm>(
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
+    builtin_obligs: &mut Vec<BuiltinObligation<'tm>>,
+    path_cond: Term<'tm>,
 ) -> Result<Term<'tm>, String> {
+    // Convenience: recurse with the same path condition.
+    macro_rules! enc {
+        ($e:expr) => {
+            encode_expr($e, env, fn_env, tm, solver, call_counter, builtin_obligs, path_cond.clone())
+        };
+    }
+
     match &expr.kind {
         ExprKind::IntLit(n) => Ok(tm.mk_integer(*n)),
         ExprKind::BoolLit(b) => Ok(tm.mk_boolean(*b)),
@@ -367,7 +478,16 @@ fn encode_expr<'tm>(
             .ok_or_else(|| format!("unbound variable `{}`", sym.0)),
 
         ExprKind::UnOp { op, expr: inner } => {
-            let t = encode_expr(inner, env, fn_env, tm, solver, call_counter)?;
+            let t = enc!(inner)?;
+            if let Some((domain, reason)) = unary_builtin_domain(op) {
+                if let Membership::Constrained(c) = membership_constraint(tm, t.clone(), &domain) {
+                    builtin_obligs.push(BuiltinObligation {
+                        path_cond: path_cond.clone(),
+                        obligation: c,
+                        violated_reason: reason,
+                    });
+                }
+            }
             match op {
                 UnOp::Neg => Ok(tm.mk_term(Kind::Neg, &[t])),
                 UnOp::Not => Ok(tm.mk_term(Kind::Not, &[t])),
@@ -375,8 +495,22 @@ fn encode_expr<'tm>(
         }
 
         ExprKind::BinOp { op, lhs, rhs } => {
-            let l = encode_expr(lhs, env, fn_env, tm, solver, call_counter)?;
-            let r = encode_expr(rhs, env, fn_env, tm, solver, call_counter)?;
+            let l = enc!(lhs)?;
+            let r = enc!(rhs)?;
+
+            // Check each argument against the operator's declared domain.
+            for (arg_idx, arg_term) in [&l, &r].iter().enumerate() {
+                if let Some((domain, reason)) = binary_builtin_domain(op, arg_idx) {
+                    if let Membership::Constrained(c) = membership_constraint(tm, (*arg_term).clone(), &domain) {
+                        builtin_obligs.push(BuiltinObligation {
+                            path_cond: path_cond.clone(),
+                            obligation: c,
+                            violated_reason: reason,
+                        });
+                    }
+                }
+            }
+
             let kind = match op {
                 BinOp::Add => Kind::Add,
                 BinOp::Sub => Kind::Sub,
@@ -399,17 +533,29 @@ fn encode_expr<'tm>(
         }
 
         ExprKind::If { cond, then_expr, else_expr } => {
-            let c = encode_expr(cond, env, fn_env, tm, solver, call_counter)?;
-            let t = encode_expr(then_expr, env, fn_env, tm, solver, call_counter)?;
-            let e = encode_expr(else_expr, env, fn_env, tm, solver, call_counter)?;
+            // The condition is evaluated on the current path.
+            let c = enc!(cond)?;
+
+            // Then-branch: path_cond ∧ cond
+            let then_guard = tm.mk_term(Kind::And, &[path_cond.clone(), c.clone()]);
+            let t = encode_expr(
+                then_expr, env, fn_env, tm, solver, call_counter, builtin_obligs, then_guard,
+            )?;
+
+            // Else-branch: path_cond ∧ ¬cond
+            let not_c = tm.mk_term(Kind::Not, &[c.clone()]);
+            let else_guard = tm.mk_term(Kind::And, &[path_cond, not_c]);
+            let e = encode_expr(
+                else_expr, env, fn_env, tm, solver, call_counter, builtin_obligs, else_guard,
+            )?;
+
             Ok(tm.mk_term(Kind::Ite, &[c, t, e]))
         }
 
         ExprKind::Call { callee, args } => {
-            // Encode arguments.
             let arg_terms: Vec<Term<'_>> = args
                 .iter()
-                .map(|a| encode_expr(a, env, fn_env, tm, solver, call_counter))
+                .map(|a| enc!(a))
                 .collect::<Result<_, _>>()?;
 
             // Look up the callee in the function environment.
@@ -518,4 +664,9 @@ fn integer_value(term: &Term<'_>) -> i64 {
     } else {
         term.to_string().trim().parse::<i64>().unwrap_or(0)
     }
+}
+
+/// Extract a bool from a cvc5 boolean model term.
+fn boolean_value(term: &Term<'_>) -> bool {
+    term.to_string().trim() == "true"
 }

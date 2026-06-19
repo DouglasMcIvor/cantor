@@ -70,7 +70,7 @@ fn main() {
                     println!("  proved          {sig_display}");
                     n_proved += 1;
                 }
-                CheckResult::Counterexample { params, output } => {
+                CheckResult::Counterexample { params, output, reason } => {
                     println!("  counterexample  {sig_display}");
                     let mut pairs: Vec<_> = params.iter().collect();
                     pairs.sort_by_key(|(k, _)| k.as_str());
@@ -79,7 +79,7 @@ fn main() {
                         .map(|(k, v)| format!("{k} = {v}"))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    println!("    {bindings}  ->  output = {output}  (not in {})", sig.range);
+                    println!("    {bindings}  ->  output = {output}  ({reason})");
                     n_counter += 1;
                 }
                 CheckResult::Unknown(reason) => {
