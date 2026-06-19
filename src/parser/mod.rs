@@ -3,20 +3,19 @@ pub mod lexer;
 use lexer::{Lexer, Token};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, UnOp},
+    ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, Param, Stmt, UnOp},
     error::CompileError,
     span::{Span, Symbol},
 };
 
-/// Recursive-descent / Pratt parser for Cantor expressions.
+/// Recursive-descent / Pratt parser for Cantor.
 ///
-/// Two tokens of lookahead are maintained so that the two-token
-/// binary operator `not in` can be recognised in infix position without
-/// backtracking.
+/// Two tokens of lookahead so that `not in` (two-token infix operator) and
+/// `ident =` (assignment statement) can be recognised without backtracking.
 pub struct Parser<'src> {
     lexer: Lexer<'src>,
-    peek0: (Token, Span), // next token to consume
-    peek1: (Token, Span), // token after that
+    peek0: (Token, Span),
+    peek1: (Token, Span),
 }
 
 impl<'src> Parser<'src> {
@@ -27,7 +26,7 @@ impl<'src> Parser<'src> {
         Ok(Self { lexer, peek0, peek1 })
     }
 
-    // ── Lookahead ────────────────────────────────────────────────────────────
+    // ── Lookahead ─────────────────────────────────────────────────────────────
 
     fn peek(&self) -> &Token {
         &self.peek0.0
@@ -41,14 +40,12 @@ impl<'src> Parser<'src> {
         &self.peek1.0
     }
 
-    /// Consume and return the current lookahead token, then shift the buffer.
     fn advance(&mut self) -> Result<(Token, Span), CompileError> {
         let new_peek1 = self.lexer.next_token()?;
         let old_peek1 = std::mem::replace(&mut self.peek1, new_peek1);
         Ok(std::mem::replace(&mut self.peek0, old_peek1))
     }
 
-    /// Consume the current token, asserting its kind for internal use.
     fn expect(&mut self, expected: &Token) -> Result<Span, CompileError> {
         let span = self.peek_span();
         let (tok, _) = self.advance()?;
@@ -63,38 +60,198 @@ impl<'src> Parser<'src> {
         }
     }
 
-    // ── Public entry point ───────────────────────────────────────────────────
+    // ── Top-level file ────────────────────────────────────────────────────────
 
-    /// Parse a complete expression, then expect EOF.
-    pub fn parse_expr_eof(&mut self) -> Result<Expr, CompileError> {
-        let expr = self.parse_expr(0)?;
-        if self.peek() != &Token::Eof {
-            return Err(CompileError::UnexpectedToken {
-                expected: "<eof>".into(),
-                found: self.peek().to_string(),
-                span: self.peek_span(),
-            });
+    /// Parse a whole source file as a sequence of top-level items.
+    pub fn parse_file(&mut self) -> Result<Vec<Item>, CompileError> {
+        let mut items = Vec::new();
+        while self.peek() != &Token::Eof {
+            items.push(self.parse_item()?);
         }
-        Ok(expr)
+        Ok(items)
     }
 
-    // ── Pratt core ───────────────────────────────────────────────────────────
+    fn parse_item(&mut self) -> Result<Item, CompileError> {
+        Ok(Item::FunctionDef(self.parse_function_def()?))
+    }
+
+    /// Parse one function definition.
+    ///
+    /// Grammar:
+    /// ```text
+    /// function_def ::= sig+ impl
+    /// sig          ::= IDENT ':' set_expr '->' set_expr
+    /// impl         ::= IDENT '(' params ')' ('=' expr | block)
+    /// ```
+    ///
+    /// All `sig` lines must share the same name as `impl`.
+    fn parse_function_def(&mut self) -> Result<FunctionDef, CompileError> {
+        let start_span = self.peek_span();
+
+        // Collect one or more signature lines: `name : domain -> range`
+        let name = self.expect_ident()?;
+        let mut sigs = vec![self.parse_sig_tail()?];
+
+        // Additional sigs share the same name.
+        while self.peek() == &Token::Ident(name.0.clone()) && self.peek2() == &Token::Colon {
+            self.advance()?; // consume repeated name
+            sigs.push(self.parse_sig_tail()?);
+        }
+
+        // Implementation: `name(params) = expr`  or  `name(params) { stmts }`
+        // `name` must match.
+        let impl_name = self.expect_ident()?;
+        if impl_name.0 != name.0 {
+            return Err(CompileError::UnexpectedToken {
+                expected: format!("`{}` (implementation must follow its signatures)", name),
+                found: format!("`{}`", impl_name),
+                span: start_span,
+            });
+        }
+
+        self.expect(&Token::LParen)?;
+        let params = self.parse_params()?;
+        self.expect(&Token::RParen)?;
+
+        let body = if self.peek() == &Token::Eq {
+            self.advance()?;
+            FunctionBody::Expr(self.parse_expr(0)?)
+        } else if self.peek() == &Token::LBrace {
+            FunctionBody::Block(self.parse_block()?)
+        } else {
+            let span = self.peek_span();
+            return Err(CompileError::UnexpectedToken {
+                expected: "`=` or `{`".into(),
+                found: self.peek().to_string(),
+                span,
+            });
+        };
+
+        let end = match &body {
+            FunctionBody::Expr(e) => e.span.end,
+            FunctionBody::Block(_) => self.peek_span().start, // just past `}`
+        };
+
+        Ok(FunctionDef {
+            name,
+            sigs,
+            params,
+            body,
+            span: Span::new(start_span.start, end),
+        })
+    }
+
+    /// Parse everything after the name on a signature line: `: domain -> range`
+    fn parse_sig_tail(&mut self) -> Result<FunctionSig, CompileError> {
+        let start = self.peek_span();
+        self.expect(&Token::Colon)?;
+        let domain = self.parse_set_expr()?;
+        self.expect(&Token::Arrow)?;
+        let range = self.parse_set_expr()?;
+        let end = range.span.end;
+        Ok(FunctionSig { domain, range, span: Span::new(start.start, end) })
+    }
+
+    /// Parse a set expression in signature position.
+    ///
+    /// For now this is just a regular expression — `*` means Cartesian product
+    /// here rather than multiplication, but we record the same AST node and let
+    /// the type checker disambiguate by position. Stops before `->`.
+    fn parse_set_expr(&mut self) -> Result<Expr, CompileError> {
+        // We parse a full expression but Arrow is not an infix operator so the
+        // Pratt loop will naturally stop before `->`; the `-` in `->` is consumed
+        // by the lexer as Arrow, not Minus, so there's no ambiguity.
+        self.parse_expr(0)
+    }
+
+    // ── Parameters ────────────────────────────────────────────────────────────
+
+    fn parse_params(&mut self) -> Result<Vec<Param>, CompileError> {
+        let mut params = Vec::new();
+        if self.peek() == &Token::RParen {
+            return Ok(params);
+        }
+        params.push(self.parse_one_param()?);
+        while self.peek() == &Token::Comma {
+            self.advance()?;
+            params.push(self.parse_one_param()?);
+        }
+        Ok(params)
+    }
+
+    fn parse_one_param(&mut self) -> Result<Param, CompileError> {
+        let span = self.peek_span();
+        let name = self.expect_ident()?;
+        Ok(Param { name, span })
+    }
+
+    // ── Imperative block ──────────────────────────────────────────────────────
+
+    /// Parse `{ stmt* }`, returning the statement list.
+    fn parse_block(&mut self) -> Result<Vec<Stmt>, CompileError> {
+        self.expect(&Token::LBrace)?;
+        let mut stmts = Vec::new();
+        while self.peek() != &Token::RBrace && self.peek() != &Token::Eof {
+            stmts.push(self.parse_stmt()?);
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(stmts)
+    }
+
+    fn parse_stmt(&mut self) -> Result<Stmt, CompileError> {
+        let span = self.peek_span();
+        match self.peek().clone() {
+            Token::Mut => {
+                self.advance()?;
+                let name = self.expect_ident()?;
+                self.expect(&Token::Eq)?;
+                let value = self.parse_expr(0)?;
+                Ok(Stmt::MutLet { name, value, span })
+            }
+            Token::Assert => {
+                self.advance()?;
+                // Parse subject at bp=5 so the Pratt loop stops before `in`
+                // (which also has left_bp=5, and the condition is left_bp > min_bp).
+                let expr = self.parse_expr(5)?;
+                self.expect(&Token::In)?;
+                let set = self.parse_expr(0)?;
+                Ok(Stmt::Assert { expr, set, span })
+            }
+            Token::Assume => {
+                self.advance()?;
+                let expr = self.parse_expr(5)?;
+                self.expect(&Token::In)?;
+                let set = self.parse_expr(0)?;
+                Ok(Stmt::Assume { expr, set, span })
+            }
+            Token::LBrace => Ok(Stmt::Block(self.parse_block()?)),
+            // `ident =` (not `==`) → assignment
+            Token::Ident(_) if self.peek2() == &Token::Eq => {
+                let name = self.expect_ident()?;
+                self.expect(&Token::Eq)?;
+                let value = self.parse_expr(0)?;
+                Ok(Stmt::Assign { name, value, span })
+            }
+            _ => Ok(Stmt::Expr(self.parse_expr(0)?)),
+        }
+    }
+
+    // ── Expression (Pratt) ────────────────────────────────────────────────────
 
     /// Parse an expression with at least the given minimum left-binding power.
-    /// Corresponds to a single invocation in the standard Pratt algorithm.
     pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, CompileError> {
         let mut lhs = self.parse_prefix()?;
 
         loop {
-            // Check for the two-token `not in` binary operator first.
+            // Two-token `not in` binary operator.
             if self.peek() == &Token::Not && self.peek2() == &Token::In {
                 let (left_bp, right_bp) = infix_bp_not_in();
                 if left_bp <= min_bp {
                     break;
                 }
                 let op_span = self.peek_span();
-                self.advance()?; // consume `not`
-                self.advance()?; // consume `in`
+                self.advance()?;
+                self.advance()?;
                 let rhs = self.parse_expr(right_bp)?;
                 lhs = make_binop(BinOp::NotIn, lhs, rhs, op_span);
                 continue;
@@ -116,7 +273,6 @@ impl<'src> Parser<'src> {
         Ok(lhs)
     }
 
-    /// Parse a prefix position: unary operators or an atom.
     fn parse_prefix(&mut self) -> Result<Expr, CompileError> {
         let span = self.peek_span();
         match self.peek().clone() {
@@ -138,11 +294,27 @@ impl<'src> Parser<'src> {
                     Span::new(span.start, end),
                 ))
             }
+            Token::If => {
+                self.advance()?;
+                let cond = self.parse_expr(0)?;
+                self.expect(&Token::Then)?;
+                let then_expr = self.parse_expr(0)?;
+                self.expect(&Token::Else)?;
+                let else_expr = self.parse_expr(0)?;
+                let end = else_expr.span.end;
+                Ok(Expr::new(
+                    ExprKind::If {
+                        cond: Box::new(cond),
+                        then_expr: Box::new(then_expr),
+                        else_expr: Box::new(else_expr),
+                    },
+                    Span::new(span.start, end),
+                ))
+            }
             _ => self.parse_atom(),
         }
     }
 
-    /// Parse an atom: literal, identifier, call, or parenthesised expression.
     fn parse_atom(&mut self) -> Result<Expr, CompileError> {
         let span = self.peek_span();
         match self.peek().clone() {
@@ -160,7 +332,6 @@ impl<'src> Parser<'src> {
             }
             Token::Ident(name) => {
                 self.advance()?;
-                // A `(` immediately after an identifier means a function call.
                 if self.peek() == &Token::LParen {
                     self.parse_call(Symbol::new(name), span)
                 } else {
@@ -172,16 +343,13 @@ impl<'src> Parser<'src> {
                 let expr = self.parse_expr(0)?;
                 let end_span = self.peek_span();
                 self.expect(&Token::RParen)?;
-                // Preserve inner span but extend to closing paren.
                 Ok(Expr::new(expr.kind, Span::new(span.start, end_span.end)))
             }
-            Token::For | Token::If => {
-                Err(CompileError::UnexpectedToken {
-                    expected: "expression".into(),
-                    found: format!("`{}` (comprehensions not yet implemented)", self.peek()),
-                    span,
-                })
-            }
+            Token::For => Err(CompileError::UnexpectedToken {
+                expected: "expression".into(),
+                found: format!("`for` (comprehensions not yet implemented)"),
+                span,
+            }),
             other => Err(CompileError::UnexpectedToken {
                 expected: "expression".into(),
                 found: other.to_string(),
@@ -190,12 +358,9 @@ impl<'src> Parser<'src> {
         }
     }
 
-    /// Parse a function call `callee(arg, arg, …)`. The callee name and its
-    /// span have already been consumed; we are positioned at `(`.
     fn parse_call(&mut self, callee: Symbol, start_span: Span) -> Result<Expr, CompileError> {
         self.expect(&Token::LParen)?;
         let mut args = Vec::new();
-
         if self.peek() != &Token::RParen {
             args.push(self.parse_expr(0)?);
             while self.peek() == &Token::Comma {
@@ -203,18 +368,14 @@ impl<'src> Parser<'src> {
                 args.push(self.parse_expr(0)?);
             }
         }
-
         let end_span = self.peek_span();
         self.expect(&Token::RParen)?;
-
         Ok(Expr::new(
             ExprKind::Call { callee, args },
             Span::new(start_span.start, end_span.end),
         ))
     }
 
-    /// Return `(left_bp, right_bp, op)` if the current token begins an infix
-    /// operator, or `None` if it doesn't.
     fn peek_infix_op(&self) -> Option<(u8, u8, BinOp)> {
         let (lbp, rbp, op) = match self.peek() {
             Token::Or     => (1,  2,  BinOp::Or),
@@ -237,20 +398,45 @@ impl<'src> Parser<'src> {
         };
         Some((lbp, rbp, op))
     }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────
+
+    fn expect_ident(&mut self) -> Result<Symbol, CompileError> {
+        let span = self.peek_span();
+        let (tok, _) = self.advance()?;
+        match tok {
+            Token::Ident(name) => Ok(Symbol::new(name)),
+            other => Err(CompileError::UnexpectedToken {
+                expected: "identifier".into(),
+                found: other.to_string(),
+                span,
+            }),
+        }
+    }
+
+    // ── Convenience entry points ───────────────────────────────────────────────
+
+    /// Parse a single expression followed by EOF (used in tests and REPL).
+    pub fn parse_expr_eof(&mut self) -> Result<Expr, CompileError> {
+        let expr = self.parse_expr(0)?;
+        if self.peek() != &Token::Eof {
+            return Err(CompileError::UnexpectedToken {
+                expected: "<eof>".into(),
+                found: self.peek().to_string(),
+                span: self.peek_span(),
+            });
+        }
+        Ok(expr)
+    }
 }
 
 // ── Binding powers ────────────────────────────────────────────────────────────
 
-// `not` prefix: right_bp is just below comparison left_bp (5), so
-// `not x == y` parses as `not (x == y)` rather than `(not x) == y`.
-const PREFIX_BP_NOT: u8 = 4;
-
-// Unary minus binds tighter than `*` and `/` (left_bp 15), so
-// `-x * y` parses as `(-x) * y`.
-const PREFIX_BP_NEG: u8 = 17;
+const PREFIX_BP_NOT: u8 = 4; // absorbs comparisons: `not x == y` → `not (x == y)`
+const PREFIX_BP_NEG: u8 = 17; // tighter than `*`/`/`: `-x * y` → `(-x) * y`
 
 fn infix_bp_not_in() -> (u8, u8) {
-    (5, 6) // same level as other comparisons
+    (5, 6)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -260,10 +446,14 @@ fn make_binop(op: BinOp, lhs: Expr, rhs: Expr, _op_span: Span) -> Expr {
     Expr::new(ExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span)
 }
 
-// ── Convenience free function ─────────────────────────────────────────────────
+// ── Free-function wrappers ────────────────────────────────────────────────────
 
-/// Parse `src` as a single expression (followed by EOF). Convenience wrapper
-/// for tests and the REPL-style driver.
+/// Parse `src` as a single expression followed by EOF.
 pub fn parse_expr(src: &str) -> Result<Expr, CompileError> {
     Parser::new(src)?.parse_expr_eof()
+}
+
+/// Parse `src` as a complete source file.
+pub fn parse_file(src: &str) -> Result<Vec<Item>, CompileError> {
+    Parser::new(src)?.parse_file()
 }

@@ -88,7 +88,8 @@ Tagline: "Types without Types" / "Who needs types anyway?"
      marking at each fallible call site for local visibility.
    - `assert` = runtime-checked narrowing (also aids downstream proofs).
      `assume` = same narrowing, no runtime check, for performance — "live
-     dangerously."
+     dangerously." Both are **statements**, not function calls; syntax and
+     semantics detailed in §10.
    - Runtime membership testing for predicate-defined sets evaluates the
      predicate unless the compiler can prove/partially-prove it away.
      Developer intuition: `assert` can be expensive for complex predicates.
@@ -207,6 +208,14 @@ Tagline: "Types without Types" / "Who needs types anyway?"
   - Automatic domain-partition inference (compiler infers a good overload
     split rather than requiring hand-declaration) is an explicitly deferred
     future feature.
+- **Module/file structure (DECIDED)**: one file = one module. Module name
+  mirrors the file path relative to the library root, with `/` replaced
+  by `::`. Example: `src/math/integers.cantor` → module `math::integers`.
+  `::` is the module path separator for qualified names
+  (`math::integers::safe_div`). This keeps file structure and module
+  structure in strict 1-to-1 correspondence — no flexible re-exports that
+  diverge the two. Consequence: `.` is freed from namespace duty and
+  available for function composition (see §11).
 - OPEN: how a library's interface is declared syntactically (separate
   interface file vs inline visibility annotations).
 - OPEN (acknowledged, out of scope for prototype): library
@@ -319,24 +328,122 @@ Tagline: "Types without Types" / "Who needs types anyway?"
   automatically — confirms the general undecidability policy (§8) extends
   to comprehensions without needing a new mechanism.
 
-## 11. Open questions for next session
+### Function definition syntax (DECIDED)
 
-Syntax (next logical unit of work — these were flagged as wanting to be
-designed together rather than piecemeal):
-- Function definition syntax (domain/range annotation form)
-- `assert` / `assume` / `decreasing by` statement syntax
+Signature-then-body split. The signature is a first-class mathematical
+statement about sets; the body names the parameters and provides the
+implementation. The two are separate lines.
+
+```
+-- Signature: domain (as a set expression) and range
+f : Int × Int -> Int
+f(x, y) = x + y
+
+-- Domain can be any set expression
+safe_div : Int × (Int \ {0}) -> Int
+safe_div(x, y) = x / y
+
+-- Overloading: multiple signatures, one shared body (§7).
+-- Compiler checks each signature's domain/range independently.
+abs : Nat    -> Nat
+abs : NegInt -> Nat
+abs(n) = if n >= 0 then n else -n
+```
+
+Domain forms accepted in a signature:
+- Named set: `Int`, `Nat`, `Int16`, user-defined set names
+- Cartesian product: `Int × Int` (ASCII: `Int * Int`)
+- Set expression: `Int \ {0}`, `Nat | NegInt`, `{ n ∈ Int | n > 0 }`
+- Compound: `{ (x, y) ∈ Int × Int | x + y < 100 }`
+
+### Function body delimiters (DECIDED)
+
+Two distinct forms; a function uses one or the other, not both at the
+top level.
+
+```
+-- Pure / functional body: single expression after `=`
+double : Int -> Int
+double(x) = x * 2
+
+-- Point-free is valid in `= expr` position (see §11 for composition
+-- operator, which is still OPEN)
+double = scale(2)   -- if scale(n)(x) = n * x
+
+-- Imperative body: block of statements in `{ }`
+-- Mutable locals are ONLY valid inside `{ }` blocks.
+sum_to : Nat -> Nat
+sum_to(n) {
+    mut acc = 0
+    mut i   = 1
+    -- (loop syntax TBD)
+    acc
+}
+
+-- Bare `{ }` blocks may appear anywhere inside a `{ }` body to
+-- introduce a new scope — this is also how imperative loops will be
+-- added later.
+f : Int -> Int
+f(x) {
+    {
+        mut tmp = x + 1
+        -- tmp goes out of scope at the closing brace
+    }
+    x * 2
+}
+```
+
+The `= expr` / `{ stmts }` split is a deliberate visual signal:
+`=` marks a pure function; `{ }` marks one that does local mutation.
+
+### `assert` and `assume` statement syntax (DECIDED)
+
+Statement form only — not function calls (see §4 for semantics).
+
+```
+assert expr in S    -- runtime membership check; Class 1 error on failure
+assume expr in S    -- no runtime check; compiler accepts the claim
+```
+
+`expr` must be a named variable (not an arbitrary temporary). The
+statement narrows the compiler's knowledge of that variable's domain to
+`S` for all subsequent code within the enclosing scope. Example:
+
+```
+safe_sqrt : Int -> Nat
+safe_sqrt(n) {
+    assert n in Nat   -- runtime check; n now known as Nat below
+    -- ... compute sqrt knowing n >= 0
+}
+```
+
+`assert`/`assume` are not functions because they produce no output value
+— their effect is on the proof state (and optionally the runtime), not
+on a value. They have no domain/range in the function sense.
+
+## 11. Open questions
+
+Syntax (next to design — treat as a group, not piecemeal):
+- **Function composition operator** — `>>` (left-to-right, ASCII) and `∘`
+  (right-to-left, Unicode) are the leading candidates. `>>` reads in the
+  same direction as `f(x, y)` application. Choosing either frees `.` from
+  namespace duty (module paths use `::` per §7). OPEN: confirm operator
+  and decide whether partial application is needed to make point-free
+  useful in practice.
 - `raise` / `emits` statement syntax (incl. whether `emits` is one channel
   or several, and what the channel set is)
-- Module/library interface declaration syntax (separate file vs inline)
-- Finalize the mutability marker (`mut` is the working default, not fully
-  locked in)
+- Library interface declaration syntax (separate interface file vs inline
+  visibility annotations — see §7)
+- Finalize the mutability marker (`mut` is the working default)
 - Aliasing/references to locals within the same function scope — leaning
-  banned, not fully confirmed
+  banned, not confirmed
+- `decreasing by <measure>` annotation syntax (deferred past v0 but syntax
+  should be consistent with `assert`/`assume` statement form when designed)
 
 Other open items (lower priority, not blocking):
 - Event type definition (built-in union vs user-definable)
 - Concurrency/async event handling model
-- Library interface versioning story (acknowledged out of scope for now)
+- Library interface versioning story (out of scope for now)
 - Solver-capability versioning (deferred, nice-to-have)
 
 ## 12. Explicitly deferred future features (not in scope, do not implement

@@ -30,6 +30,9 @@ pub struct Compiler<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
+    /// The function currently being compiled — needed for appending basic
+    /// blocks when lowering `if-then-else` expressions.
+    current_fn: Option<FunctionValue<'ctx>>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -38,12 +41,13 @@ impl<'ctx> Compiler<'ctx> {
             context,
             module: context.create_module(name),
             builder: context.create_builder(),
+            current_fn: None,
         }
     }
 
     /// Compile a named function. All parameters are `i64` for now; the return
-    /// value is always `i64` (booleans are zero-extended before returning so
-    /// the JIT test harness can use a uniform `fn() -> i64` type).
+    /// value is always `i64` (booleans are zero-extended so the JIT harness
+    /// can use a uniform `fn() -> i64` signature).
     pub fn compile_function(
         &mut self,
         name: &str,
@@ -54,6 +58,7 @@ impl<'ctx> Compiler<'ctx> {
         let param_types: Vec<_> = params.iter().map(|_| i64_type.into()).collect();
         let fn_type = i64_type.fn_type(&param_types, false);
         let function = self.module.add_function(name, fn_type, None);
+        self.current_fn = Some(function);
 
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
@@ -114,7 +119,58 @@ impl<'ctx> Compiler<'ctx> {
             ExprKind::Call { callee, args } => {
                 self.compile_call(callee, args, env, expr.span)
             }
+            ExprKind::If { cond, then_expr, else_expr } => {
+                self.compile_if(cond, then_expr, else_expr, env)
+            }
         }
+    }
+
+    fn compile_if(
+        &self,
+        cond: &Expr,
+        then_expr: &Expr,
+        else_expr: &Expr,
+        env: &Env<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, ValType), CompileError> {
+        let function = self.current_fn.ok_or_else(|| {
+            CompileError::Internal("if-then-else outside a function".into())
+        })?;
+
+        let (cond_val, _) = self.compile_expr(cond, env)?;
+        let cond_i1 = cond_val.into_int_value();
+
+        let then_bb  = self.context.append_basic_block(function, "then");
+        let else_bb  = self.context.append_basic_block(function, "else");
+        let merge_bb = self.context.append_basic_block(function, "merge");
+
+        self.builder
+            .build_conditional_branch(cond_i1, then_bb, else_bb)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        // Then branch
+        self.builder.position_at_end(then_bb);
+        let (then_val, then_ty) = self.compile_expr(then_expr, env)?;
+        self.builder
+            .build_unconditional_branch(merge_bb)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        let then_bb_end = self.builder.get_insert_block().unwrap();
+
+        // Else branch
+        self.builder.position_at_end(else_bb);
+        let (else_val, _else_ty) = self.compile_expr(else_expr, env)?;
+        self.builder
+            .build_unconditional_branch(merge_bb)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        let else_bb_end = self.builder.get_insert_block().unwrap();
+
+        // Merge with phi
+        self.builder.position_at_end(merge_bb);
+        let phi = self.builder
+            .build_phi(then_val.get_type(), "iftmp")
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        phi.add_incoming(&[(&then_val, then_bb_end), (&else_val, else_bb_end)]);
+
+        Ok((phi.as_basic_value(), then_ty))
     }
 
     fn compile_unop(
@@ -197,7 +253,6 @@ impl<'ctx> Compiler<'ctx> {
             BinOp::Ge  => cmp_op!(SGE, "ge"),
             BinOp::And => bool_op!(build_and, "and"),
             BinOp::Or  => bool_op!(build_or,  "or"),
-            // Set operations: implemented when static-set runtime is added.
             BinOp::In | BinOp::NotIn
             | BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
                 Err(CompileError::Internal("set operations not yet implemented".into()))
@@ -235,8 +290,7 @@ impl<'ctx> Compiler<'ctx> {
         Ok((result, ValType::Int))
     }
 
-    /// Consume the compiler and hand ownership of the module to a JIT engine.
-    /// Used by the test harness; a real CLI would emit an object file instead.
+    /// Consume the compiler and hand the module to a JIT engine.
     pub fn into_jit_engine(self) -> Result<ExecutionEngine<'ctx>, String> {
         self.module
             .create_jit_execution_engine(OptimizationLevel::None)

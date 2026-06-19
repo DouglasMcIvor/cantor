@@ -2,32 +2,36 @@ use std::fmt;
 
 use crate::{error::CompileError, span::Span};
 
-/// A single lexical token. Carries data for the variants that need it;
-/// everything else is a unit variant so pattern matching stays concise.
+/// A single lexical token.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Literals
     Int(i64),
 
-    // Keywords
+    // Keywords — expressions
     True,
     False,
     Not,
     And,
     Or,
     In,
-    // Reserved for comprehensions — recognised by the lexer but the
-    // expression parser rejects them with a clear "not yet" error.
-    For,
     If,
+    Then,
+    Else,
+    // Keywords — definitions / statements
+    Mut,
+    Assert,
+    Assume,
+    // Reserved for comprehensions (parser rejects with a "not yet" error)
+    For,
 
-    // Identifiers (anything that isn't a keyword)
+    // Identifiers
     Ident(String),
 
     // Arithmetic / set-difference
     Plus,   // +
     Minus,  // -  (also set difference; disambiguation is semantic)
-    Star,   // *
+    Star,   // *  (also Cartesian product in signature position)
     Slash,  // /
 
     // Set operators
@@ -43,6 +47,11 @@ pub enum Token {
     Gt,     // >
     GtEq,   // >=
 
+    // Definition / assignment
+    Eq,     // =   (assignment, pure-body connector)
+    Arrow,  // ->  (signature range separator)
+    Colon,  // :   (signature type separator)
+
     // Punctuation
     LParen, // (
     RParen, // )
@@ -56,35 +65,43 @@ pub enum Token {
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Token::Int(n)      => write!(f, "{n}"),
-            Token::Ident(s)    => write!(f, "`{s}`"),
-            Token::True        => f.write_str("true"),
-            Token::False       => f.write_str("false"),
-            Token::Not         => f.write_str("not"),
-            Token::And         => f.write_str("and"),
-            Token::Or          => f.write_str("or"),
-            Token::In          => f.write_str("in"),
-            Token::For         => f.write_str("for"),
-            Token::If          => f.write_str("if"),
-            Token::Plus        => f.write_str("+"),
-            Token::Minus       => f.write_str("-"),
-            Token::Star        => f.write_str("*"),
-            Token::Slash       => f.write_str("/"),
-            Token::Pipe        => f.write_str("|"),
-            Token::Caret       => f.write_str("^"),
-            Token::Amp         => f.write_str("&"),
-            Token::EqEq        => f.write_str("=="),
-            Token::BangEq      => f.write_str("!="),
-            Token::Lt          => f.write_str("<"),
-            Token::LtEq        => f.write_str("<="),
-            Token::Gt          => f.write_str(">"),
-            Token::GtEq        => f.write_str(">="),
-            Token::LParen      => f.write_str("("),
-            Token::RParen      => f.write_str(")"),
-            Token::LBrace      => f.write_str("{"),
-            Token::RBrace      => f.write_str("}"),
-            Token::Comma       => f.write_str(","),
-            Token::Eof         => f.write_str("<eof>"),
+            Token::Int(n)   => write!(f, "{n}"),
+            Token::Ident(s) => write!(f, "`{s}`"),
+            Token::True     => f.write_str("true"),
+            Token::False    => f.write_str("false"),
+            Token::Not      => f.write_str("not"),
+            Token::And      => f.write_str("and"),
+            Token::Or       => f.write_str("or"),
+            Token::In       => f.write_str("in"),
+            Token::If       => f.write_str("if"),
+            Token::Then     => f.write_str("then"),
+            Token::Else     => f.write_str("else"),
+            Token::Mut      => f.write_str("mut"),
+            Token::Assert   => f.write_str("assert"),
+            Token::Assume   => f.write_str("assume"),
+            Token::For      => f.write_str("for"),
+            Token::Plus     => f.write_str("+"),
+            Token::Minus    => f.write_str("-"),
+            Token::Star     => f.write_str("*"),
+            Token::Slash    => f.write_str("/"),
+            Token::Pipe     => f.write_str("|"),
+            Token::Caret    => f.write_str("^"),
+            Token::Amp      => f.write_str("&"),
+            Token::EqEq     => f.write_str("=="),
+            Token::BangEq   => f.write_str("!="),
+            Token::Lt       => f.write_str("<"),
+            Token::LtEq     => f.write_str("<="),
+            Token::Gt       => f.write_str(">"),
+            Token::GtEq     => f.write_str(">="),
+            Token::Eq       => f.write_str("="),
+            Token::Arrow    => f.write_str("->"),
+            Token::Colon    => f.write_str(":"),
+            Token::LParen   => f.write_str("("),
+            Token::RParen   => f.write_str(")"),
+            Token::LBrace   => f.write_str("{"),
+            Token::RBrace   => f.write_str("}"),
+            Token::Comma    => f.write_str(","),
+            Token::Eof      => f.write_str("<eof>"),
         }
     }
 }
@@ -134,15 +151,20 @@ impl<'src> Lexer<'src> {
         }
         let word = &self.src[start..self.pos];
         let tok = match word {
-            "true"  => Token::True,
-            "false" => Token::False,
-            "not"   => Token::Not,
-            "and"   => Token::And,
-            "or"    => Token::Or,
-            "in"    => Token::In,
-            "for"   => Token::For,
-            "if"    => Token::If,
-            _       => Token::Ident(word.to_owned()),
+            "true"   => Token::True,
+            "false"  => Token::False,
+            "not"    => Token::Not,
+            "and"    => Token::And,
+            "or"     => Token::Or,
+            "in"     => Token::In,
+            "if"     => Token::If,
+            "then"   => Token::Then,
+            "else"   => Token::Else,
+            "mut"    => Token::Mut,
+            "assert" => Token::Assert,
+            "assume" => Token::Assume,
+            "for"    => Token::For,
+            _        => Token::Ident(word.to_owned()),
         };
         (tok, Span::new(start as u32, self.pos as u32))
     }
@@ -158,14 +180,11 @@ impl<'src> Lexer<'src> {
         };
 
         let tok = match ch {
-            '0'..='9' => {
-                return self.scan_int(start);
-            }
+            '0'..='9' => return self.scan_int(start),
             c if c.is_alphabetic() || c == '_' => {
                 return Ok(self.scan_ident_or_keyword(start));
             }
             '+' => Token::Plus,
-            '-' => Token::Minus,
             '*' => Token::Star,
             '/' => Token::Slash,
             '|' => Token::Pipe,
@@ -176,16 +195,21 @@ impl<'src> Lexer<'src> {
             '{' => Token::LBrace,
             '}' => Token::RBrace,
             ',' => Token::Comma,
+            ':' => Token::Colon,
+            '-' => {
+                if self.peek_char() == Some('>') {
+                    self.advance_char();
+                    Token::Arrow
+                } else {
+                    Token::Minus
+                }
+            }
             '=' => {
                 if self.peek_char() == Some('=') {
                     self.advance_char();
                     Token::EqEq
                 } else {
-                    return Err(CompileError::UnexpectedToken {
-                        expected: "==".into(),
-                        found: "=".into(),
-                        span: Span::new(start as u32, self.pos as u32),
-                    });
+                    Token::Eq
                 }
             }
             '!' => {

@@ -182,9 +182,11 @@ fn lex_bare_bang_is_error() {
 }
 
 #[test]
-fn lex_bare_eq_is_error() {
+fn lex_bare_eq_is_token() {
+    // `=` is now valid: used for `= expr` pure bodies and `x = expr` assignments.
     let mut lexer = Lexer::new("=");
-    assert!(lexer.next_token().is_err());
+    let (tok, _) = lexer.next_token().unwrap();
+    assert_eq!(tok, cantor::parser::lexer::Token::Eq);
 }
 
 #[test]
