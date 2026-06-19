@@ -39,6 +39,48 @@ Tagline: "Types without Types" / "Who needs types anyway?"
 - Eager evaluation at runtime. Laziness is confined to generative sets only
   — there is no general lazy evaluation model.
 
+## 2a. Naming convention — uppercase vs lowercase (DECIDED)
+
+Cantor enforces a single rule: **uppercase-initial names are guaranteed
+compile-time; lowercase-initial names may be compile-time or runtime.**
+
+| Name style | Guaranteed | Allowed positions |
+|---|---|---|
+| `Uppercase` | compile-time only | type signatures, set definitions, `in`/`not in` operands |
+| `lowercase` | either (compiler decides) | everywhere |
+
+**Consequences:**
+
+- **Type signatures must use uppercase names.** `f : Int -> Nat | Fail`
+  is legal; `f : Int -> collected_primes` is a compile error — not because
+  `collected_primes` is checked for staticness, but because a lowercase
+  name is syntactically invalid in that position. The constraint on
+  signatures is therefore enforced by the naming rule alone.
+
+- **User-defined named sets must be uppercase.** `HTTPError = {400, 503}`
+  is a named-set definition; `httpError = {400, 503}` is a local variable
+  binding that happens to hold a set literal. The resolver uses the
+  first-letter case to distinguish them — no keyword or annotation needed.
+
+- **Constants are lowercase** even though the compiler may evaluate them
+  at compile time. `pi : Nat / pi = 314` — `pi` is a value (auto-constexpr
+  if it qualifies; see §12 zero-arg functions), not a set, so it stays
+  lowercase. The developer makes no promise about when it is evaluated;
+  the compiler chooses as an optimisation.
+
+- **Runtime sets are lowercase.** `collected_primes` computed by a sieve
+  at runtime is a perfectly valid `assert x in collected_primes` operand
+  — it just cannot appear in a `:` type signature.
+
+- **`in`/`not in` operands accept either case.** `assert x in Nat` (static
+  set) and `assert x in collected_primes` (runtime set) are both legal;
+  the resolver checks the RHS against the known namespace rather than
+  relying on case alone.
+
+This ties directly to the `emits`/auto-constexpr rule in §12: a name
+being lowercase says nothing about *when* it is evaluated — that is an
+implementation detail the developer should not rely on.
+
 ## 3. Recursion
 
 ### Recursive sets
