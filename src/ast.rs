@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::span::{Span, Symbol};
 
 // ── Expressions ───────────────────────────────────────────────────────────────
@@ -169,4 +171,114 @@ pub struct FunctionDef {
 pub enum Item {
     FunctionDef(FunctionDef),
     // Future: SetDef, ModuleImport, …
+}
+
+// ── Display ───────────────────────────────────────────────────────────────────
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl fmt::Display for ExprKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IntLit(n) => write!(f, "{n}"),
+            Self::BoolLit(b) => write!(f, "{b}"),
+            Self::Var(sym) => write!(f, "{sym}"),
+            Self::UnOp { op, expr } => match op {
+                UnOp::Neg => write!(f, "-{expr}"),
+                UnOp::Not => write!(f, "not {expr}"),
+            },
+            Self::BinOp { op, lhs, rhs } => {
+                // Parenthesise sub-expressions that have lower precedence than `op`.
+                let lhs_str = if needs_parens_left(op, &lhs.kind) {
+                    format!("({lhs})")
+                } else {
+                    format!("{lhs}")
+                };
+                let rhs_str = if needs_parens_right(op, &rhs.kind) {
+                    format!("({rhs})")
+                } else {
+                    format!("{rhs}")
+                };
+                write!(f, "{lhs_str} {op} {rhs_str}")
+            }
+            Self::Call { callee, args } => {
+                write!(f, "{callee}(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{arg}")?;
+                }
+                write!(f, ")")
+            }
+            Self::If { cond, then_expr, else_expr } => {
+                write!(f, "if {cond} then {then_expr} else {else_expr}")
+            }
+        }
+    }
+}
+
+/// Returns true when `child` (on the left of `parent_op`) needs parentheses.
+fn needs_parens_left(parent: &BinOp, child: &ExprKind) -> bool {
+    let ExprKind::BinOp { op: child_op, .. } = child else { return false };
+    binop_prec(child_op) < binop_prec(parent)
+}
+
+/// Returns true when `child` (on the right of `parent_op`) needs parentheses.
+fn needs_parens_right(parent: &BinOp, child: &ExprKind) -> bool {
+    let ExprKind::BinOp { op: child_op, .. } = child else { return false };
+    // Right side also needs parens when equal precedence and left-associative
+    // (all our binary operators are left-associative).
+    binop_prec(child_op) <= binop_prec(parent)
+}
+
+/// Precedence tier — higher number binds tighter.
+fn binop_prec(op: &BinOp) -> u8 {
+    match op {
+        BinOp::Or                               => 1,
+        BinOp::And                              => 2,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt
+        | BinOp::Le | BinOp::Gt | BinOp::Ge
+        | BinOp::In | BinOp::NotIn             => 3,
+        BinOp::Union                            => 4,
+        BinOp::SymDiff                          => 5,
+        BinOp::Intersect                        => 6,
+        BinOp::Add | BinOp::Sub                 => 7,
+        BinOp::Mul | BinOp::Div                 => 8,
+    }
+}
+
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Add       => "+",
+            Self::Sub       => "-",
+            Self::Mul       => "*",
+            Self::Div       => "/",
+            Self::Eq        => "==",
+            Self::Ne        => "!=",
+            Self::Lt        => "<",
+            Self::Le        => "<=",
+            Self::Gt        => ">",
+            Self::Ge        => ">=",
+            Self::In        => "in",
+            Self::NotIn     => "not in",
+            Self::Union     => "|",
+            Self::Intersect => "&",
+            Self::SymDiff   => "^",
+            Self::And       => "and",
+            Self::Or        => "or",
+        })
+    }
+}
+
+impl fmt::Display for FunctionSig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.domain {
+            None    => write!(f, "-> {}", self.range),
+            Some(d) => write!(f, "{d} -> {}", self.range),
+        }
+    }
 }
