@@ -1,4 +1,4 @@
-use crate::span::Span;
+use crate::span::{offset_to_line_col, Span};
 
 #[derive(Debug, Clone)]
 pub enum CompileError {
@@ -29,3 +29,22 @@ impl std::fmt::Display for CompileError {
 }
 
 impl std::error::Error for CompileError {}
+
+impl CompileError {
+    /// Return the 1-based (line, column) of this error's span within `src`,
+    /// or `None` for internal errors that carry no source location.
+    pub fn location(&self, src: &str) -> Option<(u32, u32)> {
+        let span = self.span()?;
+        Some(offset_to_line_col(src, span.start))
+    }
+
+    fn span(&self) -> Option<Span> {
+        match self {
+            Self::UndefinedVariable  { span, .. } => Some(*span),
+            Self::TypeMismatch       { span, .. } => Some(*span),
+            Self::UnexpectedToken    { span, .. } => Some(*span),
+            Self::InvalidIntLiteral  { span, .. } => Some(*span),
+            Self::Internal(_)                     => None,
+        }
+    }
+}

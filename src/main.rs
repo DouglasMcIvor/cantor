@@ -27,8 +27,10 @@ fn main() {
     let items = match parse_file(&src) {
         Ok(items) => items,
         Err(e) => {
-            // TODO: convert span to line:col once we track line offsets
-            eprintln!("{path}: {e}");
+            match e.location(&src) {
+                Some((line, col)) => eprintln!("{path}:{line}:{col}: {e}"),
+                None              => eprintln!("{path}: {e}"),
+            }
             process::exit(1);
         }
     };
