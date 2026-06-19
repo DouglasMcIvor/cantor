@@ -396,6 +396,57 @@ f(x) {
 The `= expr` / `{ stmts }` split is a deliberate visual signal:
 `=` marks a pure function; `{ }` marks one that does local mutation.
 
+### Constants and zero-argument functions (DECIDED)
+
+These are two distinct constructs with different syntax.
+
+**Constants** — a named element of a set; not a function:
+
+```
+-- Signature: membership claim only, no `->`.
+pi   : Real
+pi   = 3.14159
+
+zero : Int
+zero = 0
+```
+
+No `()` on the implementation line; no `->` in the signature. A constant
+has no domain or range — it simply *is* an element of a set.
+
+**Zero-argument functions** — a function callable at runtime; the `->` is
+present but nothing precedes it (empty domain):
+
+```
+-- Signature: empty domain, explicit `->` distinguishes from a constant.
+timestamp : -> Int
+timestamp() = ...
+```
+
+The `()` on the implementation line distinguishes this from a constant.
+Zero-arg functions may have `emits` (e.g. logging) in their `{ }` body.
+
+**Auto-constexpr**: a zero-arg function with a `= expr` body (not `{ }`)
+and no `emits` calls is automatically a compile-time constant — evaluated
+once at compile time and inlined everywhere. The `{ }` / `= expr` split
+already distinguishes pure from impure bodies, so no extra annotation is
+needed.
+
+**`Single`** — the named built-in singleton set `{★}`. Rarely needed in
+practice (zero-arg functions use the empty-domain syntax; constants don't
+reference `Single` at all), but available when the singleton must be named
+explicitly as a first-class set value:
+
+```
+f : Single -> Int   -- same semantics as `f : -> Int`, domain made explicit
+f(u) = 42
+```
+
+_Parser status_: constants (`name : Set` / `name = expr` without `->`) are
+planned but not yet implemented — the parser currently handles functions
+only. Zero-arg functions (`name : -> Set` / `name() = expr`) are
+implemented.
+
 ### `assert` and `assume` statement syntax (DECIDED)
 
 Statement form only — not function calls (see §4 for semantics).
@@ -459,6 +510,12 @@ Other open items (lower priority, not blocking):
 
 ## 13. Primitive types and numeric tower
 
+### Single
+
+- **`Single`** — the singleton set `{★}`, containing exactly one element.
+  Rarely written explicitly; see §10 "Constants and zero-argument functions"
+  for when it arises.
+
 ### Bool
 
 - `Bool = {true, false}` — a generative set with exactly two elements.
@@ -515,6 +572,14 @@ Three mechanisms in order of increasing programmer responsibility:
    cannot prove containment but the programmer is certain. Unsound if
    wrong — produces silently incorrect results at runtime, same as
    `assume` everywhere else in the language (§4).
+
+### Natural numbers and other named subsets
+
+- **`Nat`** — `{ n ∈ ℤ | n ≥ 0 }` — natural numbers *including* zero.
+  `abs : Int -> Nat` is therefore correct: `abs(0) = 0 ∈ Nat`. ✓
+- **`NatPos`** — `{ n ∈ ℤ | n > 0 }` — strictly positive integers (excludes
+  zero). OPEN: confirm the name (`NatPos`, `PosInt`, `Nat+`?).
+- Both are generative subsets of `Int` — not separate numeric types.
 
 ### Chained comparisons (resolved)
 

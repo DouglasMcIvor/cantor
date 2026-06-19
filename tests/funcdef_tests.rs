@@ -36,7 +36,8 @@ fn simple_sig_and_expr_body() {
 fn sig_domain_and_range_are_variables() {
     let def = parse_one("f : A -> B\nf(x) = x");
     let sig = &def.sigs[0];
-    assert!(matches!(&sig.domain.kind, ExprKind::Var(s) if s.0 == "A"));
+    let domain = sig.domain.as_ref().expect("expected a domain expr");
+    assert!(matches!(&domain.kind, ExprKind::Var(s) if s.0 == "A"));
     assert!(matches!(&sig.range.kind, ExprKind::Var(s) if s.0 == "B"));
 }
 
@@ -45,7 +46,8 @@ fn cartesian_product_domain() {
     // `*` in signature position means Cartesian product (semantic, not arithmetic)
     let def = parse_one("add : Int * Int -> Int\nadd(x, y) = x + y");
     assert_eq!(def.params.len(), 2);
-    assert!(matches!(def.sigs[0].domain.kind, ExprKind::BinOp { op: BinOp::Mul, .. }));
+    let domain = def.sigs[0].domain.as_ref().expect("expected a domain expr");
+    assert!(matches!(domain.kind, ExprKind::BinOp { op: BinOp::Mul, .. }));
 }
 
 #[test]
@@ -70,8 +72,10 @@ fn if_cond_then_else_structure() {
 
 #[test]
 fn no_arg_function() {
-    let def = parse_one("zero : Unit -> Int\nzero() = 0");
+    // Zero-arg functions use `-> Set` with an empty domain (no `Unit`).
+    let def = parse_one("zero : -> Int\nzero() = 0");
     assert_eq!(def.params.len(), 0);
+    assert!(def.sigs[0].domain.is_none(), "zero-arg sig should have no domain");
     assert!(matches!(def.body, FunctionBody::Expr(_)));
 }
 

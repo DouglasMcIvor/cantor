@@ -134,11 +134,11 @@ impl Param {
 }
 
 /// One `name : Domain -> Range` line.
-/// Domain and range are parsed as expressions; the type checker validates
-/// that they denote sets. `*` in this position means Cartesian product.
+/// Domain is `None` for zero-argument functions (`name : -> Set`).
+/// `*` in domain position means Cartesian product.
 #[derive(Debug, Clone)]
 pub struct FunctionSig {
-    pub domain: Expr,
+    pub domain: Option<Expr>,
     pub range: Expr,
     pub span: Span,
 }

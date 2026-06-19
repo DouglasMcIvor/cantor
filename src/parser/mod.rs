@@ -141,11 +141,16 @@ impl<'src> Parser<'src> {
         })
     }
 
-    /// Parse everything after the name on a signature line: `: domain -> range`
+    /// Parse everything after the name on a signature line: `: [domain] -> range`
+    /// Domain is omitted for zero-arg functions: `name : -> Set`.
     fn parse_sig_tail(&mut self) -> Result<FunctionSig, CompileError> {
         let start = self.peek_span();
         self.expect(&Token::Colon)?;
-        let domain = self.parse_set_expr()?;
+        let domain = if self.peek() == &Token::Arrow {
+            None
+        } else {
+            Some(self.parse_set_expr()?)
+        };
         self.expect(&Token::Arrow)?;
         let range = self.parse_set_expr()?;
         let end = range.span.end;
