@@ -194,3 +194,34 @@ fn lex_unknown_char_is_error() {
     let mut lexer = Lexer::new("@");
     assert!(lexer.next_token().is_err());
 }
+
+// ── Comments ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn line_comment_skipped() {
+    assert_eq!(
+        lex_all("-- this is a comment\n42"),
+        vec![Token::Int(42), Token::Eof]
+    );
+}
+
+#[test]
+fn inline_comment_skipped() {
+    assert_eq!(
+        lex_all("x + 1 -- add one"),
+        vec![Token::Ident("x".into()), Token::Plus, Token::Int(1), Token::Eof]
+    );
+}
+
+#[test]
+fn comment_at_eof_skipped() {
+    assert_eq!(lex_all("-- no newline at end"), vec![Token::Eof]);
+}
+
+#[test]
+fn comment_does_not_consume_next_line() {
+    assert_eq!(
+        lex_all("1 -- first\n2"),
+        vec![Token::Int(1), Token::Int(2), Token::Eof]
+    );
+}

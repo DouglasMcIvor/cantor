@@ -206,6 +206,11 @@ impl<'src> Lexer<'src> {
                 if self.peek_char() == Some('>') {
                     self.advance_char();
                     Token::Arrow
+                } else if self.peek_char() == Some('-') {
+                    while !matches!(self.peek_char(), Some('\n') | None) {
+                        self.advance_char();
+                    }
+                    return self.next_token();
                 } else {
                     Token::Minus
                 }

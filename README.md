@@ -21,7 +21,7 @@ Instead of a type system, functions declare their **domain** and **range** as se
 The compiler uses an SMT solver to *prove* that every possible input satisfying the domain maps to an output in the range.
 If it can't prove it, it shows you a concrete counterexample.
 
-```cantor
+```haskell
 abs : Int -> Nat        -- for ALL integers x, abs(x) is a natural number
 abs(x) = if x >= 0 then x else -x
 ```
@@ -79,12 +79,12 @@ Every check has one of three outcomes:
 
 ### Basic proof
 
-```cantor
+```haskell
 abs : Int -> Nat
 abs(x) = if x >= 0 then x else -x
 ```
 
-```cantor
+```sh
 $ cantor abs.cantor
   proved          abs : Int -> Nat
 
@@ -96,24 +96,24 @@ $ cantor abs.cantor
 The domain `Int - {0}` (integers minus zero) excludes the one input that would cause undefined behaviour.
 The compiler proves the exclusion is respected at every call site.
 
-```cantor
+```haskell
 safe_div : Int * (Int - {0}) -> Int
 safe_div(x, y) = x / y
 ```
 
-```cantor
+```sh
 $ cantor safe_div.cantor
   proved          safe_div : Int * (Int - {0}) -> Int
 ```
 
 ### Counterexample
 
-```cantor
+```haskell
 broken : Nat -> Int16
 broken(x) = x * 1000
 ```
 
-```cantor
+```sh
 $ cantor broken.cantor
   counterexample  broken : Nat -> Int16
     x = 33  ->  output = 33000  (not in Int16)
@@ -126,7 +126,7 @@ The solver found that `x = 33` produces `33000`, which overflows a 16-bit intege
 Constants are compile-time values, type-checked against their declared set.
 They are automatically inlined everywhere they are used.
 
-```cantor
+```haskell
 scale : Nat
 scale = 1000
 
@@ -143,7 +143,7 @@ circumference(r) = 2 * pi_scaled * r / scale
 A function that might fail declares `Fail` in its range.
 The `?` operator propagates failure up to the caller (which must also declare `Fail`).
 
-```cantor
+```haskell
 safe_to_nat : Int -> Nat | Fail
 safe_to_nat(n) {
     assert n in Nat    -- proved statically if possible; runtime check otherwise
@@ -162,11 +162,11 @@ The compiler proves that when neither `safe_to_nat` call fails, `a + b` is in `N
 
 ### Helping the compiler out (or lying to it): `assert`, `require` and `assume`
 
-```cantor
+```haskell
 clamp : Int * Nat * NatPos -> Nat
 clamp(x, lo, hi) {
     assert lo < hi        -- runtime check: caller's responsibility
-    require x >= 0        -- provable from the domain (x in Nat... wait, x is Int)
+    assume x >= 0         -- escape hatch: "trust me, I know the caller"
     if x < lo then lo else if x > hi then hi else x
 }
 ```
