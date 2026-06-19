@@ -21,7 +21,8 @@ compiled binaries
 linker integration
 "named types" or whatever the thingy is called but in set language. I want to be able to make Litres that are numbers but form a distinct set.
 structs/"named product sets"
-lambdas
+lambdas and closures
+dynamic dispatch?
 
 # To learn
 

@@ -1,0 +1,32 @@
+<svg viewBox="0 0 540 116" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Cantor set, depth 3.  Canvas width = 540 = 27 × 20, so every bar
+    is an exact multiple of 20 px and the thirds divide cleanly.
+
+    Row spacing: bar height 20 px, gap between rows 12 px.
+    Row y-offsets: 0, 32, 64, 96.
+  -->
+
+  <!-- Depth 0 — one full bar -->
+  <rect x="0"   y="0"  width="540" height="20" fill="#1C7D6B"/>
+
+  <!-- Depth 1 — two bars; middle third [180, 360] removed -->
+  <rect x="0"   y="32" width="180" height="20" fill="#1C7D6B"/>
+  <rect x="360" y="32" width="180" height="20" fill="#1C7D6B"/>
+
+  <!-- Depth 2 — four bars -->
+  <rect x="0"   y="64" width="60"  height="20" fill="#1C7D6B"/>
+  <rect x="120" y="64" width="60"  height="20" fill="#1C7D6B"/>
+  <rect x="360" y="64" width="60"  height="20" fill="#1C7D6B"/>
+  <rect x="480" y="64" width="60"  height="20" fill="#1C7D6B"/>
+
+  <!-- Depth 3 — eight bars (20 px wide each, same as height → square blocks) -->
+  <rect x="0"   y="96" width="20"  height="20" fill="#1C7D6B"/>
+  <rect x="40"  y="96" width="20"  height="20" fill="#1C7D6B"/>
+  <rect x="120" y="96" width="20"  height="20" fill="#1C7D6B"/>
+  <rect x="160" y="96" width="20"  height="20" fill="#1C7D6B"/>
+  <rect x="360" y="96" width="20"  height="20" fill="#1C7D6B"/>
+  <rect x="400" y="96" width="20"  height="20" fill="#1C7D6B"/>
+  <rect x="480" y="96" width="20"  height="20" fill="#1C7D6B"/>
+  <rect x="520" y="96" width="20"  height="20" fill="#1C7D6B"/>
+</svg>
