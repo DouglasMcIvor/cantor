@@ -460,3 +460,175 @@ bad_guard : Int -> Int
 bad_guard(x) = if x == 0 then 10 / x else 0
 ");
 }
+
+// ── Block body: assume ────────────────────────────────────────────────────────
+
+#[test]
+fn assume_narrows_domain_proved() {
+    // Without `assume`, x could be negative so x * x - x might not be in Nat.
+    // With `assume x in Nat`, the solver knows x >= 0 and can prove x*x - x >= 0 is
+    // not provable in general — but the range is Int so it's trivially proved.
+    proved("
+f : Int -> Int
+f(x) {
+    assume x in Nat
+    x
+}
+");
+}
+
+#[test]
+fn assume_enables_downstream_proof() {
+    // `x` is Int but assume narrows it to Nat, making x the return value
+    // provably in Nat.
+    proved("
+non_neg : Int -> Nat
+non_neg(x) {
+    assume x in Nat
+    x
+}
+");
+}
+
+#[test]
+fn assume_boolean_pred_proved() {
+    // `assume x > 0` narrows x for the solver; result x - 1 is then in Nat.
+    proved("
+pred : Int -> Nat
+pred(x) {
+    assume x > 0
+    x - 1
+}
+");
+}
+
+#[test]
+fn block_simple_let_proved() {
+    proved("
+double : Nat -> Nat
+double(x) {
+    mut y = x + x
+    y
+}
+");
+}
+
+#[test]
+fn block_sequential_lets_proved() {
+    proved("
+triple : Nat -> Nat
+triple(x) {
+    mut y = x + x
+    mut z = y + x
+    z
+}
+");
+}
+
+#[test]
+fn block_range_violation_counterexample() {
+    counterexample("
+bad : Int -> Nat
+bad(x) {
+    x
+}
+");
+}
+
+// ── Block body: require ───────────────────────────────────────────────────────
+
+#[test]
+fn require_membership_proved() {
+    // NatPos domain guarantees x > 0; require x in NatPos is therefore provable.
+    proved("
+f : NatPos -> NatPos
+f(x) {
+    require x in NatPos
+    x
+}
+");
+}
+
+#[test]
+fn require_boolean_pred_proved() {
+    proved("
+g : NatPos -> Nat
+g(x) {
+    require x > 0
+    x - 1
+}
+");
+}
+
+#[test]
+fn require_enables_downstream_proof() {
+    // Domain NatPos already ensures x > 0; require verifies it explicitly and
+    // adds it as a solver fact so x - 1 >= 0 is provable for the range check.
+    proved("
+safe_pred : NatPos -> Nat
+safe_pred(x) {
+    require x in NatPos
+    x - 1
+}
+");
+}
+
+#[test]
+fn require_fails_counterexample() {
+    // x is Int; require x in NatPos fails (x could be 0 or negative).
+    let results = check("
+h : Int -> Int
+h(x) {
+    require x in NatPos
+    x
+}
+");
+    let (_, result) = results.into_iter().next().unwrap();
+    let CheckResult::Counterexample { reason, .. } = result else {
+        panic!("expected counterexample, got {result:?}");
+    };
+    assert_eq!(reason, "requirement failed");
+}
+
+#[test]
+fn require_after_assume_proved() {
+    // assume narrows x to Nat; subsequent require x in Nat is then provable.
+    proved("
+chain : Int -> Nat
+chain(x) {
+    assume x in Nat
+    require x in Nat
+    x
+}
+");
+}
+
+#[test]
+fn require_division_safety_proved() {
+    // NatPos domain (x > 0) makes `require x in NonZeroInt` provable (> 0 → ≠ 0).
+    // The proved require fact then satisfies the division's NonZeroInt obligation.
+    proved("
+safe_recip : NatPos -> Int
+safe_recip(x) {
+    require x in NonZeroInt
+    1 / x
+}
+");
+}
+
+#[test]
+fn require_int_domain_fails() {
+    // With Int domain, x could be 0, so `require x in NonZeroInt` can't be proved.
+    let results = check("
+bad_recip : Int -> Int
+bad_recip(x) {
+    require x in NonZeroInt
+    1 / x
+}
+");
+    let (_, result) = results.into_iter().next().unwrap();
+    assert!(
+        matches!(result, CheckResult::Counterexample { .. }),
+        "require with Int domain should give counterexample, got {result:?}"
+    );
+}

@@ -86,10 +86,16 @@ Tagline: "Types without Types" / "Who needs types anyway?"
      automatically wrapped in Option.
    - Short-circuit (monadic, not exception-like) semantics, explicit `?`
      marking at each fallible call site for local visibility.
-   - `assert` = runtime-checked narrowing (also aids downstream proofs).
-     `assume` = same narrowing, no runtime check, for performance — "live
-     dangerously." Both are **statements**, not function calls; syntax and
-     semantics detailed in §10.
+   - Three narrowing statements (not function calls); syntax and semantics
+     detailed in §10:
+     - `require` — static-only proof obligation: must be provable at compile
+       time or it is a hard compile error. Equivalent to C++ `static_assert`.
+       No runtime code emitted.
+     - `assert` — graduated: if provable → elide + add fact; if disprovable
+       → compile error; if unknown → emit a runtime membership check that
+       returns a Class 1 error on failure (requires monadic `?` propagation).
+     - `assume` — no check ever; compiler accepts the claim as a fact. Unsound
+       if wrong — "live dangerously."
    - Runtime membership testing for predicate-defined sets evaluates the
      predicate unless the compiler can prove/partially-prove it away.
      Developer intuition: `assert` can be expensive for complex predicates.
@@ -340,7 +346,7 @@ f : Int × Int -> Int
 f(x, y) = x + y
 
 -- Domain can be any set expression
-safe_div : Int × (Int \ {0}) -> Int
+safe_div : Int × (Int - {0}) -> Int
 safe_div(x, y) = x / y
 
 -- Overloading: multiple signatures, one shared body (§7).
@@ -447,30 +453,65 @@ planned but not yet implemented — the parser currently handles functions
 only. Zero-arg functions (`name : -> Set` / `name() = expr`) are
 implemented.
 
-### `assert` and `assume` statement syntax (DECIDED)
+### `require`, `assert`, and `assume` statement syntax (DECIDED)
 
 Statement form only — not function calls (see §4 for semantics).
 
 ```
-assert expr in S    -- runtime membership check; Class 1 error on failure
-assume expr in S    -- no runtime check; compiler accepts the claim
+require expr in S   -- compile-time proof obligation; compile error if unprovable
+assert  expr in S   -- graduated: elide if proved, compile error if disproved,
+                    --            runtime check + Class 1 error if unknown
+assume  expr in S   -- no check, no proof; compiler accepts the claim as a fact
 ```
 
 `expr` must be a named variable (not an arbitrary temporary). The
 statement narrows the compiler's knowledge of that variable's domain to
-`S` for all subsequent code within the enclosing scope. Example:
+`S` for all subsequent code within the enclosing scope.
+
+The three-way distinction by outcome:
+
+| | Proved (UNSAT ¬P) | Disproved (SAT ¬P) | Unknown |
+|---|---|---|---|
+| `require` | elide + add fact | compile error | compile error |
+| `assert`  | elide + add fact | compile error | runtime check → `?` |
+| `assume`  | add fact         | add fact      | add fact |
+
+`require` is the right default when you know the invariant must hold
+statically — it gives you a compile error rather than silently falling
+through to runtime. Use `assert` when the invariant is program-input-
+dependent and an unknown is acceptable. Use `assume` only when you are
+certain the solver cannot prove it but you are sure it is true.
+
+Examples:
 
 ```
-safe_sqrt : Int -> Nat
-safe_sqrt(n) {
-    assert n in Nat   -- runtime check; n now known as Nat below
-    -- ... compute sqrt knowing n >= 0
+clamp : Int * Nat * NatPos -> Nat
+clamp(x, lo, hi) {
+    assert lo < hi         -- NOT statically provable: lo=5, hi=3 satisfies the
+                           -- domain but violates the ordering. Runtime check;
+                           -- returns a Class 1 error if the caller passes lo >= hi.
+    result = if x < lo then lo else if x > hi then hi else x
+    require result >= lo   -- static: solver can prove this from the if-chain
+    require result <= hi   -- static: solver can prove this from the if-chain
+    result
+}
+
+parse_age : Int -> Nat
+parse_age(n) {
+    assert n in Nat        -- unknown at compile time (n is any Int);
+                           -- emits runtime check, returns error if n < 0
+    n
 }
 ```
 
-`assert`/`assume` are not functions because they produce no output value
-— their effect is on the proof state (and optionally the runtime), not
-on a value. They have no domain/range in the function sense.
+`require`/`assert`/`assume` are not functions because they produce no
+output value — their effect is on the proof state (and optionally the
+runtime), not on a value.
+
+**Implementation order**: `assume` and `require` are purely static (no
+runtime code) and can be implemented before the monadic error-propagation
+machinery. `assert`'s runtime fallback path requires `?`-propagation and
+is deferred until Class 1 error handling is designed.
 
 ## 11. Open questions
 
@@ -578,8 +619,13 @@ Three mechanisms in order of increasing programmer responsibility:
 - **`Nat`** — `{ n ∈ ℤ | n ≥ 0 }` — natural numbers *including* zero.
   `abs : Int -> Nat` is therefore correct: `abs(0) = 0 ∈ Nat`. ✓
 - **`NatPos`** — `{ n ∈ ℤ | n > 0 }` — strictly positive integers (excludes
-  zero). OPEN: confirm the name (`NatPos`, `PosInt`, `Nat+`?).
-- Both are generative subsets of `Int` — not separate numeric types.
+  zero). DECIDED: name is `NatPos`.
+- **`NonZeroInt`** — `{ n ∈ ℤ | n ≠ 0 }` — all integers except zero.
+  The declared domain of the `/` built-in's right argument. Useful whenever
+  a function accepts any non-zero integer, positive or negative
+  (e.g. `safe_recip : NonZeroInt -> Int`). Distinguished from `NatPos`
+  in that it includes negative values.
+- All of the above are generative subsets of `Int` — not separate numeric types.
 
 ### Chained comparisons (resolved)
 

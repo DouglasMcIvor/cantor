@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, UnOp},
+    ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, Stmt, UnOp},
     error::CompileError,
     span::{Span, Symbol},
 };
@@ -80,23 +80,6 @@ pub fn check_function(
     def: &FunctionDef,
     fn_env: &FunctionEnv<'_>,
 ) -> Result<Vec<(String, CheckResult)>, CompileError> {
-    let body_expr = match &def.body {
-        FunctionBody::Expr(e) => e,
-        FunctionBody::Block(_) => {
-            return Ok(def
-                .sigs
-                .iter()
-                .enumerate()
-                .map(|(i, _)| {
-                    (
-                        sig_label(&def.name.0, i, def.sigs.len()),
-                        CheckResult::Unknown("block bodies are not yet checked".into()),
-                    )
-                })
-                .collect())
-        }
-    };
-
     let param_names: Vec<Symbol> = def.params.iter().map(|p| p.name.clone()).collect();
 
     Ok(def
@@ -105,7 +88,10 @@ pub fn check_function(
         .enumerate()
         .map(|(i, sig)| {
             let label = sig_label(&def.name.0, i, def.sigs.len());
-            let result = check_sig(sig, &param_names, body_expr, fn_env);
+            let result = match &def.body {
+                FunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env),
+                FunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env),
+            };
             (label, result)
         })
         .collect())
@@ -116,6 +102,292 @@ fn sig_label(name: &str, idx: usize, total: usize) -> String {
         name.to_owned()
     } else {
         format!("{name} (sig {})", idx + 1)
+    }
+}
+
+// ── Block body checker ────────────────────────────────────────────────────────
+
+/// Check a `{ stmts }` body against one signature.
+///
+/// Statements are processed in order with an SSA-style environment: each
+/// `mut`/assignment introduces a fresh SMT constant tied to the current value.
+/// `assume` adds a fact to the solver; `require` proves the fact first (and
+/// returns a counterexample if the proof fails).
+fn check_block_sig(
+    sig: &FunctionSig,
+    param_names: &[Symbol],
+    stmts: &[Stmt],
+    fn_env: &FunctionEnv<'_>,
+) -> CheckResult {
+    let tm = TermManager::new();
+    let mut solver = Solver::new(&tm);
+    solver.set_logic("QF_NIA");
+    solver.set_option("produce-models", "true");
+
+    let int_sort = tm.integer_sort();
+
+    let domain_parts: Vec<&Expr> = match &sig.domain {
+        None => vec![],
+        Some(domain_expr) => {
+            let parts = flatten_product(domain_expr);
+            if parts.len() != param_names.len() {
+                return CheckResult::Unknown(format!(
+                    "domain arity {} doesn't match parameter count {}",
+                    parts.len(),
+                    param_names.len()
+                ));
+            }
+            parts
+        }
+    };
+
+    let param_terms: Vec<Term<'_>> = param_names
+        .iter()
+        .map(|n| tm.mk_const(int_sort.clone(), &n.0))
+        .collect();
+
+    // accumulated_facts: all assertions so far (domain constraints, SSA
+    // equalities, assume/proved-require facts).  Replayed in a fresh solver
+    // for each `require` check so the check has the full current proof state.
+    let mut accumulated_facts: Vec<Term<'_>> = Vec::new();
+
+    for (term, part) in param_terms.iter().zip(domain_parts.iter()) {
+        match membership_constraint(&tm, term.clone(), part) {
+            Membership::Unconstrained => {}
+            Membership::Constrained(c) => {
+                solver.assert_formula(c.clone());
+                accumulated_facts.push(c);
+            }
+            Membership::Unsupported => {
+                return CheckResult::Unknown("unsupported domain set expression".into());
+            }
+        }
+    }
+
+    let mut env: Env<'_> = param_names
+        .iter()
+        .cloned()
+        .zip(param_terms.iter().cloned())
+        .collect();
+
+    let mut call_counter = 0usize;
+    let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
+    let mut ssa_counter = 0usize;
+
+    let body_term = match encode_block(
+        stmts,
+        &mut env,
+        fn_env,
+        &tm,
+        &mut solver,
+        &mut call_counter,
+        &mut builtin_obligs,
+        &mut ssa_counter,
+        &mut accumulated_facts,
+        param_names,
+        &param_terms,
+    ) {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return CheckResult::Unknown("block body has no return expression".into());
+        }
+        Err(early) => return early,
+    };
+
+    // Range + built-in obligations — identical tail to check_sig.
+    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range) {
+        Membership::Unconstrained => None,
+        Membership::Constrained(c) => Some(c),
+        Membership::Unsupported => {
+            return CheckResult::Unknown("unsupported range set expression".into());
+        }
+    };
+
+    let builtin_formulas: Vec<Term<'_>> = builtin_obligs
+        .iter()
+        .map(|o| {
+            if o.path_cond.to_string().trim() == "true" {
+                o.obligation.clone()
+            } else {
+                tm.mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
+            }
+        })
+        .collect();
+
+    let mut all_obligations: Vec<Term<'_>> = builtin_formulas;
+    if let Some(rc) = range_obligation {
+        all_obligations.push(rc);
+    }
+
+    if all_obligations.is_empty() {
+        return CheckResult::Proved;
+    }
+
+    let combined = if all_obligations.len() == 1 {
+        all_obligations.remove(0)
+    } else {
+        tm.mk_term(Kind::And, &all_obligations)
+    };
+    solver.assert_formula(tm.mk_term(Kind::Not, &[combined]));
+
+    let sat = solver.check_sat();
+    if sat.is_unsat() {
+        CheckResult::Proved
+    } else if sat.is_sat() {
+        let mut cex_params = HashMap::new();
+        for (name, term) in param_names.iter().zip(param_terms.iter()) {
+            let val = solver.get_value(term.clone());
+            cex_params.insert(name.0.clone(), integer_value(&val));
+        }
+        let reason = builtin_obligs
+            .iter()
+            .find(|o| {
+                boolean_value(&solver.get_value(o.path_cond.clone()))
+                    && !boolean_value(&solver.get_value(o.obligation.clone()))
+            })
+            .map(|o| o.violated_reason.to_string())
+            .unwrap_or_else(|| format!("not in {}", sig.range));
+        let output_term = solver.get_value(body_term);
+        CheckResult::Counterexample {
+            params: cex_params,
+            output: integer_value(&output_term),
+            reason,
+        }
+    } else {
+        CheckResult::Unknown("solver returned unknown".into())
+    }
+}
+
+/// Process a sequence of statements, threading the SSA environment.
+///
+/// Returns `Ok(Some(term))` where `term` is the last `Stmt::Expr` value,
+/// `Ok(None)` if there was no return expression, or `Err(result)` for an
+/// early exit (require failure, unsupported construct, etc.).
+fn encode_block<'tm>(
+    stmts: &[Stmt],
+    env: &mut Env<'tm>,
+    fn_env: &FunctionEnv<'_>,
+    tm: &'tm TermManager,
+    solver: &mut Solver<'tm>,
+    call_counter: &mut usize,
+    builtin_obligs: &mut Vec<BuiltinObligation<'tm>>,
+    ssa_counter: &mut usize,
+    accumulated_facts: &mut Vec<Term<'tm>>,
+    param_names: &[Symbol],
+    param_terms: &[Term<'tm>],
+) -> Result<Option<Term<'tm>>, CheckResult> {
+    let top_guard = tm.mk_boolean(true);
+    let mut last_expr: Option<Term<'tm>> = None;
+
+    for stmt in stmts {
+        last_expr = None; // only the last Expr stmt is the return value
+        match stmt {
+            Stmt::MutLet { name, value, .. } | Stmt::Assign { name, value, .. } => {
+                let val = encode_expr(
+                    value, env, fn_env, tm, solver,
+                    call_counter, builtin_obligs, top_guard.clone(),
+                )
+                .map_err(CheckResult::Unknown)?;
+                // SSA: bind name to a fresh constant equal to the encoded value.
+                let ssa_name = format!("{}_{}", name.0, ssa_counter);
+                *ssa_counter += 1;
+                let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
+                solver.assert_formula(eq.clone());
+                accumulated_facts.push(eq);
+                env.insert(name.clone(), fresh);
+            }
+
+            Stmt::Assume { predicate, .. } => {
+                let pred = encode_expr(
+                    predicate, env, fn_env, tm, solver,
+                    call_counter, builtin_obligs, top_guard.clone(),
+                )
+                .map_err(CheckResult::Unknown)?;
+                solver.assert_formula(pred.clone());
+                accumulated_facts.push(pred);
+            }
+
+            Stmt::Require { predicate, .. } => {
+                let pred = encode_expr(
+                    predicate, env, fn_env, tm, solver,
+                    call_counter, builtin_obligs, top_guard.clone(),
+                )
+                .map_err(CheckResult::Unknown)?;
+
+                match check_require(pred.clone(), tm, accumulated_facts, param_names, param_terms) {
+                    CheckResult::Proved => {
+                        // Add the proved fact for subsequent statements.
+                        solver.assert_formula(pred.clone());
+                        accumulated_facts.push(pred);
+                    }
+                    other => return Err(other),
+                }
+            }
+
+            Stmt::Assert { .. } => {
+                return Err(CheckResult::Unknown(
+                    "`assert` in block bodies not yet supported".into(),
+                ));
+            }
+
+            Stmt::Expr(e) => {
+                let t = encode_expr(
+                    e, env, fn_env, tm, solver,
+                    call_counter, builtin_obligs, top_guard.clone(),
+                )
+                .map_err(CheckResult::Unknown)?;
+                last_expr = Some(t);
+            }
+
+            Stmt::Block(inner) => {
+                last_expr = encode_block(
+                    inner, env, fn_env, tm, solver,
+                    call_counter, builtin_obligs, ssa_counter,
+                    accumulated_facts, param_names, param_terms,
+                )?;
+            }
+        }
+    }
+
+    Ok(last_expr)
+}
+
+/// Run a temporary solver query to check whether `obligation` is provable
+/// under `accumulated_facts`.  Returns `Proved`, a `Counterexample`, or
+/// `Unknown` — never `Proved` for the require-failure path.
+fn check_require<'tm>(
+    obligation: Term<'tm>,
+    tm: &'tm TermManager,
+    accumulated_facts: &[Term<'tm>],
+    param_names: &[Symbol],
+    param_terms: &[Term<'tm>],
+) -> CheckResult {
+    let mut tmp = Solver::new(tm);
+    tmp.set_logic("QF_NIA");
+    tmp.set_option("produce-models", "true");
+
+    for fact in accumulated_facts {
+        tmp.assert_formula(fact.clone());
+    }
+    tmp.assert_formula(tm.mk_term(Kind::Not, &[obligation]));
+
+    let sat = tmp.check_sat();
+    if sat.is_unsat() {
+        CheckResult::Proved
+    } else if sat.is_sat() {
+        let mut params = HashMap::new();
+        for (name, term) in param_names.iter().zip(param_terms.iter()) {
+            let val = tmp.get_value(term.clone());
+            params.insert(name.0.clone(), integer_value(&val));
+        }
+        CheckResult::Counterexample {
+            params,
+            output: 0,
+            reason: "requirement failed".to_string(),
+        }
+    } else {
+        CheckResult::Unknown("could not verify requirement".to_string())
     }
 }
 
@@ -495,6 +767,29 @@ fn encode_expr<'tm>(
         }
 
         ExprKind::BinOp { op, lhs, rhs } => {
+            // `x in S` and `x not in S` are boolean membership predicates.
+            // Handle them before encoding both sides, since the RHS is a set
+            // expression (not an integer term) and would fail normal encoding.
+            match op {
+                BinOp::In => {
+                    let l = enc!(lhs)?;
+                    return match membership_constraint(tm, l, rhs) {
+                        Membership::Constrained(c)  => Ok(c),
+                        Membership::Unconstrained    => Ok(tm.mk_boolean(true)),
+                        Membership::Unsupported      => Err("unsupported set in `in` expression".into()),
+                    };
+                }
+                BinOp::NotIn => {
+                    let l = enc!(lhs)?;
+                    return match membership_constraint(tm, l, rhs) {
+                        Membership::Constrained(c)  => Ok(tm.mk_term(Kind::Not, &[c])),
+                        Membership::Unconstrained    => Ok(tm.mk_boolean(false)),
+                        Membership::Unsupported      => Err("unsupported set in `not in` expression".into()),
+                    };
+                }
+                _ => {}
+            }
+
             let l = enc!(lhs)?;
             let r = enc!(rhs)?;
 
@@ -524,8 +819,8 @@ fn encode_expr<'tm>(
                 BinOp::Ge  => Kind::Geq,
                 BinOp::And => Kind::And,
                 BinOp::Or  => Kind::Or,
-                BinOp::In | BinOp::NotIn
-                | BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
+                BinOp::In | BinOp::NotIn => unreachable!("handled above"),
+                BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
                     return Err(format!("set operation `{op:?}` not yet encodable"))
                 }
             };

@@ -22,6 +22,7 @@ pub enum Token {
     Mut,
     Assert,
     Assume,
+    Require,
     // Reserved for comprehensions (parser rejects with a "not yet" error)
     For,
 
@@ -79,6 +80,7 @@ impl fmt::Display for Token {
             Token::Mut      => f.write_str("mut"),
             Token::Assert   => f.write_str("assert"),
             Token::Assume   => f.write_str("assume"),
+            Token::Require  => f.write_str("require"),
             Token::For      => f.write_str("for"),
             Token::Plus     => f.write_str("+"),
             Token::Minus    => f.write_str("-"),
@@ -161,8 +163,9 @@ impl<'src> Lexer<'src> {
             "then"   => Token::Then,
             "else"   => Token::Else,
             "mut"    => Token::Mut,
-            "assert" => Token::Assert,
-            "assume" => Token::Assume,
+            "assert"  => Token::Assert,
+            "assume"  => Token::Assume,
+            "require" => Token::Require,
             "for"    => Token::For,
             _        => Token::Ident(word.to_owned()),
         };

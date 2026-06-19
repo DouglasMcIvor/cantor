@@ -213,21 +213,20 @@ impl<'src> Parser<'src> {
                 let value = self.parse_expr(0)?;
                 Ok(Stmt::MutLet { name, value, span })
             }
+            Token::Require => {
+                self.advance()?;
+                let predicate = self.parse_expr(0)?;
+                Ok(Stmt::Require { predicate, span })
+            }
             Token::Assert => {
                 self.advance()?;
-                // Parse subject at bp=5 so the Pratt loop stops before `in`
-                // (which also has left_bp=5, and the condition is left_bp > min_bp).
-                let expr = self.parse_expr(5)?;
-                self.expect(&Token::In)?;
-                let set = self.parse_expr(0)?;
-                Ok(Stmt::Assert { expr, set, span })
+                let predicate = self.parse_expr(0)?;
+                Ok(Stmt::Assert { predicate, span })
             }
             Token::Assume => {
                 self.advance()?;
-                let expr = self.parse_expr(5)?;
-                self.expect(&Token::In)?;
-                let set = self.parse_expr(0)?;
-                Ok(Stmt::Assume { expr, set, span })
+                let predicate = self.parse_expr(0)?;
+                Ok(Stmt::Assume { predicate, span })
             }
             Token::LBrace => Ok(Stmt::Block(self.parse_block()?)),
             // `ident =` (not `==`) → assignment

@@ -116,10 +116,13 @@ pub enum Stmt {
     MutLet { name: Symbol, value: Expr, span: Span },
     /// `x = expr` — reassign an existing mutable (semantic analysis validates).
     Assign { name: Symbol, value: Expr, span: Span },
-    /// `assert expr in S`
-    Assert { expr: Expr, set: Expr, span: Span },
-    /// `assume expr in S`
-    Assume { expr: Expr, set: Expr, span: Span },
+    /// `require predicate` — static proof obligation; compile error if unprovable.
+    Require { predicate: Expr, span: Span },
+    /// `assert predicate` — graduated: elide if proved, compile error if disproved,
+    /// runtime check + Class 1 error if unknown. Deferred until monadic error story.
+    Assert { predicate: Expr, span: Span },
+    /// `assume predicate` — add predicate as a solver fact with no proof or runtime check.
+    Assume { predicate: Expr, span: Span },
     /// Bare expression; the last `Expr` stmt in a block is the return value.
     Expr(Expr),
     /// Nested `{ stmts }` block — introduces a new scope.
