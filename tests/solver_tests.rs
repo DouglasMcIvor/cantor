@@ -758,3 +758,58 @@ bad : Int -> Nat | Fail
 bad(x) = x
 ");
 }
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn const_type_check_proved() {
+    // 314 is in Nat (>= 0).
+    let results = check("pi : Nat\npi = 314");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].1, CheckResult::Proved);
+}
+
+#[test]
+fn const_type_check_fails_wrong_type() {
+    // -1 is NOT in Nat.
+    let results = check("neg : Nat\nneg = -1");
+    assert_eq!(results.len(), 1);
+    assert!(matches!(results[0].1, CheckResult::Counterexample { .. }));
+}
+
+#[test]
+fn const_used_in_function_proved() {
+    proved_all("
+base : Nat
+base = 10
+
+add_base : Nat -> Nat
+add_base(x) = x + base
+");
+}
+
+#[test]
+fn chained_constants_proved() {
+    proved_all("
+pi : Nat
+pi = 314
+
+tau : Nat
+tau = 2 * pi
+");
+}
+
+#[test]
+fn const_literal_proved() {
+    proved_all("
+answer : Nat
+answer = 42
+");
+}
+
+#[test]
+fn const_negative_not_nat() {
+    let results = check("bad : Nat\nbad = -5");
+    assert_eq!(results.len(), 1);
+    assert!(matches!(results[0].1, CheckResult::Counterexample { .. }));
+}

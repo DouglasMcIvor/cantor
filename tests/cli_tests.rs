@@ -250,6 +250,33 @@ fn run_usage_shown_for_missing_arg() {
     assert!(out.stderr.contains("usage"), "expected usage hint:\n{}", out.stderr);
 }
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn const_demo_proves_and_runs() {
+    // const_demo.cantor defines `base : Nat = 10` and `tau : Nat = 2 * 314`,
+    // then uses them in a function; main() should return 638.
+    let out = run_subcommand("const_demo.cantor");
+    assert_eq!(out.code, 0, "expected exit 0:\n{}\n{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("638"),
+        "expected main() = 638 in output:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn const_demo_shows_proved_for_constants() {
+    let out = run_subcommand("const_demo.cantor");
+    assert!(
+        out.stdout.contains("base : Nat = 10"),
+        "expected constant display in output:\n{}", out.stdout
+    );
+    assert!(
+        out.stdout.contains("4 proved"),
+        "expected 4 proved in summary:\n{}", out.stdout
+    );
+}
+
 // ── assert / Fail / ? runtime behaviour ──────────────────────────────────────
 
 #[test]

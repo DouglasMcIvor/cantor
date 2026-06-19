@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, Stmt, UnOp},
+    ast::{BinOp, ConstDef, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, Stmt, UnOp},
     error::CompileError,
     span::{Span, Symbol},
 };
@@ -47,6 +47,10 @@ pub enum CheckResult {
 /// Map from function name to its definition — used for interprocedural checking.
 type FunctionEnv<'a> = HashMap<Symbol, &'a FunctionDef>;
 
+/// Map from constant name to its value expression — used for inlining constants
+/// in `encode_expr` when a `Var` reference resolves to a constant, not a param.
+type ConstDefs<'a> = HashMap<Symbol, &'a Expr>;
+
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Check every function in a parsed file, using each function's signature as
@@ -58,6 +62,15 @@ pub fn check_file(items: &[Item]) -> Result<Vec<(String, Vec<(String, CheckResul
         .iter()
         .filter_map(|item| match item {
             Item::FunctionDef(def) => Some((def.name.clone(), def)),
+            Item::ConstDef(_) => None,
+        })
+        .collect();
+
+    let const_defs: ConstDefs<'_> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::ConstDef(def) => Some((def.name.clone(), &def.value)),
+            Item::FunctionDef(_) => None,
         })
         .collect();
 
@@ -65,8 +78,13 @@ pub fn check_file(items: &[Item]) -> Result<Vec<(String, Vec<(String, CheckResul
         .iter()
         .map(|item| match item {
             Item::FunctionDef(def) => {
-                let results = check_function(def, &fn_env)?;
+                let results = check_function(def, &fn_env, &const_defs)?;
                 Ok((def.name.0.clone(), results))
+            }
+            Item::ConstDef(def) => {
+                let result = check_const(def, &fn_env, &const_defs);
+                let label = format!("{} : {} = {}", def.name, def.ty, def.value);
+                Ok((def.name.0.clone(), vec![(label, result)]))
             }
         })
         .collect()
@@ -79,6 +97,7 @@ pub fn check_file(items: &[Item]) -> Result<Vec<(String, Vec<(String, CheckResul
 pub fn check_function(
     def: &FunctionDef,
     fn_env: &FunctionEnv<'_>,
+    const_defs: &ConstDefs<'_>,
 ) -> Result<Vec<(String, CheckResult)>, CompileError> {
     let param_names: Vec<Symbol> = def.params.iter().map(|p| p.name.clone()).collect();
 
@@ -89,8 +108,8 @@ pub fn check_function(
         .map(|(i, sig)| {
             let label = sig_label(&def.name.0, i, def.sigs.len());
             let result = match &def.body {
-                FunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env),
-                FunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env),
+                FunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env, const_defs),
+                FunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env, const_defs),
             };
             (label, result)
         })
@@ -102,6 +121,47 @@ fn sig_label(name: &str, idx: usize, total: usize) -> String {
         name.to_owned()
     } else {
         format!("{name} (sig {})", idx + 1)
+    }
+}
+
+/// Type-check a constant: verify that `def.value ∈ def.ty`.
+fn check_const(def: &ConstDef, fn_env: &FunctionEnv<'_>, const_defs: &ConstDefs<'_>) -> CheckResult {
+    let tm = TermManager::new();
+    let mut solver = Solver::new(&tm);
+    solver.set_logic("QF_NIA");
+    solver.set_option("produce-models", "true");
+
+    let env = Env::new();
+    let mut call_counter = 0usize;
+    let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
+    let top_guard = tm.mk_boolean(true);
+
+    let value_term = match encode_expr(
+        &def.value, &env, const_defs, fn_env, &tm, &mut solver,
+        &mut call_counter, &mut builtin_obligs, top_guard,
+    ) {
+        Ok(t) => t,
+        Err(msg) => return CheckResult::Unknown(msg),
+    };
+
+    match membership_constraint(&tm, value_term, &def.ty) {
+        Membership::Unconstrained => CheckResult::Proved,
+        Membership::Constrained(c) => {
+            solver.assert_formula(tm.mk_term(Kind::Not, &[c]));
+            let sat = solver.check_sat();
+            if sat.is_unsat() {
+                CheckResult::Proved
+            } else if sat.is_sat() {
+                CheckResult::Counterexample {
+                    params: HashMap::new(),
+                    output: 0,
+                    reason: format!("constant value not in {}", def.ty),
+                }
+            } else {
+                CheckResult::Unknown("solver returned unknown".into())
+            }
+        }
+        Membership::Unsupported => CheckResult::Unknown("unsupported type annotation".into()),
     }
 }
 
@@ -118,6 +178,7 @@ fn check_block_sig(
     param_names: &[Symbol],
     stmts: &[Stmt],
     fn_env: &FunctionEnv<'_>,
+    const_defs: &ConstDefs<'_>,
 ) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
@@ -177,6 +238,7 @@ fn check_block_sig(
     let body_term = match encode_block(
         stmts,
         &mut env,
+        const_defs,
         fn_env,
         &tm,
         &mut solver,
@@ -266,6 +328,7 @@ fn check_block_sig(
 fn encode_block<'tm>(
     stmts: &[Stmt],
     env: &mut Env<'tm>,
+    const_defs: &ConstDefs<'_>,
     fn_env: &FunctionEnv<'_>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
@@ -284,7 +347,7 @@ fn encode_block<'tm>(
         match stmt {
             Stmt::MutLet { name, value, .. } | Stmt::Assign { name, value, .. } => {
                 let val = encode_expr(
-                    value, env, fn_env, tm, solver,
+                    value, env, const_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(),
                 )
                 .map_err(CheckResult::Unknown)?;
@@ -300,7 +363,7 @@ fn encode_block<'tm>(
 
             Stmt::Assume { predicate, .. } => {
                 let pred = encode_expr(
-                    predicate, env, fn_env, tm, solver,
+                    predicate, env, const_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(),
                 )
                 .map_err(CheckResult::Unknown)?;
@@ -310,7 +373,7 @@ fn encode_block<'tm>(
 
             Stmt::Require { predicate, .. } => {
                 let pred = encode_expr(
-                    predicate, env, fn_env, tm, solver,
+                    predicate, env, const_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(),
                 )
                 .map_err(CheckResult::Unknown)?;
@@ -327,7 +390,7 @@ fn encode_block<'tm>(
 
             Stmt::Assert { predicate, .. } => {
                 let pred = encode_expr(
-                    predicate, env, fn_env, tm, solver,
+                    predicate, env, const_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(),
                 )
                 .map_err(CheckResult::Unknown)?;
@@ -373,7 +436,7 @@ fn encode_block<'tm>(
 
             Stmt::Expr(e) => {
                 let t = encode_expr(
-                    e, env, fn_env, tm, solver,
+                    e, env, const_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(),
                 )
                 .map_err(CheckResult::Unknown)?;
@@ -382,7 +445,7 @@ fn encode_block<'tm>(
 
             Stmt::Block(inner) => {
                 last_expr = encode_block(
-                    inner, env, fn_env, tm, solver,
+                    inner, env, const_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, ssa_counter,
                     accumulated_facts, param_names, param_terms,
                 )?;
@@ -438,6 +501,7 @@ fn check_sig(
     param_names: &[Symbol],
     body: &Expr,
     fn_env: &FunctionEnv<'_>,
+    const_defs: &ConstDefs<'_>,
 ) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
@@ -491,7 +555,7 @@ fn check_sig(
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
     let body_term = match encode_expr(
-        body, &env, fn_env, &tm, &mut solver, &mut call_counter,
+        body, &env, const_defs, fn_env, &tm, &mut solver, &mut call_counter,
         &mut builtin_obligs, top_guard,
     ) {
         Ok(t) => t,
@@ -771,6 +835,7 @@ fn named_set(name: &'static str) -> Expr {
 fn encode_expr<'tm>(
     expr: &Expr,
     env: &Env<'tm>,
+    const_defs: &ConstDefs<'_>,
     fn_env: &FunctionEnv<'_>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
@@ -781,7 +846,7 @@ fn encode_expr<'tm>(
     // Convenience: recurse with the same path condition.
     macro_rules! enc {
         ($e:expr) => {
-            encode_expr($e, env, fn_env, tm, solver, call_counter, builtin_obligs, path_cond.clone())
+            encode_expr($e, env, const_defs, fn_env, tm, solver, call_counter, builtin_obligs, path_cond.clone())
         };
     }
 
@@ -789,10 +854,18 @@ fn encode_expr<'tm>(
         ExprKind::IntLit(n) => Ok(tm.mk_integer(*n)),
         ExprKind::BoolLit(b) => Ok(tm.mk_boolean(*b)),
 
-        ExprKind::Var(sym) => env
-            .get(sym)
-            .cloned()
-            .ok_or_else(|| format!("unbound variable `{}`", sym.0)),
+        ExprKind::Var(sym) => {
+            if let Some(term) = env.get(sym) {
+                Ok(term.clone())
+            } else if let Some(const_expr) = const_defs.get(sym) {
+                // Inline the constant's value expression (no params, same const_defs
+                // so chained constants like `tau = 2 * pi` resolve correctly).
+                encode_expr(const_expr, &Env::new(), const_defs, fn_env, tm, solver,
+                            call_counter, builtin_obligs, path_cond)
+            } else {
+                Err(format!("unbound variable `{}`", sym.0))
+            }
+        }
 
         ExprKind::UnOp { op, expr: inner } => {
             let t = enc!(inner)?;
@@ -879,14 +952,14 @@ fn encode_expr<'tm>(
             // Then-branch: path_cond ∧ cond
             let then_guard = tm.mk_term(Kind::And, &[path_cond.clone(), c.clone()]);
             let t = encode_expr(
-                then_expr, env, fn_env, tm, solver, call_counter, builtin_obligs, then_guard,
+                then_expr, env, const_defs, fn_env, tm, solver, call_counter, builtin_obligs, then_guard,
             )?;
 
             // Else-branch: path_cond ∧ ¬cond
             let not_c = tm.mk_term(Kind::Not, &[c.clone()]);
             let else_guard = tm.mk_term(Kind::And, &[path_cond, not_c]);
             let e = encode_expr(
-                else_expr, env, fn_env, tm, solver, call_counter, builtin_obligs, else_guard,
+                else_expr, env, const_defs, fn_env, tm, solver, call_counter, builtin_obligs, else_guard,
             )?;
 
             Ok(tm.mk_term(Kind::Ite, &[c, t, e]))

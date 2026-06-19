@@ -80,6 +80,7 @@ impl<'ctx> Compiler<'ctx> {
         params: &[Param],
         body: &Expr,
         is_fallible: bool,
+        const_env: &Env<'ctx>,
     ) -> Result<FunctionValue<'ctx>, CompileError> {
         self.current_fn = Some(function);
 
@@ -101,7 +102,8 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.position_at_end(entry);
 
-        let mut env: Env = HashMap::new();
+        // Seed env with constants, then add parameters (params shadow constants).
+        let mut env: Env = const_env.clone();
         for (param, llvm_param) in params.iter().zip(function.get_param_iter()) {
             llvm_param.set_name(&param.name.0);
             env.insert(param.name.clone(), (llvm_param, ValType::Int));
@@ -133,6 +135,7 @@ impl<'ctx> Compiler<'ctx> {
         params: &[Param],
         stmts: &[Stmt],
         is_fallible: bool,
+        const_env: &Env<'ctx>,
     ) -> Result<FunctionValue<'ctx>, CompileError> {
         self.current_fn = Some(function);
 
@@ -152,7 +155,8 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.position_at_end(entry);
 
-        let mut env: Env = HashMap::new();
+        // Seed env with constants, then add parameters (params shadow constants).
+        let mut env: Env = const_env.clone();
         for (param, llvm_param) in params.iter().zip(function.get_param_iter()) {
             llvm_param.set_name(&param.name.0);
             env.insert(param.name.clone(), (llvm_param, ValType::Int));
@@ -192,7 +196,7 @@ impl<'ctx> Compiler<'ctx> {
         body: &Expr,
     ) -> Result<FunctionValue<'ctx>, CompileError> {
         let function = self.declare_function(name, params);
-        self.compile_function_body(function, params, body, false)
+        self.compile_function_body(function, params, body, false, &Env::new())
     }
 
     /// Process a sequence of statements, returning the last expression value.
@@ -644,31 +648,90 @@ pub fn range_contains_fail(range: &Expr) -> bool {
 ///
 /// Two-pass: all functions are declared first so that forward and mutual
 /// calls resolve, then bodies are compiled in order.
+/// Evaluate a constant expression at compile time.
+///
+/// Only integer arithmetic and references to already-evaluated constants are
+/// supported. This is intentionally simple — constants are auto-constexpr and
+/// the compiler inlines the result everywhere.
+fn eval_const(expr: &Expr, known: &HashMap<Symbol, i64>) -> Result<i64, CompileError> {
+    match &expr.kind {
+        ExprKind::IntLit(n) => Ok(*n),
+        ExprKind::Var(sym) => known.get(sym).copied().ok_or_else(|| {
+            CompileError::Internal(format!(
+                "constant `{}` is undefined or not yet evaluated (constants must appear before use in file order)",
+                sym.0
+            ))
+        }),
+        ExprKind::UnOp { op: UnOp::Neg, expr: inner } => Ok(-eval_const(inner, known)?),
+        ExprKind::BinOp { op, lhs, rhs } => {
+            let l = eval_const(lhs, known)?;
+            let r = eval_const(rhs, known)?;
+            match op {
+                BinOp::Add => Ok(l.wrapping_add(r)),
+                BinOp::Sub => Ok(l.wrapping_sub(r)),
+                BinOp::Mul => Ok(l.wrapping_mul(r)),
+                BinOp::Div => {
+                    if r == 0 {
+                        Err(CompileError::Internal("division by zero in constant expression".into()))
+                    } else {
+                        Ok(l / r)
+                    }
+                }
+                _ => Err(CompileError::Internal(
+                    "only integer arithmetic is supported in constant expressions".into(),
+                )),
+            }
+        }
+        _ => Err(CompileError::Internal(
+            "only integer arithmetic is supported in constant expressions".into(),
+        )),
+    }
+}
+
 pub fn compile_file<'ctx>(
     ctx: &'ctx Context,
     items: &[Item],
 ) -> Result<ExecutionEngine<'ctx>, CompileError> {
     let mut compiler = Compiler::new(ctx, "cantor");
 
-    // Pass 1 — declare all signatures so forward calls resolve in pass 2.
-    let decls: Vec<(FunctionValue<'ctx>, &FunctionDef)> = items
+    // Pass 0 — evaluate constants and build a shared env of inlined values.
+    let mut const_vals: HashMap<Symbol, i64> = HashMap::new();
+    for item in items {
+        if let Item::ConstDef(def) = item {
+            let val = eval_const(&def.value, &const_vals)?;
+            const_vals.insert(def.name.clone(), val);
+        }
+    }
+    let i64_type = ctx.i64_type();
+    let const_env: Env<'ctx> = const_vals
         .iter()
-        .map(|item| {
-            let Item::FunctionDef(def) = item;
-            let fn_val = compiler.declare_function(&def.name.0, &def.params);
-            (fn_val, def)
+        .map(|(sym, &val)| {
+            let llvm_val = i64_type.const_int(val as u64, true);
+            (sym.clone(), (llvm_val.into(), ValType::Int))
         })
         .collect();
 
-    // Pass 2 — compile bodies.
+    // Pass 1 — declare all function signatures so forward calls resolve.
+    let decls: Vec<(FunctionValue<'ctx>, &FunctionDef)> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::FunctionDef(def) => {
+                let fn_val = compiler.declare_function(&def.name.0, &def.params);
+                Some((fn_val, def))
+            }
+            Item::ConstDef(_) => None,
+        })
+        .collect();
+
+    // Pass 2 — compile bodies with constants available.
     for (fn_val, def) in decls {
         let is_fallible = def.sigs.iter().any(|s| range_contains_fail(&s.range));
         match &def.body {
             FunctionBody::Expr(e) => {
-                compiler.compile_function_body(fn_val, &def.params, e, is_fallible)?;
+                compiler.compile_function_body(fn_val, &def.params, e, is_fallible, &const_env)?;
             }
             FunctionBody::Block(stmts) => {
-                compiler.compile_block_body(fn_val, &def.params, stmts, is_fallible)?;
+                compiler.compile_block_body(fn_val, &def.params, stmts, is_fallible, &const_env)?;
             }
         }
     }

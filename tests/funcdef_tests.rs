@@ -1,15 +1,27 @@
 use cantor::{
-    ast::{BinOp, ExprKind, FunctionBody, Item},
+    ast::{BinOp, ExprKind, FunctionBody, Item, ConstDef, FunctionDef},
     parser::parse_file,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn parse_one(src: &str) -> cantor::ast::FunctionDef {
+fn parse_one(src: &str) -> FunctionDef {
     let items = parse_file(src)
         .unwrap_or_else(|e| panic!("parse error for {src:?}: {e}"));
     assert_eq!(items.len(), 1, "expected exactly one item");
-    let Item::FunctionDef(def) = items.into_iter().next().unwrap();
+    let Item::FunctionDef(def) = items.into_iter().next().unwrap() else {
+        panic!("expected FunctionDef item");
+    };
+    def
+}
+
+fn parse_one_const(src: &str) -> ConstDef {
+    let items = parse_file(src)
+        .unwrap_or_else(|e| panic!("parse error for {src:?}: {e}"));
+    assert_eq!(items.len(), 1, "expected exactly one item");
+    let Item::ConstDef(def) = items.into_iter().next().unwrap() else {
+        panic!("expected ConstDef item");
+    };
     def
 }
 
@@ -236,4 +248,44 @@ fn cartesian_product_with_set_difference() {
     let ExprKind::BinOp { op: BinOp::Mul, .. } = &domain.kind
         else { panic!("expected Mul (Cartesian product) at top level") };
     assert_eq!(def.params.len(), 2);
+}
+
+// ── Constant definitions ──────────────────────────────────────────────────────
+
+#[test]
+fn const_literal_nat() {
+    let def = parse_one_const("pi : Nat\npi = 314");
+    assert_eq!(def.name.0, "pi");
+    assert!(matches!(def.ty.kind, ExprKind::Var(ref s) if s.0 == "Nat"));
+    assert!(matches!(def.value.kind, ExprKind::IntLit(314)));
+}
+
+#[test]
+fn const_arithmetic_value() {
+    let def = parse_one_const("tau : Nat\ntau = 2 * 314");
+    assert!(matches!(def.value.kind, ExprKind::BinOp { op: BinOp::Mul, .. }));
+}
+
+#[test]
+fn const_references_other_const() {
+    let items = parse_file("pi : Nat\npi = 314\ntau : Nat\ntau = 2 * pi")
+        .unwrap_or_else(|e| panic!("parse error: {e}"));
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], Item::ConstDef(_)));
+    assert!(matches!(items[1], Item::ConstDef(_)));
+}
+
+#[test]
+fn const_and_function_in_same_file() {
+    let items = parse_file("base : Nat\nbase = 10\ndouble : Nat -> Nat\ndouble(x) = x + x")
+        .unwrap_or_else(|e| panic!("parse error: {e}"));
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], Item::ConstDef(_)));
+    assert!(matches!(items[1], Item::FunctionDef(_)));
+}
+
+#[test]
+fn const_negative_value() {
+    let def = parse_one_const("offset : Int\noffset = -5");
+    assert!(matches!(def.value.kind, ExprKind::UnOp { op: cantor::ast::UnOp::Neg, .. }));
 }

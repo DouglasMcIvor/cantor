@@ -180,12 +180,29 @@ pub struct FunctionDef {
     pub span: Span,
 }
 
+// ── Constant definitions ──────────────────────────────────────────────────────
+
+/// `name : Type` / `name = expr` — a named compile-time constant.
+///
+/// Uppercase names (enforced by §2a) denote sets; lowercase names (like `pi`)
+/// denote values.  The compiler evaluates the body at compile time (auto-
+/// constexpr) and checks that `value ∈ ty`.
+#[derive(Debug, Clone)]
+pub struct ConstDef {
+    pub name: Symbol,
+    /// The declared type (a set expression, e.g. `Nat`).
+    pub ty: Expr,
+    /// The value expression (must be evaluable at compile time).
+    pub value: Expr,
+    pub span: Span,
+}
+
 // ── Top-level items ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub enum Item {
     FunctionDef(FunctionDef),
-    // Future: SetDef, ModuleImport, …
+    ConstDef(ConstDef),
 }
 
 // ── Display ───────────────────────────────────────────────────────────────────

@@ -58,12 +58,12 @@ fn main() {
     let mut n_counter = 0usize;
     let mut n_unknown = 0usize;
 
-    for (item, (_fn_name, sig_results)) in items.iter().zip(all_results.iter()) {
-        let Item::FunctionDef(def) = item;
-
-        for (i, (_label, result)) in sig_results.iter().enumerate() {
-            let sig = &def.sigs[i];
-            let sig_display = format!("{} : {}", def.name, sig);
+    for (item, (_name, sig_results)) in items.iter().zip(all_results.iter()) {
+        for (i, (label, result)) in sig_results.iter().enumerate() {
+            let sig_display = match item {
+                Item::FunctionDef(def) => format!("{} : {}", def.name, def.sigs[i]),
+                Item::ConstDef(_) => label.clone(),
+            };
 
             match result {
                 CheckResult::Proved => {
@@ -105,9 +105,9 @@ fn main() {
 }
 
 fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
-    let has_main = items.iter().any(|item| {
-        let Item::FunctionDef(def) = item;
-        def.name.0 == "main" && def.params.is_empty()
+    let has_main = items.iter().any(|item| match item {
+        Item::FunctionDef(def) => def.name.0 == "main" && def.params.is_empty(),
+        Item::ConstDef(_) => false,
     });
 
     if !has_main {

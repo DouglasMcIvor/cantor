@@ -3,7 +3,7 @@ pub mod lexer;
 use lexer::{Lexer, Token};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, Param, Stmt, UnOp},
+    ast::{BinOp, ConstDef, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, Param, Stmt, UnOp},
     error::CompileError,
     span::{Span, Symbol},
 };
@@ -72,34 +72,65 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_item(&mut self) -> Result<Item, CompileError> {
-        Ok(Item::FunctionDef(self.parse_function_def()?))
-    }
-
-    /// Parse one function definition.
-    ///
-    /// Grammar:
-    /// ```text
-    /// function_def ::= sig+ impl
-    /// sig          ::= IDENT ':' set_expr '->' set_expr
-    /// impl         ::= IDENT '(' params ')' ('=' expr | block)
-    /// ```
-    ///
-    /// All `sig` lines must share the same name as `impl`.
-    fn parse_function_def(&mut self) -> Result<FunctionDef, CompileError> {
         let start_span = self.peek_span();
-
-        // Collect one or more signature lines: `name : domain -> range`
         let name = self.expect_ident()?;
-        let mut sigs = vec![self.parse_sig_tail()?];
+        self.expect(&Token::Colon)?;
 
-        // Additional sigs share the same name.
+        // Determine whether this is a function or a constant.
+        //
+        // Grammar:
+        //   function : IDENT ':' [set_expr '->'] set_expr   impl
+        //   constant : IDENT ':'  set_expr                  IDENT '=' expr
+        //
+        // `parse_set_expr` stops before `->` (Arrow is not an infix op), so
+        // after parsing one set_expr we can check for `->` to decide.
+        let (first_domain, first_range) = if self.peek() == &Token::Arrow {
+            // Zero-arg function: `name : -> range`
+            self.advance()?;
+            (None, self.parse_set_expr()?)
+        } else {
+            let first_expr = self.parse_set_expr()?;
+            if self.peek() == &Token::Arrow {
+                // Regular function: `name : domain -> range`
+                self.advance()?;
+                (Some(first_expr), self.parse_set_expr()?)
+            } else {
+                // No `->` found → constant: `name : type` then `name = expr`.
+                let impl_name = self.expect_ident()?;
+                if impl_name.0 != name.0 {
+                    return Err(CompileError::UnexpectedToken {
+                        expected: format!("`{}` (constant impl must follow its type)", name),
+                        found: format!("`{}`", impl_name),
+                        span: start_span,
+                    });
+                }
+                self.expect(&Token::Eq)?;
+                let value = self.parse_expr(0)?;
+                let end = value.span.end;
+                return Ok(Item::ConstDef(ConstDef {
+                    name,
+                    ty: first_expr,
+                    value,
+                    span: Span::new(start_span.start, end),
+                }));
+            }
+        };
+
+        let first_sig_end = first_range.span.end;
+        let first_sig = FunctionSig {
+            domain: first_domain,
+            range: first_range,
+            span: Span::new(start_span.start, first_sig_end),
+        };
+
+        // Collect additional sig lines sharing the same name.
+        let mut sigs = vec![first_sig];
         while self.peek() == &Token::Ident(name.0.clone()) && self.peek2() == &Token::Colon {
             self.advance()?; // consume repeated name
             sigs.push(self.parse_sig_tail()?);
         }
 
         // Implementation: `name(params) = expr`  or  `name(params) { stmts }`
-        // `name` must match.
         let impl_name = self.expect_ident()?;
         if impl_name.0 != name.0 {
             return Err(CompileError::UnexpectedToken {
@@ -129,16 +160,16 @@ impl<'src> Parser<'src> {
 
         let end = match &body {
             FunctionBody::Expr(e) => e.span.end,
-            FunctionBody::Block(_) => self.peek_span().start, // just past `}`
+            FunctionBody::Block(_) => self.peek_span().start,
         };
 
-        Ok(FunctionDef {
+        Ok(Item::FunctionDef(FunctionDef {
             name,
             sigs,
             params,
             body,
             span: Span::new(start_span.start, end),
-        })
+        }))
     }
 
     /// Parse everything after the name on a signature line: `: [domain] -> range`

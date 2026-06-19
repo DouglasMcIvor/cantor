@@ -3,13 +3,14 @@ You probably don't want to read this unless you're me.
 
 # To do
 
-constants
 runtime sets of course
 README with examples, human intro and LLM intro
 basic values that aren't integers:
 - float
 - char, string (unicode I guess)
 - byte
+review and improve error messages
+suggested constraints in error messages
 more containers! gotta have me some vectors and maps, not just sets!
 loops
 outer IO loop
