@@ -4,19 +4,24 @@ You probably don't want to read this unless you're me.
 # To do
 
 runtime sets of course
-README with examples, human intro and LLM intro
+README with examples, human intros (familiar with types, newbie) and LLM intro
+confirm that with constants I can declare my own compile time sets and use them as domains/ranges
 basic values that aren't integers:
 - float
 - char, string (unicode I guess)
 - byte
 review and improve error messages
 suggested constraints in error messages
+set comprehensions, including infinite generative sets
 more containers! gotta have me some vectors and maps, not just sets!
 loops
 outer IO loop
+write-only side effects via `emit`
 compiled binaries
 linker integration
 "named types" or whatever the thingy is called but in set language. I want to be able to make Litres that are numbers but form a distinct set.
+structs/"named product sets"
+lambdas
 
 # To learn
 

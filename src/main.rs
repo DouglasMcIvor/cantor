@@ -5,6 +5,7 @@ use inkwell::context::Context;
 use cantor::{
     ast::Item,
     codegen::{FAIL_SENTINEL, compile_file},
+    names::check_names,
     parser::parse_file,
     solver::{CheckResult, check_file},
 };
@@ -44,6 +45,17 @@ fn main() {
     if items.is_empty() {
         println!("{path}: no definitions found");
         return;
+    }
+
+    let naming_errors = check_names(&items);
+    if !naming_errors.is_empty() {
+        for e in &naming_errors {
+            match e.location(&src) {
+                Some((line, col)) => eprintln!("{path}:{line}:{col}: {e}"),
+                None              => eprintln!("{path}: {e}"),
+            }
+        }
+        process::exit(1);
     }
 
     let all_results = match check_file(&items) {

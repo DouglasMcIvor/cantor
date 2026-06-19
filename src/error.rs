@@ -6,6 +6,7 @@ pub enum CompileError {
     TypeMismatch { expected: &'static str, found: &'static str, span: Span },
     UnexpectedToken { expected: String, found: String, span: Span },
     InvalidIntLiteral { text: String, span: Span },
+    NamingConvention { message: String, span: Span },
     // Future: DomainViolation, RangeViolation (driven by cvc5 unsat core)
     Internal(String),
 }
@@ -23,6 +24,7 @@ impl std::fmt::Display for CompileError {
             Self::InvalidIntLiteral { text, .. } => {
                 write!(f, "invalid integer literal `{text}`")
             }
+            Self::NamingConvention { message, .. } => write!(f, "naming: {message}"),
             Self::Internal(msg) => write!(f, "internal compiler error: {msg}"),
         }
     }
@@ -44,6 +46,7 @@ impl CompileError {
             Self::TypeMismatch       { span, .. } => Some(*span),
             Self::UnexpectedToken    { span, .. } => Some(*span),
             Self::InvalidIntLiteral  { span, .. } => Some(*span),
+            Self::NamingConvention   { span, .. } => Some(*span),
             Self::Internal(_)                     => None,
         }
     }
