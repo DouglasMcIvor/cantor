@@ -4,6 +4,8 @@
 
 Named after [Georg Cantor](https://en.wikipedia.org/wiki/Georg_Cantor), the mathematician who built the foundations of modern set theory.
 
+![Cantor programming language logo](docs/cantor_logo.png)
+
 ## The idea
 
 Most programming languages are built on type theory.
