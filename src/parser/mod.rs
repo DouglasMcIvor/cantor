@@ -407,24 +407,46 @@ impl<'src> Parser<'src> {
             }
             Token::LBrace => {
                 self.advance()?;
-                let mut elements = Vec::new();
-                if self.peek() != &Token::RBrace {
-                    elements.push(self.parse_expr(0)?);
-                    while self.peek() == &Token::Comma {
+                if self.peek() == &Token::RBrace {
+                    let end_span = self.peek_span();
+                    self.advance()?;
+                    return Ok(Expr::new(ExprKind::SetLit(vec![]), Span::new(span.start, end_span.end)));
+                }
+                let first = self.parse_expr(0)?;
+                // One token of lookahead: `for` → comprehension, else set literal.
+                if self.peek() == &Token::For {
+                    self.advance()?;
+                    let var = self.expect_ident()?;
+                    self.expect(&Token::In)?;
+                    let source = self.parse_set_expr()?;
+                    let filter = if self.peek() == &Token::If {
                         self.advance()?;
-                        if self.peek() == &Token::RBrace { break; } // trailing comma
-                        elements.push(self.parse_expr(0)?);
-                    }
+                        Some(self.parse_expr(0)?)
+                    } else {
+                        None
+                    };
+                    let end_span = self.peek_span();
+                    self.expect(&Token::RBrace)?;
+                    return Ok(Expr::new(
+                        ExprKind::Comprehension {
+                            output: Box::new(first),
+                            var,
+                            source: Box::new(source),
+                            filter: filter.map(Box::new),
+                        },
+                        Span::new(span.start, end_span.end),
+                    ));
+                }
+                let mut elements = vec![first];
+                while self.peek() == &Token::Comma {
+                    self.advance()?;
+                    if self.peek() == &Token::RBrace { break; } // trailing comma
+                    elements.push(self.parse_expr(0)?);
                 }
                 let end_span = self.peek_span();
                 self.expect(&Token::RBrace)?;
                 Ok(Expr::new(ExprKind::SetLit(elements), Span::new(span.start, end_span.end)))
             }
-            Token::For => Err(CompileError::UnexpectedToken {
-                expected: "expression".into(),
-                found: format!("`for` (comprehensions not yet implemented)"),
-                span,
-            }),
             other => Err(CompileError::UnexpectedToken {
                 expected: "expression".into(),
                 found: other.to_string(),

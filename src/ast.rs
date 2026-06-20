@@ -64,6 +64,18 @@ impl Expr {
     pub fn try_op(expr: Expr) -> Self {
         Self::new(ExprKind::Try(Box::new(expr)), Span::dummy())
     }
+
+    pub fn comprehension(output: Expr, var: &str, source: Expr, filter: Option<Expr>) -> Self {
+        Self::new(
+            ExprKind::Comprehension {
+                output: Box::new(output),
+                var: Symbol::new(var),
+                source: Box::new(source),
+                filter: filter.map(Box::new),
+            },
+            Span::dummy(),
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +91,13 @@ pub enum ExprKind {
     SetLit(Vec<Expr>),
     /// `expr?` — propagate `Fail` from a fallible call up to the caller.
     Try(Box<Expr>),
-    // Future: Comprehension
+    /// `{ output for var in source }` or `{ output for var in source if filter }`
+    Comprehension {
+        output: Box<Expr>,
+        var: Symbol,
+        source: Box<Expr>,
+        filter: Option<Box<Expr>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,6 +305,13 @@ impl fmt::Display for ExprKind {
                 write!(f, "}}")
             }
             Self::Try(inner) => write!(f, "{inner}?"),
+            Self::Comprehension { output, var, source, filter } => {
+                write!(f, "{{{output} for {var} in {source}")?;
+                if let Some(pred) = filter {
+                    write!(f, " if {pred}")?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }

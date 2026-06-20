@@ -167,3 +167,71 @@ bad_guard : Int -> Int
 bad_guard(x) = if x == 0 then 10 / x else 0
 ");
 }
+
+// ── Set comprehensions ────────────────────────────────────────────────────────
+
+#[test]
+fn comprehension_literal_source_as_range_proved() {
+    // Range is a comprehension: value must equal 2*x for some x in {1,3,5}.
+    proved("
+f : Int -> {x * 2 for x in {1, 3, 5}}
+f(n) = 6
+");
+}
+
+#[test]
+fn comprehension_literal_source_as_range_counterexample() {
+    counterexample("
+f : Int -> {x * 2 for x in {1, 3, 5}}
+f(n) = 5
+");
+}
+
+#[test]
+fn comprehension_with_filter_as_range_proved() {
+    // {x for x in {1,2,3,4,5} if x > 2} = {3, 4, 5}
+    proved("
+f : Int -> {x for x in {1, 2, 3, 4, 5} if x > 2}
+f(n) = 4
+");
+}
+
+#[test]
+fn comprehension_with_filter_as_range_counterexample() {
+    counterexample("
+f : Int -> {x for x in {1, 2, 3, 4, 5} if x > 2}
+f(n) = 2
+");
+}
+
+#[test]
+fn comprehension_identity_named_source_as_domain_proved() {
+    // Domain is {x for x in Nat if x > 5} — i.e. integers > 5.
+    proved("
+f : {x for x in Nat if x > 5} -> NatPos
+f(n) = n
+");
+}
+
+#[test]
+fn comprehension_identity_named_source_as_domain_counterexample() {
+    // The domain includes 6 but the range Nat excludes negative results.
+    // Body returns n - 10 which is negative for n=6..9.
+    counterexample("
+f : {x for x in Nat if x > 5} -> NatPos
+f(n) = n - 10
+");
+}
+
+#[test]
+fn comprehension_in_membership_assert_proved() {
+    // `assert y in {x * 2 for x in {1, 3, 5}}` where y = 6 is statically proved.
+    proved("
+f : Int -> Nat
+f(n) {
+    mut y: Nat = 6
+    assume y in {x * 2 for x in {1, 3, 5}}
+    y
+}
+");
+}

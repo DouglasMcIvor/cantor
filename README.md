@@ -228,9 +228,45 @@ sum_set() {
 
 Naming the loop variable with an uppercase letter (`for X in {1, 2, 3}`) promises that the value is known at compile time and forces the compiler to verify the iterable is statically materializable — a lightweight way to opt into guaranteed compile-time unrolling.
 
+### Set comprehensions
+
+`{ expr for x in S if pred(x) }` produces a new set by mapping and filtering an existing one.
+Comprehensions work anywhere a set expression is valid: domain and range annotations, `in`/`not in` predicates, and as the source of a `for` loop.
+
+```haskell
+-- Domain annotation: only integers greater than 5
+f : {x for x in Nat if x > 5} -> NatPos
+f(n) = n
+
+-- As a for-in source: sum of doubled odd elements
+sum_doubled_odds : -> Nat
+sum_doubled_odds() {
+    mut acc: Nat = 0
+    for y in {x * 2 for x in {1, 2, 3, 4, 5} if x mod 2 != 0} {
+        acc = acc + y
+    }
+    acc      -- 2 + 6 + 10 = 18
+}
+```
+
+The source set can be a finite literal (unrolled statically) or an infinite named set like `Nat` (encoded as an SMT predicate).
+Captured runtime variables work in both the output expression and the filter:
+
+```haskell
+sum_above_threshold : Int -> Int
+sum_above_threshold(threshold) {
+    mut acc: Int = 0
+    for y in {x for x in {10, 20, 30, 40} if x > threshold} {
+        acc = acc + y
+    }
+    acc
+}
+```
+
 ## Features (working today)
 
 - **Set-theoretic domains and ranges** — `Int`, `Nat`, `NatPos`, `NonZeroInt`, `Int8`–`Int64`, set literals `{0, 1, 2}`, set difference `A - B`, union `A | B`, intersection `A & B`
+- **Set comprehensions** — `{ expr for x in S if pred(x) }` in domain/range/`in`/`for` positions; finite literal sources unrolled statically; infinite named sources encoded as SMT predicates
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis
 - **Constants** — `name : Set / name = expr`, type-checked and auto-inlined at compile time
@@ -242,8 +278,7 @@ Naming the loop variable with an uppercase letter (`for X in {1, 2, 3}`) promise
 
 ## On the roadmap
 
-- **Set comprehensions** — `{ expr for x in S if pred(x) }` as a first-class expression
-- **Runtime sets** — sets as first-class runtime values; `collected_primes` as a real set you can iterate, test membership, and pass around
+- **Runtime sets** — sets as first-class runtime values; `collected_primes` as a real set you can iterate, test membership, and pass around; comprehensions that produce a set value rather than being unrolled statically
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
 - **User-defined named sets** — `EvenNat = { n in Nat | n mod 2 == 0 }` as a top-level definition
 - **`raise` and `emits`** — unrecoverable errors and write-only side effects (logging, metrics)

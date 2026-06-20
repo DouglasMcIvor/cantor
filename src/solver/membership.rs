@@ -2,7 +2,8 @@
 
 use cvc5::{Kind, Term, TermManager};
 
-use crate::ast::{BinOp, Expr, ExprKind};
+use crate::ast::{BinOp, Expr, ExprKind, UnOp};
+use crate::span::Symbol;
 
 /// The result of asking "what does `t ∈ set_expr` look like as a cvc5 term?"
 pub(crate) enum Membership<'tm> {
@@ -129,7 +130,142 @@ pub(crate) fn membership_constraint<'tm>(
             }
         }
 
+        ExprKind::Comprehension { output, var, source, filter } => {
+            comprehension_membership(tm, t, output, var, source, filter.as_deref())
+        }
+
         _ => Membership::Unsupported,
+    }
+}
+
+/// Encode `t ∈ { output for var in source if filter }` as a cvc5 predicate.
+///
+/// Two strategies:
+/// - Finite literal source: unroll into a disjunction of equalities (one per element).
+/// - Identity output (`{x for x in S if P(x)}`): encode as `t ∈ S ∧ P(t)`.
+/// - All other cases: `Unsupported` (Unknown at the solver level).
+fn comprehension_membership<'tm>(
+    tm: &'tm TermManager,
+    t: Term<'tm>,
+    output: &Expr,
+    var: &Symbol,
+    source: &Expr,
+    filter: Option<&Expr>,
+) -> Membership<'tm> {
+    // Case 1: source is a finite set literal — unroll.
+    if let ExprKind::SetLit(elements) = &source.kind {
+        if elements.is_empty() {
+            return Membership::Constrained(tm.mk_boolean(false));
+        }
+        let mut disjuncts: Vec<Term<'_>> = Vec::new();
+        for elem in elements {
+            let ExprKind::IntLit(n) = &elem.kind else { return Membership::Unsupported; };
+            let elem_term = tm.mk_integer(*n);
+            let Some(out_term) = encode_comp_expr(output, var, elem_term.clone(), tm) else {
+                return Membership::Unsupported;
+            };
+            let eq = tm.mk_term(Kind::Equal, &[t.clone(), out_term]);
+            if let Some(f) = filter {
+                let Some(filter_term) = encode_comp_expr(f, var, elem_term, tm) else {
+                    return Membership::Unsupported;
+                };
+                disjuncts.push(tm.mk_term(Kind::And, &[filter_term, eq]));
+            } else {
+                disjuncts.push(eq);
+            }
+        }
+        let combined = if disjuncts.len() == 1 {
+            disjuncts.remove(0)
+        } else {
+            tm.mk_term(Kind::Or, &disjuncts)
+        };
+        return Membership::Constrained(combined);
+    }
+
+    // Case 2: output is the identity (just the bound variable).
+    // t ∈ {x for x in S if P(x)}  →  t ∈ S  ∧  P(t)
+    if let ExprKind::Var(sym) = &output.kind {
+        if sym == var {
+            let source_mem = membership_constraint(tm, t.clone(), source);
+            let filter_mem = match filter {
+                None => None,
+                Some(f) => match encode_comp_expr(f, var, t.clone(), tm) {
+                    Some(term) => Some(term),
+                    None => return Membership::Unsupported,
+                },
+            };
+            return match (source_mem, filter_mem) {
+                (Membership::Unsupported, _) => Membership::Unsupported,
+                (mem, None) => mem,
+                (Membership::Unconstrained, Some(f)) => Membership::Constrained(f),
+                (Membership::Constrained(s), Some(f)) => {
+                    Membership::Constrained(tm.mk_term(Kind::And, &[s, f]))
+                }
+            };
+        }
+    }
+
+    Membership::Unsupported
+}
+
+/// Encode a Cantor expression as a cvc5 term, substituting `var_term` for the
+/// bound variable `var`.  Only handles arithmetic and comparisons — enough for
+/// comprehension output expressions and filter predicates.  Returns `None` for
+/// anything more complex (calls, if-then-else, etc.).
+fn encode_comp_expr<'tm>(
+    expr: &Expr,
+    var: &Symbol,
+    var_term: Term<'tm>,
+    tm: &'tm TermManager,
+) -> Option<Term<'tm>> {
+    match &expr.kind {
+        ExprKind::IntLit(n)  => Some(tm.mk_integer(*n)),
+        ExprKind::BoolLit(b) => Some(tm.mk_boolean(*b)),
+        ExprKind::Var(sym) if sym == var => Some(var_term),
+        ExprKind::Var(_) => None, // free variable — not the bound var; unsupported
+        ExprKind::UnOp { op, expr: inner } => {
+            let t = encode_comp_expr(inner, var, var_term, tm)?;
+            match op {
+                UnOp::Neg => Some(tm.mk_term(Kind::Neg, &[t])),
+                UnOp::Not => Some(tm.mk_term(Kind::Not, &[t])),
+            }
+        }
+        ExprKind::BinOp { op, lhs, rhs } => {
+            match op {
+                BinOp::In | BinOp::NotIn => {
+                    let l = encode_comp_expr(lhs, var, var_term.clone(), tm)?;
+                    let mem = membership_constraint(tm, l, rhs);
+                    return match (op, mem) {
+                        (BinOp::In,    Membership::Constrained(c))  => Some(c),
+                        (BinOp::In,    Membership::Unconstrained)    => Some(tm.mk_boolean(true)),
+                        (BinOp::NotIn, Membership::Constrained(c))  => Some(tm.mk_term(Kind::Not, &[c])),
+                        (BinOp::NotIn, Membership::Unconstrained)    => Some(tm.mk_boolean(false)),
+                        _ => None,
+                    };
+                }
+                _ => {}
+            }
+            let l = encode_comp_expr(lhs, var, var_term.clone(), tm)?;
+            let r = encode_comp_expr(rhs, var, var_term, tm)?;
+            let kind = match op {
+                BinOp::Add => Kind::Add,
+                BinOp::Sub => Kind::Sub,
+                BinOp::Mul => Kind::Mult,
+                BinOp::Div => Kind::IntsDivision,
+                BinOp::Eq  => Kind::Equal,
+                BinOp::Ne  => Kind::Distinct,
+                BinOp::Lt  => Kind::Lt,
+                BinOp::Le  => Kind::Leq,
+                BinOp::Gt  => Kind::Gt,
+                BinOp::Ge  => Kind::Geq,
+                BinOp::And => Kind::And,
+                BinOp::Or  => Kind::Or,
+                BinOp::In | BinOp::NotIn => unreachable!("handled above"),
+                BinOp::Union | BinOp::Intersect | BinOp::SymDiff => return None,
+            };
+            Some(tm.mk_term(kind, &[l, r]))
+        }
+        _ => None, // Call, If, Try, SetLit, Comprehension — unsupported
     }
 }
 

@@ -7,6 +7,8 @@ You probably don't want to read this unless you're me.
 - for over named sets not just set literals
 - memory model
 - set comprehensions, including infinite generative sets
+  - math syntax `{x*2 | x ∈ Nat, x > 0}` as sugar for the python form (deferred)
+  - multi-binder `{x+y for x in A for y in B}` desugaring to Cartesian product (deferred)
 - confirm that with constants I can declare my own compile time sets and use them as domains/ranges
 - basic values that aren't int64:
   - bool

@@ -355,12 +355,9 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Emit LLVM IR for `for x in S { body }`.
     ///
-    /// Only set literals `{e1, e2, …}` are supported as iterables for now —
-    /// named/generative sets need a runtime set representation that doesn't
-    /// exist yet.  The body is unrolled: compiled once per element in source
-    /// order, with `var` bound to the element value each time.  Values of
-    /// outer-loop alloca-backed variables propagate correctly because
-    /// `compile_stmts` writes through to the alloca on every assignment.
+    /// Supports set literals `{e1, e2, …}` and comprehensions `{out for v in {…} if pred}`
+    /// as iterables.  Both are unrolled at compile time over their source elements.
+    /// Named/generative sets need a runtime set representation that doesn't exist yet.
     fn compile_for_in(
         &mut self,
         var: &Symbol,
@@ -369,27 +366,198 @@ impl<'ctx> Compiler<'ctx> {
         env: &mut Env<'ctx>,
         alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
     ) -> Result<(), CompileError> {
-        let ExprKind::SetLit(elements) = &set.kind else {
-            return Err(CompileError::Internal(
-                "for loop: only set literals `{e1, e2, ...}` are supported as iterables \
+        match &set.kind {
+            ExprKind::SetLit(elements) => {
+                let i64_type = self.context.i64_type();
+                for elem in elements {
+                    let (elem_val, elem_ty) = self.compile_expr(elem, env)?;
+                    let val_i64: BasicValueEnum = if elem_ty == ValType::Bool {
+                        self.builder
+                            .build_int_z_extend(elem_val.into_int_value(), i64_type, "bool_ext")
+                            .map_err(|e| CompileError::Internal(e.to_string()))?
+                            .into()
+                    } else {
+                        elem_val
+                    };
+                    env.insert(var.clone(), (val_i64, ValType::Int));
+                    self.compile_stmts(body, env, alloca_map)?;
+                }
+                Ok(())
+            }
+            ExprKind::Comprehension { output, var: comp_var, source, filter } => {
+                let comp_var = comp_var.clone();
+                let output = output.as_ref().clone();
+                let source = source.as_ref().clone();
+                let filter = filter.as_ref().map(|f| f.as_ref().clone());
+                self.compile_for_in_comprehension(
+                    var, &output, &comp_var, &source, filter.as_ref(), body, env, alloca_map,
+                )
+            }
+            _ => Err(CompileError::Internal(
+                "for loop: only set literals and comprehensions are supported as iterables \
                  in this version (named/generative sets need a runtime set representation)"
+                    .into(),
+            )),
+        }
+    }
+
+    /// Emit LLVM IR for `for var in { output for comp_var in source if filter } { body }`.
+    ///
+    /// Requires `source` to be a set literal.  For each source element, the comp_var
+    /// is bound, the filter (if any) is evaluated, and — when the filter passes — the
+    /// output expression is evaluated and bound to `var` before executing the body.
+    ///
+    /// When a filter is present, conditional branches create multiple control-flow
+    /// paths.  Any variable modified in the body that is NOT backed by an outer-loop
+    /// alloca is given a fresh alloca here so both paths (filter-true and filter-false)
+    /// reload the correct value from memory rather than using a stale LLVM value from
+    /// a non-dominating block.
+    fn compile_for_in_comprehension(
+        &mut self,
+        var: &Symbol,
+        output: &Expr,
+        comp_var: &Symbol,
+        source: &Expr,
+        filter: Option<&Expr>,
+        body: &[Stmt],
+        env: &mut Env<'ctx>,
+        outer_alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
+    ) -> Result<(), CompileError> {
+        let ExprKind::SetLit(elements) = &source.kind else {
+            return Err(CompileError::Internal(
+                "comprehension in `for` source: only set literal sources are supported \
+                 in this version"
                     .into(),
             ));
         };
+
         let i64_type = self.context.i64_type();
+        let function = self.current_fn.ok_or_else(|| {
+            CompileError::Internal("for-in comprehension outside a function".into())
+        })?;
+
+        // When a filter is present we use an alloca-backed map for all body-modified
+        // variables so that both the taken and skipped paths through the conditional
+        // branch see the same authoritative value after each element.  Mirrors the
+        // alloca strategy in compile_while.
+        let alloca_map: HashMap<Symbol, PointerValue<'ctx>> = if filter.is_some() {
+            let modified = collect_loop_modified(body);
+            let mut amap = outer_alloca_map.clone();
+            for name in &modified {
+                if amap.contains_key(name) { continue; }
+                if let Some(&(val, ty)) = env.get(name) {
+                    let ptr = self.builder
+                        .build_alloca(i64_type, &name.0)
+                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    let val_i64: IntValue<'ctx> = if ty == ValType::Bool {
+                        self.builder
+                            .build_int_z_extend(val.into_int_value(), i64_type, "bool_ext")
+                            .map_err(|e| CompileError::Internal(e.to_string()))?
+                    } else {
+                        val.into_int_value()
+                    };
+                    self.builder
+                        .build_store(ptr, val_i64)
+                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    amap.insert(name.clone(), ptr);
+                }
+            }
+            amap
+        } else {
+            outer_alloca_map.clone()
+        };
+
         for elem in elements {
             let (elem_val, elem_ty) = self.compile_expr(elem, env)?;
-            let val_i64: BasicValueEnum = if elem_ty == ValType::Bool {
+            let elem_i64: BasicValueEnum = if elem_ty == ValType::Bool {
                 self.builder
-                    .build_int_z_extend(elem_val.into_int_value(), i64_type, "bool_ext")
+                    .build_int_z_extend(elem_val.into_int_value(), i64_type, "comp_bool_ext")
                     .map_err(|e| CompileError::Internal(e.to_string()))?
                     .into()
             } else {
                 elem_val
             };
-            env.insert(var.clone(), (val_i64, ValType::Int));
-            self.compile_stmts(body, env, alloca_map)?;
+            // Bind the comprehension variable for use in filter and output.
+            env.insert(comp_var.clone(), (elem_i64, ValType::Int));
+
+            if let Some(filter_expr) = filter {
+                // Reload alloca-backed values before the filter check so the condition
+                // sees the post-previous-iteration value (not a stale env entry).
+                for (name, &ptr) in &alloca_map {
+                    if name == comp_var { continue; }
+                    let val = self.builder
+                        .build_load(i64_type, ptr, &name.0)
+                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    env.insert(name.clone(), (val.into(), ValType::Int));
+                }
+
+                let (cond_val, _) = self.compile_expr(filter_expr, env)?;
+                let cond_i1 = cond_val.into_int_value();
+
+                let body_bb = self.context.append_basic_block(function, "comp_body");
+                let next_bb = self.context.append_basic_block(function, "comp_next");
+
+                self.builder
+                    .build_conditional_branch(cond_i1, body_bb, next_bb)
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+                // ── Body (filter passed) ───────────────────────────────────────
+                self.builder.position_at_end(body_bb);
+                let (out_val, out_ty) = self.compile_expr(output, env)?;
+                let out_i64: BasicValueEnum = if out_ty == ValType::Bool {
+                    self.builder
+                        .build_int_z_extend(out_val.into_int_value(), i64_type, "comp_out_ext")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?
+                        .into()
+                } else {
+                    out_val
+                };
+                env.insert(var.clone(), (out_i64, ValType::Int));
+                self.compile_stmts(body, env, &alloca_map)?;
+                self.builder
+                    .build_unconditional_branch(next_bb)
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+                // ── After (both paths merge) ───────────────────────────────────
+                // Reload from allocas: authoritative value regardless of which path
+                // was taken.
+                self.builder.position_at_end(next_bb);
+                for (name, &ptr) in &alloca_map {
+                    if name == comp_var { continue; }
+                    let val = self.builder
+                        .build_load(i64_type, ptr, &format!("{}_after", name.0))
+                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    env.insert(name.clone(), (val.into(), ValType::Int));
+                }
+            } else {
+                let (out_val, out_ty) = self.compile_expr(output, env)?;
+                let out_i64: BasicValueEnum = if out_ty == ValType::Bool {
+                    self.builder
+                        .build_int_z_extend(out_val.into_int_value(), i64_type, "comp_out_ext")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?
+                        .into()
+                } else {
+                    out_val
+                };
+                env.insert(var.clone(), (out_i64, ValType::Int));
+                self.compile_stmts(body, env, &alloca_map)?;
+            }
         }
+
+        // Propagate final alloca values back into env so subsequent statements see
+        // the results of the comprehension loop.
+        if filter.is_some() {
+            for (name, &ptr) in &alloca_map {
+                if name == comp_var { continue; }
+                if !outer_alloca_map.contains_key(name) {
+                    let val = self.builder
+                        .build_load(i64_type, ptr, &format!("{}_final", name.0))
+                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    env.insert(name.clone(), (val.into(), ValType::Int));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -457,8 +625,8 @@ impl<'ctx> Compiler<'ctx> {
             ExprKind::If { cond, then_expr, else_expr } => {
                 self.compile_if(cond, then_expr, else_expr, env)
             }
-            ExprKind::SetLit(_) => Err(CompileError::Internal(
-                "set literals are only valid in signature position, not as values".into(),
+            ExprKind::SetLit(_) | ExprKind::Comprehension { .. } => Err(CompileError::Internal(
+                "set expressions are only valid in signature/`for`/`in` position, not as values".into(),
             )),
             ExprKind::Try(inner) => self.compile_try(inner, env),
         }

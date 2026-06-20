@@ -217,8 +217,8 @@ pub(crate) fn encode_expr<'tm>(
             Ok(result_var)
         }
 
-        ExprKind::SetLit(_) => {
-            Err("set literals cannot appear in function bodies".into())
+        ExprKind::SetLit(_) | ExprKind::Comprehension { .. } => {
+            Err("set expressions cannot appear in value position (only in domain/range/`in`/`for` positions)".into())
         }
 
         // At the SMT level `?` is transparent: we reason only about the success

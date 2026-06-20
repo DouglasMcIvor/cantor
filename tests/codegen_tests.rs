@@ -410,3 +410,67 @@ main(n) {
     assert_eq!(jit_src_one_arg(src, 0),  6);
     assert_eq!(jit_src_one_arg(src, 10), 36);
 }
+
+// ── For-in over comprehensions ────────────────────────────────────────────────
+
+#[test]
+fn for_in_comprehension_mapped_sum() {
+    // Sum {x * 2 for x in {1, 3, 5}} = 2 + 6 + 10 = 18.
+    let src = r#"
+main : -> Int
+main() {
+    mut acc: Int = 0
+    for y in {x * 2 for x in {1, 3, 5}} {
+        acc = acc + y
+    }
+    acc
+}"#;
+    assert_eq!(jit_src_zero_arg(src), 18);
+}
+
+#[test]
+fn for_in_comprehension_with_filter() {
+    // {x for x in {1, 2, 3, 4, 5} if x > 2} = {3, 4, 5} → sum = 12.
+    let src = r#"
+main : -> Int
+main() {
+    mut acc: Int = 0
+    for y in {x for x in {1, 2, 3, 4, 5} if x > 2} {
+        acc = acc + y
+    }
+    acc
+}"#;
+    assert_eq!(jit_src_zero_arg(src), 12);
+}
+
+#[test]
+fn for_in_comprehension_filter_all_out() {
+    // Filter eliminates all elements — body never runs.
+    let src = r#"
+main : -> Int
+main() {
+    mut acc: Int = 99
+    for y in {x for x in {1, 2, 3} if x > 10} {
+        acc = acc + y
+    }
+    acc
+}"#;
+    assert_eq!(jit_src_zero_arg(src), 99);
+}
+
+#[test]
+fn for_in_comprehension_captures_outer_param() {
+    // Captured runtime variable `n` in both output and filter.
+    // {x + n for x in {1, 2, 3} if x > 1} with n=10 → {12, 13} → sum = 25.
+    let src = r#"
+main : Int -> Int
+main(n) {
+    mut acc: Int = 0
+    for y in {x + n for x in {1, 2, 3} if x > 1} {
+        acc = acc + y
+    }
+    acc
+}"#;
+    assert_eq!(jit_src_one_arg(src, 0),  5);  // (2+0) + (3+0) = 5
+    assert_eq!(jit_src_one_arg(src, 10), 25); // (2+10) + (3+10) = 25
+}
