@@ -26,6 +26,8 @@ You probably don't want to read this unless you're me.
 - struct member functions?
 - lambdas and closures
 - dynamic dispatch?
+- macros. what is a natural Cantor way of doing code generation? functions that manipulate ASTs?
+- generics. do we need mechanisms to help define functions that work on lots of different sets? seems like it should work alongside overloading
 
 # To learn
 
