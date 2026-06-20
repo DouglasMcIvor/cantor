@@ -64,6 +64,7 @@ You probably don't want to read this unless you're me.
 # Open questions
 
 - Should we use `:=` for mutable re-assignment to make it visually distinct from declaring a named value?
+- Does cvc5 come with a built-in timeout or limit for complex proofs? Should we let the user configure an "effort" value?
 - Should we have an early `return` statement? Seems expected in imperative languages.
 - How to define exception handlers?
 - More generally, how to define the IO loop?

@@ -205,11 +205,10 @@ $ cantor sum_to.cantor
 
 The declared constraint is used in three places: the initial value is checked against it, each assignment asserts the new value satisfies it, and after the loop the post-loop SSA variable inherits it as a known fact.
 
-> **Warning — invariants are currently trusted, not verified.**
-> The compiler asserts each assignment maintains the declared constraint as an axiom, rather than proving it.
-> This means `mut acc: Int16 = 0` with `acc = acc + 1` in a million-iteration loop will currently report `proved` even though overflow is possible — the step `acc + 1 ∈ Int16` is simply trusted.
-> Inductive step verification (where the compiler actually proves the invariant is maintained) is [on the roadmap](#on-the-roadmap).
-> Until then, use `require` or `assert` inside the loop body to add the proof obligations you care about, or confine `Int16`-style invariants to loops you know are bounded.
+> **Note — the compiler verifies the inductive step.**
+> Before trusting the invariant for post-loop reasoning, the solver checks that one body iteration actually maintains it: given `acc ∈ Nat` and the loop condition, does `acc = acc + i` leave `acc` still in `Nat`?
+> If the step cannot be proved — for example, `mut acc: Int16 = 0` with `acc = acc + 1` in an unbounded loop — the compiler reports a counterexample immediately rather than a false `proved`.
+> Loop variables declared as `mut name: Int` carry no effective constraint (Int = all integers) and behave conservatively: if the range obligation depends on such a variable, the result is `unknown` rather than a potentially spurious counterexample.
 
 ## Features (working today)
 
@@ -225,7 +224,6 @@ The declared constraint is used in three places: the initial value is checked ag
 
 ## On the roadmap
 
-- **Inductive loop invariant verification** — currently `mut acc: Int16` trusts each assignment maintains the constraint; the compiler should instead *prove* the inductive step (`acc + 1 ∈ Int16` given `acc ∈ Int16`), turning the trusted axiom into a real proof obligation and catching overflow when the loop bound is unknown
 - **`for x in S` loops** — iterate over set literals; the natural companion to `assert x in S`
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` as a first-class expression
 - **Runtime sets** — sets as first-class runtime values; `collected_primes` as a real set you can iterate, test membership, and pass around

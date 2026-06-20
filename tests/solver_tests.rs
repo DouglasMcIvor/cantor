@@ -835,10 +835,11 @@ sum_to(n) {
 }
 
 #[test]
-fn while_loop_unknown_when_range_tighter_than_invariant() {
-    // Even with `mut acc: Nat`, the range NatPos is stricter.
-    // The solver correctly cannot prove acc > 0 from acc >= 0 alone (sum_to(0) = 0).
-    // Since a while loop is present, SAT → Unknown (not Counterexample).
+fn while_loop_counterexample_when_range_tighter_than_invariant() {
+    // `mut acc: Nat` proves the inductive step, so all loop vars are constrained.
+    // The range NatPos is stricter than Nat — when n=0 the loop body never runs
+    // and acc stays 0, which is not in NatPos.  With all vars constrained the
+    // solver can extract a real counterexample (n=0, output=0) rather than Unknown.
     let src = r#"
 sum_to_pos : Nat -> NatPos
 sum_to_pos(n) {
@@ -852,8 +853,31 @@ sum_to_pos(n) {
 }"#;
     let results = check(src);
     assert!(
+        matches!(results[0].1, CheckResult::Counterexample { .. }),
+        "expected Counterexample (n=0 → acc=0 ∉ NatPos), got {:?}", results[0].1
+    );
+}
+
+#[test]
+fn while_loop_unknown_when_var_has_no_constraint() {
+    // `mut acc: Int` carries no effective SMT constraint (Int = all integers).
+    // The post-loop SSA variable is completely free.  Because the range
+    // obligation (Nat) depends on `acc`, the solver finds a SAT witness —
+    // but since `acc` is unconstrained, that witness may be spurious.
+    // The checker must return Unknown rather than Counterexample.
+    let src = r#"
+f : Int -> Nat
+f(n) {
+    mut acc: Int = 0
+    while acc < n {
+        acc = acc + 1
+    }
+    acc
+}"#;
+    let results = check(src);
+    assert!(
         matches!(results[0].1, CheckResult::Unknown(_)),
-        "expected Unknown when invariant too weak for range, got {:?}", results[0].1
+        "expected Unknown when loop var has no effective constraint, got {:?}", results[0].1
     );
 }
 
@@ -888,4 +912,66 @@ f(n) {
     }
     i
 }"#);
+}
+
+// ── Inductive step verification ───────────────────────────────────────────────
+
+#[test]
+fn inductive_step_proved_for_nat_invariant() {
+    // The solver verifies the inductive step: given acc ∈ Nat and i ∈ Nat,
+    // one iteration of (acc = acc + i; i = i + 1) leaves both in Nat.
+    // This is the deeper soundness guarantee behind while_loop_proved_with_constraints.
+    proved(r#"
+sum_to : Nat -> Nat
+sum_to(n) {
+    mut acc: Nat = 0
+    mut i: Nat = 1
+    while i <= n {
+        acc = acc + i
+        i = i + 1
+    }
+    acc
+}"#);
+}
+
+#[test]
+fn inductive_step_fails_for_int16_overflow() {
+    // `mut acc: Int16` with an unbounded increment: the inductive step
+    // fails because acc = 32767 → acc + 1 = 32768 ∉ Int16.
+    // The compiler must report a counterexample, not Proved.
+    let src = r#"
+count : Nat -> Int16
+count(n) {
+    mut acc: Int16 = 0
+    while acc < n {
+        acc = acc + 1
+    }
+    acc
+}"#;
+    let results = check(src);
+    assert!(
+        matches!(results[0].1, CheckResult::Counterexample { ref reason, .. }
+            if reason.contains("Int16")),
+        "expected Counterexample citing Int16, got {:?}", results[0].1
+    );
+}
+
+#[test]
+fn inductive_step_fails_reports_function_params() {
+    // The counterexample for a failing inductive step should include the
+    // function's domain parameters so the user sees a concrete input witness.
+    let src = r#"
+bounded_add : Int16 -> Int16
+bounded_add(x) {
+    mut acc: Int16 = x
+    while true {
+        acc = acc + 1
+    }
+    acc
+}"#;
+    let results = check(src);
+    let CheckResult::Counterexample { ref params, .. } = results[0].1 else {
+        panic!("expected Counterexample, got {:?}", results[0].1);
+    };
+    assert!(params.contains_key("x"), "expected param `x` in counterexample: {params:?}");
 }
