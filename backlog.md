@@ -69,11 +69,22 @@ You probably don't want to read this unless you're me.
 
 - How hard it is to stop typing "types" everywhere instead of sets etc.
 - SMT solvers are branch heavy so aren't very SIMD/multi-thread friendly. Implication, I guess, is that we can at least try and run multiple solvers in parallel while compiling to make use of multi-threading in a simple way. Shame we can't just throw the problem at some beefy GPUs.
+- 
 
 # Open questions
 
-- LLVM static memory allocation? does that just happen on its own?
-- Should we explicitly allow `for X in Foo`? Or will that just fall out naturally?
+- Memory model - leaning toward (from ChatGPT):
+  ```
+persistent structures
+    ->
+sharing
+    ->
+cheap diffing
+    ->
+easy reclamation
+```
+  The persistent state can use tracing GC _during the diff_. This is also simultaneous with IO so can naturally run in parallel.
+  The only gap left is that the mutable arena could grow too large. Later on we could add pages to the arena to allow partial clean up like with tcmalloc and marking the pages available to the OS!
 - Should we use `:=` for mutable re-assignment to make it visually distinct from declaring a named value?
 - Does cvc5 come with a built-in timeout or limit for complex proofs? Should we let the user configure an "effort" value?
 - Should we have an early `return` statement? Seems expected in imperative languages.
