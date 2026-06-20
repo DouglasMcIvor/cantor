@@ -169,9 +169,11 @@ fn check_const(def: &ConstDef, fn_env: &FunctionEnv<'_>, const_defs: &ConstDefs<
 
 /// True if `stmts` contains a `while` loop at any nesting depth.
 ///
-/// Used to decide whether a SAT result is trustworthy: after loop invalidation
-/// the fresh unconstrained variables can satisfy almost any negative query, so
-/// a SAT result is potentially spurious.  Only UNSAT (Proved) is reliable.
+/// Used to decide whether a SAT result is trustworthy: after loop invalidation,
+/// fresh variables for constrained `mut` locals carry their declared invariant,
+/// but the inductive step is trusted rather than verified.  A SAT result may
+/// therefore be spurious (the invariant could be wrong).  Only UNSAT (Proved)
+/// is reliable — it means even with the trusted invariant the obligation holds.
 fn body_has_while(stmts: &[Stmt]) -> bool {
     stmts.iter().any(|s| match s {
         Stmt::While { .. } => true,
@@ -311,9 +313,10 @@ fn check_block_sig(
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {
-        // After loop invalidation the fresh unconstrained variables can satisfy
-        // almost any negative query, making SAT results unreliable.  Treat
-        // them as Unknown so the developer knows to add `assume` annotations.
+        // The loop invariant is trusted, not inductively verified, so a SAT
+        // result may be spurious (the invariant might not actually hold after
+        // every iteration).  Treat as Unknown; the developer can tighten the
+        // constraint or add `assert`/`assume` inside the loop body.
         if body_has_while(stmts) {
             return CheckResult::Unknown(
                 "while loop: declare mutable variable constraints (`mut name: Set = expr`) to prove post-loop properties".into()
