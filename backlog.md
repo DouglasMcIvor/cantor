@@ -43,6 +43,8 @@ You probably don't want to read this unless you're me.
 - dynamic dispatch?
 - macros. what is a natural Cantor way of doing code generation? functions that manipulate ASTs?
 - generics. do we need mechanisms to help define functions that work on lots of different sets? seems like it should work alongside overloading
+- automatic multithreading for semi-pure core?
+- multiple concurrent IO threads?
 
 - Optimizations! From ChatGPT:
   ```
@@ -111,6 +113,8 @@ You probably don't want to read this unless you're me.
 
 # Open questions
 
+- I wanted 'emit' for write only effects, but when we added multithreading we will need synchronoisation. Is that a problem?
+I guess it depends on how we handle threading.
 - Memory model - leaning toward (from ChatGPT):
   ```
   persistent structures
