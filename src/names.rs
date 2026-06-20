@@ -20,6 +20,23 @@ use crate::{
     span::Span,
 };
 
+// ── Compile-time set predicate ────────────────────────────────────────────────
+
+/// Returns `true` when every variable reference in `expr` is uppercase,
+/// meaning the expression is statically materializable at compile time.
+/// Set literals and numeric/boolean literals are always compile-time.
+fn is_compile_time_value(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Var(sym) => starts_uppercase(&sym.0),
+        ExprKind::SetLit(_) | ExprKind::IntLit(_) | ExprKind::BoolLit(_) => true,
+        ExprKind::BinOp { lhs, rhs, .. } => {
+            is_compile_time_value(lhs) && is_compile_time_value(rhs)
+        }
+        ExprKind::UnOp { expr: inner, .. } => is_compile_time_value(inner),
+        _ => false,
+    }
+}
+
 /// Check naming conventions across an entire parsed file.
 /// Returns all violations found (empty Vec = no errors).
 pub fn check_names(items: &[Item]) -> Vec<CompileError> {
@@ -64,7 +81,29 @@ fn check_stmts(stmts: &[Stmt], errors: &mut Vec<CompileError>) {
         match stmt {
             Stmt::MutLet { name, span, .. } => must_be_lowercase(&name.0, *span, errors),
             Stmt::Block(inner)              => check_stmts(inner, errors),
-            _                              => {}
+            Stmt::While { body, .. }        => check_stmts(body, errors),
+            Stmt::ForIn { var, set, body, span, .. } => {
+                // Uppercase loop variable promises compile-time values; the
+                // iterable must be statically materializable to honour that promise.
+                if starts_uppercase(&var.0) && !is_compile_time_value(set) {
+                    errors.push(CompileError::NamingConvention {
+                        message: format!(
+                            "`{}` is uppercase, which promises a compile-time value; \
+                             the iterable must be a set literal or an uppercase-named \
+                             set (use lowercase `{}` for a runtime iterable)",
+                            var.0,
+                            var.0.chars().next().map(|c| {
+                                let mut s = c.to_lowercase().to_string();
+                                s.push_str(&var.0[c.len_utf8()..]);
+                                s
+                            }).unwrap_or_default(),
+                        ),
+                        span: *span,
+                    });
+                }
+                check_stmts(body, errors);
+            }
+            _ => {}
         }
     }
 }

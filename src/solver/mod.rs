@@ -665,27 +665,24 @@ fn check_require<'tm>(
     }
 }
 
-/// Verify the inductive step of a while loop: assuming every loop-modified
-/// variable satisfies its declared constraint AND the loop condition holds,
-/// does one execution of the body leave every constrained variable still in
-/// its declared set?
+/// Common driver for while-loop and for-in inductive-step checks.
 ///
-/// Returns `Some(result)` when the step cannot be established — either a
-/// `Counterexample` (invariant falsified) or `Unknown` (solver timed out or
-/// loop condition uses unsupported syntax).  Returns `None` only when the
-/// step is positively proved UNSAT, or when there are no constrained variables
-/// to check.
+/// Both loop forms share the same structure: introduce fresh hypothesis
+/// variables for every modified binding, run the loop-specific setup (assert
+/// the condition / bind the loop variable), encode one body iteration, then
+/// check that every invariant still holds.
 ///
-/// The compiler never silently falls back to trusting an unverified invariant:
-/// if the step cannot be decided, the whole function's check returns Unknown
-/// so the developer must add an explicit `assert` (runtime check) or
-/// `assume` (unconditional trust) to opt in.
+/// `add_loop_entry` is invoked after the hypothesis variables are in place.
+/// It receives mutable access to the temporary solver, the environment, the
+/// accumulated facts, and the SSA counter, so it can assert whatever the
+/// specific loop form requires.  Return `None` to continue; return
+/// `Some(result)` to abort the step check and propagate that result.
 ///
-/// Critically, the body is encoded with an **empty** constraint environment so
-/// that assignments do not auto-assert their constraints — we want to _check_
-/// them, not assume them.
-fn check_inductive_step<'tm>(
-    cond: &Expr,
+/// `inv_label` is used in error messages (`"loop invariant"` for while,
+/// `"for-loop invariant"` for for-in).
+///
+/// Returns `None` when UNSAT (step proved); `Some(result)` otherwise.
+fn check_loop_inductive_step<'tm, F>(
     body: &[Stmt],
     modified: &std::collections::HashSet<Symbol>,
     constraint_env: &HashMap<Symbol, Expr>,
@@ -697,8 +694,17 @@ fn check_inductive_step<'tm>(
     ssa_counter: &mut usize,
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
-) -> Option<CheckResult> {
-    // Collect only the modified vars that have declared constraints.
+    inv_label: &str,
+    add_loop_entry: F,
+) -> Option<CheckResult>
+where
+    F: FnOnce(
+        &mut Solver<'tm>,
+        &mut Env<'tm>,
+        &mut Vec<Term<'tm>>,
+        &mut usize,
+    ) -> Option<CheckResult>,
+{
     let constrained: Vec<&Symbol> = modified
         .iter()
         .filter(|n| constraint_env.contains_key(*n))
@@ -711,16 +717,14 @@ fn check_inductive_step<'tm>(
     tmp.set_logic("QF_NIA");
     tmp.set_option("produce-models", "true");
 
-    // Replay all facts accumulated before this loop (domain constraints, earlier
-    // SSA equalities, proved requires, etc.) so the step check has full context.
     let mut tmp_facts: Vec<Term<'tm>> = Vec::new();
     for fact in accumulated_facts {
         tmp.assert_formula(fact.clone());
         tmp_facts.push(fact.clone());
     }
 
-    // Introduce fresh "inductive hypothesis" variables — one per modified var.
-    // For constrained vars, assert the invariant holds at the start of this
+    // Fresh inductive-hypothesis variable for each loop-modified binding.
+    // Constrained vars get their invariant asserted at the start of this
     // hypothetical iteration.
     let mut ind_env = env.clone();
     for name in modified {
@@ -736,174 +740,13 @@ fn check_inductive_step<'tm>(
         ind_env.insert(name.clone(), fresh);
     }
 
-    // Assert the loop condition: we are checking a live iteration.
-    let mut cc = 0usize;
-    let mut obligs: Vec<BuiltinObligation<'tm>> = Vec::new();
-    match encode_expr(cond, &ind_env, const_defs, fn_env, tm, &mut tmp,
-                      &mut cc, &mut obligs, tm.mk_boolean(true)) {
-        Ok(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); }
-        Err(_) => return Some(CheckResult::Unknown(
-            "cannot verify inductive step: loop condition uses syntax not yet \
-             supported in the SMT encoding".into()
-        )),
+    // Loop-specific setup: assert the condition / introduce the loop variable.
+    if let Some(err) = add_loop_entry(&mut tmp, &mut ind_env, &mut tmp_facts, ssa_counter) {
+        return Some(err);
     }
 
-    // Encode one iteration of the body.
-    // Empty constraint_env: assignments must NOT auto-assert their constraints,
-    // because we are about to CHECK those constraints as obligations.
-    let mut body_env = ind_env.clone();
-    let mut empty_cenv: HashMap<Symbol, Expr> = HashMap::new();
-    let mut step_ssa = *ssa_counter;
-    match encode_block(
-        body, &mut body_env, const_defs, fn_env, tm, &mut tmp,
-        &mut cc, &mut obligs, &mut step_ssa, &mut tmp_facts,
-        param_names, param_terms, &mut empty_cenv,
-    ) {
-        Ok(_) => {}
-        Err(e) => return Some(e),
-    }
-    *ssa_counter = step_ssa;
-
-    // Build the obligations: every constrained var's post-iteration value must
-    // satisfy its declared invariant.
-    let mut step_obligs: Vec<Term<'tm>> = Vec::new();
-    for name in &constrained {
-        if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name)) {
-            if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint) {
-                step_obligs.push(c);
-            }
-        }
-    }
-
-    if step_obligs.is_empty() {
-        return None;
-    }
-
-    let combined = if step_obligs.len() == 1 {
-        step_obligs.remove(0)
-    } else {
-        tm.mk_term(Kind::And, &step_obligs)
-    };
-    tmp.assert_formula(tm.mk_term(Kind::Not, &[combined]));
-
-    let sat = tmp.check_sat();
-    if sat.is_unsat() {
-        None // Step proved — invariant is inductively maintained.
-    } else if sat.is_sat() {
-        // Find the first variable whose post-iteration value violates the constraint.
-        let mut cex_params: HashMap<String, i64> = HashMap::new();
-        for (name, term) in param_names.iter().zip(param_terms.iter()) {
-            let val = tmp.get_value(term.clone());
-            cex_params.insert(name.0.clone(), integer_value(&val));
-        }
-        let mut output_val = 0i64;
-        let mut reason = String::from("loop invariant not maintained");
-        for name in &constrained {
-            if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name)) {
-                if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint) {
-                    if !boolean_value(&tmp.get_value(c)) {
-                        output_val = integer_value(&tmp.get_value(post.clone()));
-                        reason = format!(
-                            "loop invariant not maintained: `{}` ∉ {} (value {})",
-                            name.0, constraint, output_val
-                        );
-                        break;
-                    }
-                }
-            }
-        }
-        Some(CheckResult::Counterexample { params: cex_params, output: output_val, reason })
-    } else {
-        // The solver could not decide the inductive step.  Per the language
-        // principle, the compiler never silently assumes an unproved invariant.
-        // The developer must add an explicit `assume` inside the loop body to
-        // assert the invariant holds for the cases the solver cannot reach.
-        let names: Vec<&str> = constrained.iter().map(|n| n.0.as_str()).collect();
-        Some(CheckResult::Unknown(format!(
-            "cannot verify inductive step for loop invariant(s) `{}` — \
-             add `assert name in Set` inside the loop body to check they hold",
-            names.join("`, `")
-        )))
-    }
-}
-
-/// Verify the inductive step of a `for x in S` loop: assuming every
-/// loop-modified variable satisfies its declared constraint AND `x ∈ S`,
-/// does one execution of the body leave every constrained variable still in
-/// its declared set?
-///
-/// Returns `None` when the step is proved UNSAT, or `Some(result)` when it
-/// cannot be established.  The same "never silently trust" policy applies as
-/// for while loops.
-fn check_for_inductive_step<'tm>(
-    var: &Symbol,
-    set: &Expr,
-    body: &[Stmt],
-    modified: &std::collections::HashSet<Symbol>,
-    constraint_env: &HashMap<Symbol, Expr>,
-    env: &Env<'tm>,
-    accumulated_facts: &[Term<'tm>],
-    const_defs: &ConstDefs<'_>,
-    fn_env: &FunctionEnv<'_>,
-    tm: &'tm TermManager,
-    ssa_counter: &mut usize,
-    param_names: &[Symbol],
-    param_terms: &[Term<'tm>],
-) -> Option<CheckResult> {
-    let constrained: Vec<&Symbol> = modified
-        .iter()
-        .filter(|n| constraint_env.contains_key(*n))
-        .collect();
-    if constrained.is_empty() {
-        return None;
-    }
-
-    let mut tmp = Solver::new(tm);
-    tmp.set_logic("QF_NIA");
-    tmp.set_option("produce-models", "true");
-
-    let mut tmp_facts: Vec<Term<'tm>> = Vec::new();
-    for fact in accumulated_facts {
-        tmp.assert_formula(fact.clone());
-        tmp_facts.push(fact.clone());
-    }
-
-    // Introduce fresh inductive hypothesis vars for each loop-modified var.
-    let mut ind_env = env.clone();
-    for name in modified {
-        let fresh_name = format!("{}_step_{}", name.0, ssa_counter);
-        *ssa_counter += 1;
-        let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
-        if let Some(constraint) = constraint_env.get(name) {
-            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint) {
-                tmp.assert_formula(c.clone());
-                tmp_facts.push(c);
-            }
-        }
-        ind_env.insert(name.clone(), fresh);
-    }
-
-    // Introduce a fresh var for the loop variable with `var ∈ set` asserted.
-    let var_fresh_name = format!("{}_iter_{}", var.0, ssa_counter);
-    *ssa_counter += 1;
-    let var_fresh = tm.mk_const(tm.integer_sort(), &var_fresh_name);
-    match membership_constraint(tm, var_fresh.clone(), set) {
-        Membership::Unconstrained => {} // set is Int — no constraint, still valid
-        Membership::Constrained(c) => {
-            tmp.assert_formula(c.clone());
-            tmp_facts.push(c);
-        }
-        Membership::Unsupported => {
-            return Some(CheckResult::Unknown(
-                "for loop: cannot verify inductive step — iterable set uses syntax \
-                 not yet supported in the SMT encoding".into(),
-            ));
-        }
-    }
-    ind_env.insert(var.clone(), var_fresh);
-
-    // Encode one body iteration with an empty constraint env (we're checking,
-    // not assuming, the invariants).
+    // Encode one body iteration with an empty constraint env — we are checking
+    // the invariants, not assuming them.
     let mut body_env = ind_env;
     let mut empty_cenv: HashMap<Symbol, Expr> = HashMap::new();
     let mut cc = 0usize;
@@ -919,8 +762,7 @@ fn check_for_inductive_step<'tm>(
     }
     *ssa_counter = step_ssa;
 
-    // Build the obligations: each constrained var's post-body value must satisfy
-    // its declared invariant.
+    // Every constrained var's post-iteration value must satisfy its invariant.
     let mut step_obligs: Vec<Term<'tm>> = Vec::new();
     for name in &constrained {
         if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name)) {
@@ -951,14 +793,14 @@ fn check_for_inductive_step<'tm>(
             cex_params.insert(name.0.clone(), integer_value(&val));
         }
         let mut output_val = 0i64;
-        let mut reason = String::from("for loop invariant not maintained");
+        let mut reason = format!("{inv_label} not maintained");
         for name in &constrained {
             if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name)) {
                 if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint) {
                     if !boolean_value(&tmp.get_value(c)) {
                         output_val = integer_value(&tmp.get_value(post.clone()));
                         reason = format!(
-                            "for loop invariant not maintained: `{}` ∉ {} (value {})",
+                            "{inv_label} not maintained: `{}` ∉ {} (value {})",
                             name.0, constraint, output_val
                         );
                         break;
@@ -970,11 +812,81 @@ fn check_for_inductive_step<'tm>(
     } else {
         let names: Vec<&str> = constrained.iter().map(|n| n.0.as_str()).collect();
         Some(CheckResult::Unknown(format!(
-            "cannot verify inductive step for for-loop invariant(s) `{}` — \
+            "cannot verify inductive step for {inv_label}s `{}` — \
              add `assert name in Set` inside the loop body to check they hold",
             names.join("`, `")
         )))
     }
+}
+
+fn check_inductive_step<'tm>(
+    cond: &Expr,
+    body: &[Stmt],
+    modified: &std::collections::HashSet<Symbol>,
+    constraint_env: &HashMap<Symbol, Expr>,
+    env: &Env<'tm>,
+    accumulated_facts: &[Term<'tm>],
+    const_defs: &ConstDefs<'_>,
+    fn_env: &FunctionEnv<'_>,
+    tm: &'tm TermManager,
+    ssa_counter: &mut usize,
+    param_names: &[Symbol],
+    param_terms: &[Term<'tm>],
+) -> Option<CheckResult> {
+    check_loop_inductive_step(
+        body, modified, constraint_env, env, accumulated_facts,
+        const_defs, fn_env, tm, ssa_counter, param_names, param_terms,
+        "loop invariant",
+        |tmp, ind_env, tmp_facts, _ssa| {
+            let mut cc = 0usize;
+            let mut obligs = Vec::new();
+            match encode_expr(cond, ind_env, const_defs, fn_env, tm, tmp,
+                              &mut cc, &mut obligs, tm.mk_boolean(true)) {
+                Ok(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); None }
+                Err(_) => Some(CheckResult::Unknown(
+                    "cannot verify inductive step: loop condition uses syntax not yet \
+                     supported in the SMT encoding".into()
+                )),
+            }
+        },
+    )
+}
+
+fn check_for_inductive_step<'tm>(
+    var: &Symbol,
+    set: &Expr,
+    body: &[Stmt],
+    modified: &std::collections::HashSet<Symbol>,
+    constraint_env: &HashMap<Symbol, Expr>,
+    env: &Env<'tm>,
+    accumulated_facts: &[Term<'tm>],
+    const_defs: &ConstDefs<'_>,
+    fn_env: &FunctionEnv<'_>,
+    tm: &'tm TermManager,
+    ssa_counter: &mut usize,
+    param_names: &[Symbol],
+    param_terms: &[Term<'tm>],
+) -> Option<CheckResult> {
+    check_loop_inductive_step(
+        body, modified, constraint_env, env, accumulated_facts,
+        const_defs, fn_env, tm, ssa_counter, param_names, param_terms,
+        "for-loop invariant",
+        |tmp, ind_env, tmp_facts, ssa| {
+            let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
+            *ssa += 1;
+            let var_fresh = tm.mk_const(tm.integer_sort(), &var_fresh_name);
+            match membership_constraint(tm, var_fresh.clone(), set) {
+                Membership::Unconstrained => {} // Int — no constraint needed
+                Membership::Constrained(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); }
+                Membership::Unsupported => return Some(CheckResult::Unknown(
+                    "for loop: cannot verify inductive step — iterable set uses syntax \
+                     not yet supported in the SMT encoding".into()
+                )),
+            }
+            ind_env.insert(var.clone(), var_fresh);
+            None
+        },
+    )
 }
 
 // ── Core per-signature check ──────────────────────────────────────────────────

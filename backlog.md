@@ -17,8 +17,15 @@ You probably don't want to read this unless you're me.
 - human intros (familiar with types, newbie with the word type taboo'd) and LLM intro
 - review and improve error messages
 - suggested constraints in error messages
-- more containers! gotta have me some vectors and maps, not just sets!
+- more containers! gotta have me some vectors and maps, not just sets! ordered sets too
 - iterators for containers 
+- destructuring assignment and checks for values in product sets 
+  ```haskell
+  assert z in X * Y
+  x, y = z
+  assert x, y in X * Y
+  ``` 
+- natural `for i, x in foo` syntax to combine destructuring should fall out from the above without additional work
 - outer IO loop
 - write-only side effects via `emit`
 - compiled binaries
