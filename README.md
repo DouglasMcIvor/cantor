@@ -348,4 +348,4 @@ This means that essentially 100% of the code in Cantor is LLM-generated, along w
 
 So when I say "learn Rust" what I really mean is "learn _to read_ Rust", I almost certainly can't actually write it succesfully if I were given a blank slate and no docs.
 
-If for some reason you happen to be reading this _and_ you happen to notice the LLM-generated code is somehow off (buggy, non-idiomatic, just looks plain weird) then please let me know so I can either fix it or learn something new! But also, why _are_ you still reading this? Don't you have something better to do? Go cuddle with your cat!
+If for some reason you happen to be reading this _and_ you happen to notice the LLM-generated code is somehow off (buggy, non-idiomatic, just looks plain weird) then please let me know so I can either fix it or learn something new! But also, why _are_ you still reading this? Don't you have something better to do? Go spend time with your cat!
