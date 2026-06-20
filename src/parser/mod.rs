@@ -267,6 +267,14 @@ impl<'src> Parser<'src> {
                 let body = self.parse_block()?;
                 Ok(Stmt::While { cond, body, span })
             }
+            Token::For => {
+                self.advance()?;
+                let var = self.expect_ident()?;
+                self.expect(&Token::In)?;
+                let set = self.parse_set_expr()?;
+                let body = self.parse_block()?;
+                Ok(Stmt::ForIn { var, set, body, span })
+            }
             Token::LBrace => Ok(Stmt::Block(self.parse_block()?)),
             // `ident =` (not `==`) → assignment
             Token::Ident(_) if self.peek2() == &Token::Eq => {

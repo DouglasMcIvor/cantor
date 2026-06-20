@@ -254,6 +254,10 @@ impl<'ctx> Compiler<'ctx> {
                 Stmt::While { cond, body, .. } => {
                     self.compile_while(cond, body, env, alloca_map)?;
                 }
+
+                Stmt::ForIn { var, set, body, .. } => {
+                    self.compile_for_in(var, set, body, env, alloca_map)?;
+                }
             }
         }
         Ok(last)
@@ -346,6 +350,46 @@ impl<'ctx> Compiler<'ctx> {
             env.insert(name.clone(), (val.into(), ValType::Int));
         }
 
+        Ok(())
+    }
+
+    /// Emit LLVM IR for `for x in S { body }`.
+    ///
+    /// Only set literals `{e1, e2, …}` are supported as iterables for now —
+    /// named/generative sets need a runtime set representation that doesn't
+    /// exist yet.  The body is unrolled: compiled once per element in source
+    /// order, with `var` bound to the element value each time.  Values of
+    /// outer-loop alloca-backed variables propagate correctly because
+    /// `compile_stmts` writes through to the alloca on every assignment.
+    fn compile_for_in(
+        &mut self,
+        var: &Symbol,
+        set: &Expr,
+        body: &[Stmt],
+        env: &mut Env<'ctx>,
+        alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
+    ) -> Result<(), CompileError> {
+        let ExprKind::SetLit(elements) = &set.kind else {
+            return Err(CompileError::Internal(
+                "for loop: only set literals `{e1, e2, ...}` are supported as iterables \
+                 in this version (named/generative sets need a runtime set representation)"
+                    .into(),
+            ));
+        };
+        let i64_type = self.context.i64_type();
+        for elem in elements {
+            let (elem_val, elem_ty) = self.compile_expr(elem, env)?;
+            let val_i64: BasicValueEnum = if elem_ty == ValType::Bool {
+                self.builder
+                    .build_int_z_extend(elem_val.into_int_value(), i64_type, "bool_ext")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                    .into()
+            } else {
+                elem_val
+            };
+            env.insert(var.clone(), (val_i64, ValType::Int));
+            self.compile_stmts(body, env, alloca_map)?;
+        }
         Ok(())
     }
 

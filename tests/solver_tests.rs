@@ -975,3 +975,90 @@ bounded_add(x) {
     };
     assert!(params.contains_key("x"), "expected param `x` in counterexample: {params:?}");
 }
+
+// ── For-in loops ──────────────────────────────────────────────────────────────
+
+#[test]
+fn for_in_proved_with_constraint() {
+    // Accumulate a sum over a set literal.  `mut acc: Nat` declares the
+    // invariant; each iteration adds a NatPos element so acc stays in Nat.
+    proved(r#"
+sum_set : -> Nat
+sum_set() {
+    mut acc: Nat = 0
+    for x in {1, 2, 3} {
+        acc = acc + x
+    }
+    acc
+}"#);
+}
+
+#[test]
+fn for_in_counterexample_when_invariant_fails() {
+    // Body subtracts 10 from acc on each iteration.  Starting at 5, after
+    // any iteration acc goes negative — the Nat invariant is not maintained.
+    let src = r#"
+f : -> Nat
+f() {
+    mut acc: Nat = 5
+    for x in {1, 2, 3} {
+        acc = acc - 10
+    }
+    acc
+}"#;
+    let results = check(src);
+    assert!(
+        matches!(results[0].1, CheckResult::Counterexample { .. }),
+        "expected Counterexample (acc - 10 ∉ Nat), got {:?}", results[0].1
+    );
+}
+
+#[test]
+fn for_in_unknown_when_no_constraint() {
+    // `mut acc: Int` carries no effective SMT constraint (Int = all integers).
+    // After the loop the post-loop SSA variable is completely free, making SAT
+    // results potentially spurious — the checker must return Unknown.
+    let src = r#"
+f : -> Nat
+f() {
+    mut acc: Int = 0
+    for x in {1, 2, 3} {
+        acc = acc + x
+    }
+    acc
+}"#;
+    let results = check(src);
+    assert!(
+        matches!(results[0].1, CheckResult::Unknown(_)),
+        "expected Unknown when loop var has no effective constraint, got {:?}", results[0].1
+    );
+}
+
+#[test]
+fn for_in_empty_set_proved() {
+    // An empty set literal means the body never executes.
+    // acc stays at its initial value 0, which is in Nat.
+    proved(r#"
+f : -> Nat
+f() {
+    mut acc: Nat = 0
+    for x in {} {
+        acc = acc + x
+    }
+    acc
+}"#);
+}
+
+#[test]
+fn for_in_set_literal_with_param() {
+    // The iterable can reference function parameters or outer variables.
+    proved(r#"
+f : Nat -> Nat
+f(n) {
+    mut acc: Nat = 0
+    for x in {1, 2, 3} {
+        acc = acc + x
+    }
+    acc
+}"#);
+}

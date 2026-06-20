@@ -3,10 +3,10 @@ You probably don't want to read this unless you're me.
 
 # To do
 
-- loops
 - runtime sets of course
-- set comprehensions, including infinite generative sets
+- for over named sets not just set literals
 - memory model
+- set comprehensions, including infinite generative sets
 - confirm that with constants I can declare my own compile time sets and use them as domains/ranges
 - basic values that aren't integers:
   - float
@@ -55,6 +55,8 @@ You probably don't want to read this unless you're me.
 - () is the unit type and unit value
 - Box is for dynamic dispatch, e.g. `Box<dyn Animal>` for an Animal trait, gives you a vtable
 - Rust distinguishes the use of `<>` better than C++ by requiring `::` in things like `Vec::<i32>`.
+- Re-learned about phi nodes in SSA, that label the value taken based on where the execution path *came from*
+- Learned about alloca and how a `mem2reg` optimization will often replace it with phi nodes etc
 
 # Things that surprised me
 
@@ -63,6 +65,8 @@ You probably don't want to read this unless you're me.
 
 # Open questions
 
+- LLVM static memory allocation? does that just happen on its own?
+- Should we explicitly allow `for X in Foo`? Or will that just fall out naturally?
 - Should we use `:=` for mutable re-assignment to make it visually distinct from declaring a named value?
 - Does cvc5 come with a built-in timeout or limit for complex proofs? Should we let the user configure an "effort" value?
 - Should we have an early `return` statement? Seems expected in imperative languages.

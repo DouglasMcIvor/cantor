@@ -330,3 +330,83 @@ main(n) {
     assert_eq!(jit_src_one_arg(src, 1), 7);
     assert_eq!(jit_src_one_arg(src, 6), 42);
 }
+
+// ── For-in loops ──────────────────────────────────────────────────────────────
+
+#[test]
+fn for_in_sum_set_literal() {
+    // 1 + 2 + 3 = 6
+    let src = r#"
+main : -> Int
+main() {
+    mut acc: Int = 0
+    for x in {1, 2, 3} {
+        acc = acc + x
+    }
+    acc
+}"#;
+    assert_eq!(jit_src_zero_arg(src), 6);
+}
+
+#[test]
+fn for_in_empty_set() {
+    // Body never executes — acc stays at initial value.
+    let src = r#"
+main : -> Int
+main() {
+    mut acc: Int = 42
+    for x in {} {
+        acc = acc + 1
+    }
+    acc
+}"#;
+    assert_eq!(jit_src_zero_arg(src), 42);
+}
+
+#[test]
+fn for_in_single_element() {
+    // Exactly one iteration.
+    let src = r#"
+main : -> Int
+main() {
+    mut acc: Int = 0
+    for x in {7} {
+        acc = acc + x
+    }
+    acc
+}"#;
+    assert_eq!(jit_src_zero_arg(src), 7);
+}
+
+#[test]
+fn for_in_uses_loop_var() {
+    // The loop variable x is accessible inside the body.
+    // Iterations: x=10, x=20, x=30 → last x wins as return.
+    let src = r#"
+main : -> Int
+main() {
+    mut last: Int = 0
+    for x in {10, 20, 30} {
+        last = x
+    }
+    last
+}"#;
+    assert_eq!(jit_src_zero_arg(src), 30);
+}
+
+#[test]
+fn for_in_with_outer_param() {
+    // The set elements are expressions that can reference function parameters.
+    let src = r#"
+main : Int -> Int
+main(n) {
+    mut acc: Int = 0
+    for x in {1, 2, 3} {
+        acc = acc + x + n
+    }
+    acc
+}"#;
+    // n=0: 1+2+3 = 6; n=10: (1+10)+(2+10)+(3+10) = 36
+    assert_eq!(jit_src_one_arg(src, 0),  6);
+    assert_eq!(jit_src_one_arg(src, 10), 36);
+}

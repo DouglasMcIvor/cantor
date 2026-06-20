@@ -319,3 +319,34 @@ fn while_condition_parsed() {
     let cantor::ast::Stmt::While { cond, .. } = &stmts[1] else { panic!("expected While") };
     assert!(matches!(cond.kind, ExprKind::BinOp { op: BinOp::Lt, .. }));
 }
+
+// ── For-in loops ──────────────────────────────────────────────────────────────
+
+#[test]
+fn for_in_parses_as_stmt() {
+    let src = "f : -> Int\nf() {\n    mut acc: Int = 0\n    for x in {1, 2, 3} {\n        acc = acc + x\n    }\n    acc\n}";
+    let def = parse_one(src);
+    let FunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    assert_eq!(stmts.len(), 3); // MutLet acc, ForIn, Expr(acc)
+    assert!(matches!(stmts[1], cantor::ast::Stmt::ForIn { .. }));
+}
+
+#[test]
+fn for_in_var_and_set_parsed() {
+    let src = "f : -> Int\nf() {\n    mut acc: Int = 0\n    for x in {1, 2, 3} {\n        acc = acc + x\n    }\n    acc\n}";
+    let def = parse_one(src);
+    let FunctionBody::Block(stmts) = &def.body else { panic!() };
+    let cantor::ast::Stmt::ForIn { var, set, .. } = &stmts[1] else { panic!("expected ForIn") };
+    assert_eq!(var.0.as_str(), "x");
+    assert!(matches!(set.kind, ExprKind::SetLit(_)));
+}
+
+#[test]
+fn for_in_body_parsed() {
+    let src = "f : -> Int\nf() {\n    mut acc: Int = 0\n    for x in {1, 2} {\n        acc = acc + x\n    }\n    acc\n}";
+    let def = parse_one(src);
+    let FunctionBody::Block(stmts) = &def.body else { panic!() };
+    let cantor::ast::Stmt::ForIn { body, .. } = &stmts[1] else { panic!("expected ForIn") };
+    assert_eq!(body.len(), 1);
+    assert!(matches!(body[0], cantor::ast::Stmt::Assign { .. }));
+}

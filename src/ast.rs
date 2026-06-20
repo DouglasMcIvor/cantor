@@ -139,6 +139,8 @@ pub enum Stmt {
     Block(Vec<Stmt>),
     /// `while cond { stmts }` — loop while condition holds.
     While { cond: Expr, body: Vec<Stmt>, span: Span },
+    /// `for x in S { stmts }` — iterate over each element of the set S.
+    ForIn { var: Symbol, set: Expr, body: Vec<Stmt>, span: Span },
 }
 
 /// Collect all names that are assigned (by `mut` or reassignment) anywhere
@@ -156,7 +158,7 @@ fn collect_loop_modified_rec(stmts: &[Stmt], names: &mut std::collections::HashS
     for stmt in stmts {
         match stmt {
             Stmt::MutLet { name, .. } | Stmt::Assign { name, .. } => { names.insert(name.clone()); }
-            Stmt::While { body, .. } => collect_loop_modified_rec(body, names),
+            Stmt::While { body, .. } | Stmt::ForIn { body, .. } => collect_loop_modified_rec(body, names),
             Stmt::Block(inner) => collect_loop_modified_rec(inner, names),
             _ => {}
         }
