@@ -8,10 +8,12 @@ You probably don't want to read this unless you're me.
 - memory model
 - set comprehensions, including infinite generative sets
 - confirm that with constants I can declare my own compile time sets and use them as domains/ranges
-- basic values that aren't integers:
+- basic values that aren't int64:
+  - bool
   - float
   - char, string (unicode I guess)
   - byte
+- BigInt runtime support for our unsized Int and Nat sets
 - constants JIT'd instead of at rust level to get consistency 
 - spin up some code review agents to assess quality of rust implementation, factoring and maintainability before it gets too large
 - human intros (familiar with types, newbie with the word type taboo'd) and LLM intro
@@ -75,14 +77,14 @@ You probably don't want to read this unless you're me.
 
 - Memory model - leaning toward (from ChatGPT):
   ```
-persistent structures
+  persistent structures
     ->
-sharing
+  sharing
     ->
-cheap diffing
+  cheap diffing
     ->
-easy reclamation
-```
+  easy reclamation
+  ```
   The persistent state can use tracing GC _during the diff_. This is also simultaneous with IO so can naturally run in parallel.
   The only gap left is that the mutable arena could grow too large. Later on we could add pages to the arena to allow partial clean up like with tcmalloc and marking the pages available to the OS!
 - Should we use `:=` for mutable re-assignment to make it visually distinct from declaring a named value?
