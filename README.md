@@ -210,13 +210,31 @@ The declared constraint is used in three places: the initial value is checked ag
 > If the step cannot be proved — for example, `mut acc: Int16 = 0` with `acc = acc + 1` in an unbounded loop — the compiler reports a counterexample immediately rather than a false `proved`.
 > Loop variables declared as `mut name: Int` carry no effective constraint (Int = all integers) and behave conservatively: if the range obligation depends on such a variable, the result is `unknown` rather than a potentially spurious counterexample.
 
+### For-in loops
+
+`for x in S` iterates over a set literal, binding `x` to each element in turn.
+The same loop invariant mechanism applies: `mut acc: Set` declares the invariant, and the compiler verifies it is maintained across every element.
+
+```haskell
+sum_set : -> Nat
+sum_set() {
+    mut acc: Nat = 0
+    for x in {1, 2, 3} {
+        acc = acc + x
+    }
+    acc      -- acc ∈ Nat proved inductively over all elements
+}
+```
+
+Naming the loop variable with an uppercase letter (`for X in {1, 2, 3}`) promises that the value is known at compile time and forces the compiler to verify the iterable is statically materializable — a lightweight way to opt into guaranteed compile-time unrolling.
+
 ## Features (working today)
 
 - **Set-theoretic domains and ranges** — `Int`, `Nat`, `NatPos`, `NonZeroInt`, `Int8`–`Int64`, set literals `{0, 1, 2}`, set difference `A - B`, union `A | B`, intersection `A & B`
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis
 - **Constants** — `name : Set / name = expr`, type-checked and auto-inlined at compile time
-- **Block bodies with `while` loops** — imperative-style bodies with `while cond { stmts }`, `mut name: Set = expr` locals (set annotation is the declared loop invariant), sequenced statements, and `if-then-else`
+- **Block bodies with `while` and `for x in S` loops** — imperative-style bodies with `while cond { stmts }` and `for x in {e1, e2, …} { stmts }`, `mut name: Set = expr` locals (set annotation is the declared loop invariant), sequenced statements, and `if-then-else`
 - **`require` / `assert` / `assume`** — static and graduated runtime proof obligations
 - **`Fail` and `?`** — monadic error propagation; fallible functions declare `| Fail` in their range; `?` short-circuits on failure
 - **Named set naming convention** — uppercase names are compile-time set names (`Nat`, `HTTPError`); lowercase names are values (`pi`, `abs`, `collected_primes`); enforced by the compiler
@@ -224,7 +242,6 @@ The declared constraint is used in three places: the initial value is checked ag
 
 ## On the roadmap
 
-- **`for x in S` loops** — iterate over set literals; the natural companion to `assert x in S`
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` as a first-class expression
 - **Runtime sets** — sets as first-class runtime values; `collected_primes` as a real set you can iterate, test membership, and pass around
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
