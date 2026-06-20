@@ -1,10 +1,10 @@
 # Cantor - ℵ
 
+![Cantor programming language logo](docs/cantor_logo.png)
+
 > *A statically typed language without any types.*
 
 Named after [Georg Cantor](https://en.wikipedia.org/wiki/Georg_Cantor), the mathematician who built the foundations of modern set theory.
-
-![Cantor programming language logo](docs/cantor_logo.png)
 
 ## The idea
 
@@ -12,13 +12,13 @@ Most programming languages are built on type theory.
 Most of mathematics is built on set theory.
 
 Type theory was introduced into the foundations of mathematics largely to sidestep problems with infinite sets — most famously Russell's paradox, which arises when you let a set contain itself.
-But here's the thing: programmers never actually need infinite sets.
+But programmers never actually need infinite sets.
 A computer is a finite state machine; it only approximates a Turing machine until it runs out of RAM.
 The sets a programmer cares about — integers that fit in 64 bits, HTTP status codes, non-negative numbers — are all finite.
 
 So: if applied mathematics doesn't require type theory to get things done, and if the specific problem type theory was introduced to solve (infinite self-referential sets) never arises in practice, then maybe applied programming doesn't need types either.
 
-Cantor is a fun (at least, _I_ find it fun) experiment in that direction.
+Cantor is a fun (at least, _some people_ find it fun) experiment in that direction.
 Instead of a type system, functions declare their **domain** and **range** as sets.
 The compiler uses an SMT solver to *prove* that every possible input satisfying the domain maps to an output in the range.
 If it can't prove it, it shows you a concrete counterexample.
@@ -60,6 +60,10 @@ Of course, nothing in the world is free. The trade off we expect to make here is
 * ...so we should expect to need a *lot* of `assert`s. The simplest way to provide a proof? Tell the compiler what to do when it's false!
 
 But there are some really good SAT solvers out there, so maybe we can get away without needing "asserts where it hurts"?
+
+Ultimately the goal of abandoning types is to make programming simpler. The beauty of Lisp with its homoiconic macros is that metaprogramming and programming both share the same mental model, so your cognitive load is lower. C++ on the hand is famously 4 languages in one: C, object-oriented C++, templates and the functional-style algorithms from the standard library. The hope for Cantor is that if you don't even need to distinguish between _types_ and _values_ then maybe some nice simple consequences will fall out from the design down the road.
+
+While Lisp is homoiconic, Cantor is _homovalent_ - same valued.
 
 ## How it works
 
