@@ -97,6 +97,7 @@ You probably don't want to read this unless you're me.
 - ! is the Void type
 - () is the unit type and unit value
 - Box is for dynamic dispatch, e.g. `Box<dyn Animal>` for an Animal trait, gives you a vtable
+- `::<...>` is a TURBOFISH!!!
 - Rust distinguishes the use of `<>` better than C++ by requiring `::` in things like `Vec::<i32>`.
 - Re-learned about phi nodes in SSA, that label the value taken based on where the execution path *came from*
 - Learned about alloca and how a `mem2reg` optimization will often replace it with phi nodes etc
