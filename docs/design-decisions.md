@@ -626,18 +626,18 @@ Other open items (lower priority, not blocking):
 Every value in Cantor passes through three distinct conceptual layers:
 
 1. **Names** — what the developer writes: `Bool`, `Nat`, `Litre`, `alias Metre`.
-   Many names may point to the same underlying set (aliases) or to entirely distinct sets (newtypes).
+   Many names may point to the same underlying set (aliases) or to entirely distinct sets.
 
 2. **Sets** — the solver's unit of identity.
    `3 litres` and the integer `3` are in different sets even if both have the same runtime representation.
    The SMT solver works exclusively at this layer and has no notion of runtime representation.
-   Newtype creates a new set distinct from its basis set (`Litre ≠ Float`).
+   `distinct` creates a new set distinct from its basis set (`Litre ≠ Float`).
    `alias` creates a new name pointing to an *existing* set — fully transparent to the solver.
 
 3. **Runtime Kind** — what codegen emits: `Kind::Int` (`i64`), `Kind::Bool` (`i1`), `Kind::Float` (`f64`, future), `Kind::Set` (heap allocation, future).
    Kind is a **codegen-only** concept; the solver never sees it.
    `Kind` is derived from the set via a deterministic `set_kind(set_expr) -> Kind` lookup.
-   Newtypes do not create a new Kind — `Litre` maps to `Kind::Float` just as `Float` does;
+   `distinct` does not create a new Kind — `Litre` maps to `Kind::Float` just as `Float` does;
    the solver enforces their distinctness without codegen needing to know.
 
 **Consequence for aliases:** `alias Metre = Float` is a transparent rename at the set layer.
