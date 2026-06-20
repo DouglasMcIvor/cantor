@@ -35,6 +35,26 @@ impl<'ctx> Compiler<'ctx> {
                     .build_int_compare(IntPredicate::NE, val, i64.const_int(0, true), "in_nonzero")
                     .map_err(|e| CompileError::Internal(e.to_string())),
                 "Fail"  => Ok(bool.const_int(0, false)),
+                // Bool values are represented as i1 (0/1) at runtime.  A value
+                // is in Bool iff it is 0 or 1 as an i64.  Normalise i1 to i64
+                // first so the integer comparisons below are well-typed.
+                "Bool"  => {
+                    let val_i64 = if val.get_type().get_bit_width() == 1 {
+                        self.builder
+                            .build_int_z_extend(val, i64, "bool_to_i64_mem")
+                            .map_err(|e| CompileError::Internal(e.to_string()))?
+                    } else {
+                        val
+                    };
+                    let zero = i64.const_int(0, false);
+                    let one  = i64.const_int(1, false);
+                    let eq0 = b.build_int_compare(IntPredicate::EQ, val_i64, zero, "bool_eq0")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    let eq1 = b.build_int_compare(IntPredicate::EQ, val_i64, one, "bool_eq1")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    b.build_or(eq0, eq1, "in_bool")
+                        .map_err(|e| CompileError::Internal(e.to_string()))
+                }
                 "Int8"  => self.compile_bounded_membership(val, i8::MIN  as i64, i8::MAX  as i64),
                 "Int16" => self.compile_bounded_membership(val, i16::MIN as i64, i16::MAX as i64),
                 "Int32" => self.compile_bounded_membership(val, i32::MIN as i64, i32::MAX as i64),

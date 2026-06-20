@@ -87,6 +87,57 @@ bad_bit(x) = x + x
 }
 
 #[test]
+// ── Bool domain and range ─────────────────────────────────────────────────────
+
+#[test]
+fn bool_range_comparison_proved() {
+    proved("
+is_positive : Int -> Bool
+is_positive(x) = x > 0
+");
+}
+
+#[test]
+fn bool_range_literal_proved() {
+    proved("
+always_true : Int -> Bool
+always_true(x) = true
+");
+}
+
+#[test]
+fn bool_domain_not_proved() {
+    proved("
+negate : Bool -> Bool
+negate(b) = not b
+");
+}
+
+#[test]
+fn bool_domain_and_proved() {
+    proved("
+both : Bool * Bool -> Bool
+both(a, b) = a and b
+");
+}
+
+#[test]
+fn bool_domain_to_int_proved() {
+    proved("
+to_nat : Bool -> Nat
+to_nat(b) = if b then 1 else 0
+");
+}
+
+#[test]
+fn bool_domain_to_nat_range_excludes_negative() {
+    proved("
+bool_to_nat : Bool -> Nat
+bool_to_nat(b) = if b then 1 else 0
+");
+}
+
+#[test]
 fn safe_div_fixture_all_proved() {
     let src = "
 safe_div : Int * (Int - {0}) -> Int

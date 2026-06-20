@@ -127,6 +127,33 @@ $ cantor broken.cantor
 
 The solver found that `x = 33` produces `33000`, which overflows a 16-bit integer.
 
+### Bool domain and range
+
+`Bool` is a first-class set like any other — it can appear as a domain or range, and Bool values compose naturally with boolean operators.
+
+```haskell
+is_positive : Int -> Bool
+is_positive(x) = x > 0
+
+negate : Bool -> Bool
+negate(b) = not b
+
+to_nat : Bool -> Nat
+to_nat(b) = if b then 1 else 0
+```
+
+```sh
+$ cantor bool_demo.cantor
+  proved          is_positive : Int -> Bool
+  proved          negate : Bool -> Bool
+  proved          to_nat : Bool -> Nat
+
+  3 proved, 0 counterexample(s), 0 unknown
+```
+
+Bool values are represented as `i1` at runtime (not as integers) so `true` is never silently treated as `1`.
+The compiler widens to `i64` only at function-call boundaries and narrows back immediately, keeping Bool and integer values structurally separate throughout.
+
 ### Constants
 
 Constants are compile-time values, type-checked against their declared set.
@@ -265,7 +292,8 @@ sum_above_threshold(threshold) {
 
 ## Features (working today)
 
-- **Set-theoretic domains and ranges** — `Int`, `Nat`, `NatPos`, `NonZeroInt`, `Int8`–`Int64`, set literals `{0, 1, 2}`, set difference `A - B`, union `A | B`, intersection `A & B`
+- **Set-theoretic domains and ranges** — `Int`, `Nat`, `NatPos`, `NonZeroInt`, `Int8`–`Int64`, `Bool`, set literals `{0, 1, 2}`, set difference `A - B`, union `A | B`, intersection `A & B`
+- **Bool as a first-class value kind** — `Bool` is disjoint from all integer sets; comparisons (`>`, `==`, …) produce `Bool`; `and`, `or`, `not` operate on `Bool`; no implicit coercion between `Bool` and integers
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` in domain/range/`in`/`for` positions; finite literal sources unrolled statically; infinite named sources encoded as SMT predicates
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis

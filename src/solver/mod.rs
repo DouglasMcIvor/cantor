@@ -31,6 +31,8 @@ use crate::{
     span::Symbol,
 };
 
+use crate::kind::{Kind as ValKind, set_kind};
+
 use self::encode::{Env, BuiltinObligation, encode_expr, flatten_product, integer_value, boolean_value};
 use self::loops::{encode_block, body_has_unconstrained_loop_var};
 use self::membership::{Membership, membership_constraint};
@@ -190,7 +192,8 @@ fn check_block_sig(
     solver.set_logic("QF_NIA");
     solver.set_option("produce-models", "true");
 
-    let int_sort = tm.integer_sort();
+    let int_sort  = tm.integer_sort();
+    let bool_sort = tm.boolean_sort();
 
     let domain_parts: Vec<&Expr> = match &sig.domain {
         None => vec![],
@@ -209,12 +212,21 @@ fn check_block_sig(
 
     let param_terms: Vec<Term<'_>> = param_names
         .iter()
-        .map(|n| tm.mk_const(int_sort.clone(), &n.0))
+        .zip(domain_parts.iter().map(|p| set_kind(p)).chain(std::iter::repeat(ValKind::Int)))
+        .map(|(n, k)| {
+            if k == ValKind::Bool {
+                tm.mk_const(bool_sort.clone(), &n.0)
+            } else {
+                tm.mk_const(int_sort.clone(), &n.0)
+            }
+        })
+        .take(param_names.len())
         .collect();
 
     let mut accumulated_facts: Vec<Term<'_>> = Vec::new();
 
     for (term, part) in param_terms.iter().zip(domain_parts.iter()) {
+        if set_kind(part) == ValKind::Bool { continue; }
         match membership_constraint(&tm, term.clone(), part) {
             Membership::Unconstrained => {}
             Membership::Constrained(c) => {
@@ -318,9 +330,18 @@ fn check_block_sig(
             );
         }
         let mut cex_params = HashMap::new();
-        for (name, term) in param_names.iter().zip(param_terms.iter()) {
+        for (name, term, part) in param_names.iter()
+            .zip(param_terms.iter())
+            .zip(domain_parts.iter())
+            .map(|((n, t), p)| (n, t, p))
+        {
             let val = solver.get_value(term.clone());
-            cex_params.insert(name.0.clone(), integer_value(&val));
+            let n = if set_kind(part) == ValKind::Bool {
+                boolean_value(&val) as i64
+            } else {
+                integer_value(&val)
+            };
+            cex_params.insert(name.0.clone(), n);
         }
         let reason = builtin_obligs
             .iter()
@@ -355,7 +376,8 @@ fn check_sig(
     solver.set_logic("QF_NIA");
     solver.set_option("produce-models", "true");
 
-    let int_sort = tm.integer_sort();
+    let int_sort  = tm.integer_sort();
+    let bool_sort = tm.boolean_sort();
 
     let domain_parts: Vec<&Expr> = match &sig.domain {
         None => vec![],
@@ -372,12 +394,26 @@ fn check_sig(
         }
     };
 
+    // Create each param constant in the sort that matches its domain Kind.
+    // Bool-domain params use the boolean sort so `not b`, `b and c`, etc. work
+    // without sort mismatches; integer-domain params use the integer sort.
     let param_terms: Vec<Term<'_>> = param_names
         .iter()
-        .map(|n| tm.mk_const(int_sort.clone(), &n.0))
+        .zip(domain_parts.iter().map(|p| set_kind(p)).chain(std::iter::repeat(ValKind::Int)))
+        .map(|(n, k)| {
+            if k == ValKind::Bool {
+                tm.mk_const(bool_sort.clone(), &n.0)
+            } else {
+                tm.mk_const(int_sort.clone(), &n.0)
+            }
+        })
+        .take(param_names.len())
         .collect();
 
+    // Assert domain membership for integer-domain params.
+    // Bool-domain params are already constrained by their sort; skip them.
     for (term, part) in param_terms.iter().zip(domain_parts.iter()) {
+        if set_kind(part) == ValKind::Bool { continue; }
         match membership_constraint(&tm, term.clone(), part) {
             Membership::Unconstrained => {}
             Membership::Constrained(c) => solver.assert_formula(c),
@@ -444,9 +480,18 @@ fn check_sig(
         CheckResult::Proved
     } else if sat.is_sat() {
         let mut cex_params = HashMap::new();
-        for (name, term) in param_names.iter().zip(param_terms.iter()) {
+        for (name, term, part) in param_names.iter()
+            .zip(param_terms.iter())
+            .zip(domain_parts.iter())
+            .map(|((n, t), p)| (n, t, p))
+        {
             let val = solver.get_value(term.clone());
-            cex_params.insert(name.0.clone(), integer_value(&val));
+            let n = if set_kind(part) == ValKind::Bool {
+                boolean_value(&val) as i64
+            } else {
+                integer_value(&val)
+            };
+            cex_params.insert(name.0.clone(), n);
         }
         let reason = builtin_obligs
             .iter()

@@ -621,6 +621,33 @@ Other open items (lower priority, not blocking):
 
 ## 13. Primitive types and numeric tower
 
+### Value layers (DECIDED)
+
+Every value in Cantor passes through three distinct conceptual layers:
+
+1. **Names** — what the developer writes: `Bool`, `Nat`, `Litre`, `alias Metre`.
+   Many names may point to the same underlying set (aliases) or to entirely distinct sets (newtypes).
+
+2. **Sets** — the solver's unit of identity.
+   `3 litres` and the integer `3` are in different sets even if both have the same runtime representation.
+   The SMT solver works exclusively at this layer and has no notion of runtime representation.
+   Newtype creates a new set distinct from its basis set (`Litre ≠ Float`).
+   `alias` creates a new name pointing to an *existing* set — fully transparent to the solver.
+
+3. **Runtime Kind** — what codegen emits: `Kind::Int` (`i64`), `Kind::Bool` (`i1`), `Kind::Float` (`f64`, future), `Kind::Set` (heap allocation, future).
+   Kind is a **codegen-only** concept; the solver never sees it.
+   `Kind` is derived from the set via a deterministic `set_kind(set_expr) -> Kind` lookup.
+   Newtypes do not create a new Kind — `Litre` maps to `Kind::Float` just as `Float` does;
+   the solver enforces their distinctness without codegen needing to know.
+
+**Consequence for aliases:** `alias Metre = Float` is a transparent rename at the set layer.
+Error messages show the name at the point of the error (Clang-style), not the underlying set.
+The `alias` keyword (over `typedef`) is a deliberate stylistic signal to reach for it less.
+
+**Consequence for `Bool`:** `Bool` maps to `Kind::Bool` (`i1`).
+The solver treats `Bool`-domain parameters using `boolean_sort`, not integer sort.
+No implicit coercion between `Bool` and any integer kind exists at any layer.
+
 ### Single
 
 - **`Single`** — the singleton set `{★}`, containing exactly one element.
@@ -634,6 +661,23 @@ Other open items (lower priority, not blocking):
   and any integer exists anywhere in the language (see §10 gotchas).
 - `==` on `Bool` is structural set equality (same as everything else —
   no special case).
+- **Runtime representation: `i1`.** Bool values are a distinct Kind
+  (`Kind::Bool`) and are stored as LLVM `i1`.
+- **Uniform `i64` ABI at function boundaries.** All function parameters
+  and return values cross LLVM call boundaries as `i64`.
+  Bool params are widened to `i64` at the call site and truncated back to
+  `i1` in the callee's entry block.
+  Bool return values are widened to `i64` before the `ret` instruction and
+  truncated back to `i1` by the caller immediately after the call.
+  This keeps the calling convention uniform while preserving Bool's
+  structural distinctness throughout the body.
+- **Solver representation: `boolean_sort`.** Bool-domain parameters are
+  created as cvc5 constants in the `boolean_sort` (not integer sort),
+  so boolean operators (`and`, `or`, `not`, comparisons) work without
+  sort mismatches.  Domain membership is trivially satisfied by sort
+  construction and requires no extra `membership_constraint` assertion.
+  Bool-returning call results use a `boolean_sort` fresh variable so
+  callee contracts propagate correctly.
 
 ### Integers
 

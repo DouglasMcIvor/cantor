@@ -8,7 +8,8 @@ use crate::{
     span::Symbol,
 };
 
-use super::{Compiler, Env, ValType};
+use crate::kind::Kind;
+use super::{Compiler, Env};
 
 impl<'ctx> Compiler<'ctx> {
     /// Process a sequence of statements, returning the last expression value.
@@ -22,7 +23,7 @@ impl<'ctx> Compiler<'ctx> {
         stmts: &[Stmt],
         env: &mut Env<'ctx>,
         alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
-    ) -> Result<Option<(BasicValueEnum<'ctx>, ValType)>, CompileError> {
+    ) -> Result<Option<(BasicValueEnum<'ctx>, Kind)>, CompileError> {
         let mut last = None;
         for stmt in stmts {
             last = None;
@@ -34,7 +35,7 @@ impl<'ctx> Compiler<'ctx> {
                     // through so the loop header sees the updated value.
                     if let Some(&ptr) = alloca_map.get(name) {
                         let i64_type = self.context.i64_type();
-                        let val_i64: IntValue<'ctx> = if result.1 == ValType::Bool {
+                        let val_i64: IntValue<'ctx> = if result.1 == Kind::Bool {
                             self.builder
                                 .build_int_z_extend(result.0.into_int_value(), i64_type, "bool_ext")
                                 .map_err(|e| CompileError::Internal(e.to_string()))?
@@ -105,7 +106,7 @@ impl<'ctx> Compiler<'ctx> {
                     .builder
                     .build_alloca(i64_type, &name.0)
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
-                let val_i64: IntValue<'ctx> = if ty == ValType::Bool {
+                let val_i64: IntValue<'ctx> = if ty == Kind::Bool {
                     self.builder
                         .build_int_z_extend(val.into_int_value(), i64_type, "bool_ext")
                         .map_err(|e| CompileError::Internal(e.to_string()))?
@@ -140,7 +141,16 @@ impl<'ctx> Compiler<'ctx> {
                 .builder
                 .build_load(i64_type, ptr, &name.0)
                 .map_err(|e| CompileError::Internal(e.to_string()))?;
-            loop_env.insert(name.clone(), (val.into(), ValType::Int));
+            let original_kind = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+            let entry = if original_kind == Kind::Bool {
+                let i1 = self.builder
+                    .build_int_truncate(val.into_int_value(), self.context.bool_type(), "reload_bool")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                (i1.into(), Kind::Bool)
+            } else {
+                (val.into(), Kind::Int)
+            };
+            loop_env.insert(name.clone(), entry);
         }
         let (cond_val, _) = self.compile_expr(cond, &loop_env)?;
         self.builder
@@ -164,7 +174,16 @@ impl<'ctx> Compiler<'ctx> {
                 .builder
                 .build_load(i64_type, ptr, &format!("{}_final", name.0))
                 .map_err(|e| CompileError::Internal(e.to_string()))?;
-            env.insert(name.clone(), (val.into(), ValType::Int));
+            let original_kind = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+            let entry = if original_kind == Kind::Bool {
+                let i1 = self.builder
+                    .build_int_truncate(val.into_int_value(), self.context.bool_type(), "final_bool")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                (i1.into(), Kind::Bool)
+            } else {
+                (val.into(), Kind::Int)
+            };
+            env.insert(name.clone(), entry);
         }
 
         Ok(())
@@ -188,7 +207,7 @@ impl<'ctx> Compiler<'ctx> {
                 let i64_type = self.context.i64_type();
                 for elem in elements {
                     let (elem_val, elem_ty) = self.compile_expr(elem, env)?;
-                    let val_i64: BasicValueEnum = if elem_ty == ValType::Bool {
+                    let val_i64: BasicValueEnum = if elem_ty == Kind::Bool {
                         self.builder
                             .build_int_z_extend(elem_val.into_int_value(), i64_type, "bool_ext")
                             .map_err(|e| CompileError::Internal(e.to_string()))?
@@ -196,7 +215,7 @@ impl<'ctx> Compiler<'ctx> {
                     } else {
                         elem_val
                     };
-                    env.insert(var.clone(), (val_i64, ValType::Int));
+                    env.insert(var.clone(), (val_i64, Kind::Int));
                     self.compile_stmts(body, env, alloca_map)?;
                 }
                 Ok(())
@@ -267,7 +286,7 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_alloca(i64_type, &name.0)
                         .map_err(|e| CompileError::Internal(e.to_string()))?;
-                    let val_i64: IntValue<'ctx> = if ty == ValType::Bool {
+                    let val_i64: IntValue<'ctx> = if ty == Kind::Bool {
                         self.builder
                             .build_int_z_extend(val.into_int_value(), i64_type, "bool_ext")
                             .map_err(|e| CompileError::Internal(e.to_string()))?
@@ -287,16 +306,8 @@ impl<'ctx> Compiler<'ctx> {
 
         for elem in elements {
             let (elem_val, elem_ty) = self.compile_expr(elem, env)?;
-            let elem_i64: BasicValueEnum = if elem_ty == ValType::Bool {
-                self.builder
-                    .build_int_z_extend(elem_val.into_int_value(), i64_type, "comp_bool_ext")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?
-                    .into()
-            } else {
-                elem_val
-            };
-            // Bind the comprehension variable for use in filter and output.
-            env.insert(comp_var.clone(), (elem_i64, ValType::Int));
+            // Bind the comprehension variable with its natural Kind.
+            env.insert(comp_var.clone(), (elem_val, elem_ty));
 
             if let Some(filter_expr) = filter {
                 // Reload alloca-backed values before the filter check so the condition
@@ -307,7 +318,16 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_load(i64_type, ptr, &name.0)
                         .map_err(|e| CompileError::Internal(e.to_string()))?;
-                    env.insert(name.clone(), (val.into(), ValType::Int));
+                    let k = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+                    let entry = if k == Kind::Bool {
+                        let i1 = self.builder
+                            .build_int_truncate(val.into_int_value(), self.context.bool_type(), "reload_bool")
+                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        (i1.into(), Kind::Bool)
+                    } else {
+                        (val.into(), Kind::Int)
+                    };
+                    env.insert(name.clone(), entry);
                 }
 
                 let (cond_val, _) = self.compile_expr(filter_expr, env)?;
@@ -323,15 +343,7 @@ impl<'ctx> Compiler<'ctx> {
                 // ── Body (filter passed) ───────────────────────────────────────
                 self.builder.position_at_end(body_bb);
                 let (out_val, out_ty) = self.compile_expr(output, env)?;
-                let out_i64: BasicValueEnum = if out_ty == ValType::Bool {
-                    self.builder
-                        .build_int_z_extend(out_val.into_int_value(), i64_type, "comp_out_ext")
-                        .map_err(|e| CompileError::Internal(e.to_string()))?
-                        .into()
-                } else {
-                    out_val
-                };
-                env.insert(var.clone(), (out_i64, ValType::Int));
+                env.insert(var.clone(), (out_val, out_ty));
                 self.compile_stmts(body, env, &alloca_map)?;
                 self.builder
                     .build_unconditional_branch(next_bb)
@@ -347,19 +359,20 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_load(i64_type, ptr, &format!("{}_after", name.0))
                         .map_err(|e| CompileError::Internal(e.to_string()))?;
-                    env.insert(name.clone(), (val.into(), ValType::Int));
+                    let k = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+                    let entry = if k == Kind::Bool {
+                        let i1 = self.builder
+                            .build_int_truncate(val.into_int_value(), self.context.bool_type(), "after_bool")
+                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        (i1.into(), Kind::Bool)
+                    } else {
+                        (val.into(), Kind::Int)
+                    };
+                    env.insert(name.clone(), entry);
                 }
             } else {
                 let (out_val, out_ty) = self.compile_expr(output, env)?;
-                let out_i64: BasicValueEnum = if out_ty == ValType::Bool {
-                    self.builder
-                        .build_int_z_extend(out_val.into_int_value(), i64_type, "comp_out_ext")
-                        .map_err(|e| CompileError::Internal(e.to_string()))?
-                        .into()
-                } else {
-                    out_val
-                };
-                env.insert(var.clone(), (out_i64, ValType::Int));
+                env.insert(var.clone(), (out_val, out_ty));
                 self.compile_stmts(body, env, &alloca_map)?;
             }
         }
@@ -374,7 +387,16 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_load(i64_type, ptr, &format!("{}_final", name.0))
                         .map_err(|e| CompileError::Internal(e.to_string()))?;
-                    env.insert(name.clone(), (val.into(), ValType::Int));
+                    let k = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+                    let entry = if k == Kind::Bool {
+                        let i1 = self.builder
+                            .build_int_truncate(val.into_int_value(), self.context.bool_type(), "comp_final_bool")
+                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        (i1.into(), Kind::Bool)
+                    } else {
+                        (val.into(), Kind::Int)
+                    };
+                    env.insert(name.clone(), entry);
                 }
             }
         }

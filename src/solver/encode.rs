@@ -6,6 +6,7 @@ use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
     ast::{BinOp, Expr, ExprKind, FunctionDef, FunctionSig, UnOp},
+    kind::{Kind as ValKind, range_kind},
     span::{Span, Symbol},
 };
 
@@ -208,7 +209,17 @@ pub(crate) fn encode_expr<'tm>(
 
             let fresh = format!("_call_{}", *call_counter);
             *call_counter += 1;
-            let result_var = tm.mk_const(tm.integer_sort(), &fresh);
+            // Use the callee's return Kind to pick the right SMT sort for the
+            // fresh result variable (boolean sort for Bool-returning functions).
+            let ret_kind = callee_def.sigs.first()
+                .map(|s| range_kind(&s.range))
+                .unwrap_or(ValKind::Int);
+            let result_sort = if ret_kind == ValKind::Bool {
+                tm.boolean_sort()
+            } else {
+                tm.integer_sort()
+            };
+            let result_var = tm.mk_const(result_sort, &fresh);
 
             for sig in &callee_def.sigs {
                 assert_call_contract(sig, &arg_terms, result_var.clone(), tm, solver);

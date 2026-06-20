@@ -1,0 +1,8 @@
+is_positive : Int -> Bool
+is_positive(x) = x > 0
+
+negate : Bool -> Bool
+negate(b) = not b
+
+bool_to_nat : Bool -> Nat
+bool_to_nat(b) = if b then 1 else 0

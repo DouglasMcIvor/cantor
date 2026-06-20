@@ -13,6 +13,7 @@ use inkwell::{
 use crate::{
     ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, Item, Param, Stmt, UnOp},
     error::CompileError,
+    kind::{Kind, param_kinds, range_kind},
     span::Symbol,
 };
 
@@ -28,16 +29,7 @@ mod loops;
 /// integer -9223372036854775808. A proper tagged-union ABI will fix this later.
 pub const FAIL_SENTINEL: i64 = i64::MIN;
 
-/// The LLVM type a Cantor value compiles to. Tracked alongside BasicValueEnum
-/// because LLVM erases the distinction between i1 (Bool) and i64 (Int) at
-/// the value level, but we need it for correct instruction selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValType {
-    Int,  // i64
-    Bool, // i1
-}
-
-type Env<'ctx> = HashMap<Symbol, (BasicValueEnum<'ctx>, ValType)>;
+type Env<'ctx> = HashMap<Symbol, (BasicValueEnum<'ctx>, Kind)>;
 
 pub struct Compiler<'ctx> {
     context: &'ctx Context,
@@ -50,6 +42,9 @@ pub struct Compiler<'ctx> {
     /// `Some` only when the function is fallible (range contains `Fail`).
     /// Branches here when an `assert` fails at runtime or a `?` propagates.
     fail_bb: Option<BasicBlock<'ctx>>,
+    /// Maps each declared function name to its return Kind so `compile_call`
+    /// can truncate the i64 result back to i1 for Bool-returning functions.
+    fn_return_kinds: HashMap<String, Kind>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -60,28 +55,40 @@ impl<'ctx> Compiler<'ctx> {
             builder: context.create_builder(),
             current_fn: None,
             fail_bb: None,
+            fn_return_kinds: HashMap::new(),
         }
     }
 
     /// Add a function declaration to the module (no body yet).
     ///
-    /// All parameters and the return value are `i64`. Call
-    /// [`compile_function_body`] afterwards to fill in the implementation.
-    pub fn declare_function(&mut self, name: &str, params: &[Param]) -> FunctionValue<'ctx> {
+    /// All parameters and the return value use i64 (uniform ABI); Bool values
+    /// are widened to i64 at function boundaries and truncated back inside the
+    /// body.  `return_kind` is recorded in [`fn_return_kinds`] so call sites
+    /// can restore the correct Kind after the call.
+    pub fn declare_function(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        return_kind: Kind,
+    ) -> FunctionValue<'ctx> {
         let i64_type = self.context.i64_type();
         let param_types: Vec<_> = params.iter().map(|_| i64_type.into()).collect();
         let fn_type = i64_type.fn_type(&param_types, false);
-        self.module.add_function(name, fn_type, None)
+        let fn_val = self.module.add_function(name, fn_type, None);
+        self.fn_return_kinds.insert(name.to_owned(), return_kind);
+        fn_val
     }
 
     /// Compile the body of an already-declared function (expression body).
     ///
-    /// Booleans are zero-extended to `i64` so callers always use a uniform
-    /// `fn(i64, …) -> i64` signature.
+    /// Bool-domain parameters arrive as i64 and are truncated to i1 in the
+    /// local env.  The return value is zero-extended to i64 so all functions
+    /// share a uniform `fn(i64, …) -> i64` ABI.
     pub fn compile_function_body(
         &mut self,
         function: FunctionValue<'ctx>,
         params: &[Param],
+        param_kinds: &[Kind],
         body: &Expr,
         is_fallible: bool,
         const_env: &Env<'ctx>,
@@ -90,8 +97,6 @@ impl<'ctx> Compiler<'ctx> {
 
         let entry = self.context.append_basic_block(function, "entry");
 
-        // For fallible functions: create the fail block up front so `?`
-        // expressions inside the body can branch to it.
         self.fail_bb = if is_fallible {
             let bb = self.context.append_basic_block(function, "fail");
             self.builder.position_at_end(bb);
@@ -106,17 +111,33 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.position_at_end(entry);
 
-        // Seed env with constants, then add parameters (params shadow constants).
         let mut env: Env = const_env.clone();
-        for (param, llvm_param) in params.iter().zip(function.get_param_iter()) {
+        for ((param, llvm_param), &kind) in params
+            .iter()
+            .zip(function.get_param_iter())
+            .zip(param_kinds.iter())
+        {
             llvm_param.set_name(&param.name.0);
-            env.insert(param.name.clone(), (llvm_param, ValType::Int));
+            let entry = if kind == Kind::Bool {
+                let i1_val = self
+                    .builder
+                    .build_int_truncate(
+                        llvm_param.into_int_value(),
+                        self.context.bool_type(),
+                        "bool_param",
+                    )
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                (i1_val.into(), Kind::Bool)
+            } else {
+                (llvm_param, Kind::Int)
+            };
+            env.insert(param.name.clone(), entry);
         }
 
         let (val, ty) = self.compile_expr(body, &env)?;
 
         let i64_type = self.context.i64_type();
-        let ret_val = if ty == ValType::Bool {
+        let ret_val = if ty == Kind::Bool {
             self.builder
                 .build_int_z_extend(val.into_int_value(), i64_type, "bool_to_i64")
                 .map_err(|e| CompileError::Internal(e.to_string()))?
@@ -137,6 +158,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         function: FunctionValue<'ctx>,
         params: &[Param],
+        param_kinds: &[Kind],
         stmts: &[Stmt],
         is_fallible: bool,
         const_env: &Env<'ctx>,
@@ -159,23 +181,39 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.position_at_end(entry);
 
-        // Seed env with constants, then add parameters (params shadow constants).
         let mut env: Env = const_env.clone();
-        for (param, llvm_param) in params.iter().zip(function.get_param_iter()) {
+        for ((param, llvm_param), &kind) in params
+            .iter()
+            .zip(function.get_param_iter())
+            .zip(param_kinds.iter())
+        {
             llvm_param.set_name(&param.name.0);
-            env.insert(param.name.clone(), (llvm_param, ValType::Int));
+            let entry = if kind == Kind::Bool {
+                let i1_val = self
+                    .builder
+                    .build_int_truncate(
+                        llvm_param.into_int_value(),
+                        self.context.bool_type(),
+                        "bool_param",
+                    )
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                (i1_val.into(), Kind::Bool)
+            } else {
+                (llvm_param, Kind::Int)
+            };
+            env.insert(param.name.clone(), entry);
         }
 
         let return_val = self.compile_stmts(stmts, &mut env, &HashMap::new())?;
 
         let i64_type = self.context.i64_type();
         let ret_val = match return_val {
-            Some((val, ValType::Bool)) => self
+            Some((val, Kind::Bool)) => self
                 .builder
                 .build_int_z_extend(val.into_int_value(), i64_type, "bool_to_i64")
                 .map_err(|e| CompileError::Internal(e.to_string()))?
                 .into(),
-            Some((val, ValType::Int)) => val,
+            Some((val, Kind::Int)) => val,
             None => {
                 return Err(CompileError::Internal(
                     "block body has no return expression".into(),
@@ -192,15 +230,17 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Declare and compile a function in one step (expression body, infallible).
     ///
-    /// Convenience wrapper used by tests.
+    /// Convenience wrapper used by tests; assumes all params and return are
+    /// `Kind::Int`.
     pub fn compile_function(
         &mut self,
         name: &str,
         params: &[Param],
         body: &Expr,
     ) -> Result<FunctionValue<'ctx>, CompileError> {
-        let function = self.declare_function(name, params);
-        self.compile_function_body(function, params, body, false, &Env::new())
+        let all_int: Vec<Kind> = vec![Kind::Int; params.len()];
+        let function = self.declare_function(name, params, Kind::Int);
+        self.compile_function_body(function, params, &all_int, body, false, &Env::new())
     }
 
     /// Consume the compiler and hand the module to a JIT engine.
@@ -227,10 +267,6 @@ pub fn range_contains_fail(range: &Expr) -> bool {
 }
 
 /// Evaluate a constant expression at compile time.
-///
-/// Only integer arithmetic and references to already-evaluated constants are
-/// supported. This is intentionally simple — constants are auto-constexpr and
-/// the compiler inlines the result everywhere.
 fn eval_const(expr: &Expr, known: &HashMap<Symbol, i64>) -> Result<i64, CompileError> {
     match &expr.kind {
         ExprKind::IntLit(n) => Ok(*n),
@@ -268,8 +304,8 @@ fn eval_const(expr: &Expr, known: &HashMap<Symbol, i64>) -> Result<i64, CompileE
 
 /// Compile every function in `items` into a single JIT module.
 ///
-/// Two-pass: all functions are declared first so that forward and mutual
-/// calls resolve, then bodies are compiled in order.
+/// Three-pass: constants evaluated first, then all functions declared (so
+/// forward/mutual calls resolve), then bodies compiled.
 pub fn compile_file<'ctx>(
     ctx: &'ctx Context,
     items: &[Item],
@@ -289,16 +325,23 @@ pub fn compile_file<'ctx>(
         .iter()
         .map(|(sym, &val)| {
             let llvm_val = i64_type.const_int(val as u64, true);
-            (sym.clone(), (llvm_val.into(), ValType::Int))
+            (sym.clone(), (llvm_val.into(), Kind::Int))
         })
         .collect();
 
     // Pass 1 — declare all function signatures so forward calls resolve.
+    // Param and return Kinds are derived from the first signature; overloaded
+    // functions must agree on the Kind of each position.
     let decls: Vec<(FunctionValue<'ctx>, &FunctionDef)> = items
         .iter()
         .filter_map(|item| match item {
             Item::FunctionDef(def) => {
-                let fn_val = compiler.declare_function(&def.name.0, &def.params);
+                let ret_kind = def
+                    .sigs
+                    .first()
+                    .map(|s| range_kind(&s.range))
+                    .unwrap_or(Kind::Int);
+                let fn_val = compiler.declare_function(&def.name.0, &def.params, ret_kind);
                 Some((fn_val, def))
             }
             Item::ConstDef(_) => None,
@@ -308,12 +351,22 @@ pub fn compile_file<'ctx>(
     // Pass 2 — compile bodies with constants available.
     for (fn_val, def) in decls {
         let is_fallible = def.sigs.iter().any(|s| range_contains_fail(&s.range));
+        let p_kinds: Vec<Kind> = def
+            .sigs
+            .first()
+            .map(|s| param_kinds(s))
+            .unwrap_or_else(|| vec![Kind::Int; def.params.len()]);
+
         match &def.body {
             FunctionBody::Expr(e) => {
-                compiler.compile_function_body(fn_val, &def.params, e, is_fallible, &const_env)?;
+                compiler.compile_function_body(
+                    fn_val, &def.params, &p_kinds, e, is_fallible, &const_env,
+                )?;
             }
             FunctionBody::Block(stmts) => {
-                compiler.compile_block_body(fn_val, &def.params, stmts, is_fallible, &const_env)?;
+                compiler.compile_block_body(
+                    fn_val, &def.params, &p_kinds, stmts, is_fallible, &const_env,
+                )?;
             }
         }
     }

@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod codegen;
+pub mod kind;
 pub mod error;
 pub mod names;
 pub mod parser;

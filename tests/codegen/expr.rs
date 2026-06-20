@@ -166,6 +166,49 @@ fn param_arithmetic() {
     assert_eq!(jit_eval_fn(&[Param::new("x")], body, &[5]), 24);
 }
 
+// ── Bool-returning functions via compile_file ─────────────────────────────────
+
+#[test]
+fn bool_returning_function_true() {
+    // is_positive : Int -> Bool / is_positive(x) = x > 0
+    // main called with 5 → 1
+    assert_eq!(
+        jit_src_one_arg(
+            "is_positive : Int -> Bool\nis_positive(x) = x > 0\nmain : Int -> Bool\nmain(x) = is_positive(x)",
+            5
+        ),
+        1
+    );
+}
+
+#[test]
+fn bool_returning_function_false() {
+    assert_eq!(
+        jit_src_one_arg(
+            "is_positive : Int -> Bool\nis_positive(x) = x > 0\nmain : Int -> Bool\nmain(x) = is_positive(x)",
+            -3
+        ),
+        0
+    );
+}
+
+#[test]
+fn bool_returning_function_negated() {
+    // negate(b) = not is_positive(b)  — exercises call result truncation
+    assert_eq!(
+        jit_src_one_arg(
+            "is_positive : Int -> Bool\n\
+             is_positive(x) = x > 0\n\
+             negate_pos : Int -> Bool\n\
+             negate_pos(x) = not is_positive(x)\n\
+             main : Int -> Bool\n\
+             main(x) = negate_pos(x)",
+            5
+        ),
+        0
+    );
+}
+
 // ── Cross-function calls ──────────────────────────────────────────────────────
 
 #[test]

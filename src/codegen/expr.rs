@@ -6,25 +6,26 @@ use inkwell::{
 use crate::{
     ast::{BinOp, Expr, ExprKind, UnOp},
     error::CompileError,
+    kind::Kind,
     span::{Span, Symbol},
 };
 
-use super::{Compiler, Env, ValType, FAIL_SENTINEL};
+use super::{Compiler, Env, FAIL_SENTINEL};
 
 impl<'ctx> Compiler<'ctx> {
     pub(crate) fn compile_expr(
         &self,
         expr: &Expr,
         env: &Env<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, ValType), CompileError> {
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         match &expr.kind {
             ExprKind::IntLit(n) => {
                 let v = self.context.i64_type().const_int(*n as u64, true);
-                Ok((v.into(), ValType::Int))
+                Ok((v.into(), Kind::Int))
             }
             ExprKind::BoolLit(b) => {
                 let v = self.context.bool_type().const_int(*b as u64, false);
-                Ok((v.into(), ValType::Bool))
+                Ok((v.into(), Kind::Bool))
             }
             ExprKind::Var(sym) => env
                 .get(sym)
@@ -51,7 +52,7 @@ impl<'ctx> Compiler<'ctx> {
         &self,
         inner: &Expr,
         env: &Env<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, ValType), CompileError> {
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (val, _) = self.compile_expr(inner, env)?;
         let result_i64 = val.into_int_value();
 
@@ -77,7 +78,7 @@ impl<'ctx> Compiler<'ctx> {
             .map_err(|e| CompileError::Internal(e.to_string()))?;
 
         self.builder.position_at_end(ok_bb);
-        Ok((result_i64.into(), ValType::Int))
+        Ok((result_i64.into(), Kind::Int))
     }
 
     fn compile_if(
@@ -86,7 +87,7 @@ impl<'ctx> Compiler<'ctx> {
         then_expr: &Expr,
         else_expr: &Expr,
         env: &Env<'ctx>,
-    ) -> Result<(BasicValueEnum<'ctx>, ValType), CompileError> {
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let function = self
             .current_fn
             .ok_or_else(|| CompileError::Internal("if-then-else outside a function".into()))?;
@@ -132,7 +133,7 @@ impl<'ctx> Compiler<'ctx> {
         inner: &Expr,
         env: &Env<'ctx>,
         _span: Span,
-    ) -> Result<(BasicValueEnum<'ctx>, ValType), CompileError> {
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (val, _ty) = self.compile_expr(inner, env)?;
         let iv = val.into_int_value();
         match op {
@@ -141,7 +142,7 @@ impl<'ctx> Compiler<'ctx> {
                     .builder
                     .build_int_neg(iv, "neg")
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
-                Ok((v.into(), ValType::Int))
+                Ok((v.into(), Kind::Int))
             }
             // build_not is bitwise NOT; on i1 this is logical NOT (0↔1).
             UnOp::Not => {
@@ -149,7 +150,7 @@ impl<'ctx> Compiler<'ctx> {
                     .builder
                     .build_not(iv, "not")
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
-                Ok((v.into(), ValType::Bool))
+                Ok((v.into(), Kind::Bool))
             }
         }
     }
@@ -161,13 +162,13 @@ impl<'ctx> Compiler<'ctx> {
         rhs: &Expr,
         env: &Env<'ctx>,
         _span: Span,
-    ) -> Result<(BasicValueEnum<'ctx>, ValType), CompileError> {
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         // Membership checks: only the LHS is a value; the RHS is a set expression.
         match op {
             BinOp::In => {
                 let (lv, _) = self.compile_expr(lhs, env)?;
                 let pred = self.compile_membership(lv.into_int_value(), rhs)?;
-                return Ok((pred.into(), ValType::Bool));
+                return Ok((pred.into(), Kind::Bool));
             }
             BinOp::NotIn => {
                 let (lv, _) = self.compile_expr(lhs, env)?;
@@ -176,7 +177,7 @@ impl<'ctx> Compiler<'ctx> {
                     .builder
                     .build_not(pred, "not_in")
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
-                return Ok((neg.into(), ValType::Bool));
+                return Ok((neg.into(), Kind::Bool));
             }
             _ => {}
         }
@@ -192,7 +193,7 @@ impl<'ctx> Compiler<'ctx> {
                 let v = b
                     .$method(li, ri, $name)
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
-                Ok((v.into(), ValType::Int))
+                Ok((v.into(), Kind::Int))
             }};
         }
         macro_rules! cmp_op {
@@ -200,7 +201,7 @@ impl<'ctx> Compiler<'ctx> {
                 let v = b
                     .build_int_compare(IntPredicate::$pred, li, ri, $name)
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
-                Ok((v.into(), ValType::Bool))
+                Ok((v.into(), Kind::Bool))
             }};
         }
         macro_rules! bool_op {
@@ -208,7 +209,7 @@ impl<'ctx> Compiler<'ctx> {
                 let v = b
                     .$method(li, ri, $name)
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
-                Ok((v.into(), ValType::Bool))
+                Ok((v.into(), Kind::Bool))
             }};
         }
 
@@ -238,15 +239,28 @@ impl<'ctx> Compiler<'ctx> {
         args: &[Expr],
         env: &Env<'ctx>,
         span: Span,
-    ) -> Result<(BasicValueEnum<'ctx>, ValType), CompileError> {
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let function = self.module.get_function(&callee.0).ok_or_else(|| {
             CompileError::UndefinedVariable { name: callee.0.clone(), span }
         })?;
 
         let mut compiled_args = Vec::with_capacity(args.len());
         for arg in args {
-            let (v, _) = self.compile_expr(arg, env)?;
-            compiled_args.push(v.into());
+            let (v, arg_kind) = self.compile_expr(arg, env)?;
+            // All function parameters are i64 (uniform ABI); widen Bool args.
+            let v_i64 = if arg_kind == Kind::Bool {
+                self.builder
+                    .build_int_z_extend(
+                        v.into_int_value(),
+                        self.context.i64_type(),
+                        "arg_bool_ext",
+                    )
+                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                    .into()
+            } else {
+                v
+            };
+            compiled_args.push(v_i64.into());
         }
 
         let call = self
@@ -254,11 +268,26 @@ impl<'ctx> Compiler<'ctx> {
             .build_call(function, &compiled_args, "call")
             .map_err(|e| CompileError::Internal(e.to_string()))?;
 
-        let result = call
+        let result_i64 = call
             .try_as_basic_value()
             .left()
             .ok_or_else(|| CompileError::Internal("void return in expression position".into()))?;
 
-        Ok((result, ValType::Int))
+        // Restore the correct Kind: Bool-returning functions widen to i64 at
+        // their boundary; truncate back to i1 so downstream bool ops work.
+        let return_kind = self.fn_return_kinds.get(&callee.0).copied().unwrap_or(Kind::Int);
+        if return_kind == Kind::Bool {
+            let i1_val = self
+                .builder
+                .build_int_truncate(
+                    result_i64.into_int_value(),
+                    self.context.bool_type(),
+                    "call_bool",
+                )
+                .map_err(|e| CompileError::Internal(e.to_string()))?;
+            Ok((i1_val.into(), Kind::Bool))
+        } else {
+            Ok((result_i64, Kind::Int))
+        }
     }
 }

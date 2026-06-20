@@ -5,14 +5,15 @@ You probably don't want to read this unless you're me.
 
 - runtime sets of course
 - for over named sets not just set literals
+- functions returning product sets
 - CLI to output IR
 - memory model
+- ABI! (I just saw "// All function parameters are i64 (uniform ABI); widen Bool args." in the code, which is fine for now. Also needed to remove `FAIL_SENTINEL`)
 - set comprehensions, including infinite generative sets
   - math syntax `{x*2 | x ∈ Nat, x > 0}` as sugar for the python form (deferred)
   - multi-binder `{x+y for x in A for y in B}` desugaring to Cartesian product (deferred)
 - confirm that with constants I can declare my own compile time sets and use them as domains/ranges
-- basic values that aren't int64:
-  - bool
+- more basic values:
   - float
   - char, string (unicode I guess)
   - byte
@@ -69,6 +70,7 @@ You probably don't want to read this unless you're me.
 - Rust distinguishes the use of `<>` better than C++ by requiring `::` in things like `Vec::<i32>`.
 - Re-learned about phi nodes in SSA, that label the value taken based on where the execution path *came from*
 - Learned about alloca and how a `mem2reg` optimization will often replace it with phi nodes etc
+- Claude will often remove its own comments when editing sections of code. I'm not sure why it does this.
 
 # Things that surprised me
 

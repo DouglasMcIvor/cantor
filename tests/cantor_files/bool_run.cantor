@@ -1,0 +1,8 @@
+is_positive : Int -> Bool
+is_positive(x) = x > 0
+
+negate : Bool -> Bool
+negate(b) = not b
+
+main : -> Int
+main() = if negate(is_positive(-3)) then 99 else 0

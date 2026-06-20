@@ -32,6 +32,11 @@ pub(crate) fn membership_constraint<'tm>(
             // an integer t", which causes Nat | Fail to simplify to Nat >= 0
             // correctly: (t >= 0) || false = (t >= 0).
             "Fail"       => Membership::Constrained(tm.mk_boolean(false)),
+            // Bool is handled at the sort level: boolean-sort terms are trivially
+            // in Bool, and Bool-domain params are created as boolean-sort constants
+            // (so no integer-theory constraint is needed).  Returning Unconstrained
+            // avoids sort mismatches when the term is already boolean-sort.
+            "Bool"       => Membership::Unconstrained,
             "Nat"        => {
                 let zero = tm.mk_integer(0);
                 Membership::Constrained(tm.mk_term(Kind::Geq, &[t, zero]))
