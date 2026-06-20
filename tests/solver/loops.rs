@@ -210,6 +210,24 @@ safe_recip(x) {
 }
 
 #[test]
+fn assert_in_infallible_function_is_counterexample() {
+    // An unproven assert in a function without `| Fail` in the range is a
+    // counterexample: the function can crash at runtime with no Fail path.
+    let results = check("
+runtime_div : Int * Int -> Int
+runtime_div(x, y) {
+    assert y != 0
+    x / y
+}
+");
+    let (label, result) = results.into_iter().next().unwrap();
+    let CheckResult::Counterexample { reason, .. } = result else {
+        panic!("expected counterexample for `{label}`, got {result:?}");
+    };
+    assert!(reason.contains("Fail"), "reason should mention `Fail`: {reason}");
+}
+
+#[test]
 fn assert_after_let_proved() {
     proved("
 bounded : Int -> Nat | Fail

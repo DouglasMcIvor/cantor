@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    ast::{ConstDef, Expr, FunctionBody, FunctionDef, FunctionSig, Item},
+    ast::{BinOp, ConstDef, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item},
     span::Symbol,
 };
 
@@ -166,6 +166,16 @@ fn check_const(def: &ConstDef, fn_env: &FunctionEnv<'_>, const_defs: &ConstDefs<
     }
 }
 
+fn range_contains_fail(range: &Expr) -> bool {
+    match &range.kind {
+        ExprKind::Var(sym) => sym.0 == "Fail",
+        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+            range_contains_fail(lhs) || range_contains_fail(rhs)
+        }
+        _ => false,
+    }
+}
+
 // ── Block body checker ────────────────────────────────────────────────────────
 
 fn check_block_sig(
@@ -227,6 +237,7 @@ fn check_block_sig(
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
     let mut ssa_counter = 0usize;
     let mut constraint_env: HashMap<Symbol, Expr> = HashMap::new();
+    let mut has_runtime_assert = false;
 
     let body_term = match encode_block(
         stmts,
@@ -242,6 +253,7 @@ fn check_block_sig(
         param_names,
         &param_terms,
         &mut constraint_env,
+        &mut has_runtime_assert,
     ) {
         Ok(Some(t)) => t,
         Ok(None) => {
@@ -249,6 +261,16 @@ fn check_block_sig(
         }
         Err(early) => return early,
     };
+
+    if has_runtime_assert && !range_contains_fail(&sig.range) {
+        return CheckResult::Counterexample {
+            params: HashMap::new(),
+            output: 0,
+            reason: "assert may fail at runtime but return type does not include `Fail` \
+                     — add `| Fail` to the return type or prove the assertion statically"
+                .into(),
+        };
+    }
 
     let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range) {
         Membership::Unconstrained => None,

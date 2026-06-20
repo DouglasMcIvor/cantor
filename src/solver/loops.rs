@@ -68,6 +68,7 @@ pub(crate) fn encode_block<'tm>(
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
     constraint_env: &mut HashMap<Symbol, Expr>,
+    has_runtime_assert: &mut bool,
 ) -> Result<Option<Term<'tm>>, CheckResult> {
     let top_guard = tm.mk_boolean(true);
     let mut last_expr: Option<Term<'tm>> = None;
@@ -173,12 +174,14 @@ pub(crate) fn encode_block<'tm>(
                             }
                             _ => {
                                 // pred is sometimes true — codegen emits a runtime check.
+                                *has_runtime_assert = true;
                                 solver.assert_formula(pred.clone());
                                 accumulated_facts.push(pred);
                             }
                         }
                     }
                     CheckResult::Unknown(_) => {
+                        *has_runtime_assert = true;
                         solver.assert_formula(pred.clone());
                         accumulated_facts.push(pred);
                     }
@@ -199,7 +202,7 @@ pub(crate) fn encode_block<'tm>(
                     inner, env, const_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, ssa_counter,
                     accumulated_facts, param_names, param_terms,
-                    constraint_env,
+                    constraint_env, has_runtime_assert,
                 )?;
             }
 
@@ -403,10 +406,11 @@ where
     let mut cc = 0usize;
     let mut obligs: Vec<BuiltinObligation<'tm>> = Vec::new();
     let mut step_ssa = *ssa_counter;
+    let mut _dummy_runtime_assert = false;
     match encode_block(
         body, &mut body_env, const_defs, fn_env, tm, &mut tmp,
         &mut cc, &mut obligs, &mut step_ssa, &mut tmp_facts,
-        param_names, param_terms, &mut empty_cenv,
+        param_names, param_terms, &mut empty_cenv, &mut _dummy_runtime_assert,
     ) {
         Ok(_) => {}
         Err(e) => return Some(e),

@@ -393,7 +393,12 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
     ) -> Result<(), CompileError> {
         let Some(fail_bb) = self.fail_bb else {
-            return Ok(());
+            return Err(CompileError::Internal(
+                "assert in a function whose return type does not include `Fail` \
+                 was not eliminated by the solver — add `| Fail` to the return type \
+                 or prove the assertion statically"
+                    .into(),
+            ));
         };
 
         let function = self

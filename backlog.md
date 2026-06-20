@@ -5,6 +5,7 @@ You probably don't want to read this unless you're me.
 
 - runtime sets of course
 - for over named sets not just set literals
+- CLI to output IR
 - memory model
 - set comprehensions, including infinite generative sets
   - math syntax `{x*2 | x ∈ Nat, x > 0}` as sugar for the python form (deferred)
