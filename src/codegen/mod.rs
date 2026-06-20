@@ -7,11 +7,11 @@ use inkwell::{
     context::Context,
     execution_engine::ExecutionEngine,
     module::Module,
-    values::{BasicValueEnum, FunctionValue, IntValue},
+    values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
 };
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, Item, Param, Stmt, UnOp},
+    ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, Item, Param, Stmt, UnOp, collect_loop_modified},
     error::CompileError,
     span::{Span, Symbol},
 };
@@ -162,7 +162,7 @@ impl<'ctx> Compiler<'ctx> {
             env.insert(param.name.clone(), (llvm_param, ValType::Int));
         }
 
-        let return_val = self.compile_stmts(stmts, &mut env)?;
+        let return_val = self.compile_stmts(stmts, &mut env, &HashMap::new())?;
 
         let i64_type = self.context.i64_type();
         let ret_val = match return_val {
@@ -200,10 +200,16 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Process a sequence of statements, returning the last expression value.
+    ///
+    /// `alloca_map` is non-empty when compiling a loop body: it maps each
+    /// loop-modified variable to its alloca pointer so assignments also write
+    /// through to the alloca (making the updated value visible to the loop
+    /// header on the next iteration).
     fn compile_stmts(
         &mut self,
         stmts: &[Stmt],
         env: &mut Env<'ctx>,
+        alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
     ) -> Result<Option<(BasicValueEnum<'ctx>, ValType)>, CompileError> {
         let mut last = None;
         for stmt in stmts {
@@ -211,6 +217,22 @@ impl<'ctx> Compiler<'ctx> {
             match stmt {
                 Stmt::MutLet { name, value, .. } | Stmt::Assign { name, value, .. } => {
                     let result = self.compile_expr(value, env)?;
+                    // If this variable is backed by an alloca (i.e. we're in a loop
+                    // body and this variable persists across iterations), write
+                    // through so the loop header sees the updated value.
+                    if let Some(&ptr) = alloca_map.get(name) {
+                        let i64_type = self.context.i64_type();
+                        let val_i64: IntValue<'ctx> = if result.1 == ValType::Bool {
+                            self.builder
+                                .build_int_z_extend(result.0.into_int_value(), i64_type, "bool_ext")
+                                .map_err(|e| CompileError::Internal(e.to_string()))?
+                        } else {
+                            result.0.into_int_value()
+                        };
+                        self.builder
+                            .build_store(ptr, val_i64)
+                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    }
                     env.insert(name.clone(), result);
                 }
 
@@ -226,11 +248,105 @@ impl<'ctx> Compiler<'ctx> {
                 }
 
                 Stmt::Block(inner) => {
-                    last = self.compile_stmts(inner, env)?;
+                    last = self.compile_stmts(inner, env, alloca_map)?;
+                }
+
+                Stmt::While { cond, body, .. } => {
+                    self.compile_while(cond, body, env, alloca_map)?;
                 }
             }
         }
         Ok(last)
+    }
+
+    /// Emit LLVM IR for `while cond { body }`.
+    ///
+    /// Variables assigned inside `body` that already exist in `env` are
+    /// given alloca-backed storage so their values persist across iterations.
+    /// New allocas are merged with any inherited from an outer loop so nested
+    /// loops correctly write through to the outermost alloca.
+    fn compile_while(
+        &mut self,
+        cond: &Expr,
+        body: &[Stmt],
+        env: &mut Env<'ctx>,
+        outer_alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
+    ) -> Result<(), CompileError> {
+        let i64_type = self.context.i64_type();
+
+        // Build the alloca map for this loop: start from the outer map (so
+        // nested loops reuse the same allocas for shared variables) and add
+        // new allocas for any body-modified variable not already covered.
+        let modified = collect_loop_modified(body);
+        let mut inner_alloca_map: HashMap<Symbol, PointerValue<'ctx>> = outer_alloca_map.clone();
+
+        for name in &modified {
+            if inner_alloca_map.contains_key(name) {
+                continue; // already backed by an outer-loop alloca
+            }
+            if let Some(&(val, ty)) = env.get(name) {
+                let ptr = self.builder
+                    .build_alloca(i64_type, &name.0)
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                let val_i64: IntValue<'ctx> = if ty == ValType::Bool {
+                    self.builder
+                        .build_int_z_extend(val.into_int_value(), i64_type, "bool_ext")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?
+                } else {
+                    val.into_int_value()
+                };
+                self.builder
+                    .build_store(ptr, val_i64)
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                inner_alloca_map.insert(name.clone(), ptr);
+            }
+        }
+
+        let function = self.current_fn.ok_or_else(|| {
+            CompileError::Internal("while loop outside a function".into())
+        })?;
+
+        let cond_bb  = self.context.append_basic_block(function, "while_cond");
+        let body_bb  = self.context.append_basic_block(function, "while_body");
+        let after_bb = self.context.append_basic_block(function, "while_after");
+
+        self.builder.build_unconditional_branch(cond_bb)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        // ── Condition block ────────────────────────────────────────────────
+        // Reload alloca'd variables so the condition sees the latest values.
+        self.builder.position_at_end(cond_bb);
+        let mut loop_env = env.clone();
+        for (name, &ptr) in &inner_alloca_map {
+            let val = self.builder
+                .build_load(i64_type, ptr, &name.0)
+                .map_err(|e| CompileError::Internal(e.to_string()))?;
+            loop_env.insert(name.clone(), (val.into(), ValType::Int));
+        }
+        let (cond_val, _) = self.compile_expr(cond, &loop_env)?;
+        self.builder
+            .build_conditional_branch(cond_val.into_int_value(), body_bb, after_bb)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        // ── Body block ─────────────────────────────────────────────────────
+        self.builder.position_at_end(body_bb);
+        let mut body_env = loop_env;
+        self.compile_stmts(body, &mut body_env, &inner_alloca_map)?;
+        self.builder.build_unconditional_branch(cond_bb)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        // ── After block ────────────────────────────────────────────────────
+        // Reload the final alloca values back into the caller's env so
+        // subsequent statements in the enclosing block see the results.
+        self.builder.position_at_end(after_bb);
+        for (name, &ptr) in &inner_alloca_map {
+            let val = self.builder
+                .build_load(i64_type, ptr, &format!("{}_final", name.0))
+                .map_err(|e| CompileError::Internal(e.to_string()))?;
+            env.insert(name.clone(), (val.into(), ValType::Int));
+        }
+
+        Ok(())
     }
 
     /// Emit a runtime check for `assert predicate`.

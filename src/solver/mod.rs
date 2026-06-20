@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, ConstDef, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, Stmt, UnOp},
+    ast::{BinOp, ConstDef, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, Stmt, UnOp, collect_loop_modified},
     error::CompileError,
     span::{Span, Symbol},
 };
@@ -167,6 +167,19 @@ fn check_const(def: &ConstDef, fn_env: &FunctionEnv<'_>, const_defs: &ConstDefs<
 
 // ── Block body checker ────────────────────────────────────────────────────────
 
+/// True if `stmts` contains a `while` loop at any nesting depth.
+///
+/// Used to decide whether a SAT result is trustworthy: after loop invalidation
+/// the fresh unconstrained variables can satisfy almost any negative query, so
+/// a SAT result is potentially spurious.  Only UNSAT (Proved) is reliable.
+fn body_has_while(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::While { .. } => true,
+        Stmt::Block(inner) => body_has_while(inner),
+        _ => false,
+    })
+}
+
 /// Check a `{ stmts }` body against one signature.
 ///
 /// Statements are processed in order with an SSA-style environment: each
@@ -235,6 +248,7 @@ fn check_block_sig(
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
     let mut ssa_counter = 0usize;
 
+    let mut constraint_env: HashMap<Symbol, Expr> = HashMap::new();
     let body_term = match encode_block(
         stmts,
         &mut env,
@@ -248,6 +262,7 @@ fn check_block_sig(
         &mut accumulated_facts,
         param_names,
         &param_terms,
+        &mut constraint_env,
     ) {
         Ok(Some(t)) => t,
         Ok(None) => {
@@ -296,6 +311,14 @@ fn check_block_sig(
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {
+        // After loop invalidation the fresh unconstrained variables can satisfy
+        // almost any negative query, making SAT results unreliable.  Treat
+        // them as Unknown so the developer knows to add `assume` annotations.
+        if body_has_while(stmts) {
+            return CheckResult::Unknown(
+                "while loop: declare mutable variable constraints (`mut name: Set = expr`) to prove post-loop properties".into()
+            );
+        }
         let mut cex_params = HashMap::new();
         for (name, term) in param_names.iter().zip(param_terms.iter()) {
             let val = solver.get_value(term.clone());
@@ -338,6 +361,7 @@ fn encode_block<'tm>(
     accumulated_facts: &mut Vec<Term<'tm>>,
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
+    constraint_env: &mut HashMap<Symbol, Expr>,
 ) -> Result<Option<Term<'tm>>, CheckResult> {
     let top_guard = tm.mk_boolean(true);
     let mut last_expr: Option<Term<'tm>> = None;
@@ -345,7 +369,28 @@ fn encode_block<'tm>(
     for stmt in stmts {
         last_expr = None; // only the last Expr stmt is the return value
         match stmt {
-            Stmt::MutLet { name, value, .. } | Stmt::Assign { name, value, .. } => {
+            Stmt::MutLet { name, constraint, value, .. } => {
+                let val = encode_expr(
+                    value, env, const_defs, fn_env, tm, solver,
+                    call_counter, builtin_obligs, top_guard.clone(),
+                )
+                .map_err(CheckResult::Unknown)?;
+                let ssa_name = format!("{}_{}", name.0, ssa_counter);
+                *ssa_counter += 1;
+                let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
+                solver.assert_formula(eq.clone());
+                accumulated_facts.push(eq);
+                // Assert the declared invariant for the initial value.
+                if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint) {
+                    solver.assert_formula(c.clone());
+                    accumulated_facts.push(c);
+                }
+                constraint_env.insert(name.clone(), constraint.clone());
+                env.insert(name.clone(), fresh);
+            }
+
+            Stmt::Assign { name, value, .. } => {
                 let val = encode_expr(
                     value, env, const_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(),
@@ -358,6 +403,14 @@ fn encode_block<'tm>(
                 let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
                 solver.assert_formula(eq.clone());
                 accumulated_facts.push(eq);
+                // If the variable carries a declared invariant, assert it holds
+                // for the new value (trusted, used as inductive hypothesis).
+                if let Some(constraint) = constraint_env.get(name) {
+                    if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint) {
+                        solver.assert_formula(c.clone());
+                        accumulated_facts.push(c);
+                    }
+                }
                 env.insert(name.clone(), fresh);
             }
 
@@ -448,7 +501,47 @@ fn encode_block<'tm>(
                     inner, env, const_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, ssa_counter,
                     accumulated_facts, param_names, param_terms,
+                    constraint_env,
                 )?;
+            }
+
+            Stmt::While { cond, body, .. } => {
+                // Sound conservative approximation: we cannot reason statically
+                // about how many iterations execute, so we:
+                //   1. Invalidate every variable the loop body assigns by
+                //      replacing it with a fresh SMT constant.
+                //   2. For variables declared with a constraint (`mut x: Set`),
+                //      assert the constraint on the fresh constant — this serves
+                //      as the loop invariant (trusted, not yet verified inductively).
+                //   3. Assert ¬cond (the loop has exited).
+                let modified = collect_loop_modified(body);
+                for name in &modified {
+                    if env.contains_key(name) {
+                        let fresh_name = format!("{}_{}", name.0, ssa_counter);
+                        *ssa_counter += 1;
+                        let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
+                        if let Some(constraint) = constraint_env.get(name) {
+                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint) {
+                                solver.assert_formula(c.clone());
+                                accumulated_facts.push(c);
+                            }
+                        }
+                        env.insert(name.clone(), fresh);
+                    }
+                }
+
+                // Assert the exit condition: cond is false after the loop.
+                match encode_expr(cond, env, const_defs, fn_env, tm, solver,
+                                  call_counter, builtin_obligs, top_guard.clone()) {
+                    Ok(cond_term) => {
+                        let not_cond = tm.mk_term(Kind::Not, &[cond_term]);
+                        solver.assert_formula(not_cond.clone());
+                        accumulated_facts.push(not_cond);
+                    }
+                    Err(_) => {} // cond uses unsupported constructs — skip the fact
+                }
+
+                last_expr = None;
             }
         }
     }

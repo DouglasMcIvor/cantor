@@ -118,8 +118,12 @@ pub enum UnOp {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    /// `mut x = expr` — introduce a new mutable local.
-    MutLet { name: Symbol, value: Expr, span: Span },
+    /// `mut x: Set = expr` — introduce a new mutable local with invariant.
+    ///
+    /// The `constraint` is the declared set the variable must remain in through
+    /// every assignment.  The solver uses it as the loop invariant when the
+    /// variable is modified inside a `while` body.
+    MutLet { name: Symbol, constraint: Expr, value: Expr, span: Span },
     /// `x = expr` — reassign an existing mutable (semantic analysis validates).
     Assign { name: Symbol, value: Expr, span: Span },
     /// `require predicate` — static proof obligation; compile error if unprovable.
@@ -133,6 +137,30 @@ pub enum Stmt {
     Expr(Expr),
     /// Nested `{ stmts }` block — introduces a new scope.
     Block(Vec<Stmt>),
+    /// `while cond { stmts }` — loop while condition holds.
+    While { cond: Expr, body: Vec<Stmt>, span: Span },
+}
+
+/// Collect all names that are assigned (by `mut` or reassignment) anywhere
+/// inside `stmts`, recursively through nested blocks and while loops.
+///
+/// Used by both the solver (to invalidate loop-modified variables) and the
+/// codegen (to decide which variables need alloca-backed storage for loops).
+pub fn collect_loop_modified(stmts: &[Stmt]) -> std::collections::HashSet<Symbol> {
+    let mut names = std::collections::HashSet::new();
+    collect_loop_modified_rec(stmts, &mut names);
+    names
+}
+
+fn collect_loop_modified_rec(stmts: &[Stmt], names: &mut std::collections::HashSet<Symbol>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::MutLet { name, .. } | Stmt::Assign { name, .. } => { names.insert(name.clone()); }
+            Stmt::While { body, .. } => collect_loop_modified_rec(body, names),
+            Stmt::Block(inner) => collect_loop_modified_rec(inner, names),
+            _ => {}
+        }
+    }
 }
 
 // ── Function definitions ──────────────────────────────────────────────────────

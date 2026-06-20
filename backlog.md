@@ -3,19 +3,21 @@ You probably don't want to read this unless you're me.
 
 # To do
 
+- loops
 - runtime sets of course
-- human intros (familiar with types, newbie with the word type taboo'd) and LLM intro
+- set comprehensions, including infinite generative sets
+- memory model
 - confirm that with constants I can declare my own compile time sets and use them as domains/ranges
 - basic values that aren't integers:
   - float
   - char, string (unicode I guess)
   - byte
 - constants JIT'd instead of at rust level to get consistency 
+- spin up some code review agents to assess quality of rust implementation, factoring and maintainability before it gets too large
+- human intros (familiar with types, newbie with the word type taboo'd) and LLM intro
 - review and improve error messages
 - suggested constraints in error messages
-- set comprehensions, including infinite generative sets
 - more containers! gotta have me some vectors and maps, not just sets!
-- loops
 - iterators for containers 
 - outer IO loop
 - write-only side effects via `emit`
@@ -33,8 +35,6 @@ You probably don't want to read this unless you're me.
 
 - Actually write some rust by hand, old skool
 - Haha, even funnier: actually run the _build command_ by hand!
-- What does .into() do?
-- How do iterators work in rust?
 
 # Interesting things I have learned
 
@@ -44,7 +44,7 @@ You probably don't want to read this unless you're me.
 - There is Weak to solve cycles in Rc
 - traits are like type classes
 - they can be derived
-- # is attribute, either built in or custom macros
+- `#` is attribute, either built in or custom macros
 - MACROS RULE!!!! Or, erm, `macro_rules!` lets you define some nice macros for code generation.
 - The ! is for calling macros. ? is for monadic error handling (short circuits)
 - send/sync traits control ability to transfer/share between threads, nice
@@ -54,6 +54,7 @@ You probably don't want to read this unless you're me.
 - ! is the Void type
 - () is the unit type and unit value
 - Box is for dynamic dispatch, e.g. `Box<dyn Animal>` for an Animal trait, gives you a vtable
+- Rust distinguishes the use of `<>` better than C++ by requiring `::` in things like `Vec::<i32>`.
 
 # Things that surprised me
 
@@ -62,6 +63,7 @@ You probably don't want to read this unless you're me.
 
 # Open questions
 
+- Should we use `:=` for mutable re-assignment to make it visually distinct from declaring a named value?
 - Should we have an early `return` statement? Seems expected in imperative languages.
 - How to define exception handlers?
 - More generally, how to define the IO loop?

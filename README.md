@@ -158,8 +158,8 @@ safe_to_nat(n) {
 
 add_positive : Int * Int -> Nat | Fail
 add_positive(x, y) {
-    mut a = safe_to_nat(x)?
-    mut b = safe_to_nat(y)?
+    mut a: Nat = safe_to_nat(x)?
+    mut b: Nat = safe_to_nat(y)?
     a + b
 }
 ```
@@ -181,13 +181,43 @@ clamp(x, lo, hi) {
 `assert` graduates: if provable, it's elided; if always false, it's a compile error; if unknown, it becomes a runtime check.
 `assume` is an escape hatch: "honest guv! the solver can't see this but I just know it's true!"
 
+### Loops and loop invariants
+
+`while` loops use `mut name: Set = expr` to declare both a mutable local and its **loop invariant** — the set the variable must remain in across every iteration.
+
+```haskell
+sum_to : Nat -> Nat
+sum_to(n) {
+    mut acc: Nat = 0   -- 0 ∈ Nat ✓  (init); Nat is the invariant for acc
+    mut i: Nat = 1     -- 1 ∈ Nat ✓  (init)
+    while i <= n {
+        acc = acc + i  -- acc + i ∈ Nat asserted (step: trusted, see below)
+        i = i + 1      -- i + 1 ∈ Nat asserted (step: trusted)
+    }
+    acc                -- acc ∈ Nat from invariant + ¬(i <= n) → ℵ proved
+}
+```
+
+```sh
+$ cantor sum_to.cantor
+  ℵ proved   sum_to : Nat -> Nat
+```
+
+The declared constraint is used in three places: the initial value is checked against it, each assignment asserts the new value satisfies it, and after the loop the post-loop SSA variable inherits it as a known fact.
+
+> **Warning — invariants are currently trusted, not verified.**
+> The compiler asserts each assignment maintains the declared constraint as an axiom, rather than proving it.
+> This means `mut acc: Int16 = 0` with `acc = acc + 1` in a million-iteration loop will currently report `proved` even though overflow is possible — the step `acc + 1 ∈ Int16` is simply trusted.
+> Inductive step verification (where the compiler actually proves the invariant is maintained) is [on the roadmap](#on-the-roadmap).
+> Until then, use `require` or `assert` inside the loop body to add the proof obligations you care about, or confine `Int16`-style invariants to loops you know are bounded.
+
 ## Features (working today)
 
 - **Set-theoretic domains and ranges** — `Int`, `Nat`, `NatPos`, `NonZeroInt`, `Int8`–`Int64`, set literals `{0, 1, 2}`, set difference `A - B`, union `A | B`, intersection `A & B`
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis
 - **Constants** — `name : Set / name = expr`, type-checked and auto-inlined at compile time
-- **Block bodies** — imperative-style bodies with `mut` locals, sequenced statements, and `if-then-else`
+- **Block bodies with `while` loops** — imperative-style bodies with `while cond { stmts }`, `mut name: Set = expr` locals (set annotation is the declared loop invariant), sequenced statements, and `if-then-else`
 - **`require` / `assert` / `assume`** — static and graduated runtime proof obligations
 - **`Fail` and `?`** — monadic error propagation; fallible functions declare `| Fail` in their range; `?` short-circuits on failure
 - **Named set naming convention** — uppercase names are compile-time set names (`Nat`, `HTTPError`); lowercase names are values (`pi`, `abs`, `collected_primes`); enforced by the compiler
@@ -195,8 +225,10 @@ clamp(x, lo, hi) {
 
 ## On the roadmap
 
+- **Inductive loop invariant verification** — currently `mut acc: Int16` trusts each assignment maintains the constraint; the compiler should instead *prove* the inductive step (`acc + 1 ∈ Int16` given `acc ∈ Int16`), turning the trusted axiom into a real proof obligation and catching overflow when the loop bound is unknown
+- **`for x in S` loops** — iterate over set literals; the natural companion to `assert x in S`
+- **Set comprehensions** — `{ expr for x in S if pred(x) }` as a first-class expression
 - **Runtime sets** — sets as first-class runtime values; `collected_primes` as a real set you can iterate, test membership, and pass around
-- **Loops** — syntax and semantics TBD; set comprehensions `{ expr for x in S if pred }`
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
 - **User-defined named sets** — `EvenNat = { n in Nat | n mod 2 == 0 }` as a top-level definition
 - **`raise` and `emits`** — unrecoverable errors and write-only side effects (logging, metrics)

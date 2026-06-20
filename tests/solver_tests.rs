@@ -516,7 +516,7 @@ fn block_simple_let_proved() {
     proved("
 double : Nat -> Nat
 double(x) {
-    mut y = x + x
+    mut y: Nat = x + x
     y
 }
 ");
@@ -527,8 +527,8 @@ fn block_sequential_lets_proved() {
     proved("
 triple : Nat -> Nat
 triple(x) {
-    mut y = x + x
-    mut z = y + x
+    mut y: Nat = x + x
+    mut z: Nat = y + x
     z
 }
 ");
@@ -705,7 +705,7 @@ fn assert_after_let_proved() {
     proved("
 bounded : Int -> Nat | Fail
 bounded(x) {
-    mut y = x + 1
+    mut y: Int = x + 1
     assert y > 0
     y
 }
@@ -727,7 +727,7 @@ safe_to_nat(x) {
 
 caller : Int -> Nat | Fail
 caller(n) {
-    mut x = safe_to_nat(n)?
+    mut x: Nat = safe_to_nat(n)?
     x + 1
 }
 ");
@@ -812,4 +812,80 @@ fn const_negative_not_nat() {
     let results = check("bad : Nat\nbad = -5");
     assert_eq!(results.len(), 1);
     assert!(matches!(results[0].1, CheckResult::Counterexample { .. }));
+}
+
+// ── While loops ───────────────────────────────────────────────────────────────
+
+#[test]
+fn while_loop_proved_with_constraints() {
+    // `mut acc: Nat` declares Nat as the loop invariant.  The solver uses it
+    // to constrain the post-loop SSA variable, making the range obligation
+    // (return is in Nat) immediately provable — no `assume` needed.
+    proved(r#"
+sum_to : Nat -> Nat
+sum_to(n) {
+    mut acc: Nat = 0
+    mut i: Nat = 1
+    while i <= n {
+        acc = acc + i
+        i = i + 1
+    }
+    acc
+}"#);
+}
+
+#[test]
+fn while_loop_unknown_when_range_tighter_than_invariant() {
+    // Even with `mut acc: Nat`, the range NatPos is stricter.
+    // The solver correctly cannot prove acc > 0 from acc >= 0 alone (sum_to(0) = 0).
+    // Since a while loop is present, SAT → Unknown (not Counterexample).
+    let src = r#"
+sum_to_pos : Nat -> NatPos
+sum_to_pos(n) {
+    mut acc: Nat = 0
+    mut i: Nat = 1
+    while i <= n {
+        acc = acc + i
+        i = i + 1
+    }
+    acc
+}"#;
+    let results = check(src);
+    assert!(
+        matches!(results[0].1, CheckResult::Unknown(_)),
+        "expected Unknown when invariant too weak for range, got {:?}", results[0].1
+    );
+}
+
+#[test]
+fn while_loop_proved_with_assume() {
+    // `assume` is still valid and works alongside constraints when you need
+    // a fact that can't be derived from the constraint alone.
+    proved(r#"
+sum_to : Nat -> Nat
+sum_to(n) {
+    mut acc: Nat = 0
+    mut i: Nat = 1
+    while i <= n {
+        acc = acc + i
+        i = i + 1
+    }
+    assume acc in Nat
+    acc
+}"#);
+}
+
+#[test]
+fn while_exit_condition_asserted() {
+    // After a `while i < n` loop the solver knows `i >= n` (exit condition).
+    // Combined with `mut i: Nat`, the return i is provably in Nat.
+    proved(r#"
+f : Nat -> Nat
+f(n) {
+    mut i: Nat = 0
+    while i < n {
+        i = i + 1
+    }
+    i
+}"#);
 }

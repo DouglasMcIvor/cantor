@@ -6,6 +6,6 @@ safe_to_nat(x) {
 
 main : -> Nat | Fail
 main() {
-    mut n = safe_to_nat(42)?
+    mut n: Nat = safe_to_nat(42)?
     n + 1
 }

@@ -240,9 +240,11 @@ impl<'src> Parser<'src> {
             Token::Mut => {
                 self.advance()?;
                 let name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let constraint = self.parse_set_expr()?;
                 self.expect(&Token::Eq)?;
                 let value = self.parse_expr(0)?;
-                Ok(Stmt::MutLet { name, value, span })
+                Ok(Stmt::MutLet { name, constraint, value, span })
             }
             Token::Require => {
                 self.advance()?;
@@ -258,6 +260,12 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 let predicate = self.parse_expr(0)?;
                 Ok(Stmt::Assume { predicate, span })
+            }
+            Token::While => {
+                self.advance()?;
+                let cond = self.parse_expr(0)?;
+                let body = self.parse_block()?;
+                Ok(Stmt::While { cond, body, span })
             }
             Token::LBrace => Ok(Stmt::Block(self.parse_block()?)),
             // `ident =` (not `==`) → assignment

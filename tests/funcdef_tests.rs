@@ -112,7 +112,7 @@ fn block_with_mut_and_assign() {
     let src = r#"
 f : Int -> Int
 f(x) {
-    mut y = x + 1
+    mut y: Int = x + 1
     y = y * 2
     y
 }
@@ -288,4 +288,34 @@ fn const_and_function_in_same_file() {
 fn const_negative_value() {
     let def = parse_one_const("offset : Int\noffset = -5");
     assert!(matches!(def.value.kind, ExprKind::UnOp { op: cantor::ast::UnOp::Neg, .. }));
+}
+
+// ── While loops ───────────────────────────────────────────────────────────────
+
+#[test]
+fn while_parses_as_stmt() {
+    let src = "sum_to : Nat -> Nat\nsum_to(n) {\n    mut acc: Nat = 0\n    mut i: Nat = 1\n    while i <= n {\n        acc = acc + i\n        i = i + 1\n    }\n    acc\n}";
+    let def = parse_one(src);
+    let FunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    assert_eq!(stmts.len(), 4); // MutLet acc, MutLet i, While, Expr(acc)
+    assert!(matches!(stmts[2], cantor::ast::Stmt::While { .. }));
+}
+
+#[test]
+fn while_body_stmts_parsed() {
+    let src = "f : Int -> Int\nf(x) {\n    mut i: Int = 0\n    while i < x {\n        i = i + 1\n    }\n    i\n}";
+    let def = parse_one(src);
+    let FunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let cantor::ast::Stmt::While { body, .. } = &stmts[1] else { panic!("expected While") };
+    assert_eq!(body.len(), 1);
+    assert!(matches!(body[0], cantor::ast::Stmt::Assign { .. }));
+}
+
+#[test]
+fn while_condition_parsed() {
+    let src = "f : Nat -> Nat\nf(n) {\n    mut i: Nat = 0\n    while i < n {\n        i = i + 1\n    }\n    i\n}";
+    let def = parse_one(src);
+    let FunctionBody::Block(stmts) = &def.body else { panic!() };
+    let cantor::ast::Stmt::While { cond, .. } = &stmts[1] else { panic!("expected While") };
+    assert!(matches!(cond.kind, ExprKind::BinOp { op: BinOp::Lt, .. }));
 }

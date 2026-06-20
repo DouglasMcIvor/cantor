@@ -228,3 +228,105 @@ fn call_other_function() {
     };
     assert_eq!(result, 42);
 }
+
+// ── While loops ──────────────────────────────────────────────────────────────
+
+/// Parse `src` as a Cantor source file, compile it, and call `main(arg)`.
+fn jit_src_one_arg(src: &str, arg: i64) -> i64 {
+    use cantor::{parser::parse_file, codegen::compile_file};
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let ctx = Context::create();
+    let engine = compile_file(&ctx, &items).unwrap_or_else(|e| panic!("compile error: {e}"));
+    unsafe {
+        let f = engine
+            .get_function::<unsafe extern "C" fn(i64) -> i64>("main")
+            .unwrap();
+        f.call(arg)
+    }
+}
+
+/// Parse `src`, compile, and call zero-arg `main()`.
+fn jit_src_zero_arg(src: &str) -> i64 {
+    use cantor::{parser::parse_file, codegen::compile_file};
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let ctx = Context::create();
+    let engine = compile_file(&ctx, &items).unwrap_or_else(|e| panic!("compile error: {e}"));
+    unsafe {
+        let f = engine
+            .get_function::<unsafe extern "C" fn() -> i64>("main")
+            .unwrap();
+        f.call()
+    }
+}
+
+#[test]
+fn while_counts_to_n() {
+    // main(n) counts from 0 up to n using a while loop and returns i (== n).
+    let src = r#"
+main : Nat -> Nat
+main(n) {
+    mut i: Nat = 0
+    while i < n {
+        i = i + 1
+    }
+    i
+}"#;
+    assert_eq!(jit_src_one_arg(src, 0),  0);
+    assert_eq!(jit_src_one_arg(src, 1),  1);
+    assert_eq!(jit_src_one_arg(src, 5),  5);
+    assert_eq!(jit_src_one_arg(src, 10), 10);
+}
+
+#[test]
+fn while_sum_to_n() {
+    // sum_to(n) = 1 + 2 + … + n  (== n*(n+1)/2)
+    let src = r#"
+main : Nat -> Nat
+main(n) {
+    mut acc: Nat = 0
+    mut i: Nat = 1
+    while i <= n {
+        acc = acc + i
+        i = i + 1
+    }
+    acc
+}"#;
+    assert_eq!(jit_src_one_arg(src, 0),  0);
+    assert_eq!(jit_src_one_arg(src, 1),  1);
+    assert_eq!(jit_src_one_arg(src, 5),  15);
+    assert_eq!(jit_src_one_arg(src, 10), 55);
+}
+
+#[test]
+fn while_zero_iterations() {
+    // Loop condition is false from the start — body never executes.
+    let src = r#"
+main : -> Int
+main() {
+    mut x: Int = 42
+    while x < 0 {
+        x = x - 1
+    }
+    x
+}"#;
+    assert_eq!(jit_src_zero_arg(src), 42);
+}
+
+#[test]
+fn while_multiply_by_addition() {
+    // a * b computed as repeated addition.
+    let src = r#"
+main : Nat -> Nat
+main(n) {
+    mut result: Nat = 0
+    mut i: Nat = 0
+    while i < n {
+        result = result + 7
+        i = i + 1
+    }
+    result
+}"#;
+    assert_eq!(jit_src_one_arg(src, 0), 0);
+    assert_eq!(jit_src_one_arg(src, 1), 7);
+    assert_eq!(jit_src_one_arg(src, 6), 42);
+}

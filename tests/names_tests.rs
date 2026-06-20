@@ -54,12 +54,12 @@ fn const_name_uppercase_err() {
 
 #[test]
 fn mut_local_lowercase_ok() {
-    ok("f : Nat -> Nat\nf(x) {\n  mut result = x + 1\n  result\n}");
+    ok("f : Nat -> Nat\nf(x) {\n  mut result: Nat = x + 1\n  result\n}");
 }
 
 #[test]
 fn mut_local_uppercase_err() {
-    let e = err("f : Nat -> Nat\nf(x) {\n  mut Result = x + 1\n  Result\n}");
+    let e = err("f : Nat -> Nat\nf(x) {\n  mut Result: Nat = x + 1\n  Result\n}");
     assert!(e.contains("Result"), "error should name `Result`: {e}");
 }
 
@@ -122,5 +122,5 @@ fn multiple_violations_all_reported() {
 fn lowercase_in_rhs_of_assert_ok() {
     // `collected_primes` is a runtime set — lowercase is fine in assert position.
     // For now this test just verifies we don't false-positive on lowercase assert operands.
-    ok("f : Nat -> Nat\nf(x) {\n  mut collected_primes = x\n  collected_primes\n}");
+    ok("f : Nat -> Nat\nf(x) {\n  mut collected_primes: Nat = x\n  collected_primes\n}");
 }
