@@ -120,6 +120,7 @@ You probably don't want to read this unless you're me.
   > Everything else—monomorphisation, overload generation, even "generic constraints"—falls out as implementation details. That's about as small a conceptual core as I can imagine, and it fits remarkably well with the direction Cantor has been taking.
 - automatic multithreading for semi-pure core?
 - multiple concurrent IO threads?
+- small runtime sets optimized as bitmasks. Once we get to the homogeneous set level the runtime doesn't actually care what the values are. So a cardinality 64 set can be encoded as just a uint64. It may make sense to extend this to fairly large sets with vectors of uint64. It would be nice to benchmark when this breaks down (time space tradeoff right?)
 - Optimizations! From ChatGPT:
   ```
     The key lever: assumptions become optimisations
