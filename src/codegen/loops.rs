@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
-use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
+use inkwell::{IntPredicate, values::{BasicValueEnum, IntValue, PointerValue}};
 
 use crate::{
     ast::{Expr, ExprKind, Stmt, collect_loop_modified},
     error::CompileError,
+    kind::{Kind, SetElemKind},
     span::Symbol,
 };
 
-use crate::kind::Kind;
 use super::{Compiler, Env};
 
 impl<'ctx> Compiler<'ctx> {
@@ -229,12 +229,171 @@ impl<'ctx> Compiler<'ctx> {
                     var, &output, &comp_var, &source, filter.as_ref(), body, env, alloca_map,
                 )
             }
-            _ => Err(CompileError::Internal(
-                "for loop: only set literals and comprehensions are supported as iterables \
-                 in this version (named/generative sets need a runtime set representation)"
-                    .into(),
-            )),
+            _ => {
+                // Compile the set expression and dispatch on its runtime Kind.
+                let (ptr, kind) = self.compile_expr(set, env)?;
+                match kind {
+                    Kind::Set(elem_kind) => {
+                        self.compile_for_in_runtime_set(var, ptr, elem_kind, body, env, alloca_map)
+                    }
+                    _ => Err(CompileError::Internal(
+                        "for loop: iterable must be a set literal, comprehension, \
+                         or a variable of `Set(…)` kind"
+                            .into(),
+                    )),
+                }
+            }
         }
+    }
+
+    /// Emit LLVM IR for `for var in <runtime-set> { body }`.
+    ///
+    /// Iterates 0..size, calling `cantor_set_get_*` each time to bind `var`.
+    /// Body-modified variables are alloca-backed so their values survive across
+    /// iterations — same strategy as `compile_while`.
+    fn compile_for_in_runtime_set(
+        &mut self,
+        var: &Symbol,
+        set_ptr: BasicValueEnum<'ctx>,
+        elem_kind: SetElemKind,
+        body: &[Stmt],
+        env: &mut Env<'ctx>,
+        outer_alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
+    ) -> Result<(), CompileError> {
+        let i64t = self.context.i64_type();
+
+        // Build alloca map for body-modified variables (same pattern as compile_while).
+        let modified = collect_loop_modified(body);
+        let mut inner_alloca_map: HashMap<Symbol, PointerValue<'ctx>> = outer_alloca_map.clone();
+        for name in &modified {
+            if inner_alloca_map.contains_key(name) { continue; }
+            if let Some(&(val, ty)) = env.get(name) {
+                let ptr = self.builder.build_alloca(i64t, &name.0)
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                let val_i64: IntValue<'ctx> = if ty == Kind::Bool {
+                    self.builder.build_int_z_extend(val.into_int_value(), i64t, "bool_ext")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?
+                } else {
+                    val.into_int_value()
+                };
+                self.builder.build_store(ptr, val_i64)
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                inner_alloca_map.insert(name.clone(), ptr);
+            }
+        }
+
+        // Get set size once before the loop.
+        let size_fn_name = match elem_kind {
+            SetElemKind::Int  => "cantor_set_size_i64",
+            SetElemKind::Bool => "cantor_set_size_bool",
+        };
+        let size_fn = self.module.get_function(size_fn_name)
+            .ok_or_else(|| CompileError::Internal(format!("{size_fn_name} not declared")))?;
+        let n = self.builder
+            .build_call(size_fn, &[set_ptr.into()], "set_n")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .try_as_basic_value().left()
+            .ok_or_else(|| CompileError::Internal("size fn returned void".into()))?
+            .into_int_value();
+
+        // Alloca for the loop counter.
+        let i_ptr = self.builder.build_alloca(i64t, "set_i")
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        self.builder.build_store(i_ptr, i64t.const_int(0, false))
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        let function = self.current_fn
+            .ok_or_else(|| CompileError::Internal("for-in loop outside a function".into()))?;
+
+        let cond_bb  = self.context.append_basic_block(function, "for_set_cond");
+        let body_bb  = self.context.append_basic_block(function, "for_set_body");
+        let after_bb = self.context.append_basic_block(function, "for_set_after");
+
+        self.builder.build_unconditional_branch(cond_bb)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        // ── Condition block: reload alloca vars, test i < n ────────────────────
+        self.builder.position_at_end(cond_bb);
+        let mut loop_env = env.clone();
+        for (name, &ptr) in &inner_alloca_map {
+            let val = self.builder.build_load(i64t, ptr, &name.0)
+                .map_err(|e| CompileError::Internal(e.to_string()))?;
+            let original_kind = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+            let entry = if original_kind == Kind::Bool {
+                let i1 = self.builder
+                    .build_int_truncate(val.into_int_value(), self.context.bool_type(), "reload_bool")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                (i1.into(), Kind::Bool)
+            } else {
+                (val.into(), original_kind)
+            };
+            loop_env.insert(name.clone(), entry);
+        }
+        let i_val = self.builder.build_load(i64t, i_ptr, "i_val")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .into_int_value();
+        let cond = self.builder.build_int_compare(IntPredicate::SLT, i_val, n, "for_cond")
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        self.builder.build_conditional_branch(cond, body_bb, after_bb)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        // ── Body block: fetch element, bind var, compile body, increment i ──────
+        self.builder.position_at_end(body_bb);
+        let get_fn_name = match elem_kind {
+            SetElemKind::Int  => "cantor_set_get_i64",
+            SetElemKind::Bool => "cantor_set_get_bool",
+        };
+        let get_fn = self.module.get_function(get_fn_name)
+            .ok_or_else(|| CompileError::Internal(format!("{get_fn_name} not declared")))?;
+        let elem_raw = self.builder
+            .build_call(get_fn, &[set_ptr.into(), i_val.into()], "elem_raw")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .try_as_basic_value().left()
+            .ok_or_else(|| CompileError::Internal("get fn returned void".into()))?;
+        let (elem_val, elem_k): (BasicValueEnum<'ctx>, Kind) = match elem_kind {
+            SetElemKind::Int  => (elem_raw, Kind::Int),
+            SetElemKind::Bool => {
+                let i1 = self.builder
+                    .build_int_truncate(elem_raw.into_int_value(), self.context.bool_type(), "elem_bool")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                (i1.into(), Kind::Bool)
+            }
+        };
+
+        let mut body_env = loop_env;
+        body_env.insert(var.clone(), (elem_val, elem_k));
+        self.compile_stmts(body, &mut body_env, &inner_alloca_map)?;
+
+        // Reload i from the alloca (safe after any inner loops the body may contain).
+        let i_curr = self.builder.build_load(i64t, i_ptr, "i_curr")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .into_int_value();
+        let i_next = self.builder.build_int_add(i_curr, i64t.const_int(1, false), "i_next")
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        self.builder.build_store(i_ptr, i_next)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        self.builder.build_unconditional_branch(cond_bb)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        // ── After block: propagate final alloca values back into caller's env ───
+        self.builder.position_at_end(after_bb);
+        for (name, &ptr) in &inner_alloca_map {
+            let val = self.builder
+                .build_load(i64t, ptr, &format!("{}_final", name.0))
+                .map_err(|e| CompileError::Internal(e.to_string()))?;
+            let original_kind = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+            let entry = if original_kind == Kind::Bool {
+                let i1 = self.builder
+                    .build_int_truncate(val.into_int_value(), self.context.bool_type(), "final_bool")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                (i1.into(), Kind::Bool)
+            } else {
+                (val.into(), original_kind)
+            };
+            env.insert(name.clone(), entry);
+        }
+
+        Ok(())
     }
 
     /// Emit LLVM IR for `for var in { output for comp_var in source if filter } { body }`.

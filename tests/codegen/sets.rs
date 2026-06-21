@@ -69,6 +69,81 @@ fn set_literal_runtime_elements_dedup() {
     assert_eq!(result, 1);
 }
 
+// ── for x in runtime_set_variable ────────────────────────────────────────────
+
+#[test]
+fn for_in_runtime_set_sums_elements() {
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             mut s   : Set(Int) = {1, 2, 3}
+             mut acc : Int = 0
+             for x in s {
+                 acc := acc + x
+             }
+             acc
+         }",
+        0,
+    );
+    assert_eq!(result, 6);
+}
+
+#[test]
+fn for_in_runtime_set_with_param_elements() {
+    // Set built from the parameter — proves iteration works on fully runtime data.
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             mut s   : Set(Int) = {n, n + 1, n + 2}
+             mut acc : Int = 0
+             for x in s {
+                 acc := acc + x
+             }
+             acc
+         }",
+        10, // {10, 11, 12} → 33
+    );
+    assert_eq!(result, 33);
+}
+
+#[test]
+fn for_in_runtime_set_dedup_elements_counted_once() {
+    // Duplicate elements in the literal are deduplicated; the loop only visits
+    // each unique element once.
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             mut s   : Set(Int) = {1, 2, 1, 3, 2}
+             mut acc : Int = 0
+             for x in s {
+                 acc := acc + x
+             }
+             acc
+         }",
+        0,
+    );
+    assert_eq!(result, 6); // 1+2+3, not 1+2+1+3+2
+}
+
+#[test]
+fn for_in_empty_runtime_set_body_not_entered() {
+    // Inserting a single element twice deduplicates to 1 element.
+    // Using n and n again guarantees the set has size 1 for any n.
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             mut s   : Set(Int) = {n, n}
+             mut acc : Int = 0
+             for x in s {
+                 acc := acc + 1
+             }
+             acc
+         }",
+        99,
+    );
+    assert_eq!(result, 1); // only one distinct element
+}
+
 // ── IR inspection: compile-time vs runtime ────────────────────────────────────
 
 /// `for x in {literal}` is compile-time unrolled — the IR must not contain any
