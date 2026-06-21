@@ -346,12 +346,13 @@ sum_above_threshold(threshold) {
 
 ## On the roadmap
 
-- **Richer set invariants** — `mut s : Set(Int - {0})` should constrain every element; currently the element-kind constraint is not propagated to the SMT solver
+- **Richer set invariants** — `mut s : Set(Int - {0})` should constrain every element; the fix is to extract the inner element-kind expression from `Set(...)` and pass it to `membership_constraint` for the loop variable in the inductive step — no logic change required, stays in QF_NIA
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
 - **User-defined named sets** — `EvenNat = { n in Nat | n mod 2 == 0 }` as a top-level definition
 - **`raise` and `emits`** — unrecoverable errors and write-only side effects (logging, metrics)
 - **State** — mutable program state that survives between calls, with a proof that it satisfies its invariants at every boundary
 - **Module system** — imports, library compilation, separate checking
+- **cvc5 Sets theory + quantifier proofs** — the element-kind approach breaks down when a proof depends on a filter predicate holding for every element (e.g. `{x in s | x mod 2 == 0}` where the evenness property must appear in the proof obligation) or on set-operation semantics (union, intersection). These require switching to cvc5's native `Sets` theory, a combined logic like `QF_SNIA`, and universally quantified formulas (`∀x. x ∈ evens → x mod 2 == 0`). The solver will return `unknown` more often in this regime. In practice this only bites developers writing proofs that reason about derived or filtered sets — the common case of iterating and accumulating is fully covered by element-kind constraints.
 
 ## Are you serious!?
 
