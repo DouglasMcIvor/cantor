@@ -69,6 +69,80 @@ fn set_literal_runtime_elements_dedup() {
     assert_eq!(result, 1);
 }
 
+// ── x in runtime_set_variable (membership) ───────────────────────────────────
+
+#[test]
+fn membership_true_for_element_in_set() {
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             mut s : Set(Int) = {1, 2, 3}
+             if 2 in s then 1 else 0
+         }",
+        0,
+    );
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn membership_false_for_element_not_in_set() {
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             mut s : Set(Int) = {1, 2, 3}
+             if 99 in s then 1 else 0
+         }",
+        0,
+    );
+    assert_eq!(result, 0);
+}
+
+#[test]
+fn membership_with_runtime_value() {
+    // The value being tested comes from the parameter — both sides are runtime.
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             mut s : Set(Int) = {10, 20, 30}
+             if n in s then 1 else 0
+         }",
+        20,
+    );
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn membership_not_in_runtime_set() {
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             mut s : Set(Int) = {1, 2, 3}
+             if 99 not in s then 1 else 0
+         }",
+        0,
+    );
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn membership_filters_sum_via_runtime_set() {
+    // Sum only the elements of a compile-time-unrolled range that belong to a
+    // runtime set — exercises membership check across different iteration forms.
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             mut evens : Set(Int) = {2, 4, 6, 8}
+             mut acc   : Int = 0
+             for x in {1, 2, 3, 4, 5, 6} {
+                 acc := if x in evens then acc + x else acc
+             }
+             acc
+         }",
+        0,
+    );
+    assert_eq!(result, 12); // 2+4+6
+}
+
 // ── for x in runtime_set_variable ────────────────────────────────────────────
 
 #[test]

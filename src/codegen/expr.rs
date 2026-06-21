@@ -164,20 +164,26 @@ impl<'ctx> Compiler<'ctx> {
         _span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         // Membership checks: only the LHS is a value; the RHS is a set expression.
+        // When the RHS is a variable that resolves to a runtime set in env, dispatch
+        // to the runtime contains function rather than the compile-time path.
         match op {
-            BinOp::In => {
-                let (lv, _) = self.compile_expr(lhs, env)?;
-                let pred = self.compile_membership(lv.into_int_value(), rhs)?;
+            BinOp::In | BinOp::NotIn => {
+                let (lv, lk) = self.compile_expr(lhs, env)?;
+                let pred = if let ExprKind::Var(sym) = &rhs.kind {
+                    if let Some(&(set_ptr, Kind::Set(ek))) = env.get(sym) {
+                        self.compile_runtime_contains(lv, lk, set_ptr, ek)?
+                    } else {
+                        self.compile_membership(lv.into_int_value(), rhs)?
+                    }
+                } else {
+                    self.compile_membership(lv.into_int_value(), rhs)?
+                };
+                if op == BinOp::NotIn {
+                    let neg = self.builder.build_not(pred, "not_in")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    return Ok((neg.into(), Kind::Bool));
+                }
                 return Ok((pred.into(), Kind::Bool));
-            }
-            BinOp::NotIn => {
-                let (lv, _) = self.compile_expr(lhs, env)?;
-                let pred = self.compile_membership(lv.into_int_value(), rhs)?;
-                let neg = self
-                    .builder
-                    .build_not(pred, "not_in")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
-                return Ok((neg.into(), Kind::Bool));
             }
             _ => {}
         }

@@ -1,8 +1,9 @@
-use inkwell::{IntPredicate, values::IntValue};
+use inkwell::{IntPredicate, values::{BasicValueEnum, IntValue}};
 
 use crate::{
     ast::{BinOp, Expr, ExprKind},
     error::CompileError,
+    kind::{Kind, SetElemKind},
 };
 
 use super::Compiler;
@@ -115,6 +116,44 @@ impl<'ctx> Compiler<'ctx> {
                 "unsupported set expression in membership check".into(),
             )),
         }
+    }
+
+    /// Emit a `cantor_set_contains_*` call for `val ∈ runtime_set`.
+    ///
+    /// Returns an `i1` (true/false), matching the shape of `compile_membership`.
+    /// Bool values are widened to i64 before the call (uniform ABI).
+    pub(in crate::codegen) fn compile_runtime_contains(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_kind: Kind,
+        set_ptr: BasicValueEnum<'ctx>,
+        elem_kind: SetElemKind,
+    ) -> Result<IntValue<'ctx>, CompileError> {
+        let i64t = self.context.i64_type();
+        let contains_fn = match elem_kind {
+            SetElemKind::Int  => "cantor_set_contains_i64",
+            SetElemKind::Bool => "cantor_set_contains_bool",
+        };
+        let fn_val = self.module.get_function(contains_fn)
+            .ok_or_else(|| CompileError::Internal(format!("{contains_fn} not declared")))?;
+        let val_i64: BasicValueEnum = if val_kind == Kind::Bool {
+            self.builder
+                .build_int_z_extend(val.into_int_value(), i64t, "val_bool_ext")
+                .map_err(|e| CompileError::Internal(e.to_string()))?
+                .into()
+        } else {
+            val
+        };
+        let result_i64 = self.builder
+            .build_call(fn_val, &[set_ptr.into(), val_i64.into()], "contains")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .try_as_basic_value().left()
+            .ok_or_else(|| CompileError::Internal("contains fn returned void".into()))?
+            .into_int_value();
+        // Truncate the i64 0/1 result to i1 to match compile_membership's return shape.
+        self.builder
+            .build_int_truncate(result_i64, self.context.bool_type(), "contains_i1")
+            .map_err(|e| CompileError::Internal(e.to_string()))
     }
 
     fn compile_bounded_membership(

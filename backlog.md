@@ -41,7 +41,30 @@ You probably don't want to read this unless you're me.
 - compiled binaries
 - linker integration
 - "named types" (Type vs NewType?) or whatever the thingy is called but in set language. I want to be able to make Litres that are numbers but form a distinct set.
-- structs/"named product sets" and same for unions
+- literal suffix support for e.g. 3m for 3 meters
+- structs/"named product sets" and same for unions. product sets are either fully not named or fully named.
+  Tentative syntax for products:
+  ```
+  Pair = distinct Meter * Meter
+  mut p : Pair = (3m, 4m)
+
+  Point = distinct (
+      x: Meter
+      y: Meter
+  )
+  mut p : Point = (
+      x = 3m
+      y = 4m
+  )
+  ```
+  Tentative syntax for unions:
+  ```
+  Measurement = distinct Meter | Liter
+  mut m1 : Measurement = 3m
+  mut m2 : Measurement = 4l
+
+  -- not sure what to do about named unions yet
+  ```
 - pattern matching with `match x { a => ... , b => ...}`
 - struct member functions?
 - lambdas and closures
