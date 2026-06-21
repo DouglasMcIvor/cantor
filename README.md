@@ -346,7 +346,6 @@ sum_above_threshold(threshold) {
 
 ## On the roadmap
 
-- **Richer set invariants** — `mut s : Set(Int - {0})` should constrain every element; the fix is to extract the inner element-kind expression from `Set(...)` and pass it to `membership_constraint` for the loop variable in the inductive step — no logic change required, stays in QF_NIA
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
 - **User-defined named sets** — `EvenNat = { n in Nat | n mod 2 == 0 }` as a top-level definition
 - **`raise` and `emits`** — unrecoverable errors and write-only side effects (logging, metrics)

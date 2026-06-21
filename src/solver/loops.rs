@@ -553,6 +553,22 @@ fn check_for_inductive_step<'tm>(
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
 ) -> Option<CheckResult> {
+    // If `set` is a runtime set variable, extract its element-kind expression
+    // from the Set(ElemKind) constraint (e.g. Set(Nat) → Nat, Set(Int-{0}) →
+    // Int-{0}).  The clone is cheap — we just need the Expr for membership_constraint.
+    let runtime_elem_constraint: Option<Expr> = if let ExprKind::Var(sym) = &set.kind {
+        constraint_env.get(sym).and_then(|c| {
+            if let ExprKind::Call { callee, args } = &c.kind {
+                if callee.0 == "Set" && args.len() == 1 {
+                    return Some(args[0].clone());
+                }
+            }
+            None
+        })
+    } else {
+        None
+    };
+
     check_loop_inductive_step(
         body, modified, constraint_env, env, accumulated_facts,
         const_defs, fn_env, tm, ssa_counter, param_names, param_terms,
@@ -561,16 +577,16 @@ fn check_for_inductive_step<'tm>(
             let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
             *ssa += 1;
             let var_fresh = tm.mk_const(tm.integer_sort(), &var_fresh_name);
-            // When iterating over a runtime set variable, the element kind can't
-            // be expressed in QF_NIA. Treat the loop variable as unconstrained.
-            let is_runtime_set_var = if let ExprKind::Var(sym) = &set.kind {
-                constraint_env.get(sym)
-                    .map(|c| matches!(set_kind(c), ValKind::Set(_)))
-                    .unwrap_or(false)
+            if let Some(elem_c) = &runtime_elem_constraint {
+                // Apply the element-kind constraint (e.g. x >= 0 for Set(Nat)).
+                // If the element kind itself is unsupported, proceed unconstrained
+                // rather than aborting — we'll just be less precise.
+                match membership_constraint(tm, var_fresh.clone(), elem_c) {
+                    Membership::Unconstrained => {}
+                    Membership::Constrained(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); }
+                    Membership::Unsupported => {}
+                }
             } else {
-                false
-            };
-            if !is_runtime_set_var {
                 match membership_constraint(tm, var_fresh.clone(), set) {
                     Membership::Unconstrained => {}
                     Membership::Constrained(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); }

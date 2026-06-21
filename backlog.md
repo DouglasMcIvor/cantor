@@ -3,8 +3,6 @@ You probably don't want to read this unless you're me.
 
 # To do
 
-- runtime sets of course
-- for over named sets not just set literals
 - immutable set (and eventually all-value) bindings — two milestones:
   1. range-constraint form: `s : Set(Int) = {1, 2, 3}` desugars to `s = {1, 2, 3}; require s in Set(Int)`
   2. inference form: `s = {1, 2, 3}` infers element kind from the literal
@@ -81,6 +79,7 @@ You probably don't want to read this unless you're me.
   > Coproducts (unions) have injections.
   >
   > You don't need to mention category theory anywhere in the language documentation, of course, but it's a reassuring sign. When the syntax naturally lines up with deep mathematical structures, it usually means you've found something that will remain coherent as the language grows. In Cantor, . naturally denotes projection (p.x), and Constructor(...) naturally denotes injection (Result.Ok(3m)). That symmetry feels remarkably elegant.
+- mutable range inference
 - pattern matching with `match x { a => ... , b => ...}`
 - struct member functions?
 - lambdas and closures

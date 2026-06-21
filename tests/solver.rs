@@ -6,3 +6,5 @@ mod membership;
 mod encode;
 #[path = "solver/loops.rs"]
 mod loops;
+#[path = "solver/runtime_sets.rs"]
+mod runtime_sets;
