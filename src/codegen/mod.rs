@@ -243,11 +243,75 @@ impl<'ctx> Compiler<'ctx> {
         self.compile_function_body(function, params, &all_int, body, false, &Env::new())
     }
 
+    /// Borrow the underlying LLVM module (useful for tests and manual IR construction).
+    pub fn module(&self) -> &Module<'ctx> {
+        &self.module
+    }
+
+    /// Declare all Cantor runtime functions as external symbols in the module.
+    ///
+    /// Must be called before compiling any code that uses runtime sets.
+    /// `into_jit_engine` will then register the actual function pointers so
+    /// the JIT can resolve the calls.
+    pub fn declare_runtime_functions(&mut self) {
+        let i64t = self.context.i64_type();
+        let void = self.context.void_type();
+        let ii   = &[i64t.into(), i64t.into()] as &[_]; // (set_ptr, val) -> ...
+        let i    = &[i64t.into()] as &[_];               // (set_ptr) -> i64
+
+        // Set(Int) ABI
+        self.module.add_function("cantor_set_new_i64",      i64t.fn_type(&[], false),  None);
+        self.module.add_function("cantor_set_insert_i64",   void.fn_type(ii,   false), None);
+        self.module.add_function("cantor_set_contains_i64", i64t.fn_type(ii,   false), None);
+        self.module.add_function("cantor_set_size_i64",     i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_set_get_i64",      i64t.fn_type(ii,   false), None);
+
+        // Set(Bool) ABI — booleans passed as i64 (0/1) at the boundary
+        self.module.add_function("cantor_set_new_bool",      i64t.fn_type(&[], false), None);
+        self.module.add_function("cantor_set_insert_bool",   void.fn_type(ii,   false), None);
+        self.module.add_function("cantor_set_contains_bool", i64t.fn_type(ii,   false), None);
+        self.module.add_function("cantor_set_size_bool",     i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_set_get_bool",      i64t.fn_type(ii,   false), None);
+    }
+
     /// Consume the compiler and hand the module to a JIT engine.
+    ///
+    /// Any runtime functions declared via `declare_runtime_functions` are
+    /// registered with the engine via `add_global_mapping` so the JIT can
+    /// resolve calls to them without dynamic library lookup.
     pub fn into_jit_engine(self) -> Result<ExecutionEngine<'ctx>, String> {
-        self.module
+        use crate::runtime;
+
+        // Collect (FunctionValue, address) pairs while we still have the module.
+        // FunctionValue<'ctx> is tied to the LLVM context lifetime, not to the
+        // module, so these remain valid after the module is consumed below.
+        let mappings: Vec<(FunctionValue<'ctx>, usize)> = {
+            let rt: &[(&str, usize)] = &[
+                ("cantor_set_new_i64",       runtime::cantor_set_new_i64      as usize),
+                ("cantor_set_insert_i64",    runtime::cantor_set_insert_i64   as usize),
+                ("cantor_set_contains_i64",  runtime::cantor_set_contains_i64 as usize),
+                ("cantor_set_size_i64",      runtime::cantor_set_size_i64     as usize),
+                ("cantor_set_get_i64",       runtime::cantor_set_get_i64      as usize),
+                ("cantor_set_new_bool",      runtime::cantor_set_new_bool     as usize),
+                ("cantor_set_insert_bool",   runtime::cantor_set_insert_bool  as usize),
+                ("cantor_set_contains_bool", runtime::cantor_set_contains_bool as usize),
+                ("cantor_set_size_bool",     runtime::cantor_set_size_bool    as usize),
+                ("cantor_set_get_bool",      runtime::cantor_set_get_bool     as usize),
+            ];
+            rt.iter()
+                .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))
+                .collect()
+        }; // borrow of self.module ends here
+
+        let ee = self.module
             .create_jit_execution_engine(OptimizationLevel::None)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+
+        for (fn_val, addr) in mappings {
+            unsafe { ee.add_global_mapping(&fn_val, addr); }
+        }
+
+        Ok(ee)
     }
 
     pub fn print_ir(&self) {
@@ -311,6 +375,7 @@ pub fn compile_file<'ctx>(
     items: &[Item],
 ) -> Result<ExecutionEngine<'ctx>, CompileError> {
     let mut compiler = Compiler::new(ctx, "cantor");
+    compiler.declare_runtime_functions();
 
     // Pass 0 — evaluate constants and build a shared env of inlined values.
     let mut const_vals: HashMap<Symbol, i64> = HashMap::new();

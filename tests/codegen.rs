@@ -4,3 +4,5 @@ mod helpers;
 mod expr;
 #[path = "codegen/loops.rs"]
 mod loops;
+#[path = "codegen/runtime_fns.rs"]
+mod runtime_fns;
