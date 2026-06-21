@@ -2,7 +2,7 @@
 
 ![Cantor programming language logo](docs/cantor_logo.png)
 
-> *A statically typed language without any types.* - *Values are all you need*
+> *A statically typed language without any types - values are all you need!*
 
 Named after [Georg Cantor](https://en.wikipedia.org/wiki/Georg_Cantor), the mathematician who built the foundations of modern set theory.
 
@@ -156,7 +156,7 @@ The compiler widens to `i64` only at function-call boundaries and narrows back i
 
 ### Constants
 
-Constants are compile-time values, type-checked against their declared set.
+Constants are compile-time values, checked against their declared range constraint set.
 They are automatically inlined everywhere they are used.
 
 ```haskell
@@ -333,7 +333,7 @@ sum_above_threshold(threshold) {
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` in domain/range/`in`/`for` positions; finite literal sources unrolled statically; infinite named sources encoded as SMT predicates
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis
-- **Unified named definitions** — constants (`pi : Nat = 314`) and compile-time set definitions (`Colour = {1, 2, 3}`) share the same one-line syntax and the same AST node; both are auto-inlined at compile time; constants are type-checked against their annotation
+- **Unified named definitions** — constants (`pi : Nat = 314`) and compile-time set definitions (`Colour = {1, 2, 3}`) share the same one-line syntax and the same AST node; both are auto-inlined at compile time; constants are checked against their range annotation
 - **Block bodies with `while` and `for x in S` loops** — imperative-style bodies with `while cond { stmts }` and `for x in {e1, e2, …} { stmts }`, `mut name: Set = expr` locals (set annotation is the declared loop invariant), sequenced statements, and `if-then-else`
 - **Runtime sets** — `Set(Int)` and `Set(Bool)` as first-class heap-allocated values; `mut s : Set(Int) = {…}` creates a sorted-unique set; `for x in s` iterates; `x in s` / `x not in s` test membership; `size(s)` returns cardinality; duplicates are collapsed silently
 - **`require` / `assert` / `assume`** — static and graduated runtime proof obligations
@@ -346,11 +346,11 @@ sum_above_threshold(threshold) {
 
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` with no new language mechanism — just a named set used in a union range.
 
-- **`distinct` type proofs** — `distinct` sets are declared and named but currently phantom: the solver returns `unknown` for any signature involving one, including the trivial identity `volume : Litre -> Litre`. Making them useful requires encoding them as uninterpreted SMT sorts and adding a constructor mechanism (`litre : Nat -> Litre`). Once done, unit-safe arithmetic, newtypes, and nominal error values (`ErrForbidden = distinct 403`) all work for free.
+- **`distinct` value proofs** — `distinct` sets are declared and named but currently phantom: the solver returns `unknown` for any signature involving one, including the trivial identity `volume : Litre -> Litre`. Making them useful requires encoding them as uninterpreted SMT sorts and adding a constructor mechanism (`litre : Nat -> Litre`). Once done, unit-safe arithmetic, new values, and nominal error values (`ErrForbidden = distinct 403`) all work for free.
 
 - **Namespaces and structured data** — dot-access for members of named definitions unlocks named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`) and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
 
-- **Pattern matching** — `match x { Shape.Circle(r) => …, Shape.Rect(w, h) => … }`; the natural companion to union types, and the basis for destructuring in general.
+- **Pattern matching** — `match x { Shape.Circle(r) => …, Shape.Rect(w, h) => … }`; the natural companion to union sets, and the basis for destructuring in general.
 
 - **Lambdas, closures, and higher-order functions** — anonymous functions, captured variables, and functions as first-class values. Unlocks `map`, `filter`, `fold`, and combinators without needing the full generics machinery.
 
@@ -360,7 +360,7 @@ sum_above_threshold(threshold) {
 
 - **Module system** — imports, library compilation, separate checking; one file = one module, `::` path separator.
 
-- **More built-in types and collections** — floats, strings, bytes, ordered sets, vectors, maps. The mechanics are unexciting but the language can't do much without them.
+- **More built-in values and collections** — floats, strings, bytes, ordered sets, vectors, maps. The mechanics are unexciting but the language can't do much without them.
 
 - **Generics** — a single new keyword `given` introduces a compile-time variable into scope; `require` states constraints on it; instantiation asks the solver to discharge them. Reduces to an overload generator with no other new machinery: `given A; require A <= Countable; population : Habitat(A) -> Nat`.
 
