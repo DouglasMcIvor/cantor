@@ -9,6 +9,13 @@
 
 use crate::ast::{BinOp, Expr, ExprKind, FunctionSig};
 
+/// The element kind of a homogeneous runtime set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetElemKind {
+    Int,
+    Bool,
+}
+
 /// The LLVM type a Cantor value compiles to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -16,15 +23,21 @@ pub enum Kind {
     Int,
     /// i1 — the two-element Bool set {true, false}, disjoint from all integers
     Bool,
+    /// i64 (pointer-as-i64) — heap-allocated sorted array; element kind tracked for dispatch.
+    Set(SetElemKind),
 }
 
 /// The runtime Kind of a value drawn from `set_expr`.
-///
-/// `Bool` is the only non-integer kind so far; every other named set and set
-/// expression falls back to `Kind::Int`.
 pub fn set_kind(set_expr: &Expr) -> Kind {
     match &set_expr.kind {
         ExprKind::Var(sym) if sym.0 == "Bool" => Kind::Bool,
+        // `Set(Int)` / `Set(Bool)` — the power set of the given element set.
+        ExprKind::Call { callee, args } if callee.0 == "Set" && args.len() == 1 => {
+            match set_kind(&args[0]) {
+                Kind::Bool => Kind::Set(SetElemKind::Bool),
+                _ => Kind::Set(SetElemKind::Int),
+            }
+        }
         _ => Kind::Int,
     }
 }
@@ -41,7 +54,13 @@ pub fn range_kind(range: &Expr) -> Kind {
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             let lk = range_kind(lhs);
             let rk = range_kind(rhs);
-            if lk == Kind::Bool || rk == Kind::Bool { Kind::Bool } else { Kind::Int }
+            // Set dominates Bool dominates Int (Fail contributes Int and must not
+            // override the real success-path kind).
+            match (lk, rk) {
+                (Kind::Set(ek), _) | (_, Kind::Set(ek)) => Kind::Set(ek),
+                (Kind::Bool, _) | (_, Kind::Bool) => Kind::Bool,
+                _ => Kind::Int,
+            }
         }
         _ => set_kind(range),
     }

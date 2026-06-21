@@ -148,7 +148,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
                 (i1.into(), Kind::Bool)
             } else {
-                (val.into(), Kind::Int)
+                (val.into(), original_kind)
             };
             loop_env.insert(name.clone(), entry);
         }
@@ -181,7 +181,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
                 (i1.into(), Kind::Bool)
             } else {
-                (val.into(), Kind::Int)
+                (val.into(), original_kind)
             };
             env.insert(name.clone(), entry);
         }
@@ -325,7 +325,7 @@ impl<'ctx> Compiler<'ctx> {
                             .map_err(|e| CompileError::Internal(e.to_string()))?;
                         (i1.into(), Kind::Bool)
                     } else {
-                        (val.into(), Kind::Int)
+                        (val.into(), k)
                     };
                     env.insert(name.clone(), entry);
                 }
@@ -366,7 +366,7 @@ impl<'ctx> Compiler<'ctx> {
                             .map_err(|e| CompileError::Internal(e.to_string()))?;
                         (i1.into(), Kind::Bool)
                     } else {
-                        (val.into(), Kind::Int)
+                        (val.into(), k)
                     };
                     env.insert(name.clone(), entry);
                 }
@@ -394,7 +394,7 @@ impl<'ctx> Compiler<'ctx> {
                             .map_err(|e| CompileError::Internal(e.to_string()))?;
                         (i1.into(), Kind::Bool)
                     } else {
-                        (val.into(), Kind::Int)
+                        (val.into(), k)
                     };
                     env.insert(name.clone(), entry);
                 }

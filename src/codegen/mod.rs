@@ -213,7 +213,7 @@ impl<'ctx> Compiler<'ctx> {
                 .build_int_z_extend(val.into_int_value(), i64_type, "bool_to_i64")
                 .map_err(|e| CompileError::Internal(e.to_string()))?
                 .into(),
-            Some((val, Kind::Int)) => val,
+            Some((val, Kind::Int)) | Some((val, Kind::Set(_))) => val,
             None => {
                 return Err(CompileError::Internal(
                     "block body has no return expression".into(),

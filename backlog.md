@@ -116,7 +116,6 @@ You probably don't want to read this unless you're me.
 - How should we implement built in containers like sets and so? Pull in a library or roll our own?
   - For temporaries: flat arrays to start to keep it simple, deallocate entire arena each IO loop, one arena to start
   - ChatGPT suggests `im` or `rpds` (its preference for some reason) for persistent data structures and eventually we can roll our own
-  - Will need to start with a runtime implemented in rust and an ABI for `cantor_set_new()` etc
 - Should we represent values of lists of product sets automatically as a struct of arrays? That might be fun
 - Does all of overloading, generics and dynamic dispatch collapse into the one thing? Either the compiler proves a particular definition is used or else it outputs a vtable?
 - I wanted 'emit' for write only effects, but when we added multithreading we will need synchronoisation. Is that a problem?
