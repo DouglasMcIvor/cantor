@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use inkwell::{
     OptimizationLevel,
@@ -11,7 +11,7 @@ use inkwell::{
 };
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, Item, Param, Stmt, UnOp},
+    ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, Param, Stmt, UnOp},
     error::CompileError,
     kind::{Kind, param_kinds, range_kind},
     span::Symbol,
@@ -53,6 +53,9 @@ pub struct Compiler<'ctx> {
     /// are set literals (e.g. `HTTPError = {400, 503}` → `[400, 503]`).
     /// Used by `compile_try` and `compile_membership` for named error set checks.
     user_set_vals: HashMap<String, Vec<i64>>,
+    /// Names of all `distinct` sets in the file (e.g. `"Litre"`, `"Kelvin"`).
+    /// Used to detect auto-generated constructors like `litre(x)` → identity.
+    distinct_names: HashSet<String>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -66,6 +69,7 @@ impl<'ctx> Compiler<'ctx> {
             fn_return_kinds: HashMap::new(),
             fn_ranges: HashMap::new(),
             user_set_vals: HashMap::new(),
+            distinct_names: HashSet::new(),
         }
     }
 
@@ -426,6 +430,14 @@ fn compile_items<'ctx>(
         }
     }
     compiler.user_set_vals = user_set_vals;
+
+    compiler.distinct_names = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::NameDef(def) if def.kind == DefKind::Distinct => Some(def.name.0.clone()),
+            _ => None,
+        })
+        .collect();
 
     let i64_type = ctx.i64_type();
     let const_env: Env<'ctx> = const_vals

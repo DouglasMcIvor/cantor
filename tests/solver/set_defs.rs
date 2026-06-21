@@ -57,11 +57,12 @@ f() = 10
 ");
 }
 
-// ── Distinct sets → Unknown ───────────────────────────────────────────────────
+// ── Distinct sets ─────────────────────────────────────────────────────────────
 
 #[test]
-fn distinct_set_domain_unknown() {
-    unknown("
+fn distinct_set_identity_proved() {
+    // x ∈ Litre → x ∈ Litre: identity function is proved
+    proved("
 Litre = distinct Nat
 volume : Litre -> Litre
 volume(x) = x
@@ -69,10 +70,41 @@ volume(x) = x
 }
 
 #[test]
-fn distinct_set_range_unknown() {
-    unknown("
+fn distinct_set_constructor_proved() {
+    // litre(n) ∈ Litre when n ∈ Nat
+    proved("
+Litre = distinct Nat
+wrap : Nat -> Litre
+wrap(n) = litre(n)
+");
+}
+
+#[test]
+fn distinct_set_from_proved() {
+    // from(litre(n)) ∈ Nat — the result is constrained to the basis
+    proved("
+Litre = distinct Nat
+unwrap : Litre -> Nat
+unwrap(x) = from(x)
+");
+}
+
+#[test]
+fn distinct_set_range_without_constructor_counterexample() {
+    // 273 is a plain integer, not wrapped with kelvin(); solver rejects it
+    counterexample("
 Kelvin = distinct NatPos
 freeze : -> Kelvin
 freeze() = 273
+");
+}
+
+#[test]
+fn distinct_set_wrong_basis_counterexample() {
+    // Claiming Int output is Litre (distinct Nat) when input could be negative
+    counterexample("
+Litre = distinct Nat
+bad : Int -> Litre
+bad(x) = litre(x)
 ");
 }

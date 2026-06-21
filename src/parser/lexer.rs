@@ -33,6 +33,9 @@ pub enum Token {
     For,
     // Failure
     Fail,
+    // Built-in functions (reserved — cannot be shadowed by user definitions)
+    From,
+    Size,
 
     // Identifiers
     Ident(String),
@@ -98,6 +101,8 @@ impl fmt::Display for Token {
             Token::While    => f.write_str("while"),
             Token::For      => f.write_str("for"),
             Token::Fail     => f.write_str("fail"),
+            Token::From     => f.write_str("from"),
+            Token::Size     => f.write_str("size"),
             Token::Plus     => f.write_str("+"),
             Token::Minus    => f.write_str("-"),
             Token::Star     => f.write_str("*"),
@@ -191,6 +196,8 @@ impl<'src> Lexer<'src> {
             "for"      => Token::For,
             "fail"     => Token::Fail,
             "return"   => Token::Return,
+            "from"     => Token::From,
+            "size"     => Token::Size,
             _          => Token::Ident(word.to_owned()),
         };
         (tok, Span::new(start as u32, self.pos as u32))

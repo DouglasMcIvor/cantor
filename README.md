@@ -326,6 +326,33 @@ sum_above_threshold(threshold) {
 }
 ```
 
+### Distinct sets and unit safety
+
+`distinct` creates a new solver-opaque set that is disjoint from its basis type.
+The compiler auto-provides a constructor and `from` as a destructor.
+
+```haskell
+Litre  = distinct Nat
+Kelvin = distinct NatPos
+
+-- litre : Nat -> Litre  (auto-provided)
+-- from  : Litre -> Nat  (built-in destructor)
+
+scale : Litre -> Litre
+scale(v) = litre(from(v) * 2)   -- double the underlying Nat, re-wrap as Litre
+
+freeze : -> Kelvin
+freeze() = kelvin(273)           -- 273 wrapped with the constructor: proved ✓
+```
+
+```sh
+$ cantor distinct_demo.cantor
+  proved   scale  : Litre -> Litre
+  proved   freeze : -> Kelvin
+```
+
+Accidentally passing a plain `Nat` where a `Litre` is expected, or forgetting the constructor, produces a counterexample rather than a silent pass.
+
 ## Features (working today)
 
 - **Set-theoretic domains and ranges** — `Int`, `Nat`, `NatPos`, `NonZeroInt`, `Int8`–`Int64`, `Bool`, set literals `{0, 1, 2}`, set difference `A - B`, union `A | B`, intersection `A & B`, error-union `A !! B` (why? because when you get an error the code goes bang! bang! ... I'll let myself out ...)
@@ -345,12 +372,11 @@ sum_above_threshold(threshold) {
 - **`return expr`** — early return from a block body; the solver reports `unknown` for block bodies containing `return` (early exits can't yet be modelled in the linear SMT encoder)
 - **`assert … else fail/return`** — `assert pred else fail 400` returns the offset-encoded failure when the predicate is false; `assert pred else return expr` returns `expr` directly as an early success exit
 - **Named set naming convention** — uppercase names are compile-time set names (`Nat`, `HTTPError`); lowercase names are values (`pi`, `abs`, `collected_primes`); enforced by the compiler
-- **`alias` and `distinct` set modifiers** — `Colour = {1, 2, 3}` and `Animal = alias Cat | Dog` declare transparent aliases (the solver expands membership inline); `Litre = distinct Nat` declares a new solver-opaque set disjoint from `Nat` (see roadmap note on `distinct` proofs)
+- **`alias` and `distinct` set modifiers** — `Colour = {1, 2, 3}` and `Animal = alias Cat | Dog` declare transparent aliases (the solver expands membership inline); `Litre = distinct Nat` declares a new solver-opaque set disjoint from `Nat` with full SMT-backed value proofs (see below)
+- **`distinct` value proofs** — `Litre = distinct Nat` automatically provides the constructor `litre : Nat -> Litre` and the built-in destructor `from(x)` which returns the basis-type value. The solver uses an uninterpreted predicate `is_Litre : Int -> Bool` (via `QF_UFNIA`) to reason about membership: `litre(n)` asserts `n ∈ Nat → is_Litre(result)`; `from(x)` asserts `is_Litre(x) → result ∈ Nat`; identity functions (`volume : Litre -> Litre`) are proved directly. Plain integer literals not wrapped in a constructor are correctly rejected with a counterexample. Both `litre` and `from` are identity operations at runtime. `from` and `size` are reserved keywords.
 - **JIT execution** — `cantor run <file>` checks proofs then JIT-compiles and runs `main` via LLVM
 
 ## On the roadmap
-
-- **`distinct` value proofs** — `distinct` sets are declared and named but currently phantom: the solver returns `unknown` for any signature involving one, including the trivial identity `volume : Litre -> Litre`. Making them useful requires encoding them as uninterpreted SMT sorts and adding a constructor mechanism (`litre : Nat -> Litre`). Once done, unit-safe arithmetic, new values, and nominal error values (`ErrForbidden = distinct 403`) all work for free.
 
 - **Namespaces and structured data** — dot-access for members of named definitions unlocks named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`) and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
 

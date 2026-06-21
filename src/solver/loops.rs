@@ -13,7 +13,7 @@ use crate::{
 use super::CheckResult;
 use super::NameDefs;
 use super::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value};
-use super::membership::{Membership, membership_constraint};
+use super::membership::{DistinctPreds, Membership, membership_constraint};
 
 // ── Loop predicate ────────────────────────────────────────────────────────────
 
@@ -28,6 +28,7 @@ pub(crate) fn body_has_unconstrained_loop_var<'tm>(
     constraint_env: &HashMap<Symbol, Expr>,
     tm: &'tm TermManager,
     name_defs: &NameDefs<'_>,
+    distinct_preds: &DistinctPreds<'tm>,
 ) -> bool {
     stmts.iter().any(|s| match s {
         Stmt::While { body, .. } | Stmt::ForIn { body, .. } => {
@@ -38,14 +39,14 @@ pub(crate) fn body_has_unconstrained_loop_var<'tm>(
                     Some(constraint) => {
                         let dummy = tm.mk_integer(0);
                         matches!(
-                            membership_constraint(tm, dummy, constraint, name_defs),
+                            membership_constraint(tm, dummy, constraint, name_defs, distinct_preds),
                             Membership::Unconstrained
                         )
                     }
                 }
             })
         }
-        Stmt::Block(inner) => body_has_unconstrained_loop_var(inner, constraint_env, tm, name_defs),
+        Stmt::Block(inner) => body_has_unconstrained_loop_var(inner, constraint_env, tm, name_defs, distinct_preds),
         _ => false,
     })
 }
@@ -73,6 +74,7 @@ pub(crate) fn encode_block<'tm>(
     constraint_env: &mut HashMap<Symbol, Expr>,
     has_runtime_assert: &mut bool,
     immutable_names: &mut HashSet<Symbol>,
+    distinct_preds: &DistinctPreds<'tm>,
 ) -> Result<Option<Term<'tm>>, CheckResult> {
     let top_guard = tm.mk_boolean(true);
     let mut last_expr: Option<Term<'tm>> = None;
@@ -94,7 +96,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Let { name, constraint, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(),
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -107,7 +109,7 @@ pub(crate) fn encode_block<'tm>(
                 // check_require uses a fresh solver seeded only from accumulated_facts
                 // and would miss call contracts added to the main solver — deferring
                 // lets the final negation+SAT check use the full solver context.
-                if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs) {
+                if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: top_guard.clone(),
                         obligation: c,
@@ -137,7 +139,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::MutLet { name, constraint, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(),
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -150,7 +152,7 @@ pub(crate) fn encode_block<'tm>(
                 // check_require uses a fresh solver seeded only from accumulated_facts
                 // and would miss call contracts added to the main solver — deferring
                 // lets the final negation+SAT check use the full solver context.
-                if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs) {
+                if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: top_guard.clone(),
                         obligation: c,
@@ -179,7 +181,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Assign { name, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(),
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -193,7 +195,7 @@ pub(crate) fn encode_block<'tm>(
                 // inductive step checker handles loop invariants separately — so
                 // this check only fires for non-loop reassignments.
                 if let Some(constraint) = constraint_env.get(name).cloned() {
-                    if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), &constraint, name_defs) {
+                    if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), &constraint, name_defs, distinct_preds) {
                         match check_require(c.clone(), tm, accumulated_facts, param_names, param_terms) {
                             CheckResult::Proved => {
                                 solver.assert_formula(c.clone());
@@ -219,7 +221,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Assume { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(),
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
                 )
                 .map_err(CheckResult::Unknown)?;
                 solver.assert_formula(pred.clone());
@@ -229,7 +231,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Require { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(),
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
                 )
                 .map_err(CheckResult::Unknown)?;
 
@@ -245,7 +247,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Assert { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(),
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
                 )
                 .map_err(CheckResult::Unknown)?;
 
@@ -295,7 +297,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Expr(e) => {
                 let t = encode_expr(
                     e, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(),
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
                 )
                 .map_err(CheckResult::Unknown)?;
                 last_expr = Some(t);
@@ -306,7 +308,7 @@ pub(crate) fn encode_block<'tm>(
                     inner, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, ssa_counter,
                     accumulated_facts, param_names, param_terms,
-                    constraint_env, has_runtime_assert, immutable_names,
+                    constraint_env, has_runtime_assert, immutable_names, distinct_preds,
                 )?;
             }
 
@@ -315,7 +317,7 @@ pub(crate) fn encode_block<'tm>(
                 if let Some(step_err) = check_inductive_step(
                     cond, body, &modified, constraint_env,
                     env, accumulated_facts, name_defs, fn_env, tm,
-                    ssa_counter, param_names, param_terms, immutable_names,
+                    ssa_counter, param_names, param_terms, immutable_names, distinct_preds,
                 ) {
                     return Err(step_err);
                 }
@@ -333,7 +335,7 @@ pub(crate) fn encode_block<'tm>(
                         *ssa_counter += 1;
                         let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
                         if let Some(constraint) = constraint_env.get(name) {
-                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs) {
+                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                                 solver.assert_formula(c.clone());
                                 accumulated_facts.push(c);
                             }
@@ -343,7 +345,7 @@ pub(crate) fn encode_block<'tm>(
                 }
 
                 match encode_expr(cond, env, name_defs, fn_env, tm, solver,
-                                  call_counter, builtin_obligs, top_guard.clone()) {
+                                  call_counter, builtin_obligs, top_guard.clone(), distinct_preds) {
                     Ok(cond_term) => {
                         let not_cond = tm.mk_term(Kind::Not, &[cond_term]);
                         solver.assert_formula(not_cond.clone());
@@ -367,7 +369,7 @@ pub(crate) fn encode_block<'tm>(
                 if let Some(step_err) = check_for_inductive_step(
                     var, set, body, &modified, constraint_env,
                     env, accumulated_facts, name_defs, fn_env, tm,
-                    ssa_counter, param_names, param_terms, immutable_names,
+                    ssa_counter, param_names, param_terms, immutable_names, distinct_preds,
                 ) {
                     return Err(step_err);
                 }
@@ -381,7 +383,7 @@ pub(crate) fn encode_block<'tm>(
                         *ssa_counter += 1;
                         let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
                         if let Some(constraint) = constraint_env.get(name) {
-                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs) {
+                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                                 solver.assert_formula(c.clone());
                                 accumulated_facts.push(c);
                             }
@@ -411,7 +413,7 @@ pub(crate) fn check_require<'tm>(
     param_terms: &[Term<'tm>],
 ) -> CheckResult {
     let mut tmp = Solver::new(tm);
-    tmp.set_logic("QF_NIA");
+    tmp.set_logic("QF_UFNIA");
     tmp.set_option("produce-models", "true");
 
     for fact in accumulated_facts {
@@ -461,6 +463,7 @@ fn check_loop_inductive_step<'tm, F>(
     param_terms: &[Term<'tm>],
     inv_label: &str,
     outer_immutable_names: &HashSet<Symbol>,
+    distinct_preds: &DistinctPreds<'tm>,
     add_loop_entry: F,
 ) -> Option<CheckResult>
 where
@@ -480,7 +483,7 @@ where
     }
 
     let mut tmp = Solver::new(tm);
-    tmp.set_logic("QF_NIA");
+    tmp.set_logic("QF_UFNIA");
     tmp.set_option("produce-models", "true");
 
     let mut tmp_facts: Vec<Term<'tm>> = Vec::new();
@@ -496,7 +499,7 @@ where
         *ssa_counter += 1;
         let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
         if let Some(constraint) = constraint_env.get(name) {
-            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs) {
+            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                 tmp.assert_formula(c.clone());
                 tmp_facts.push(c);
             }
@@ -523,7 +526,7 @@ where
         body, &mut body_env, name_defs, fn_env, tm, &mut tmp,
         &mut cc, &mut obligs, &mut step_ssa, &mut tmp_facts,
         param_names, param_terms, &mut empty_cenv, &mut _dummy_runtime_assert,
-        &mut step_imm,
+        &mut step_imm, distinct_preds,
     ) {
         Ok(_) => {}
         Err(e) => return Some(e),
@@ -534,7 +537,7 @@ where
     let mut step_obligs: Vec<Term<'tm>> = Vec::new();
     for name in &constrained {
         if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name)) {
-            if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint, name_defs) {
+            if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint, name_defs, distinct_preds) {
                 step_obligs.push(c);
             }
         }
@@ -564,7 +567,7 @@ where
         let mut reason = format!("{inv_label} not maintained");
         for name in &constrained {
             if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name)) {
-                if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint, name_defs) {
+                if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint, name_defs, distinct_preds) {
                     if !boolean_value(&tmp.get_value(c)) {
                         output_val = integer_value(&tmp.get_value(post.clone()));
                         reason = format!(
@@ -601,16 +604,17 @@ fn check_inductive_step<'tm>(
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
     immutable_names: &HashSet<Symbol>,
+    distinct_preds: &DistinctPreds<'tm>,
 ) -> Option<CheckResult> {
     check_loop_inductive_step(
         body, modified, constraint_env, env, accumulated_facts,
         name_defs, fn_env, tm, ssa_counter, param_names, param_terms,
-        "loop invariant", immutable_names,
+        "loop invariant", immutable_names, distinct_preds,
         |tmp, ind_env, tmp_facts, _ssa| {
             let mut cc = 0usize;
             let mut obligs = Vec::new();
             match encode_expr(cond, ind_env, name_defs, fn_env, tm, tmp,
-                              &mut cc, &mut obligs, tm.mk_boolean(true)) {
+                              &mut cc, &mut obligs, tm.mk_boolean(true), distinct_preds) {
                 Ok(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); None }
                 Err(_) => Some(CheckResult::Unknown(
                     "cannot verify inductive step: loop condition uses syntax not yet \
@@ -636,6 +640,7 @@ fn check_for_inductive_step<'tm>(
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
     immutable_names: &HashSet<Symbol>,
+    distinct_preds: &DistinctPreds<'tm>,
 ) -> Option<CheckResult> {
     // If `set` is a runtime set variable, extract its element-kind expression
     // from the Set(ElemKind) constraint (e.g. Set(Nat) → Nat, Set(Int-{0}) →
@@ -656,7 +661,7 @@ fn check_for_inductive_step<'tm>(
     check_loop_inductive_step(
         body, modified, constraint_env, env, accumulated_facts,
         name_defs, fn_env, tm, ssa_counter, param_names, param_terms,
-        "for-loop invariant", immutable_names,
+        "for-loop invariant", immutable_names, distinct_preds,
         |tmp, ind_env, tmp_facts, ssa| {
             let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
             *ssa += 1;
@@ -665,13 +670,13 @@ fn check_for_inductive_step<'tm>(
                 // Apply the element-kind constraint (e.g. x >= 0 for Set(Nat)).
                 // If the element kind itself is unsupported, proceed unconstrained
                 // rather than aborting — we'll just be less precise.
-                match membership_constraint(tm, var_fresh.clone(), elem_c, name_defs) {
+                match membership_constraint(tm, var_fresh.clone(), elem_c, name_defs, distinct_preds) {
                     Membership::Unconstrained => {}
                     Membership::Constrained(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); }
                     Membership::Unsupported => {}
                 }
             } else {
-                match membership_constraint(tm, var_fresh.clone(), set, name_defs) {
+                match membership_constraint(tm, var_fresh.clone(), set, name_defs, distinct_preds) {
                     Membership::Unconstrained => {}
                     Membership::Constrained(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); }
                     Membership::Unsupported => return Some(CheckResult::Unknown(

@@ -1,11 +1,16 @@
 //! Set membership encoding — mapping Cantor set expressions to cvc5 predicates.
 
+use std::collections::HashMap;
+
 use cvc5::{Kind, Term, TermManager};
 
 use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp};
 use crate::span::Symbol;
 
 use super::NameDefs;
+
+/// Map from distinct set name to its uninterpreted predicate term (`is_D : Int -> Bool`).
+pub(crate) type DistinctPreds<'tm> = HashMap<Symbol, Term<'tm>>;
 
 /// The result of asking "what does `t ∈ set_expr` look like as a cvc5 term?"
 pub(crate) enum Membership<'tm> {
@@ -21,12 +26,14 @@ pub(crate) enum Membership<'tm> {
 ///
 /// Handles named built-in sets, user-defined alias sets (expanded inline),
 /// set literals `{n, …}`, set difference `A - B`, union `A | B`, and
-/// intersection `A & B`.  Distinct user-defined sets return `Unsupported`.
+/// intersection `A & B`.  Distinct user-defined sets use their uninterpreted
+/// predicate from `distinct_preds`.
 pub(crate) fn membership_constraint<'tm>(
     tm: &'tm TermManager,
     t: Term<'tm>,
     set_expr: &Expr,
     name_defs: &NameDefs<'_>,
+    distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
     match &set_expr.kind {
         ExprKind::Var(sym) => match sym.0.as_str() {
@@ -62,9 +69,17 @@ pub(crate) fn membership_constraint<'tm>(
                 if let Some(def) = name_defs.get(sym) {
                     match def.kind {
                         // Alias: transparent — expand to the RHS set expression.
-                        DefKind::Alias => membership_constraint(tm, t, &def.value, name_defs),
-                        // Distinct: opaque to the solver; can't prove membership automatically.
-                        DefKind::Distinct => Membership::Unsupported,
+                        DefKind::Alias => membership_constraint(tm, t, &def.value, name_defs, distinct_preds),
+                        // Distinct: apply the uninterpreted predicate `is_D(t)`.
+                        DefKind::Distinct => {
+                            if let Some(pred) = distinct_preds.get(sym) {
+                                Membership::Constrained(
+                                    tm.mk_term(Kind::ApplyUf, &[pred.clone(), t])
+                                )
+                            } else {
+                                Membership::Unsupported
+                            }
+                        }
                     }
                 } else {
                     Membership::Unsupported
@@ -105,7 +120,7 @@ pub(crate) fn membership_constraint<'tm>(
         // `-` in signature position means set difference (A ∖ B).
         ExprKind::BinOp { op: BinOp::Sub, lhs, rhs } => {
             // t ∈ A - B  ↔  (t ∈ A) ∧ ¬(t ∈ B)
-            let not_in_b = match membership_constraint(tm, t.clone(), rhs, name_defs) {
+            let not_in_b = match membership_constraint(tm, t.clone(), rhs, name_defs, distinct_preds) {
                 Membership::Unsupported => return Membership::Unsupported,
                 Membership::Unconstrained => {
                     // B is ℤ, so A - B = ∅; nothing is a member.
@@ -113,7 +128,7 @@ pub(crate) fn membership_constraint<'tm>(
                 }
                 Membership::Constrained(c) => tm.mk_term(Kind::Not, &[c]),
             };
-            match membership_constraint(tm, t, lhs, name_defs) {
+            match membership_constraint(tm, t, lhs, name_defs, distinct_preds) {
                 Membership::Unsupported => Membership::Unsupported,
                 Membership::Unconstrained => Membership::Constrained(not_in_b),
                 Membership::Constrained(c) => {
@@ -129,12 +144,12 @@ pub(crate) fn membership_constraint<'tm>(
         // The third clause covers bare `fail` returned by assertion failures when
         // there is no `else fail` clause.
         ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, rhs } => {
-            let in_a = membership_constraint(tm, t.clone(), lhs, name_defs);
+            let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
 
             // Decode the potential payload and check it against the error set B.
             let sentinel_base = tm.mk_integer(i64::MIN.wrapping_add(1));
             let decoded = tm.mk_term(Kind::Sub, &[t.clone(), sentinel_base]);
-            let in_b = membership_constraint(tm, decoded, rhs, name_defs);
+            let in_b = membership_constraint(tm, decoded, rhs, name_defs, distinct_preds);
 
             // Bare FAIL_SENTINEL — returned by asserts without an `else fail` clause.
             let sentinel_val = tm.mk_integer(i64::MIN);
@@ -162,8 +177,8 @@ pub(crate) fn membership_constraint<'tm>(
         // `|` in signature position means set union.
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             // t ∈ A | B  ↔  (t ∈ A) ∨ (t ∈ B)
-            let in_a = membership_constraint(tm, t.clone(), lhs, name_defs);
-            let in_b = membership_constraint(tm, t, rhs, name_defs);
+            let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
+            let in_b = membership_constraint(tm, t, rhs, name_defs, distinct_preds);
             match (in_a, in_b) {
                 (Membership::Unsupported, _) | (_, Membership::Unsupported) => Membership::Unsupported,
                 (Membership::Unconstrained, _) | (_, Membership::Unconstrained) => Membership::Unconstrained,
@@ -176,8 +191,8 @@ pub(crate) fn membership_constraint<'tm>(
         // `&` in signature position means set intersection.
         ExprKind::BinOp { op: BinOp::Intersect, lhs, rhs } => {
             // t ∈ A & B  ↔  (t ∈ A) ∧ (t ∈ B)
-            let in_a = membership_constraint(tm, t.clone(), lhs, name_defs);
-            let in_b = membership_constraint(tm, t, rhs, name_defs);
+            let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
+            let in_b = membership_constraint(tm, t, rhs, name_defs, distinct_preds);
             match (in_a, in_b) {
                 (Membership::Unsupported, _) | (_, Membership::Unsupported) => Membership::Unsupported,
                 (Membership::Unconstrained, other) => other,
@@ -189,7 +204,7 @@ pub(crate) fn membership_constraint<'tm>(
         }
 
         ExprKind::Comprehension { output, var, source, filter } => {
-            comprehension_membership(tm, t, output, var, source, filter.as_deref(), name_defs)
+            comprehension_membership(tm, t, output, var, source, filter.as_deref(), name_defs, distinct_preds)
         }
 
         _ => Membership::Unsupported,
@@ -210,6 +225,7 @@ fn comprehension_membership<'tm>(
     source: &Expr,
     filter: Option<&Expr>,
     name_defs: &NameDefs<'_>,
+    distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
     // Case 1: source is a finite set literal — unroll.
     if let ExprKind::SetLit(elements) = &source.kind {
@@ -220,12 +236,12 @@ fn comprehension_membership<'tm>(
         for elem in elements {
             let ExprKind::IntLit(n) = &elem.kind else { return Membership::Unsupported; };
             let elem_term = tm.mk_integer(*n);
-            let Some(out_term) = encode_comp_expr(output, var, elem_term.clone(), tm, name_defs) else {
+            let Some(out_term) = encode_comp_expr(output, var, elem_term.clone(), tm, name_defs, distinct_preds) else {
                 return Membership::Unsupported;
             };
             let eq = tm.mk_term(Kind::Equal, &[t.clone(), out_term]);
             if let Some(f) = filter {
-                let Some(filter_term) = encode_comp_expr(f, var, elem_term, tm, name_defs) else {
+                let Some(filter_term) = encode_comp_expr(f, var, elem_term, tm, name_defs, distinct_preds) else {
                     return Membership::Unsupported;
                 };
                 disjuncts.push(tm.mk_term(Kind::And, &[filter_term, eq]));
@@ -245,10 +261,10 @@ fn comprehension_membership<'tm>(
     // t ∈ {x for x in S if P(x)}  →  t ∈ S  ∧  P(t)
     if let ExprKind::Var(sym) = &output.kind {
         if sym == var {
-            let source_mem = membership_constraint(tm, t.clone(), source, name_defs);
+            let source_mem = membership_constraint(tm, t.clone(), source, name_defs, distinct_preds);
             let filter_mem = match filter {
                 None => None,
-                Some(f) => match encode_comp_expr(f, var, t.clone(), tm, name_defs) {
+                Some(f) => match encode_comp_expr(f, var, t.clone(), tm, name_defs, distinct_preds) {
                     Some(term) => Some(term),
                     None => return Membership::Unsupported,
                 },
@@ -277,6 +293,7 @@ fn encode_comp_expr<'tm>(
     var_term: Term<'tm>,
     tm: &'tm TermManager,
     name_defs: &NameDefs<'_>,
+    distinct_preds: &DistinctPreds<'tm>,
 ) -> Option<Term<'tm>> {
     match &expr.kind {
         ExprKind::IntLit(n)  => Some(tm.mk_integer(*n)),
@@ -284,7 +301,7 @@ fn encode_comp_expr<'tm>(
         ExprKind::Var(sym) if sym == var => Some(var_term),
         ExprKind::Var(_) => None, // free variable — not the bound var; unsupported
         ExprKind::UnOp { op, expr: inner } => {
-            let t = encode_comp_expr(inner, var, var_term, tm, name_defs)?;
+            let t = encode_comp_expr(inner, var, var_term, tm, name_defs, distinct_preds)?;
             match op {
                 UnOp::Neg => Some(tm.mk_term(Kind::Neg, &[t])),
                 UnOp::Not => Some(tm.mk_term(Kind::Not, &[t])),
@@ -293,8 +310,8 @@ fn encode_comp_expr<'tm>(
         ExprKind::BinOp { op, lhs, rhs } => {
             match op {
                 BinOp::In | BinOp::NotIn => {
-                    let l = encode_comp_expr(lhs, var, var_term.clone(), tm, name_defs)?;
-                    let mem = membership_constraint(tm, l, rhs, name_defs);
+                    let l = encode_comp_expr(lhs, var, var_term.clone(), tm, name_defs, distinct_preds)?;
+                    let mem = membership_constraint(tm, l, rhs, name_defs, distinct_preds);
                     return match (op, mem) {
                         (BinOp::In,    Membership::Constrained(c))  => Some(c),
                         (BinOp::In,    Membership::Unconstrained)    => Some(tm.mk_boolean(true)),
@@ -305,8 +322,8 @@ fn encode_comp_expr<'tm>(
                 }
                 _ => {}
             }
-            let l = encode_comp_expr(lhs, var, var_term.clone(), tm, name_defs)?;
-            let r = encode_comp_expr(rhs, var, var_term, tm, name_defs)?;
+            let l = encode_comp_expr(lhs, var, var_term.clone(), tm, name_defs, distinct_preds)?;
+            let r = encode_comp_expr(rhs, var, var_term, tm, name_defs, distinct_preds)?;
             let kind = match op {
                 BinOp::Add => Kind::Add,
                 BinOp::Sub => Kind::Sub,

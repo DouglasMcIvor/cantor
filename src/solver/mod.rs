@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef},
+    ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef},
     span::Symbol,
 };
 
@@ -35,7 +35,7 @@ use crate::kind::{Kind as ValKind, set_kind};
 
 use self::encode::{Env, BuiltinObligation, encode_expr, flatten_product, integer_value, boolean_value};
 use self::loops::{encode_block, body_has_unconstrained_loop_var};
-use self::membership::{Membership, membership_constraint};
+use self::membership::{DistinctPreds, Membership, membership_constraint};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -54,6 +54,24 @@ pub enum CheckResult {
 
 type FunctionEnv<'a> = HashMap<Symbol, &'a FunctionDef>;
 pub(crate) type NameDefs<'a> = HashMap<Symbol, &'a NameDef>;
+
+// ── Distinct predicate builder ────────────────────────────────────────────────
+
+/// For each `D = distinct B` in `name_defs`, create an uninterpreted predicate
+/// `is_D : Int -> Bool` as a cvc5 constant of function sort.
+/// These are threaded through the encoder so membership in D can be represented.
+fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs<'_>) -> DistinctPreds<'tm> {
+    let mut preds = DistinctPreds::new();
+    for (sym, def) in name_defs {
+        if def.kind == DefKind::Distinct {
+            let fn_sort = tm.mk_fun_sort(&[tm.integer_sort()], tm.boolean_sort());
+            let pred_name = format!("is_{}", sym.0);
+            let pred = tm.mk_const(fn_sort, &pred_name);
+            preds.insert(sym.clone(), pred);
+        }
+    }
+    preds
+}
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
@@ -133,9 +151,10 @@ fn sig_label(name: &str, idx: usize, total: usize) -> String {
 fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs: &NameDefs<'_>) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
-    solver.set_logic("QF_NIA");
+    solver.set_logic("QF_UFNIA");
     solver.set_option("produce-models", "true");
 
+    let distinct_preds = build_distinct_preds(&tm, name_defs);
     let env = Env::new();
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
@@ -143,13 +162,13 @@ fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs:
 
     let value_term = match encode_expr(
         &def.value, &env, name_defs, fn_env, &tm, &mut solver,
-        &mut call_counter, &mut builtin_obligs, top_guard,
+        &mut call_counter, &mut builtin_obligs, top_guard, &distinct_preds,
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
     };
 
-    match membership_constraint(&tm, value_term, ty, name_defs) {
+    match membership_constraint(&tm, value_term, ty, name_defs, &distinct_preds) {
         Membership::Unconstrained => CheckResult::Proved,
         Membership::Constrained(c) => {
             solver.assert_formula(tm.mk_term(Kind::Not, &[c]));
@@ -193,8 +212,10 @@ fn check_block_sig(
 ) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
-    solver.set_logic("QF_NIA");
+    solver.set_logic("QF_UFNIA");
     solver.set_option("produce-models", "true");
+
+    let distinct_preds = build_distinct_preds(&tm, name_defs);
 
     let int_sort  = tm.integer_sort();
     let bool_sort = tm.boolean_sort();
@@ -231,7 +252,7 @@ fn check_block_sig(
 
     for (term, part) in param_terms.iter().zip(domain_parts.iter()) {
         if set_kind(part) == ValKind::Bool { continue; }
-        match membership_constraint(&tm, term.clone(), part, name_defs) {
+        match membership_constraint(&tm, term.clone(), part, name_defs, &distinct_preds) {
             Membership::Unconstrained => {}
             Membership::Constrained(c) => {
                 solver.assert_formula(c.clone());
@@ -272,6 +293,7 @@ fn check_block_sig(
         &mut constraint_env,
         &mut has_runtime_assert,
         &mut immutable_names,
+        &distinct_preds,
     ) {
         Ok(Some(t)) => t,
         Ok(None) => {
@@ -290,7 +312,7 @@ fn check_block_sig(
         };
     }
 
-    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range, name_defs) {
+    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range, name_defs, &distinct_preds) {
         Membership::Unconstrained => None,
         Membership::Constrained(c) => Some(c),
         Membership::Unsupported => {
@@ -329,7 +351,7 @@ fn check_block_sig(
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {
-        if body_has_unconstrained_loop_var(stmts, &constraint_env, &tm, name_defs) {
+        if body_has_unconstrained_loop_var(stmts, &constraint_env, &tm, name_defs, &distinct_preds) {
             return CheckResult::Unknown(
                 "while loop: declare all mutable variable constraints \
                  (`mut name: Set = expr`) to enable counterexample extraction".into()
@@ -379,8 +401,10 @@ fn check_sig(
 ) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
-    solver.set_logic("QF_NIA");
+    solver.set_logic("QF_UFNIA");
     solver.set_option("produce-models", "true");
+
+    let distinct_preds = build_distinct_preds(&tm, name_defs);
 
     let int_sort  = tm.integer_sort();
     let bool_sort = tm.boolean_sort();
@@ -420,7 +444,7 @@ fn check_sig(
     // Bool-domain params are already constrained by their sort; skip them.
     for (term, part) in param_terms.iter().zip(domain_parts.iter()) {
         if set_kind(part) == ValKind::Bool { continue; }
-        match membership_constraint(&tm, term.clone(), part, name_defs) {
+        match membership_constraint(&tm, term.clone(), part, name_defs, &distinct_preds) {
             Membership::Unconstrained => {}
             Membership::Constrained(c) => solver.assert_formula(c),
             Membership::Unsupported => {
@@ -440,13 +464,13 @@ fn check_sig(
     let top_guard = tm.mk_boolean(true);
     let body_term = match encode_expr(
         body, &env, name_defs, fn_env, &tm, &mut solver, &mut call_counter,
-        &mut builtin_obligs, top_guard,
+        &mut builtin_obligs, top_guard, &distinct_preds,
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
     };
 
-    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range, name_defs) {
+    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range, name_defs, &distinct_preds) {
         Membership::Unconstrained => None,
         Membership::Constrained(c) => Some(c),
         Membership::Unsupported => {

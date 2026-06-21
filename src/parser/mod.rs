@@ -513,6 +513,15 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RBrace)?;
                 Ok(Expr::new(ExprKind::SetLit(elements), Span::new(span.start, end_span.end)))
             }
+            // Reserved built-in functions: always called with exactly one argument.
+            Token::From => {
+                self.advance()?;
+                self.parse_call(Symbol::new("from"), span)
+            }
+            Token::Size => {
+                self.advance()?;
+                self.parse_call(Symbol::new("size"), span)
+            }
             other => Err(CompileError::UnexpectedToken {
                 expected: "expression".into(),
                 found: other.to_string(),

@@ -10,7 +10,7 @@ use crate::{
     span::{Span, Symbol},
 };
 
-use super::membership::{Membership, membership_constraint};
+use super::membership::{DistinctPreds, Membership, membership_constraint};
 use super::NameDefs;
 
 // ── Environment ───────────────────────────────────────────────────────────────
@@ -78,10 +78,11 @@ pub(crate) fn encode_expr<'tm>(
     call_counter: &mut usize,
     builtin_obligs: &mut Vec<BuiltinObligation<'tm>>,
     path_cond: Term<'tm>,
+    distinct_preds: &DistinctPreds<'tm>,
 ) -> Result<Term<'tm>, String> {
     macro_rules! enc {
         ($e:expr) => {
-            encode_expr($e, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, path_cond.clone())
+            encode_expr($e, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, path_cond.clone(), distinct_preds)
         };
     }
 
@@ -96,7 +97,7 @@ pub(crate) fn encode_expr<'tm>(
                 // Inline the definition's value expression (no params, same name_defs
                 // so chained defs like `tau : Nat = 2 * pi` resolve correctly).
                 encode_expr(&def.value, &Env::new(), name_defs, fn_env, tm, solver,
-                            call_counter, builtin_obligs, path_cond)
+                            call_counter, builtin_obligs, path_cond, distinct_preds)
             } else {
                 Err(format!("unbound variable `{}`", sym.0))
             }
@@ -105,7 +106,7 @@ pub(crate) fn encode_expr<'tm>(
         ExprKind::UnOp { op, expr: inner } => {
             let t = enc!(inner)?;
             if let Some((domain, reason)) = unary_builtin_domain(op) {
-                if let Membership::Constrained(c) = membership_constraint(tm, t.clone(), &domain, name_defs) {
+                if let Membership::Constrained(c) = membership_constraint(tm, t.clone(), &domain, name_defs, distinct_preds) {
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: path_cond.clone(),
                         obligation: c,
@@ -135,7 +136,7 @@ pub(crate) fn encode_expr<'tm>(
                         }
                     }
                     let l = enc!(lhs)?;
-                    return match membership_constraint(tm, l, rhs, name_defs) {
+                    return match membership_constraint(tm, l, rhs, name_defs, distinct_preds) {
                         Membership::Constrained(c)  => Ok(c),
                         Membership::Unconstrained    => Ok(tm.mk_boolean(true)),
                         Membership::Unsupported      => Err("unsupported set in `in` expression".into()),
@@ -151,7 +152,7 @@ pub(crate) fn encode_expr<'tm>(
                         }
                     }
                     let l = enc!(lhs)?;
-                    return match membership_constraint(tm, l, rhs, name_defs) {
+                    return match membership_constraint(tm, l, rhs, name_defs, distinct_preds) {
                         Membership::Constrained(c)  => Ok(tm.mk_term(Kind::Not, &[c])),
                         Membership::Unconstrained    => Ok(tm.mk_boolean(false)),
                         Membership::Unsupported      => Err("unsupported set in `not in` expression".into()),
@@ -165,7 +166,7 @@ pub(crate) fn encode_expr<'tm>(
 
             for (arg_idx, arg_term) in [&l, &r].iter().enumerate() {
                 if let Some((domain, reason)) = binary_builtin_domain(op, arg_idx) {
-                    if let Membership::Constrained(c) = membership_constraint(tm, (*arg_term).clone(), &domain, name_defs) {
+                    if let Membership::Constrained(c) = membership_constraint(tm, (*arg_term).clone(), &domain, name_defs, distinct_preds) {
                         builtin_obligs.push(BuiltinObligation {
                             path_cond: path_cond.clone(),
                             obligation: c,
@@ -202,14 +203,14 @@ pub(crate) fn encode_expr<'tm>(
             // Then-branch: path_cond ∧ cond
             let then_guard = tm.mk_term(Kind::And, &[path_cond.clone(), c.clone()]);
             let t = encode_expr(
-                then_expr, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, then_guard,
+                then_expr, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, then_guard, distinct_preds,
             )?;
 
             // Else-branch: path_cond ∧ ¬cond
             let not_c = tm.mk_term(Kind::Not, &[c.clone()]);
             let else_guard = tm.mk_term(Kind::And, &[path_cond, not_c]);
             let e = encode_expr(
-                else_expr, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, else_guard,
+                else_expr, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, else_guard, distinct_preds,
             )?;
 
             Ok(tm.mk_term(Kind::Ite, &[c, t, e]))
@@ -225,6 +226,50 @@ pub(crate) fn encode_expr<'tm>(
                 let non_neg = tm.mk_term(Kind::Geq, &[result.clone(), tm.mk_integer(0)]);
                 solver.assert_formula(non_neg);
                 return Ok(result);
+            }
+
+            // `from(x)` built-in: destructor for any `distinct` set.
+            // For each distinct set D with basis B: is_D(arg) → result ∈ B.
+            if callee.0 == "from" && args.len() == 1 {
+                let arg_term = enc!(&args[0])?;
+                let fresh = format!("_from_{}", *call_counter);
+                *call_counter += 1;
+                let result_var = tm.mk_const(tm.integer_sort(), &fresh);
+                for (sym, pred) in distinct_preds {
+                    if let Some(def) = name_defs.get(sym) {
+                        let is_arg = tm.mk_term(Kind::ApplyUf, &[pred.clone(), arg_term.clone()]);
+                        match membership_constraint(tm, result_var.clone(), &def.value, name_defs, distinct_preds) {
+                            Membership::Unconstrained => {}
+                            Membership::Constrained(basis_c) => {
+                                solver.assert_formula(tm.mk_term(Kind::Implies, &[is_arg, basis_c]));
+                            }
+                            Membership::Unsupported => {}
+                        }
+                    }
+                }
+                return Ok(result_var);
+            }
+
+            // Auto-generated constructor: `litre(n)` for `Litre = distinct Nat`.
+            // Detected by capitalising the first letter of callee and checking name_defs.
+            if args.len() == 1 {
+                if let Some(distinct_def) = distinct_def_for_constructor(callee, name_defs) {
+                    if let Some(pred) = distinct_preds.get(&distinct_def.name) {
+                        let arg_term = enc!(&args[0])?;
+                        let fresh = format!("_call_{}", *call_counter);
+                        *call_counter += 1;
+                        let result_var = tm.mk_const(tm.integer_sort(), &fresh);
+                        let is_result = tm.mk_term(Kind::ApplyUf, &[pred.clone(), result_var.clone()]);
+                        match membership_constraint(tm, arg_term, &distinct_def.value, name_defs, distinct_preds) {
+                            Membership::Unconstrained => solver.assert_formula(is_result),
+                            Membership::Constrained(basis_c) => {
+                                solver.assert_formula(tm.mk_term(Kind::Implies, &[basis_c, is_result]));
+                            }
+                            Membership::Unsupported => {}
+                        }
+                        return Ok(result_var);
+                    }
+                }
             }
 
             let arg_terms: Vec<Term<'_>> = args
@@ -251,7 +296,7 @@ pub(crate) fn encode_expr<'tm>(
             let result_var = tm.mk_const(result_sort, &fresh);
 
             for sig in &callee_def.sigs {
-                assert_call_contract(sig, &arg_terms, result_var.clone(), tm, solver, name_defs);
+                assert_call_contract(sig, &arg_terms, result_var.clone(), tm, solver, name_defs, distinct_preds);
             }
 
             Ok(result_var)
@@ -279,7 +324,7 @@ pub(crate) fn encode_expr<'tm>(
                         } = &sig.range.kind
                         {
                             if let Membership::Constrained(c) =
-                                membership_constraint(tm, result.clone(), success_type, name_defs)
+                                membership_constraint(tm, result.clone(), success_type, name_defs, distinct_preds)
                             {
                                 solver.assert_formula(c);
                             }
@@ -317,6 +362,7 @@ pub(crate) fn assert_call_contract<'tm>(
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     name_defs: &NameDefs<'_>,
+    distinct_preds: &DistinctPreds<'tm>,
 ) {
     let mut antecedents: Vec<Term<'_>> = Vec::new();
     match &sig.domain {
@@ -327,7 +373,7 @@ pub(crate) fn assert_call_contract<'tm>(
                 return;
             }
             for (part, arg) in parts.iter().zip(arg_terms.iter()) {
-                match membership_constraint(tm, arg.clone(), part, name_defs) {
+                match membership_constraint(tm, arg.clone(), part, name_defs, distinct_preds) {
                     Membership::Unconstrained => {}
                     Membership::Constrained(c) => antecedents.push(c),
                     Membership::Unsupported => return,
@@ -336,7 +382,7 @@ pub(crate) fn assert_call_contract<'tm>(
         }
     }
 
-    let consequent = match membership_constraint(tm, result, &sig.range, name_defs) {
+    let consequent = match membership_constraint(tm, result, &sig.range, name_defs, distinct_preds) {
         Membership::Unconstrained => return,
         Membership::Constrained(c) => c,
         Membership::Unsupported => return,
@@ -384,4 +430,19 @@ pub(crate) fn integer_value(term: &Term<'_>) -> i64 {
 /// Extract a bool from a cvc5 boolean model term.
 pub(crate) fn boolean_value(term: &Term<'_>) -> bool {
     term.to_string().trim() == "true"
+}
+
+/// If `callee` is the auto-generated constructor for a `distinct` set
+/// (i.e. its name with the first letter uppercased is a `Distinct` NameDef),
+/// return that NameDef.
+pub(crate) fn distinct_def_for_constructor<'a>(
+    callee: &Symbol,
+    name_defs: &'a NameDefs<'_>,
+) -> Option<&'a crate::ast::NameDef> {
+    use crate::ast::DefKind;
+    let mut chars = callee.0.chars();
+    let first = chars.next()?;
+    let capitalized = first.to_uppercase().collect::<String>() + chars.as_str();
+    let sym = Symbol::new(capitalized);
+    name_defs.get(&sym).filter(|def| def.kind == DefKind::Distinct).copied()
 }

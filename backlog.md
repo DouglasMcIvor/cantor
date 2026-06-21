@@ -119,7 +119,7 @@ You probably don't want to read this unless you're me.
   >
   > Everything else—monomorphisation, overload generation, even "generic constraints"—falls out as implementation details. That's about as small a conceptual core as I can imagine, and it fits remarkably well with the direction Cantor has been taking.
 - automatic multithreading for semi-pure core?
-- multiple concurrent IO threads?
+- multiple concurrent IO threads? ChatGPT convo suggests developing a _scheduler_ using optimisitic concurrency control, taking adaptive measurements on which events conflicts, both statically and dynamically determining state partitions for different event handlers, letting the developer declare that events are `ordered` or `unordered` or `mostly independent` so that we know the "shape" of events. Lots of fun stuff we could do!
 - small runtime sets optimized as bitmasks. Once we get to the homogeneous set level the runtime doesn't actually care what the values are. So a cardinality 64 set can be encoded as just a uint64. It may make sense to extend this to fairly large sets with vectors of uint64. It would be nice to benchmark when this breaks down (time space tradeoff right?)
 - Optimizations! From ChatGPT:
   ```

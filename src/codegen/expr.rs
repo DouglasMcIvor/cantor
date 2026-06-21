@@ -380,6 +380,24 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        // `from(x)` — built-in destructor for `distinct` values; identity at runtime.
+        if callee.0 == "from" && args.len() == 1 {
+            let (val, _kind) = self.compile_expr(&args[0], env)?;
+            return Ok((val, Kind::Int));
+        }
+
+        // Auto-generated constructor `d(x)` for `D = distinct B`; identity at runtime.
+        if args.len() == 1 {
+            let mut chars = callee.0.chars();
+            if let Some(first) = chars.next() {
+                let capitalized = first.to_uppercase().collect::<String>() + chars.as_str();
+                if self.distinct_names.contains(&capitalized) {
+                    let (val, _kind) = self.compile_expr(&args[0], env)?;
+                    return Ok((val, Kind::Int));
+                }
+            }
+        }
+
         // `size(s)` — built-in cardinality function for runtime sets.
         if callee.0 == "size" && args.len() == 1 {
             let (ptr, kind) = self.compile_expr(&args[0], env)?;
