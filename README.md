@@ -335,19 +335,19 @@ sum_above_threshold(threshold) {
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` in domain/range/`in`/`for` positions; finite literal sources unrolled statically; infinite named sources encoded as SMT predicates
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis
-- **Constants** — `name : Set / name = expr`, type-checked and auto-inlined at compile time
+- **Unified named definitions** — constants (`pi : Nat = 314`) and compile-time set definitions (`Colour = {1, 2, 3}`) share the same one-line syntax and the same AST node; both are auto-inlined at compile time; constants are type-checked against their annotation
 - **Block bodies with `while` and `for x in S` loops** — imperative-style bodies with `while cond { stmts }` and `for x in {e1, e2, …} { stmts }`, `mut name: Set = expr` locals (set annotation is the declared loop invariant), sequenced statements, and `if-then-else`
 - **Runtime sets** — `Set(Int)` and `Set(Bool)` as first-class heap-allocated values; `mut s : Set(Int) = {…}` creates a sorted-unique set; `for x in s` iterates; `x in s` / `x not in s` test membership; `size(s)` returns cardinality; duplicates are collapsed silently
 - **`require` / `assert` / `assume`** — static and graduated runtime proof obligations
 - **`Fail` and `?`** — monadic error propagation; fallible functions declare `| Fail` in their range; `?` short-circuits on failure
 - **Named set naming convention** — uppercase names are compile-time set names (`Nat`, `HTTPError`); lowercase names are values (`pi`, `abs`, `collected_primes`); enforced by the compiler
-- **User-defined named sets** — `Colour = {1, 2, 3}` and `Animal = Cat | Dog` declare compile-time set aliases; `Litre = distinct Nat` declares a new set that is solver-opaque and disjoint from `Nat` (see roadmap note below)
+- **`alias` and `distinct` set modifiers** — `Colour = {1, 2, 3}` and `Animal = alias Cat | Dog` declare transparent aliases (the solver expands membership inline); `Litre = distinct Nat` declares a new solver-opaque set disjoint from `Nat` (see roadmap note on `distinct` proofs)
 - **JIT execution** — `cantor run <file>` checks proofs then JIT-compiles and runs `main` via LLVM
 
 ## On the roadmap
 
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
-- **`distinct` values and unified definitions** — `ErrForbidden = distinct 403` would introduce a nominal constant: the solver treats it as opaque (not equal to `403`), while `HTTPError = {ErrForbidden, ErrNotFound}` becomes a named set whose membership the solver can track by nominal equality. This requires unifying `ConstDef` and `SetDef` into a single top-level definition form (`name = expr` / `name : Set = expr`), and teaching the solver to handle set literals whose elements are named distinct values.
+- **`distinct` values** — `ErrForbidden = distinct 403` would introduce a nominal constant: the solver treats it as opaque (not equal to `403`), while `HTTPError = {ErrForbidden, ErrNotFound}` becomes a named set whose membership the solver can track by nominal equality. The unified definition form (`name = expr` / `name : Set = expr`) is already in place; what remains is teaching the solver to handle set literals whose elements are named distinct values.
 - **`distinct` set proofs** — `distinct` sets are currently phantom types: the solver returns `unknown` for any signature involving one, including the trivial identity `volume : Litre -> Litre`. Making them useful requires two things landing together: (1) encoding `distinct` sets as uninterpreted SMT sorts so the solver can track "this value is a `Litre`" through a proof, and (2) a constructor/injection mechanism (`litre : Nat -> Litre`) so user code can actually produce a value of a distinct set from its underlying representation. Until then, `distinct` reserves the name and enforces the naming convention but proves nothing.
 - **Namespaces** — dot-access for members of a named definition (`HTTPError.Forbidden`); prerequisite for named set literal syntax below.
 - **Named set literals** — `HTTPError = distinct {Forbidden: 403, NotFound: 404}` as syntactic sugar that simultaneously declares the set and binds `HTTPError.Forbidden` and `HTTPError.NotFound` as its nominal members; requires namespaces.

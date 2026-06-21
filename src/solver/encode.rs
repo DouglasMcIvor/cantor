@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::membership::{Membership, membership_constraint};
-use super::SetDefs;
+use super::NameDefs;
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -71,9 +71,8 @@ pub(crate) fn named_set(name: &'static str) -> Expr {
 pub(crate) fn encode_expr<'tm>(
     expr: &Expr,
     env: &Env<'tm>,
-    const_defs: &HashMap<Symbol, &Expr>,
+    name_defs: &NameDefs<'_>,
     fn_env: &HashMap<Symbol, &FunctionDef>,
-    set_defs: &SetDefs<'_>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
@@ -82,7 +81,7 @@ pub(crate) fn encode_expr<'tm>(
 ) -> Result<Term<'tm>, String> {
     macro_rules! enc {
         ($e:expr) => {
-            encode_expr($e, env, const_defs, fn_env, set_defs, tm, solver, call_counter, builtin_obligs, path_cond.clone())
+            encode_expr($e, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, path_cond.clone())
         };
     }
 
@@ -93,10 +92,10 @@ pub(crate) fn encode_expr<'tm>(
         ExprKind::Var(sym) => {
             if let Some(term) = env.get(sym) {
                 Ok(term.clone())
-            } else if let Some(const_expr) = const_defs.get(sym) {
-                // Inline the constant's value expression (no params, same const_defs
-                // so chained constants like `tau = 2 * pi` resolve correctly).
-                encode_expr(const_expr, &Env::new(), const_defs, fn_env, set_defs, tm, solver,
+            } else if let Some(def) = name_defs.get(sym) {
+                // Inline the definition's value expression (no params, same name_defs
+                // so chained defs like `tau : Nat = 2 * pi` resolve correctly).
+                encode_expr(&def.value, &Env::new(), name_defs, fn_env, tm, solver,
                             call_counter, builtin_obligs, path_cond)
             } else {
                 Err(format!("unbound variable `{}`", sym.0))
@@ -106,7 +105,7 @@ pub(crate) fn encode_expr<'tm>(
         ExprKind::UnOp { op, expr: inner } => {
             let t = enc!(inner)?;
             if let Some((domain, reason)) = unary_builtin_domain(op) {
-                if let Membership::Constrained(c) = membership_constraint(tm, t.clone(), &domain, set_defs) {
+                if let Membership::Constrained(c) = membership_constraint(tm, t.clone(), &domain, name_defs) {
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: path_cond.clone(),
                         obligation: c,
@@ -136,7 +135,7 @@ pub(crate) fn encode_expr<'tm>(
                         }
                     }
                     let l = enc!(lhs)?;
-                    return match membership_constraint(tm, l, rhs, set_defs) {
+                    return match membership_constraint(tm, l, rhs, name_defs) {
                         Membership::Constrained(c)  => Ok(c),
                         Membership::Unconstrained    => Ok(tm.mk_boolean(true)),
                         Membership::Unsupported      => Err("unsupported set in `in` expression".into()),
@@ -152,7 +151,7 @@ pub(crate) fn encode_expr<'tm>(
                         }
                     }
                     let l = enc!(lhs)?;
-                    return match membership_constraint(tm, l, rhs, set_defs) {
+                    return match membership_constraint(tm, l, rhs, name_defs) {
                         Membership::Constrained(c)  => Ok(tm.mk_term(Kind::Not, &[c])),
                         Membership::Unconstrained    => Ok(tm.mk_boolean(false)),
                         Membership::Unsupported      => Err("unsupported set in `not in` expression".into()),
@@ -166,7 +165,7 @@ pub(crate) fn encode_expr<'tm>(
 
             for (arg_idx, arg_term) in [&l, &r].iter().enumerate() {
                 if let Some((domain, reason)) = binary_builtin_domain(op, arg_idx) {
-                    if let Membership::Constrained(c) = membership_constraint(tm, (*arg_term).clone(), &domain, set_defs) {
+                    if let Membership::Constrained(c) = membership_constraint(tm, (*arg_term).clone(), &domain, name_defs) {
                         builtin_obligs.push(BuiltinObligation {
                             path_cond: path_cond.clone(),
                             obligation: c,
@@ -203,14 +202,14 @@ pub(crate) fn encode_expr<'tm>(
             // Then-branch: path_cond ∧ cond
             let then_guard = tm.mk_term(Kind::And, &[path_cond.clone(), c.clone()]);
             let t = encode_expr(
-                then_expr, env, const_defs, fn_env, set_defs, tm, solver, call_counter, builtin_obligs, then_guard,
+                then_expr, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, then_guard,
             )?;
 
             // Else-branch: path_cond ∧ ¬cond
             let not_c = tm.mk_term(Kind::Not, &[c.clone()]);
             let else_guard = tm.mk_term(Kind::And, &[path_cond, not_c]);
             let e = encode_expr(
-                else_expr, env, const_defs, fn_env, set_defs, tm, solver, call_counter, builtin_obligs, else_guard,
+                else_expr, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, else_guard,
             )?;
 
             Ok(tm.mk_term(Kind::Ite, &[c, t, e]))
@@ -252,7 +251,7 @@ pub(crate) fn encode_expr<'tm>(
             let result_var = tm.mk_const(result_sort, &fresh);
 
             for sig in &callee_def.sigs {
-                assert_call_contract(sig, &arg_terms, result_var.clone(), tm, solver, set_defs);
+                assert_call_contract(sig, &arg_terms, result_var.clone(), tm, solver, name_defs);
             }
 
             Ok(result_var)
@@ -281,7 +280,7 @@ pub(crate) fn assert_call_contract<'tm>(
     result: Term<'tm>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
-    set_defs: &SetDefs<'_>,
+    name_defs: &NameDefs<'_>,
 ) {
     let mut antecedents: Vec<Term<'_>> = Vec::new();
     match &sig.domain {
@@ -292,7 +291,7 @@ pub(crate) fn assert_call_contract<'tm>(
                 return;
             }
             for (part, arg) in parts.iter().zip(arg_terms.iter()) {
-                match membership_constraint(tm, arg.clone(), part, set_defs) {
+                match membership_constraint(tm, arg.clone(), part, name_defs) {
                     Membership::Unconstrained => {}
                     Membership::Constrained(c) => antecedents.push(c),
                     Membership::Unsupported => return,
@@ -301,7 +300,7 @@ pub(crate) fn assert_call_contract<'tm>(
         }
     }
 
-    let consequent = match membership_constraint(tm, result, &sig.range, set_defs) {
+    let consequent = match membership_constraint(tm, result, &sig.range, name_defs) {
         Membership::Unconstrained => return,
         Membership::Constrained(c) => c,
         Membership::Unsupported => return,

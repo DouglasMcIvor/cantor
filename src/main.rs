@@ -74,7 +74,7 @@ fn main() {
         for (i, (label, result)) in sig_results.iter().enumerate() {
             let sig_display = match item {
                 Item::FunctionDef(def) => format!("{} : {}", def.name, def.sigs[i]),
-                Item::ConstDef(_) | Item::SetDef(_) => label.clone(),
+                Item::NameDef(_) => label.clone(),
             };
 
             match result {
@@ -119,7 +119,7 @@ fn main() {
 fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
     let has_main = items.iter().any(|item| match item {
         Item::FunctionDef(def) => def.name.0 == "main" && def.params.is_empty(),
-        Item::ConstDef(_) | Item::SetDef(_) => false,
+        Item::NameDef(_) => false,
     });
 
     if !has_main {

@@ -3,7 +3,7 @@ pub mod lexer;
 use lexer::{Lexer, Token};
 
 use crate::{
-    ast::{BinOp, ConstDef, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, Param, SetDef, SetDefKind, Stmt, UnOp},
+    ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef, Param, Stmt, UnOp},
     error::CompileError,
     span::{Span, Symbol},
 };
@@ -72,11 +72,11 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_item(&mut self) -> Result<Item, CompileError> {
-        // Set definition: `Name = [alias|distinct] set_expr`
-        // Disambiguated from functions/constants (which always have `:` after the name)
+        // Unannotated name def: `Name = [alias|distinct] expr`
+        // Disambiguated from annotated defs and functions (which have `:` after the name)
         // by checking the second lookahead token.
         if matches!(self.peek(), Token::Ident(_)) && self.peek2() == &Token::Eq {
-            return self.parse_set_def();
+            return self.parse_unannotated_name_def();
         }
 
         let start_span = self.peek_span();
@@ -102,13 +102,14 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 (Some(first_expr), self.parse_set_expr()?)
             } else {
-                // No `->` found → constant: `name : type = expr` (one-line form).
+                // No `->` found → annotated name def: `name : ty = value`
                 self.expect(&Token::Eq)?;
                 let value = self.parse_expr(0)?;
                 let end = value.span.end;
-                return Ok(Item::ConstDef(ConstDef {
+                return Ok(Item::NameDef(NameDef {
                     name,
-                    ty: first_expr,
+                    kind: DefKind::Alias,
+                    ty: Some(first_expr),
                     value,
                     span: Span::new(start_span.start, end),
                 }));
@@ -171,21 +172,21 @@ impl<'src> Parser<'src> {
         }))
     }
 
-    /// Parse a set definition: `Name = [alias|distinct] set_expr`.
+    /// Parse an unannotated name def: `Name = [alias|distinct] expr`.
     ///
     /// Called when we see `Ident '='` at the top level (peeked two tokens ahead).
-    fn parse_set_def(&mut self) -> Result<Item, CompileError> {
+    fn parse_unannotated_name_def(&mut self) -> Result<Item, CompileError> {
         let start = self.peek_span();
         let name = self.expect_ident()?;
         self.expect(&Token::Eq)?;
         let kind = match self.peek().clone() {
-            Token::Distinct => { self.advance()?; SetDefKind::Distinct }
-            Token::Alias    => { self.advance()?; SetDefKind::Alias }
-            _               => SetDefKind::Alias,
+            Token::Distinct => { self.advance()?; DefKind::Distinct }
+            Token::Alias    => { self.advance()?; DefKind::Alias }
+            _               => DefKind::Alias,
         };
-        let rhs = self.parse_set_expr()?;
-        let end = rhs.span.end;
-        Ok(Item::SetDef(SetDef { name, kind, rhs, span: Span::new(start.start, end) }))
+        let value = self.parse_set_expr()?;
+        let end = value.span.end;
+        Ok(Item::NameDef(NameDef { name, kind, ty: None, value, span: Span::new(start.start, end) }))
     }
 
     /// Parse everything after the name on a signature line: `: [domain] -> range`

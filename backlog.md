@@ -90,7 +90,34 @@ You probably don't want to read this unless you're me.
 - lambdas and closures
 - dynamic dispatch? - this is just overloading a function to get a union domain and the compiler outputting a switch or a jump table!
 - macros. what is a natural Cantor way of doing code generation? functions that manipulate ASTs?
-- generics. do we need mechanisms to help define functions that work on lots of different sets? seems like it should work alongside overloading
+- generics. do we need mechanisms to help define functions that work on lots of different sets? seems like it should work alongside overloading.
+  Went through this with ChatGPT and ended up with something quite elegant:
+  ```
+  population:
+    given A : Set(Countable)
+    Habitat(A) -> Nat
+
+  population:
+    given A
+    require A in Set(Countable)
+    Habit(A) -> Nat
+
+  population:
+    given A
+    require A <= Countable
+    Habit(A) -> Nat
+  ```
+  We introduce a sole new keyword `given` to define _compile-time variables_ that are introduced into the lexical scope.
+  The solver then defers the constraint checks until instantiation time.
+  The is very similar to overloading - we have simply defined an _overload generator_.
+  I like this observation from ChatGPT:
+  > The thing that's striking me about this whole design is how little new machinery you've introduced. In most languages, generics are a completely separate subsystem with their own syntax, name resolution, constraint language, instantiation rules and error model. Here, they seem to reduce to just three ideas:
+  >
+  > 1. given introduces a symbolic compile-time value.
+  > 2. require states obligations about it.
+  > 3. Instantiation substitutes concrete values and asks the solver to discharge those obligations.
+  >
+  > Everything else—monomorphisation, overload generation, even "generic constraints"—falls out as implementation details. That's about as small a conceptual core as I can imagine, and it fits remarkably well with the direction Cantor has been taking.
 - automatic multithreading for semi-pure core?
 - multiple concurrent IO threads?
 - Optimizations! From ChatGPT:

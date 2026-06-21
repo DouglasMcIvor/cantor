@@ -379,7 +379,7 @@ fn compile_items<'ctx>(
     // Pass 0 — evaluate constants and build a shared env of inlined values.
     let mut const_vals: HashMap<Symbol, i64> = HashMap::new();
     for item in items {
-        if let Item::ConstDef(def) = item {
+        if let Item::NameDef(def) = item {
             let val = eval_const(&def.value, &const_vals)?;
             const_vals.insert(def.name.clone(), val);
         }
@@ -408,7 +408,7 @@ fn compile_items<'ctx>(
                 let fn_val = compiler.declare_function(&def.name.0, &def.params, ret_kind);
                 Some((fn_val, def))
             }
-            Item::ConstDef(_) | Item::SetDef(_) => None,
+            Item::NameDef(_) => None,
         })
         .collect();
 

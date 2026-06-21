@@ -15,7 +15,7 @@
 //! problem at once rather than fixing them one at a time.
 
 use crate::{
-    ast::{ConstDef, Expr, ExprKind, FunctionBody, FunctionDef, Item, SetDef, Stmt},
+    ast::{Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDef, Stmt},
     error::CompileError,
     span::Span,
 };
@@ -44,8 +44,7 @@ pub fn check_names(items: &[Item]) -> Vec<CompileError> {
     for item in items {
         match item {
             Item::FunctionDef(def) => check_function(def, &mut errors),
-            Item::ConstDef(def)    => check_const(def, &mut errors),
-            Item::SetDef(def)      => check_set_def(def, &mut errors),
+            Item::NameDef(def)     => check_name_def(def, &mut errors),
         }
     }
     errors
@@ -72,23 +71,26 @@ fn check_function(def: &FunctionDef, errors: &mut Vec<CompileError>) {
     }
 }
 
-fn check_const(def: &ConstDef, errors: &mut Vec<CompileError>) {
-    must_be_lowercase(&def.name.0, def.span, errors);
-    vars_must_be_uppercase(&def.ty, errors);
-}
-
-fn check_set_def(def: &SetDef, errors: &mut Vec<CompileError>) {
-    if !starts_uppercase(&def.name.0) {
-        errors.push(CompileError::NamingConvention {
-            message: format!(
-                "`{}` is a set definition and must start with an uppercase letter \
-                 (compile-time set names must be uppercase per §2a)",
-                def.name
-            ),
-            span: def.span,
-        });
+fn check_name_def(def: &NameDef, errors: &mut Vec<CompileError>) {
+    if let Some(ty) = &def.ty {
+        // Annotated form (`name : Set = value`): name must be lowercase, annotation uppercase.
+        must_be_lowercase(&def.name.0, def.span, errors);
+        vars_must_be_uppercase(ty, errors);
+    } else {
+        // Unannotated form (`Name = [alias|distinct] value`): name must be uppercase,
+        // value is a set expression so its vars must also be uppercase.
+        if !starts_uppercase(&def.name.0) {
+            errors.push(CompileError::NamingConvention {
+                message: format!(
+                    "`{}` is a set definition and must start with an uppercase letter \
+                     (compile-time set names must be uppercase per §2a)",
+                    def.name
+                ),
+                span: def.span,
+            });
+        }
+        vars_must_be_uppercase(&def.value, errors);
     }
-    vars_must_be_uppercase(&def.rhs, errors);
 }
 
 fn check_stmts(stmts: &[Stmt], errors: &mut Vec<CompileError>) {

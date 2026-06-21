@@ -1,5 +1,5 @@
 use cantor::{
-    ast::{BinOp, ExprKind, Item, SetDefKind, UnOp},
+    ast::{BinOp, DefKind, ExprKind, Item, UnOp},
     parser::{parse_expr, parse_file},
     span::offset_to_line_col,
 };
@@ -413,56 +413,56 @@ fn comprehension_display_with_filter() {
 
 // ── Set definitions ───────────────────────────────────────────────────────────
 
-fn parse_set_def(src: &str) -> (String, SetDefKind, ExprKind) {
+fn parse_name_def(src: &str) -> (String, DefKind, ExprKind) {
     let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
     match items.into_iter().next().unwrap() {
-        Item::SetDef(def) => (def.name.0, def.kind, def.rhs.kind),
-        other => panic!("expected SetDef, got {other:?}"),
+        Item::NameDef(def) => (def.name.0, def.kind, def.value.kind),
+        other => panic!("expected NameDef, got {other:?}"),
     }
 }
 
 #[test]
 fn set_def_set_literal_implicit_alias() {
-    let (name, kind, _rhs) = parse_set_def("Colour = {1, 2, 3}");
+    let (name, kind, _rhs) = parse_name_def("Colour = {1, 2, 3}");
     assert_eq!(name, "Colour");
-    assert_eq!(kind, SetDefKind::Alias);
+    assert_eq!(kind, DefKind::Alias);
 }
 
 #[test]
 fn set_def_union_implicit_alias() {
-    let (name, kind, rhs) = parse_set_def("Animal = Cat | Dog");
+    let (name, kind, rhs) = parse_name_def("Animal = Cat | Dog");
     assert_eq!(name, "Animal");
-    assert_eq!(kind, SetDefKind::Alias);
+    assert_eq!(kind, DefKind::Alias);
     assert!(matches!(rhs, ExprKind::BinOp { op: BinOp::Union, .. }));
 }
 
 #[test]
 fn set_def_explicit_alias_keyword() {
-    let (name, kind, rhs) = parse_set_def("Animal = alias Cat | Dog");
+    let (name, kind, rhs) = parse_name_def("Animal = alias Cat | Dog");
     assert_eq!(name, "Animal");
-    assert_eq!(kind, SetDefKind::Alias);
+    assert_eq!(kind, DefKind::Alias);
     assert!(matches!(rhs, ExprKind::BinOp { op: BinOp::Union, .. }));
 }
 
 #[test]
 fn set_def_distinct_keyword() {
-    let (name, kind, rhs) = parse_set_def("Litre = distinct Float");
+    let (name, kind, rhs) = parse_name_def("Litre = distinct Float");
     assert_eq!(name, "Litre");
-    assert_eq!(kind, SetDefKind::Distinct);
+    assert_eq!(kind, DefKind::Distinct);
     assert!(matches!(rhs, ExprKind::Var(s) if s.0 == "Float"));
 }
 
 #[test]
 fn set_def_distinct_set_difference() {
-    let (name, kind, _rhs) = parse_set_def("SafeDiv = distinct Int - {0}");
+    let (name, kind, _rhs) = parse_name_def("SafeDiv = distinct Int - {0}");
     assert_eq!(name, "SafeDiv");
-    assert_eq!(kind, SetDefKind::Distinct);
+    assert_eq!(kind, DefKind::Distinct);
 }
 
 #[test]
 fn set_def_alias_named_set() {
-    let (name, kind, rhs) = parse_set_def("MyNat = alias Nat");
+    let (name, kind, rhs) = parse_name_def("MyNat = alias Nat");
     assert_eq!(name, "MyNat");
-    assert_eq!(kind, SetDefKind::Alias);
+    assert_eq!(kind, DefKind::Alias);
     assert!(matches!(rhs, ExprKind::Var(s) if s.0 == "Nat"));
 }

@@ -233,45 +233,39 @@ pub struct FunctionDef {
     pub span: Span,
 }
 
-// ── Constant definitions ──────────────────────────────────────────────────────
+// ── Named definitions ─────────────────────────────────────────────────────────
 
-/// `name : Type` / `name = expr` — a named compile-time constant.
-///
-/// Uppercase names (enforced by §2a) denote sets; lowercase names (like `pi`)
-/// denote values.  The compiler evaluates the body at compile time (auto-
-/// constexpr) and checks that `value ∈ ty`.
-#[derive(Debug, Clone)]
-pub struct ConstDef {
-    pub name: Symbol,
-    /// The declared type (a set expression, e.g. `Nat`).
-    pub ty: Expr,
-    /// The value expression (must be evaluable at compile time).
-    pub value: Expr,
-    pub span: Span,
-}
-
-// ── Set definitions ───────────────────────────────────────────────────────────
-
-/// Whether a named set is a transparent alias or a new disjoint set (§13).
+/// Whether a named definition is a transparent alias or introduces a new
+/// disjoint/opaque identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SetDefKind {
-    /// `Name = expr` or `Name = alias expr` — transparent to the solver.
-    /// `x in Name` expands to `x in expr` at the set layer.
+pub enum DefKind {
+    /// Default — transparent to the solver.
+    /// `x in Name` expands to `x in value` (set position) or inlines `value`
+    /// (value position).
     Alias,
-    /// `Name = distinct expr` — new set disjoint from its basis set.
-    /// The solver treats `Name` as opaque; `x in Name` does not imply `x in expr`.
+    /// `Name = distinct expr` — new identity disjoint from its basis.
+    /// The solver treats membership as opaque; `x in Name` returns Unknown.
     Distinct,
 }
 
-/// `Name = [alias|distinct] set_expr` — a compile-time named set definition.
+/// A top-level named definition: `name [: ty] = [alias|distinct] value`.
 ///
-/// Uppercase name required (§2a). Without a keyword (or with `alias`) the name
-/// is a transparent rename; with `distinct` the solver sees a new, opaque set.
+/// Covers both what were previously `ConstDef` and `SetDef`:
+///
+/// - `pi : Nat = 314` — annotated constant (ty = Some(Nat), kind = Alias)
+/// - `Colour = {1, 2, 3}` — unannotated set alias (ty = None, kind = Alias)
+/// - `Litre = distinct Nat` — opaque distinct set (ty = None, kind = Distinct)
+///
+/// Naming convention (§2a): lowercase names are value constants; uppercase
+/// names are compile-time set names.  Both use the same AST node.
 #[derive(Debug, Clone)]
-pub struct SetDef {
+pub struct NameDef {
     pub name: Symbol,
-    pub kind: SetDefKind,
-    pub rhs: Expr,
+    pub kind: DefKind,
+    /// Optional type annotation — present for `name : Set = expr` form.
+    /// When present, the solver verifies `value ∈ ty`.
+    pub ty: Option<Expr>,
+    pub value: Expr,
     pub span: Span,
 }
 
@@ -280,8 +274,7 @@ pub struct SetDef {
 #[derive(Debug, Clone)]
 pub enum Item {
     FunctionDef(FunctionDef),
-    ConstDef(ConstDef),
-    SetDef(SetDef),
+    NameDef(NameDef),
 }
 
 // ── Display ───────────────────────────────────────────────────────────────────

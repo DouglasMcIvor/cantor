@@ -1,5 +1,5 @@
 use cantor::{
-    ast::{BinOp, ExprKind, FunctionBody, Item, ConstDef, FunctionDef},
+    ast::{BinOp, ExprKind, FunctionBody, Item, NameDef, FunctionDef},
     parser::parse_file,
 };
 
@@ -15,12 +15,12 @@ fn parse_one(src: &str) -> FunctionDef {
     def
 }
 
-fn parse_one_const(src: &str) -> ConstDef {
+fn parse_one_const(src: &str) -> NameDef {
     let items = parse_file(src)
         .unwrap_or_else(|e| panic!("parse error for {src:?}: {e}"));
     assert_eq!(items.len(), 1, "expected exactly one item");
-    let Item::ConstDef(def) = items.into_iter().next().unwrap() else {
-        panic!("expected ConstDef item");
+    let Item::NameDef(def) = items.into_iter().next().unwrap() else {
+        panic!("expected NameDef item");
     };
     def
 }
@@ -256,7 +256,7 @@ fn cartesian_product_with_set_difference() {
 fn const_literal_nat() {
     let def = parse_one_const("pi : Nat = 314");
     assert_eq!(def.name.0, "pi");
-    assert!(matches!(def.ty.kind, ExprKind::Var(ref s) if s.0 == "Nat"));
+    assert!(matches!(def.ty.as_ref().unwrap().kind, ExprKind::Var(ref s) if s.0 == "Nat"));
     assert!(matches!(def.value.kind, ExprKind::IntLit(314)));
 }
 
@@ -271,8 +271,8 @@ fn const_references_other_const() {
     let items = parse_file("pi : Nat = 314\ntau : Nat = 2 * pi")
         .unwrap_or_else(|e| panic!("parse error: {e}"));
     assert_eq!(items.len(), 2);
-    assert!(matches!(items[0], Item::ConstDef(_)));
-    assert!(matches!(items[1], Item::ConstDef(_)));
+    assert!(matches!(items[0], Item::NameDef(_)));
+    assert!(matches!(items[1], Item::NameDef(_)));
 }
 
 #[test]
@@ -280,7 +280,7 @@ fn const_and_function_in_same_file() {
     let items = parse_file("base : Nat = 10\ndouble : Nat -> Nat\ndouble(x) = x + x")
         .unwrap_or_else(|e| panic!("parse error: {e}"));
     assert_eq!(items.len(), 2);
-    assert!(matches!(items[0], Item::ConstDef(_)));
+    assert!(matches!(items[0], Item::NameDef(_)));
     assert!(matches!(items[1], Item::FunctionDef(_)));
 }
 
