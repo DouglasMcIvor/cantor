@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, ConstDef, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item},
+    ast::{BinOp, ConstDef, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, SetDef},
     span::Symbol,
 };
 
@@ -54,6 +54,7 @@ pub enum CheckResult {
 
 type FunctionEnv<'a> = HashMap<Symbol, &'a FunctionDef>;
 type ConstDefs<'a>   = HashMap<Symbol, &'a Expr>;
+pub(crate) type SetDefs<'a> = HashMap<Symbol, &'a SetDef>;
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
@@ -66,7 +67,7 @@ pub fn check_file(items: &[Item]) -> Result<Vec<(String, Vec<(String, CheckResul
         .iter()
         .filter_map(|item| match item {
             Item::FunctionDef(def) => Some((def.name.clone(), def)),
-            Item::ConstDef(_) => None,
+            _ => None,
         })
         .collect();
 
@@ -74,22 +75,31 @@ pub fn check_file(items: &[Item]) -> Result<Vec<(String, Vec<(String, CheckResul
         .iter()
         .filter_map(|item| match item {
             Item::ConstDef(def) => Some((def.name.clone(), &def.value)),
-            Item::FunctionDef(_) => None,
+            _ => None,
+        })
+        .collect();
+
+    let set_defs: SetDefs<'_> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::SetDef(def) => Some((def.name.clone(), def)),
+            _ => None,
         })
         .collect();
 
     items
         .iter()
-        .map(|item| match item {
+        .filter_map(|item| match item {
             Item::FunctionDef(def) => {
-                let results = check_function(def, &fn_env, &const_defs)?;
-                Ok((def.name.0.clone(), results))
+                let results = check_function(def, &fn_env, &const_defs, &set_defs);
+                Some(results.map(|r| (def.name.0.clone(), r)))
             }
             Item::ConstDef(def) => {
-                let result = check_const(def, &fn_env, &const_defs);
+                let result = check_const(def, &fn_env, &const_defs, &set_defs);
                 let label = format!("{} : {} = {}", def.name, def.ty, def.value);
-                Ok((def.name.0.clone(), vec![(label, result)]))
+                Some(Ok((def.name.0.clone(), vec![(label, result)])))
             }
+            Item::SetDef(_) => None, // set definitions don't produce check results
         })
         .collect()
 }
@@ -102,6 +112,7 @@ pub fn check_function(
     def: &FunctionDef,
     fn_env: &FunctionEnv<'_>,
     const_defs: &ConstDefs<'_>,
+    set_defs: &SetDefs<'_>,
 ) -> Result<Vec<(String, CheckResult)>, crate::error::CompileError> {
     let param_names: Vec<Symbol> = def.params.iter().map(|p| p.name.clone()).collect();
 
@@ -112,8 +123,8 @@ pub fn check_function(
         .map(|(i, sig)| {
             let label = sig_label(&def.name.0, i, def.sigs.len());
             let result = match &def.body {
-                FunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env, const_defs),
-                FunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env, const_defs),
+                FunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env, const_defs, set_defs),
+                FunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env, const_defs, set_defs),
             };
             (label, result)
         })
@@ -128,7 +139,7 @@ fn sig_label(name: &str, idx: usize, total: usize) -> String {
     }
 }
 
-fn check_const(def: &ConstDef, fn_env: &FunctionEnv<'_>, const_defs: &ConstDefs<'_>) -> CheckResult {
+fn check_const(def: &ConstDef, fn_env: &FunctionEnv<'_>, const_defs: &ConstDefs<'_>, set_defs: &SetDefs<'_>) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
     solver.set_logic("QF_NIA");
@@ -140,14 +151,14 @@ fn check_const(def: &ConstDef, fn_env: &FunctionEnv<'_>, const_defs: &ConstDefs<
     let top_guard = tm.mk_boolean(true);
 
     let value_term = match encode_expr(
-        &def.value, &env, const_defs, fn_env, &tm, &mut solver,
+        &def.value, &env, const_defs, fn_env, set_defs, &tm, &mut solver,
         &mut call_counter, &mut builtin_obligs, top_guard,
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
     };
 
-    match membership_constraint(&tm, value_term, &def.ty) {
+    match membership_constraint(&tm, value_term, &def.ty, set_defs) {
         Membership::Unconstrained => CheckResult::Proved,
         Membership::Constrained(c) => {
             solver.assert_formula(tm.mk_term(Kind::Not, &[c]));
@@ -186,6 +197,7 @@ fn check_block_sig(
     stmts: &[crate::ast::Stmt],
     fn_env: &FunctionEnv<'_>,
     const_defs: &ConstDefs<'_>,
+    set_defs: &SetDefs<'_>,
 ) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
@@ -227,7 +239,7 @@ fn check_block_sig(
 
     for (term, part) in param_terms.iter().zip(domain_parts.iter()) {
         if set_kind(part) == ValKind::Bool { continue; }
-        match membership_constraint(&tm, term.clone(), part) {
+        match membership_constraint(&tm, term.clone(), part, set_defs) {
             Membership::Unconstrained => {}
             Membership::Constrained(c) => {
                 solver.assert_formula(c.clone());
@@ -257,6 +269,7 @@ fn check_block_sig(
         &mut env,
         const_defs,
         fn_env,
+        set_defs,
         &tm,
         &mut solver,
         &mut call_counter,
@@ -286,7 +299,7 @@ fn check_block_sig(
         };
     }
 
-    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range) {
+    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range, set_defs) {
         Membership::Unconstrained => None,
         Membership::Constrained(c) => Some(c),
         Membership::Unsupported => {
@@ -325,7 +338,7 @@ fn check_block_sig(
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {
-        if body_has_unconstrained_loop_var(stmts, &constraint_env, &tm) {
+        if body_has_unconstrained_loop_var(stmts, &constraint_env, &tm, set_defs) {
             return CheckResult::Unknown(
                 "while loop: declare all mutable variable constraints \
                  (`mut name: Set = expr`) to enable counterexample extraction".into()
@@ -372,6 +385,7 @@ fn check_sig(
     body: &Expr,
     fn_env: &FunctionEnv<'_>,
     const_defs: &ConstDefs<'_>,
+    set_defs: &SetDefs<'_>,
 ) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
@@ -416,7 +430,7 @@ fn check_sig(
     // Bool-domain params are already constrained by their sort; skip them.
     for (term, part) in param_terms.iter().zip(domain_parts.iter()) {
         if set_kind(part) == ValKind::Bool { continue; }
-        match membership_constraint(&tm, term.clone(), part) {
+        match membership_constraint(&tm, term.clone(), part, set_defs) {
             Membership::Unconstrained => {}
             Membership::Constrained(c) => solver.assert_formula(c),
             Membership::Unsupported => {
@@ -435,14 +449,14 @@ fn check_sig(
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
     let body_term = match encode_expr(
-        body, &env, const_defs, fn_env, &tm, &mut solver, &mut call_counter,
+        body, &env, const_defs, fn_env, set_defs, &tm, &mut solver, &mut call_counter,
         &mut builtin_obligs, top_guard,
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
     };
 
-    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range) {
+    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range, set_defs) {
         Membership::Unconstrained => None,
         Membership::Constrained(c) => Some(c),
         Membership::Unsupported => {

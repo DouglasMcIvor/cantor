@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::membership::{Membership, membership_constraint};
+use super::SetDefs;
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -72,6 +73,7 @@ pub(crate) fn encode_expr<'tm>(
     env: &Env<'tm>,
     const_defs: &HashMap<Symbol, &Expr>,
     fn_env: &HashMap<Symbol, &FunctionDef>,
+    set_defs: &SetDefs<'_>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
@@ -80,7 +82,7 @@ pub(crate) fn encode_expr<'tm>(
 ) -> Result<Term<'tm>, String> {
     macro_rules! enc {
         ($e:expr) => {
-            encode_expr($e, env, const_defs, fn_env, tm, solver, call_counter, builtin_obligs, path_cond.clone())
+            encode_expr($e, env, const_defs, fn_env, set_defs, tm, solver, call_counter, builtin_obligs, path_cond.clone())
         };
     }
 
@@ -94,7 +96,7 @@ pub(crate) fn encode_expr<'tm>(
             } else if let Some(const_expr) = const_defs.get(sym) {
                 // Inline the constant's value expression (no params, same const_defs
                 // so chained constants like `tau = 2 * pi` resolve correctly).
-                encode_expr(const_expr, &Env::new(), const_defs, fn_env, tm, solver,
+                encode_expr(const_expr, &Env::new(), const_defs, fn_env, set_defs, tm, solver,
                             call_counter, builtin_obligs, path_cond)
             } else {
                 Err(format!("unbound variable `{}`", sym.0))
@@ -104,7 +106,7 @@ pub(crate) fn encode_expr<'tm>(
         ExprKind::UnOp { op, expr: inner } => {
             let t = enc!(inner)?;
             if let Some((domain, reason)) = unary_builtin_domain(op) {
-                if let Membership::Constrained(c) = membership_constraint(tm, t.clone(), &domain) {
+                if let Membership::Constrained(c) = membership_constraint(tm, t.clone(), &domain, set_defs) {
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: path_cond.clone(),
                         obligation: c,
@@ -134,7 +136,7 @@ pub(crate) fn encode_expr<'tm>(
                         }
                     }
                     let l = enc!(lhs)?;
-                    return match membership_constraint(tm, l, rhs) {
+                    return match membership_constraint(tm, l, rhs, set_defs) {
                         Membership::Constrained(c)  => Ok(c),
                         Membership::Unconstrained    => Ok(tm.mk_boolean(true)),
                         Membership::Unsupported      => Err("unsupported set in `in` expression".into()),
@@ -150,7 +152,7 @@ pub(crate) fn encode_expr<'tm>(
                         }
                     }
                     let l = enc!(lhs)?;
-                    return match membership_constraint(tm, l, rhs) {
+                    return match membership_constraint(tm, l, rhs, set_defs) {
                         Membership::Constrained(c)  => Ok(tm.mk_term(Kind::Not, &[c])),
                         Membership::Unconstrained    => Ok(tm.mk_boolean(false)),
                         Membership::Unsupported      => Err("unsupported set in `not in` expression".into()),
@@ -164,7 +166,7 @@ pub(crate) fn encode_expr<'tm>(
 
             for (arg_idx, arg_term) in [&l, &r].iter().enumerate() {
                 if let Some((domain, reason)) = binary_builtin_domain(op, arg_idx) {
-                    if let Membership::Constrained(c) = membership_constraint(tm, (*arg_term).clone(), &domain) {
+                    if let Membership::Constrained(c) = membership_constraint(tm, (*arg_term).clone(), &domain, set_defs) {
                         builtin_obligs.push(BuiltinObligation {
                             path_cond: path_cond.clone(),
                             obligation: c,
@@ -201,14 +203,14 @@ pub(crate) fn encode_expr<'tm>(
             // Then-branch: path_cond ∧ cond
             let then_guard = tm.mk_term(Kind::And, &[path_cond.clone(), c.clone()]);
             let t = encode_expr(
-                then_expr, env, const_defs, fn_env, tm, solver, call_counter, builtin_obligs, then_guard,
+                then_expr, env, const_defs, fn_env, set_defs, tm, solver, call_counter, builtin_obligs, then_guard,
             )?;
 
             // Else-branch: path_cond ∧ ¬cond
             let not_c = tm.mk_term(Kind::Not, &[c.clone()]);
             let else_guard = tm.mk_term(Kind::And, &[path_cond, not_c]);
             let e = encode_expr(
-                else_expr, env, const_defs, fn_env, tm, solver, call_counter, builtin_obligs, else_guard,
+                else_expr, env, const_defs, fn_env, set_defs, tm, solver, call_counter, builtin_obligs, else_guard,
             )?;
 
             Ok(tm.mk_term(Kind::Ite, &[c, t, e]))
@@ -250,7 +252,7 @@ pub(crate) fn encode_expr<'tm>(
             let result_var = tm.mk_const(result_sort, &fresh);
 
             for sig in &callee_def.sigs {
-                assert_call_contract(sig, &arg_terms, result_var.clone(), tm, solver);
+                assert_call_contract(sig, &arg_terms, result_var.clone(), tm, solver, set_defs);
             }
 
             Ok(result_var)
@@ -279,6 +281,7 @@ pub(crate) fn assert_call_contract<'tm>(
     result: Term<'tm>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
+    set_defs: &SetDefs<'_>,
 ) {
     let mut antecedents: Vec<Term<'_>> = Vec::new();
     match &sig.domain {
@@ -289,7 +292,7 @@ pub(crate) fn assert_call_contract<'tm>(
                 return;
             }
             for (part, arg) in parts.iter().zip(arg_terms.iter()) {
-                match membership_constraint(tm, arg.clone(), part) {
+                match membership_constraint(tm, arg.clone(), part, set_defs) {
                     Membership::Unconstrained => {}
                     Membership::Constrained(c) => antecedents.push(c),
                     Membership::Unsupported => return,
@@ -298,7 +301,7 @@ pub(crate) fn assert_call_contract<'tm>(
         }
     }
 
-    let consequent = match membership_constraint(tm, result, &sig.range) {
+    let consequent = match membership_constraint(tm, result, &sig.range, set_defs) {
         Membership::Unconstrained => return,
         Membership::Constrained(c) => c,
         Membership::Unsupported => return,

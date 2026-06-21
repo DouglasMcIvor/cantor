@@ -181,3 +181,39 @@ fn for_in_body_mut_uppercase_err() {
     let e = err("f : -> Int\nf() {\n  mut acc: Int = 0\n  for x in {1, 2} {\n    mut Tmp: Int = x\n    acc := acc + Tmp\n  }\n  acc\n}");
     assert!(e.contains("Tmp"), "error should name `Tmp`: {e}");
 }
+
+// ── Set definition naming ─────────────────────────────────────────────────────
+
+#[test]
+fn set_def_uppercase_name_ok() {
+    ok("MySet = {1, 2, 3}");
+}
+
+#[test]
+fn set_def_lowercase_name_err() {
+    let e = err("mySet = {1, 2, 3}");
+    assert!(e.contains("mySet"), "error should name `mySet`: {e}");
+    assert!(e.contains("uppercase"), "error should mention uppercase: {e}");
+}
+
+#[test]
+fn set_def_alias_uppercase_rhs_ok() {
+    ok("Animal = Cat | Dog");
+}
+
+#[test]
+fn set_def_alias_lowercase_rhs_err() {
+    let e = err("Animal = cat | Dog");
+    assert!(e.contains("cat"), "error should name `cat`: {e}");
+}
+
+#[test]
+fn set_def_distinct_uppercase_ok() {
+    ok("Litre = distinct Nat");
+}
+
+#[test]
+fn set_def_distinct_lowercase_rhs_err() {
+    let e = err("Litre = distinct nat");
+    assert!(e.contains("nat"), "error should name `nat`: {e}");
+}

@@ -342,12 +342,13 @@ sum_above_threshold(threshold) {
 - **`require` / `assert` / `assume`** — static and graduated runtime proof obligations
 - **`Fail` and `?`** — monadic error propagation; fallible functions declare `| Fail` in their range; `?` short-circuits on failure
 - **Named set naming convention** — uppercase names are compile-time set names (`Nat`, `HTTPError`); lowercase names are values (`pi`, `abs`, `collected_primes`); enforced by the compiler
+- **User-defined named sets** — `Colour = {1, 2, 3}` and `Animal = Cat | Dog` declare compile-time set aliases; `Litre = distinct Nat` declares a new set that is solver-opaque and disjoint from `Nat` (see roadmap note below)
 - **JIT execution** — `cantor run <file>` checks proofs then JIT-compiles and runs `main` via LLVM
 
 ## On the roadmap
 
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
-- **User-defined named sets** — `EvenNat = { n in Nat | n mod 2 == 0 }` as a top-level definition
+- **`distinct` set proofs** — `distinct` sets are currently phantom types: the solver returns `unknown` for any signature involving one, including the trivial identity `volume : Litre -> Litre`. Making them useful requires two things landing together: (1) encoding `distinct` sets as uninterpreted SMT sorts so the solver can track "this value is a `Litre`" through a proof, and (2) a constructor/injection mechanism (`litre : Nat -> Litre`) so user code can actually produce a value of a distinct set from its underlying representation. Until then, `distinct` reserves the name and enforces the naming convention but proves nothing.
 - **`raise` and `emits`** — unrecoverable errors and write-only side effects (logging, metrics)
 - **State** — mutable program state that survives between calls, with a proof that it satisfies its invariants at every boundary
 - **Module system** — imports, library compilation, separate checking

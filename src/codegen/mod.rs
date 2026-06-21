@@ -408,7 +408,7 @@ fn compile_items<'ctx>(
                 let fn_val = compiler.declare_function(&def.name.0, &def.params, ret_kind);
                 Some((fn_val, def))
             }
-            Item::ConstDef(_) => None,
+            Item::ConstDef(_) | Item::SetDef(_) => None,
         })
         .collect();
 

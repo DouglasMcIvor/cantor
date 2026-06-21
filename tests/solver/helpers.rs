@@ -44,3 +44,13 @@ pub fn counterexample(src: &str) {
         "expected Counterexample for `{label}`, got {result:?}"
     );
 }
+
+/// Assert that the single-function source produces at least one Unknown.
+pub fn unknown(src: &str) {
+    let results = check(src);
+    let (label, result) = results.into_iter().next().unwrap();
+    assert!(
+        matches!(result, CheckResult::Unknown(_)),
+        "expected Unknown for `{label}`, got {result:?}"
+    );
+}

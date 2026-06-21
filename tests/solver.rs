@@ -10,3 +10,5 @@ mod loops;
 mod runtime_sets;
 #[path = "solver/let_bindings.rs"]
 mod let_bindings;
+#[path = "solver/set_defs.rs"]
+mod set_defs;

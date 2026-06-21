@@ -23,6 +23,9 @@ pub enum Token {
     Assert,
     Assume,
     Require,
+    // Set definitions
+    Alias,
+    Distinct,
     // Loops
     While,
     // Reserved for comprehensions (parser rejects with a "not yet" error)
@@ -85,6 +88,8 @@ impl fmt::Display for Token {
             Token::Assert   => f.write_str("assert"),
             Token::Assume   => f.write_str("assume"),
             Token::Require  => f.write_str("require"),
+            Token::Alias    => f.write_str("alias"),
+            Token::Distinct => f.write_str("distinct"),
             Token::While    => f.write_str("while"),
             Token::For      => f.write_str("for"),
             Token::Plus     => f.write_str("+"),
@@ -169,13 +174,15 @@ impl<'src> Lexer<'src> {
             "if"     => Token::If,
             "then"   => Token::Then,
             "else"   => Token::Else,
-            "mut"     => Token::Mut,
-            "assert"  => Token::Assert,
-            "assume"  => Token::Assume,
-            "require" => Token::Require,
-            "while"   => Token::While,
-            "for"     => Token::For,
-            _        => Token::Ident(word.to_owned()),
+            "mut"      => Token::Mut,
+            "assert"   => Token::Assert,
+            "assume"   => Token::Assume,
+            "require"  => Token::Require,
+            "alias"    => Token::Alias,
+            "distinct" => Token::Distinct,
+            "while"    => Token::While,
+            "for"      => Token::For,
+            _          => Token::Ident(word.to_owned()),
         };
         (tok, Span::new(start as u32, self.pos as u32))
     }

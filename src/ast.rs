@@ -250,12 +250,38 @@ pub struct ConstDef {
     pub span: Span,
 }
 
+// ── Set definitions ───────────────────────────────────────────────────────────
+
+/// Whether a named set is a transparent alias or a new disjoint set (§13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetDefKind {
+    /// `Name = expr` or `Name = alias expr` — transparent to the solver.
+    /// `x in Name` expands to `x in expr` at the set layer.
+    Alias,
+    /// `Name = distinct expr` — new set disjoint from its basis set.
+    /// The solver treats `Name` as opaque; `x in Name` does not imply `x in expr`.
+    Distinct,
+}
+
+/// `Name = [alias|distinct] set_expr` — a compile-time named set definition.
+///
+/// Uppercase name required (§2a). Without a keyword (or with `alias`) the name
+/// is a transparent rename; with `distinct` the solver sees a new, opaque set.
+#[derive(Debug, Clone)]
+pub struct SetDef {
+    pub name: Symbol,
+    pub kind: SetDefKind,
+    pub rhs: Expr,
+    pub span: Span,
+}
+
 // ── Top-level items ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub enum Item {
     FunctionDef(FunctionDef),
     ConstDef(ConstDef),
+    SetDef(SetDef),
 }
 
 // ── Display ───────────────────────────────────────────────────────────────────
