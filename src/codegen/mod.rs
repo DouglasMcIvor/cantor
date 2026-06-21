@@ -367,13 +367,12 @@ fn eval_const(expr: &Expr, known: &HashMap<Symbol, i64>) -> Result<i64, CompileE
 }
 
 /// Compile every function in `items` into a single JIT module.
-///
-/// Three-pass: constants evaluated first, then all functions declared (so
-/// forward/mutual calls resolve), then bodies compiled.
-pub fn compile_file<'ctx>(
+/// Three-pass compilation (constants → declarations → bodies) into a `Compiler`.
+/// Both `compile_file` and `compile_to_ir` delegate here.
+fn compile_items<'ctx>(
     ctx: &'ctx Context,
     items: &[Item],
-) -> Result<ExecutionEngine<'ctx>, CompileError> {
+) -> Result<Compiler<'ctx>, CompileError> {
     let mut compiler = Compiler::new(ctx, "cantor");
     compiler.declare_runtime_functions();
 
@@ -436,7 +435,24 @@ pub fn compile_file<'ctx>(
         }
     }
 
-    compiler
+    Ok(compiler)
+}
+
+/// Compile a parsed file to a JIT execution engine.
+pub fn compile_file<'ctx>(
+    ctx: &'ctx Context,
+    items: &[Item],
+) -> Result<ExecutionEngine<'ctx>, CompileError> {
+    compile_items(ctx, items)?
         .into_jit_engine()
-        .map_err(|e| CompileError::Internal(e))
+        .map_err(CompileError::Internal)
+}
+
+/// Compile a parsed file and return the LLVM IR as a string (no JIT).
+///
+/// Useful in tests to assert whether something was handled at compile time
+/// (no runtime calls in the IR) or at runtime (runtime calls present).
+pub fn compile_to_ir<'ctx>(ctx: &'ctx Context, items: &[Item]) -> Result<String, CompileError> {
+    let compiler = compile_items(ctx, items)?;
+    Ok(compiler.module().print_to_string().to_string())
 }

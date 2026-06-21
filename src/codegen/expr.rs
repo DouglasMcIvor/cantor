@@ -6,7 +6,7 @@ use inkwell::{
 use crate::{
     ast::{BinOp, Expr, ExprKind, UnOp},
     error::CompileError,
-    kind::Kind,
+    kind::{Kind, SetElemKind},
     span::{Span, Symbol},
 };
 
@@ -40,9 +40,9 @@ impl<'ctx> Compiler<'ctx> {
             ExprKind::If { cond, then_expr, else_expr } => {
                 self.compile_if(cond, then_expr, else_expr, env)
             }
-            ExprKind::SetLit(_) | ExprKind::Comprehension { .. } => Err(CompileError::Internal(
-                "set expressions are only valid in signature/`for`/`in` position, not as values"
-                    .into(),
+            ExprKind::SetLit(elements) => self.compile_set_lit_value(elements, env),
+            ExprKind::Comprehension { .. } => Err(CompileError::Internal(
+                "comprehension in value position not yet supported".into(),
             )),
             ExprKind::Try(inner) => self.compile_try(inner, env),
         }
@@ -240,6 +240,27 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        // `size(s)` — built-in cardinality function for runtime sets.
+        if callee.0 == "size" && args.len() == 1 {
+            let (ptr, kind) = self.compile_expr(&args[0], env)?;
+            let size_fn = match kind {
+                Kind::Set(SetElemKind::Int)  => "cantor_set_size_i64",
+                Kind::Set(SetElemKind::Bool) => "cantor_set_size_bool",
+                _ => return Err(CompileError::Internal(
+                    "size() requires a runtime set argument".into(),
+                )),
+            };
+            let fn_val = self.module.get_function(size_fn)
+                .ok_or_else(|| CompileError::Internal(format!("{size_fn} not declared")))?;
+            let result = self.builder
+                .build_call(fn_val, &[ptr.into()], "size")
+                .map_err(|e| CompileError::Internal(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .ok_or_else(|| CompileError::Internal("size fn returned void".into()))?;
+            return Ok((result, Kind::Int));
+        }
+
         let function = self.module.get_function(&callee.0).ok_or_else(|| {
             CompileError::UndefinedVariable { name: callee.0.clone(), span }
         })?;
@@ -289,5 +310,83 @@ impl<'ctx> Compiler<'ctx> {
         } else {
             Ok((result_i64, Kind::Int))
         }
+    }
+
+    /// Compile `{ e1, e2, … }` in value position into a heap-allocated runtime set.
+    ///
+    /// All elements must have the same Kind (homogeneous sets only for now).
+    /// Returns a pointer-as-i64 with `Kind::Set(elem_kind)`.
+    fn compile_set_lit_value(
+        &self,
+        elements: &[Expr],
+        env: &Env<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        if elements.is_empty() {
+            return Err(CompileError::Internal(
+                "empty set literal in value position — element kind cannot be inferred; \
+                 add an explicit annotation (e.g. `s : Set(Int) = {}`)"
+                    .into(),
+            ));
+        }
+
+        let i64t = self.context.i64_type();
+
+        // Compile all elements up front to determine and check homogeneity.
+        let compiled: Vec<(BasicValueEnum<'ctx>, Kind)> = elements
+            .iter()
+            .map(|e| self.compile_expr(e, env))
+            .collect::<Result<_, _>>()?;
+
+        let elem_kind = compiled[0].1;
+        for &(_, k) in &compiled {
+            if k != elem_kind {
+                return Err(CompileError::Internal(
+                    "mixed element kinds in set literal — \
+                     heterogeneous sets not yet supported"
+                        .into(),
+                ));
+            }
+        }
+
+        let (set_elem_kind, new_fn, insert_fn) = match elem_kind {
+            Kind::Int  => (SetElemKind::Int,  "cantor_set_new_i64",  "cantor_set_insert_i64"),
+            Kind::Bool => (SetElemKind::Bool, "cantor_set_new_bool", "cantor_set_insert_bool"),
+            Kind::Set(_) => return Err(CompileError::Internal(
+                "sets of sets not yet supported".into(),
+            )),
+        };
+
+        // Allocate an empty set.
+        let new_fn_val = self.module.get_function(new_fn)
+            .ok_or_else(|| CompileError::Internal(
+                format!("{new_fn} not declared — was declare_runtime_functions called?"),
+            ))?;
+        let ptr = self.builder
+            .build_call(new_fn_val, &[], "new_set")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::Internal("cantor_set_new returned void".into()))?;
+
+        // Insert each element (insert functions return void).
+        let insert_fn_val = self.module.get_function(insert_fn)
+            .ok_or_else(|| CompileError::Internal(
+                format!("{insert_fn} not declared — was declare_runtime_functions called?"),
+            ))?;
+        for (val, k) in compiled {
+            let val_i64: BasicValueEnum = if k == Kind::Bool {
+                self.builder
+                    .build_int_z_extend(val.into_int_value(), i64t, "elem_bool_ext")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                    .into()
+            } else {
+                val
+            };
+            self.builder
+                .build_call(insert_fn_val, &[ptr.into(), val_i64.into()], "insert")
+                .map_err(|e| CompileError::Internal(e.to_string()))?;
+        }
+
+        Ok((ptr, Kind::Set(set_elem_kind)))
     }
 }

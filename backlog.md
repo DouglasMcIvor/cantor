@@ -5,6 +5,10 @@ You probably don't want to read this unless you're me.
 
 - runtime sets of course
 - for over named sets not just set literals
+- immutable set (and eventually all-value) bindings — two milestones:
+  1. range-constraint form: `s : Set(Int) = {1, 2, 3}` desugars to `s = {1, 2, 3}; require s in Set(Int)`
+  2. inference form: `s = {1, 2, 3}` infers element kind from the literal
+  (currently only `mut name : constraint = value` exists; no immutable `let` form)
 - functions returning product sets
 - CLI to output IR
 - memory model
@@ -37,7 +41,8 @@ You probably don't want to read this unless you're me.
 - compiled binaries
 - linker integration
 - "named types" (Type vs NewType?) or whatever the thingy is called but in set language. I want to be able to make Litres that are numbers but form a distinct set.
-- structs/"named product sets"
+- structs/"named product sets" and same for unions
+- pattern matching with `match x { a => ... , b => ...}`
 - struct member functions?
 - lambdas and closures
 - dynamic dispatch?
@@ -45,7 +50,6 @@ You probably don't want to read this unless you're me.
 - generics. do we need mechanisms to help define functions that work on lots of different sets? seems like it should work alongside overloading
 - automatic multithreading for semi-pure core?
 - multiple concurrent IO threads?
-
 - Optimizations! From ChatGPT:
   ```
     The key lever: assumptions become optimisations

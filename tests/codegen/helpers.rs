@@ -1,6 +1,6 @@
 use cantor::{
     ast::{Expr, Param},
-    codegen::{compile_file, Compiler},
+    codegen::{compile_file, compile_to_ir, Compiler},
 };
 use inkwell::context::Context;
 
@@ -62,4 +62,15 @@ pub fn jit_src_zero_arg(src: &str) -> i64 {
             .unwrap();
         f.call()
     }
+}
+
+/// Compile `src` and return the LLVM IR as a string without running it.
+///
+/// Use this to assert whether a construct was handled at compile time
+/// (no `cantor_set_*` calls in the IR) or emitted as runtime calls.
+pub fn ir_for_src(src: &str) -> String {
+    use cantor::parser::parse_file;
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let ctx = Context::create();
+    compile_to_ir(&ctx, &items).unwrap_or_else(|e| panic!("compile error: {e}"))
 }

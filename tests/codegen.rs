@@ -6,3 +6,5 @@ mod expr;
 mod loops;
 #[path = "codegen/runtime_fns.rs"]
 mod runtime_fns;
+#[path = "codegen/sets.rs"]
+mod sets;
