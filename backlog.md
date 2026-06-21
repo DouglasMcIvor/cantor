@@ -3,10 +3,8 @@ You probably don't want to read this unless you're me.
 
 # To do
 
-- immutable set (and eventually all-value) bindings — two milestones:
-  1. range-constraint form: `s : Set(Int) = {1, 2, 3}` desugars to `s = {1, 2, 3}; require s in Set(Int)`
-  2. inference form: `s = {1, 2, 3}` infers element kind from the literal
-  (currently only `mut name : constraint = value` exists; no immutable `let` form)
+- confirm that with constants I can declare my own compile time sets and use them as domains/ranges
+- `distinct` and `alias` keywords as that combines nicely with the above
 - function overloads, or as ChatGPT suggests "the language should officially define an overloaded function as *the union of compatible partial functions*". In my own words "all functions are partial until linking is complete"
 - functions returning product sets
 - CLI to output IR
@@ -15,7 +13,7 @@ You probably don't want to read this unless you're me.
 - set comprehensions, including infinite generative sets
   - math syntax `{x*2 | x ∈ Nat, x > 0}` as sugar for the python form (deferred)
   - multi-binder `{x+y for x in A for y in B}` desugaring to Cartesian product (deferred)
-- confirm that with constants I can declare my own compile time sets and use them as domains/ranges
+- immutable set constants like `s = {1, 2, 3}`, need to be baked in as statics
 - more basic values:
   - float
   - char, string (unicode I guess)

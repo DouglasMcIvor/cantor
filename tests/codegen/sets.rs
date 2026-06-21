@@ -285,3 +285,48 @@ fn bool_set_literal_deduplicates() {
     );
     assert_eq!(result, 2);
 }
+
+// ── Immutable let bindings holding sets ───────────────────────────────────────
+
+#[test]
+fn let_set_size() {
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             s : Set(Int) = {1, 2, 3}
+             size(s)
+         }",
+        0,
+    );
+    assert_eq!(result, 3);
+}
+
+#[test]
+fn let_set_membership() {
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             s : Set(Int) = {10, 20, 30}
+             if n in s then 1 else 0
+         }",
+        20,
+    );
+    assert_eq!(result, 1);
+}
+
+#[test]
+fn let_set_for_in() {
+    let result = jit_src_one_arg(
+        "main : Int -> Int
+         main(n) {
+             s : Set(Int) = {1, 2, 3}
+             mut acc : Int = 0
+             for x in s {
+                 acc := acc + x
+             }
+             acc
+         }",
+        0,
+    );
+    assert_eq!(result, 6);
+}
