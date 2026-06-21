@@ -1,0 +1,19 @@
+-- Demonstrates runtime sets: Set(Int) literals, for-in iteration,
+-- membership testing, and size.
+-- Expected result: sum(2,3,5,7) + membership_checks(2) + size(4) = 23
+
+main : -> Int
+main() {
+    mut primes : Set(Int) = {2, 3, 5, 7}
+
+    mut acc : Int = 0
+    for p in primes {
+        acc := acc + p
+    }
+
+    mut checks : Int = 0
+    checks := if 3 in primes     then checks + 1 else checks
+    checks := if 4 not in primes then checks + 1 else checks
+
+    acc + checks + size(primes)
+}

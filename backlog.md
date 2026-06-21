@@ -63,8 +63,24 @@ You probably don't want to read this unless you're me.
   mut m1 : Measurement = 3m
   mut m2 : Measurement = 4l
 
-  -- not sure what to do about named unions yet
+  Measurement = distinct (
+      Length: Meter
+    | Volume: Liter
+  )
+  mut m1 : Measurement = Measurement.Length(3m) -- requires namespaces to exist first
+  mut m2 = Measurement.Volume(4l) -- requires mutable range inference to exist first
   ```
+  ChatGPT likes it:
+  > For named products, field names feel like named projection functions. p.x is shorthand for applying the projection corresponding to the x component.
+  >
+  > For named unions, constructor names feel like named injection functions. Result.Ok(3m) is shorthand for applying the canonical injection from Meter into the Result union.
+  >
+  > Those are exactly the two fundamental morphisms associated with products and coproducts in category theory:
+  >
+  > Products have projections.
+  > Coproducts (unions) have injections.
+  >
+  > You don't need to mention category theory anywhere in the language documentation, of course, but it's a reassuring sign. When the syntax naturally lines up with deep mathematical structures, it usually means you've found something that will remain coherent as the language grows. In Cantor, . naturally denotes projection (p.x), and Constructor(...) naturally denotes injection (Result.Ok(3m)). That symmetry feels remarkably elegant.
 - pattern matching with `match x { a => ... , b => ...}`
 - struct member functions?
 - lambdas and closures

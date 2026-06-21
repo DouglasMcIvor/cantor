@@ -354,3 +354,32 @@ fn assert_pass_still_proves_sigs() {
         "expected `proved` in checker output:\n{}", out.stdout
     );
 }
+
+// ── Runtime sets ──────────────────────────────────────────────────────────────
+
+#[test]
+fn runtime_set_runs_and_returns_correct_result() {
+    // runtime_set.cantor:
+    //   sum({2,3,5,7}) = 17
+    //   membership checks: 3 in primes (✓) + 4 not in primes (✓) = 2
+    //   size({2,3,5,7}) = 4
+    //   total = 17 + 2 + 4 = 23
+    let out = run_subcommand("runtime_set.cantor");
+    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("main() = 23"),
+        "expected 'main() = 23' in output:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn runtime_set_has_no_counterexamples() {
+    // The solver cannot yet fully verify Set(Int) signatures (returns `unknown`),
+    // but must never produce a counterexample — that would indicate a logic error
+    // in the proof encoding, not a missing feature.
+    let out = run_subcommand("runtime_set.cantor");
+    assert!(
+        !out.stdout.contains("  counterexample  "),
+        "unexpected counterexample in output:\n{}", out.stdout
+    );
+}

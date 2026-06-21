@@ -243,7 +243,7 @@ Loop variables declared as `mut name: Int` carry no effective constraint (Int = 
 
 ### For-in loops
 
-`for x in S` iterates over a set literal, binding `x` to each element in turn.
+`for x in S` iterates over a set, binding `x` to each element in turn.
 The same loop invariant mechanism applies: `mut acc: Set` declares the invariant, and the compiler verifies it is maintained across every element.
 
 ```haskell
@@ -258,6 +258,44 @@ sum_set() {
 ```
 
 Naming the loop variable with an uppercase letter (`for X in {1, 2, 3}`) promises that the value is known at compile time and forces the compiler to verify the iterable is statically materializable — a lightweight way to opt into guaranteed compile-time unrolling.
+
+### Runtime sets
+
+`Set(Int)` and `Set(Bool)` are first-class runtime values.
+`mut s : Set(Int) = {e1, e2, …}` allocates a heap-backed sorted-unique set; duplicates are collapsed silently.
+`for x in s` iterates the elements in sorted order, `x in s` / `x not in s` test membership, and `size(s)` returns the cardinality.
+
+```haskell
+main : -> Int
+main() {
+    mut primes : Set(Int) = {2, 3, 5, 7}
+
+    mut acc : Int = 0
+    for p in primes {
+        acc := acc + p        -- acc = 17
+    }
+
+    mut checks : Int = 0
+    checks := if 3 in primes     then checks + 1 else checks   -- 3 is prime ✓
+    checks := if 4 not in primes then checks + 1 else checks   -- 4 is not   ✓
+
+    acc + checks + size(primes)   -- 17 + 2 + 4 = 23
+}
+```
+
+```sh
+$ cantor run primes.cantor
+  unknown         main : -> Int
+    (set expressions cannot appear in value position ...)
+
+  0 proved, 0 counterexample(s), 1 unknown
+warning: 1 signature(s) could not be fully verified — running anyway
+
+main() = 23
+```
+
+The solver currently returns `unknown` for functions that use `Set(…)` values — SMT encoding of set-typed variables is on the roadmap.
+The runtime result is always correct; the only gap is that the compiler cannot yet *prove* the signature holds for all inputs.
 
 ### Set comprehensions
 
@@ -303,6 +341,7 @@ sum_above_threshold(threshold) {
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis
 - **Constants** — `name : Set / name = expr`, type-checked and auto-inlined at compile time
 - **Block bodies with `while` and `for x in S` loops** — imperative-style bodies with `while cond { stmts }` and `for x in {e1, e2, …} { stmts }`, `mut name: Set = expr` locals (set annotation is the declared loop invariant), sequenced statements, and `if-then-else`
+- **Runtime sets** — `Set(Int)` and `Set(Bool)` as first-class heap-allocated values; `mut s : Set(Int) = {…}` creates a sorted-unique set; `for x in s` iterates; `x in s` / `x not in s` test membership; `size(s)` returns cardinality; duplicates are collapsed silently
 - **`require` / `assert` / `assume`** — static and graduated runtime proof obligations
 - **`Fail` and `?`** — monadic error propagation; fallible functions declare `| Fail` in their range; `?` short-circuits on failure
 - **Named set naming convention** — uppercase names are compile-time set names (`Nat`, `HTTPError`); lowercase names are values (`pi`, `abs`, `collected_primes`); enforced by the compiler
@@ -310,7 +349,7 @@ sum_above_threshold(threshold) {
 
 ## On the roadmap
 
-- **Runtime sets** — sets as first-class runtime values; `collected_primes` as a real set you can iterate, test membership, and pass around; comprehensions that produce a set value rather than being unrolled statically
+- **SMT verification of Set-typed variables** — the solver currently returns `unknown` for functions that create or consume `Set(…)` values; encoding set-typed mutation invariants in cvc5's native set theory is the next proof milestone
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
 - **User-defined named sets** — `EvenNat = { n in Nat | n mod 2 == 0 }` as a top-level definition
 - **`raise` and `emits`** — unrecoverable errors and write-only side effects (logging, metrics)
