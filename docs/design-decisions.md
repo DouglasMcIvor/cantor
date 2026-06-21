@@ -226,11 +226,12 @@ implementation detail the developer should not rely on.
 - A mutable local has a "trajectory" through some set S over the function
   body; compiler does loop-invariant-style inference, falling back to
   assert/assume when it can't determine the invariant automatically.
-- **Syntax (DECIDED)**: `mut name = expr` introduces a mutable variable with
-  its initial value. `name := expr` *re*assigns it. Plain `name = expr` inside
-  a `{ }` body is an immutable local binding — using `:=` on such a name is a
-  compile error. Compound mutation operators follow the same two-character form:
-  `+=`, `-=`, etc.
+- **Syntax (DECIDED)**: `mut name: Set = expr` introduces a mutable variable;
+  the `Set` annotation is the declared invariant — the set every reassignment
+  must stay in and that is assumed true at the top of each loop iteration.
+  `name := expr` *re*assigns it. Plain `name = expr` inside a `{ }` body is
+  an immutable local binding — using `:=` on such a name is a compile error.
+  Compound mutation operators follow the same two-character form: `+=`, `-=`, etc.
 
 ## 6. IO / Event loop
 
@@ -436,19 +437,21 @@ double = scale(2)   -- if scale(n)(x) = n * x
 -- Mutable locals are ONLY valid inside `{ }` blocks.
 sum_to : Nat -> Nat
 sum_to(n) {
-    mut acc = 0    -- initial binding: `mut` + `=`
-    mut i   = 1
-    -- (loop syntax TBD; reassignment inside will use `:=`, e.g. `acc := acc + i`)
+    mut acc: Nat = 0   -- Set annotation = declared loop invariant
+    mut i: Nat   = 1
+    while i <= n {
+        acc := acc + i
+        i   := i + 1
+    }
     acc
 }
 
 -- Bare `{ }` blocks may appear anywhere inside a `{ }` body to
--- introduce a new scope — this is also how imperative loops will be
--- added later.
+-- introduce a new scope.
 f : Int -> Int
 f(x) {
     {
-        mut tmp = x + 1
+        mut tmp: Int = x + 1
         -- tmp goes out of scope at the closing brace
     }
     x * 2
@@ -465,16 +468,23 @@ These are two distinct constructs with different syntax.
 **Constants** — a named element of a set; not a function:
 
 ```
--- Signature: membership claim only, no `->`.
-pi   : Real
-pi   = 3.14159
+-- Signature and value on one line; no `->`.
+pi   : Real = 3.14159
+zero : Int  = 0
 
-zero : Int
-zero = 0
+-- Constants can reference other constants (auto-inlined)
+scale      : Nat = 1000
+pi_scaled  : Nat = 3 * scale + 141
+
+-- Compile-time set definitions share the same syntax
+Colour = {1, 2, 3}
 ```
 
-No `()` on the implementation line; no `->` in the signature. A constant
-has no domain or range — it simply *is* an element of a set.
+No `()`, no `->` in the signature. A constant has no domain or range —
+it simply *is* an element of a set. Both value constants and named set
+definitions use the same `name : Set = expr` / `name = expr` one-line form
+and the same AST node; both are auto-inlined at compile time. Constants
+are checked against their set annotation at compile time.
 
 **Zero-argument functions** — a function callable at runtime; the `->` is
 present but nothing precedes it (empty domain):
@@ -504,10 +514,7 @@ f : Single -> Int   -- same semantics as `f : -> Int`, domain made explicit
 f(u) = 42
 ```
 
-_Parser status_: constants (`name : Set` / `name = expr` without `->`) are
-planned but not yet implemented — the parser currently handles functions
-only. Zero-arg functions (`name : -> Set` / `name() = expr`) are
-implemented.
+Both constants and zero-arg functions are implemented.
 
 ### `require`, `assert`, and `assume` statement syntax (DECIDED)
 
@@ -569,7 +576,7 @@ safe_to_nat(n) {
 
 caller : Int -> Nat | Fail
 caller(n) {
-    mut x = safe_to_nat(n)?   -- `?` propagates Fail if safe_to_nat fails
+    mut x: Nat = safe_to_nat(n)?   -- `?` propagates Fail if safe_to_nat fails
     x + 1
 }
 ```
@@ -586,6 +593,71 @@ The error set would be inferred from the literal (`TerriblePunError` must
 be a named error set), and the function's range would need to include it:
 `f : Int -> Nat | TerriblePunError`. Design deferred until named error sets
 and the associated syntax are worked out.
+
+### Loop syntax (DECIDED)
+
+**`while` loops** — condition-guarded imperative loop. The `mut` invariant
+annotation is used in three places: the initial value is checked against it,
+each reassignment is checked, and after the loop the post-loop variable
+inherits the invariant as a known solver fact. The compiler verifies the
+inductive step (given the invariant and the loop condition, does one body
+iteration maintain the invariant?).
+
+```
+while cond { stmts }
+```
+
+**`for x in S` loops** — iterates over a set, binding `x` to each element.
+Works for both compile-time set literals and runtime `Set(T)` values.
+Loop invariant semantics are identical to `while`.
+
+```
+for x in {1, 2, 3} { acc := acc + x }
+for x in runtime_set { acc := acc + x }
+```
+
+Naming the loop variable with an uppercase letter (`for X in S`) promises
+the value is known at compile time and forces the compiler to verify the
+iterable is statically materializable — a lightweight opt-in to
+guaranteed compile-time unrolling.
+
+### Runtime sets (DECIDED)
+
+`Set(Int)` and `Set(Bool)` are first-class heap-allocated runtime values.
+They hold sorted, duplicate-free elements. Supported operations:
+
+| Syntax | Meaning |
+|---|---|
+| `mut s: Set(Int) = {e1, e2, …}` | allocate; duplicates collapsed silently |
+| `for x in s` | iterate in sorted order |
+| `x in s` / `x not in s` | membership test |
+| `size(s)` | cardinality |
+
+The solver models runtime sets as opaque values: membership and `size`
+are unconstrained integers, sufficient to prove `Int`-range signatures.
+
+### `alias` and `distinct` (DECIDED)
+
+Both modify how a name is treated at the set layer (§13). Syntax is a
+one-line definition, same as any constant or named set:
+
+```
+-- alias: transparent rename; solver expands membership inline.
+-- Colour is just another name for {1, 2, 3}.
+Colour = {1, 2, 3}
+Animal = alias Cat | Dog
+
+-- distinct: creates a solver-opaque set disjoint from its basis.
+-- Litre ≠ Float even though both have the same runtime Kind.
+Litre = distinct Nat
+```
+
+`alias` is the right keyword (over `typedef`) as a deliberate signal to
+reach for it less. `distinct` sets are currently phantom at the proof
+level: the solver returns `unknown` for any signature involving one,
+including the trivial identity `volume : Litre -> Litre`. Making them
+useful requires uninterpreted SMT sorts and a constructor mechanism — see
+the roadmap in §1/README.
 
 ## 11. Open questions
 
@@ -610,6 +682,20 @@ Other open items (lower priority, not blocking):
 - Concurrency/async event handling model
 - Library interface versioning story (out of scope for now)
 - Solver-capability versioning (deferred, nice-to-have)
+- **Early `return` statement** — expected in imperative languages; not yet
+  designed. Does it interact with `Fail`/`?` propagation?
+- **Memory model direction** — leading candidate: persistent data structures
+  → structural sharing → cheap diffing → easy reclamation; tracing GC
+  during the diff phase (runs concurrently with IO). Mutable arena for
+  within-event temporaries; arena is discarded at event boundary. (Not
+  finalised — needs more design work when IO loop is tackled.)
+- **Built-in containers** — pull in a library (`im`, `rpds`) or roll our
+  own? Preference: start with flat arrays for temporaries; use `im`/`rpds`
+  for persistent structures; roll our own later.
+- **cvc5 proof effort / timeout** — should developers be able to configure
+  an effort level per proof? Does cvc5 expose a built-in timeout?
+- **`emits` and multithreading** — if concurrent IO threads share `emits`
+  channels, synchronisation is needed. Defer until threading model is decided.
 
 ## 12. Explicitly deferred future features (not in scope, do not implement
     speculatively)
@@ -621,6 +707,33 @@ Other open items (lower priority, not blocking):
 - Automatic domain-partition inference for overload sets
 - Emit handlers written in Cantor itself
 - Solver-capability versioning
+- **Named product sets (structs)** — `Point = distinct (x: Meter; y: Meter)`;
+  constructor syntax TBD (tentatively positional `(3m, 4m)` or named
+  `(x = 3m; y = 4m)`). Projection via dot: `p.x` (natural as a named
+  projection function). Requires namespace support first.
+- **Named union sets** — `Measurement = distinct (Length: Meter | Volume: Liter)`;
+  constructor via injection: `Measurement.Length(3m)`. Parallel to named
+  products; requires namespaces. Aligns with products/coproducts: products
+  have projections, coproducts have injections.
+- **Literal suffixes** — `3m` for `3 meters` etc.; sugar for a constructor
+  call. Design depends on named product sets landing first.
+- **Pattern matching** — `match x { a => …, b => … }` or overloaded-signature
+  form; exact syntax undecided. Natural complement to named unions.
+- **Destructuring** — `assert z in X * Y; x, y = z`; `for i, x in collection`
+  falls out as sugar over destructuring + for-in.
+- **Generics via `given`** — `given A; require A <= Countable; f(x: A) -> Nat`.
+  Introduce a compile-time variable into scope; obligations stated with
+  `require`; instantiation substitutes concrete values and asks the solver
+  to discharge them. Reduces to an overload generator with no new semantic
+  machinery. Single new keyword: `given`. (Design explored but not finalised.)
+- **Pattern matching** — see above.
+- **Early `return`** — an open question (see §11).
+- **`raise` / `emits` syntax** — see §11.
+- Float, char/string, byte primitive values.
+- BigInt runtime support for unbounded `Int` / `Nat`.
+- Compiled (AOT) binaries; linker integration.
+- Module system (imports, separate checking) — see §7.
+- More containers: ordered sets, vectors, maps; iterators.
 
 ## 13. Primitive types and numeric tower
 
