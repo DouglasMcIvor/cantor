@@ -60,7 +60,14 @@ impl<'ctx> Compiler<'ctx> {
                 "Int16" => self.compile_bounded_membership(val, i16::MIN as i64, i16::MAX as i64),
                 "Int32" => self.compile_bounded_membership(val, i32::MIN as i64, i32::MAX as i64),
                 "Int64" => self.compile_bounded_membership(val, i64::MIN,        i64::MAX        ),
-                other   => Err(CompileError::Internal(format!("unknown set `{other}`"))),
+                other => {
+                    // Check user-defined named sets (e.g. `HTTPError = {400, 503}`).
+                    if let Some(vals) = self.user_set_vals.get(other) {
+                        self.build_int_set_membership(val, vals)
+                    } else {
+                        Err(CompileError::Internal(format!("unknown set `{other}`")))
+                    }
+                }
             },
 
             ExprKind::SetLit(elements) => {
@@ -154,6 +161,36 @@ impl<'ctx> Compiler<'ctx> {
         self.builder
             .build_int_truncate(result_i64, self.context.bool_type(), "contains_i1")
             .map_err(|e| CompileError::Internal(e.to_string()))
+    }
+
+    /// Emit `val == v0 || val == v1 || …` as an `i1` predicate.
+    ///
+    /// Used by `compile_try` to check whether a call result is a member of a
+    /// named error set (e.g. `{400, 503}`) at runtime.
+    pub(in crate::codegen) fn build_int_set_membership(
+        &self,
+        val: IntValue<'ctx>,
+        values: &[i64],
+    ) -> Result<IntValue<'ctx>, CompileError> {
+        if values.is_empty() {
+            return Ok(self.context.bool_type().const_int(0, false));
+        }
+        let b = &self.builder;
+        let i64t = self.context.i64_type();
+        let mut acc: Option<IntValue<'ctx>> = None;
+        for &n in values {
+            let n_val = i64t.const_int(n as u64, true);
+            let eq = b
+                .build_int_compare(IntPredicate::EQ, val, n_val, "err_eq")
+                .map_err(|e| CompileError::Internal(e.to_string()))?;
+            acc = Some(match acc {
+                None => eq,
+                Some(prev) => b
+                    .build_or(prev, eq, "err_or")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?,
+            });
+        }
+        Ok(acc.unwrap())
     }
 
     fn compile_bounded_membership(

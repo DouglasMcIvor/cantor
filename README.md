@@ -328,7 +328,7 @@ sum_above_threshold(threshold) {
 
 ## Features (working today)
 
-- **Set-theoretic domains and ranges** — `Int`, `Nat`, `NatPos`, `NonZeroInt`, `Int8`–`Int64`, `Bool`, set literals `{0, 1, 2}`, set difference `A - B`, union `A | B`, intersection `A & B`
+- **Set-theoretic domains and ranges** — `Int`, `Nat`, `NatPos`, `NonZeroInt`, `Int8`–`Int64`, `Bool`, set literals `{0, 1, 2}`, set difference `A - B`, union `A | B`, intersection `A & B`, error-union `A !! B`
 - **Bool as a first-class value kind** — `Bool` is disjoint from all integer sets; comparisons (`>`, `==`, …) produce `Bool`; `and`, `or`, `not` operate on `Bool`; no implicit coercion between `Bool` and integers
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` in domain/range/`in`/`for` positions; finite literal sources unrolled statically; infinite named sources encoded as SMT predicates
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
@@ -338,13 +338,17 @@ sum_above_threshold(threshold) {
 - **Runtime sets** — `Set(Int)` and `Set(Bool)` as first-class heap-allocated values; `mut s : Set(Int) = {…}` creates a sorted-unique set; `for x in s` iterates; `x in s` / `x not in s` test membership; `size(s)` returns cardinality; duplicates are collapsed silently
 - **`require` / `assert` / `assume`** — static and graduated runtime proof obligations
 - **`Fail` and `?`** — monadic error propagation; fallible functions declare `| Fail` in their range; `?` short-circuits on failure
+- **`fail` and `fail expr`** — `fail` produces the bare failure sentinel; `fail 400` constructs a tagged failure with integer payload (used with `!!`)
+- **Named error sets and error-union** — `HTTPError = {400, 503}` defines an error set; two ways to use it in a range:
+  - `fetch : NatPos -> Nat | HTTPError` — plain set union; safe when the **success type and error codes are disjoint** (e.g. `NatPos` doesn't contain 400 or 503); `?` propagates the error code as-is; **no `| Fail` needed** in the caller's range
+  - `fetch : Int -> Int !! HTTPError` — error-union operator; use when success values and error codes may overlap (any `Int` could legitimately be 400); `fail 400` encodes as `i64::MIN + 401` so `?` always distinguishes `fail 400` from success `400`; **caller must declare `| Fail` or `!!` in its own range**
+- **`return expr`** — early return from a block body; the solver reports `unknown` for block bodies containing `return` (early exits can't yet be modelled in the linear SMT encoder)
+- **`assert … else fail/return`** — `assert pred else fail 400` returns the offset-encoded failure when the predicate is false; `assert pred else return expr` returns `expr` directly as an early success exit
 - **Named set naming convention** — uppercase names are compile-time set names (`Nat`, `HTTPError`); lowercase names are values (`pi`, `abs`, `collected_primes`); enforced by the compiler
 - **`alias` and `distinct` set modifiers** — `Colour = {1, 2, 3}` and `Animal = alias Cat | Dog` declare transparent aliases (the solver expands membership inline); `Litre = distinct Nat` declares a new solver-opaque set disjoint from `Nat` (see roadmap note on `distinct` proofs)
 - **JIT execution** — `cantor run <file>` checks proofs then JIT-compiles and runs `main` via LLVM
 
 ## On the roadmap
-
-- **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` with no new language mechanism — just a named set used in a union range.
 
 - **`distinct` value proofs** — `distinct` sets are declared and named but currently phantom: the solver returns `unknown` for any signature involving one, including the trivial identity `volume : Litre -> Litre`. Making them useful requires encoding them as uninterpreted SMT sorts and adding a constructor mechanism (`litre : Nat -> Litre`). Once done, unit-safe arithmetic, new values, and nominal error values (`ErrForbidden = distinct 403`) all work for free.
 

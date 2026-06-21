@@ -45,6 +45,14 @@ pub struct Compiler<'ctx> {
     /// Maps each declared function name to its return Kind so `compile_call`
     /// can truncate the i64 result back to i1 for Bool-returning functions.
     fn_return_kinds: HashMap<String, Kind>,
+    /// Maps each declared function name to its first-signature range expression.
+    /// Used by `compile_try` to determine which named error sets `?` should
+    /// propagate for that callee.
+    fn_ranges: HashMap<String, Expr>,
+    /// Pre-expanded integer values for user-defined named sets whose definitions
+    /// are set literals (e.g. `HTTPError = {400, 503}` → `[400, 503]`).
+    /// Used by `compile_try` and `compile_membership` for named error set checks.
+    user_set_vals: HashMap<String, Vec<i64>>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -56,6 +64,8 @@ impl<'ctx> Compiler<'ctx> {
             current_fn: None,
             fail_bb: None,
             fn_return_kinds: HashMap::new(),
+            fn_ranges: HashMap::new(),
+            user_set_vals: HashMap::new(),
         }
     }
 
@@ -319,13 +329,18 @@ impl<'ctx> Compiler<'ctx> {
     }
 }
 
-/// True if any `|`-union branch of the range expression is the `Fail` set.
+/// True if the range expression can produce a failure value at runtime.
+///
+/// This covers both the traditional `| Fail` union and the new `!!` error-union
+/// operator (which encodes errors as FAIL_SENTINEL + payload + 1).
 pub fn range_contains_fail(range: &Expr) -> bool {
     match &range.kind {
         ExprKind::Var(sym) => sym.0 == "Fail",
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             range_contains_fail(lhs) || range_contains_fail(rhs)
         }
+        // `A !! B` always permits runtime failure.
+        ExprKind::BinOp { op: BinOp::ErrorUnion, .. } => true,
         _ => false,
     }
 }
@@ -376,14 +391,42 @@ fn compile_items<'ctx>(
     let mut compiler = Compiler::new(ctx, "cantor");
     compiler.declare_runtime_functions();
 
-    // Pass 0 — evaluate constants and build a shared env of inlined values.
+    // Pass 0 — evaluate scalar constants and build a shared env of inlined values.
+    // Set-definition NameDefs (e.g. `HTTPError = {400, 503}`) are silently skipped
+    // here because they have no scalar value to inline into function bodies; they
+    // are collected separately into `user_set_vals` below.
     let mut const_vals: HashMap<Symbol, i64> = HashMap::new();
     for item in items {
         if let Item::NameDef(def) = item {
-            let val = eval_const(&def.value, &const_vals)?;
-            const_vals.insert(def.name.clone(), val);
+            if let Ok(val) = eval_const(&def.value, &const_vals) {
+                const_vals.insert(def.name.clone(), val);
+            }
         }
     }
+
+    // Collect integer-value lists for set-literal NameDefs so that
+    // `compile_membership` and `compile_try` can reason about named error sets
+    // (e.g. `HTTPError = {400, 503}`) at compile time.
+    let mut user_set_vals: HashMap<String, Vec<i64>> = HashMap::new();
+    for item in items {
+        if let Item::NameDef(def) = item {
+            if let ExprKind::SetLit(elements) = &def.value.kind {
+                let vals: Option<Vec<i64>> = elements
+                    .iter()
+                    .map(|e| match &e.kind {
+                        ExprKind::IntLit(n) => Some(*n),
+                        ExprKind::Var(sym) => const_vals.get(sym).copied(),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(v) = vals {
+                    user_set_vals.insert(def.name.0.clone(), v);
+                }
+            }
+        }
+    }
+    compiler.user_set_vals = user_set_vals;
+
     let i64_type = ctx.i64_type();
     let const_env: Env<'ctx> = const_vals
         .iter()
@@ -400,12 +443,16 @@ fn compile_items<'ctx>(
         .iter()
         .filter_map(|item| match item {
             Item::FunctionDef(def) => {
-                let ret_kind = def
-                    .sigs
-                    .first()
+                let first_sig = def.sigs.first();
+                let ret_kind = first_sig
                     .map(|s| range_kind(&s.range))
                     .unwrap_or(Kind::Int);
                 let fn_val = compiler.declare_function(&def.name.0, &def.params, ret_kind);
+                // Record the range expression so `compile_try` can determine what
+                // error values `?` should propagate for this callee.
+                if let Some(sig) = first_sig {
+                    compiler.fn_ranges.insert(def.name.0.clone(), sig.range.clone());
+                }
                 Some((fn_val, def))
             }
             Item::NameDef(_) => None,

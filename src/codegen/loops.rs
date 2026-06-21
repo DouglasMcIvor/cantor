@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use inkwell::{IntPredicate, values::{BasicValueEnum, IntValue, PointerValue}};
 
 use crate::{
-    ast::{Expr, ExprKind, Stmt, collect_loop_modified},
+    ast::{AssertElse, Expr, ExprKind, Stmt, collect_loop_modified},
     error::CompileError,
     kind::{Kind, SetElemKind},
     span::Symbol,
 };
 
-use super::{Compiler, Env};
+use super::{Compiler, Env, FAIL_SENTINEL};
 
 impl<'ctx> Compiler<'ctx> {
     /// Process a sequence of statements, returning the last expression value.
@@ -60,8 +60,16 @@ impl<'ctx> Compiler<'ctx> {
                 // Static-only constructs — no runtime representation.
                 Stmt::Require { .. } | Stmt::Assume { .. } => {}
 
-                Stmt::Assert { predicate, .. } => {
+                Stmt::Assert { predicate, else_clause: None, .. } => {
                     self.compile_assert(predicate, env)?;
+                }
+
+                Stmt::Assert { predicate, else_clause: Some(else_clause), .. } => {
+                    self.compile_assert_else(predicate, else_clause, env)?;
+                }
+
+                Stmt::Return { value, .. } => {
+                    self.compile_return_stmt(value, env)?;
                 }
 
                 Stmt::Expr(e) => {
@@ -603,6 +611,106 @@ impl<'ctx> Compiler<'ctx> {
             .map_err(|e| CompileError::Internal(e.to_string()))?;
 
         self.builder.position_at_end(pass_bb);
+        Ok(())
+    }
+
+    /// Emit a runtime check for `assert predicate else <clause>`.
+    ///
+    /// When the predicate is false: for `else fail expr`, compute the offset-encoded
+    /// failure value and return it; for `else return expr`, evaluate the expression
+    /// and return it directly.  Both cases position the builder on a dead block after
+    /// the early return so inkwell doesn't require a terminator.
+    fn compile_assert_else(
+        &mut self,
+        predicate: &Expr,
+        else_clause: &AssertElse,
+        env: &Env<'ctx>,
+    ) -> Result<(), CompileError> {
+        let function = self
+            .current_fn
+            .ok_or_else(|| CompileError::Internal("assert outside a function".into()))?;
+
+        let (cond_val, _) = self.compile_expr(predicate, env)?;
+        let cond_i1 = cond_val.into_int_value();
+
+        let fail_out_bb = self.context.append_basic_block(function, "assert_else_fail");
+        let pass_bb     = self.context.append_basic_block(function, "assert_else_pass");
+
+        self.builder
+            .build_conditional_branch(cond_i1, pass_bb, fail_out_bb)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        // ── else branch: emit the value to return and exit early ──────────────
+        self.builder.position_at_end(fail_out_bb);
+        let else_val: BasicValueEnum<'ctx> = match else_clause {
+            AssertElse::FailWith(fail_expr) => {
+                let (v, _) = self.compile_expr(fail_expr, env)?;
+                let n = v.into_int_value();
+                let i64t = self.context.i64_type();
+                let base = i64t.const_int(FAIL_SENTINEL.wrapping_add(1) as u64, true);
+                self.builder
+                    .build_int_add(base, n, "fail_encoded")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                    .into()
+            }
+            AssertElse::Return(ret_expr) => {
+                let (v, kind) = self.compile_expr(ret_expr, env)?;
+                if kind == Kind::Bool {
+                    let i64t = self.context.i64_type();
+                    self.builder
+                        .build_int_z_extend(v.into_int_value(), i64t, "ret_bool_ext")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?
+                        .into()
+                } else {
+                    v
+                }
+            }
+        };
+        self.builder
+            .build_return(Some(&else_val))
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        // Position on a dead block so inkwell doesn't need a terminator after the return.
+        let dead = self.context.append_basic_block(function, "assert_else_dead");
+        self.builder.position_at_end(dead);
+
+        // ── pass branch: normal continuation ──────────────────────────────────
+        self.builder.position_at_end(pass_bb);
+        Ok(())
+    }
+
+    /// Emit an early `return value` from the current function.
+    ///
+    /// Positions the builder on a dead basic block after emitting the return
+    /// instruction, so subsequent statements (unreachable by definition) don't
+    /// need a terminator.
+    fn compile_return_stmt(
+        &mut self,
+        value: &Expr,
+        env: &Env<'ctx>,
+    ) -> Result<(), CompileError> {
+        let function = self
+            .current_fn
+            .ok_or_else(|| CompileError::Internal("`return` outside a function".into()))?;
+
+        let (v, kind) = self.compile_expr(value, env)?;
+        let i64t = self.context.i64_type();
+        let ret_val: BasicValueEnum<'ctx> = if kind == Kind::Bool {
+            self.builder
+                .build_int_z_extend(v.into_int_value(), i64t, "ret_bool_ext")
+                .map_err(|e| CompileError::Internal(e.to_string()))?
+                .into()
+        } else {
+            v
+        };
+        self.builder
+            .build_return(Some(&ret_val))
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        // Dead block to satisfy inkwell's requirement for a current insert point.
+        let dead = self.context.append_basic_block(function, "after_return");
+        self.builder.position_at_end(dead);
+
         Ok(())
     }
 }

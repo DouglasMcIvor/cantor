@@ -189,7 +189,7 @@ pub(crate) fn encode_expr<'tm>(
                 BinOp::And => Kind::And,
                 BinOp::Or  => Kind::Or,
                 BinOp::In | BinOp::NotIn => unreachable!("handled above"),
-                BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
+                BinOp::Union | BinOp::ErrorUnion | BinOp::Intersect | BinOp::SymDiff => {
                     return Err(format!("set operation `{op:?}` not yet encodable"))
                 }
             };
@@ -265,6 +265,18 @@ pub(crate) fn encode_expr<'tm>(
         // path, so the callee's contract (domain → range) already constrains the
         // result variable.  Runtime failure propagation is a codegen concern.
         ExprKind::Try(inner) => enc!(inner),
+
+        // `fail` — encode as the FAIL_SENTINEL constant (i64::MIN).
+        ExprKind::FailLit => Ok(tm.mk_integer(i64::MIN)),
+
+        // `fail expr` — encodes as a very negative integer (FAIL_SENTINEL + expr + 1).
+        // The solver sees this as a concrete value; contracts on `!!` ranges use
+        // Unconstrained so the solver never needs to reason about this encoding.
+        ExprKind::FailWith(inner) => {
+            let n = enc!(inner)?;
+            let base = tm.mk_integer(i64::MIN.wrapping_add(1));
+            Ok(tm.mk_term(Kind::Add, &[base, n]))
+        }
     }
 }
 

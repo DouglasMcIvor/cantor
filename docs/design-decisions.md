@@ -125,19 +125,32 @@ implementation detail the developer should not rely on.
 1. **Class 1 — domain/range violations ("normal" errors).**
    - **`Fail` as built-in set, explicit `| Fail` in range**: a function
      that can fail at runtime declares this in its range: `f : Int -> Nat | Fail`.
-     `Fail` is a named built-in singleton set (the failure sentinel); it
-     is not a generic `Option`/`Result` wrapper from a type system.
-     Using set union (`| Fail`) is the natural Cantor idiom and extends
-     cleanly to named domain-specific error sets:
-     `fetch : Request -> Response | HTTPError` where `HTTPError = {400, 503, …}`.
-     These are just set unions — no new language mechanism is needed for
-     richer error types, only the appropriate named sets.
+     `Fail` is a named built-in singleton set containing the sentinel value `fail`;
+     it is not a generic `Option`/`Result` wrapper from a type system.
+   - **`fail` literal and `fail expr`**: `fail` produces the bare sentinel;
+     `fail 400` constructs a tagged failure with payload 400. Inside a `!!`
+     function (see below) the payload is offset-encoded to stay distinguishable
+     from success values even when they are numerically equal (`Int !! HTTPError`
+     can return both a success 400 and a fail 400).
+   - **Error-union operator `!!`** — `Success !! ErrorSet` is shorthand for
+     the disjoint union of a success type and a set of tagged failure payloads.
+     Example: `fetch : Int -> Int !! HTTPError`. The `?` operator on a `!!`
+     callee **decodes** the failure payload back to its raw value before
+     propagating, so the caller sees `400` (not the encoding). The runtime
+     encoding uses `FAIL_SENTINEL + code + 1` (offset encoding); the solver
+     treats `!!` ranges as unconstrained (v0 pragmatic hack — both go away
+     when product types land at the "Namespaces and structured data" milestone).
    - **Short-circuit (monadic) semantics**, explicit postfix `?` at each
      fallible call site for local visibility: `f(x)?` propagates `Fail`
-     (or the relevant error set) from the callee up to the caller.
-     The caller must also declare `Fail` (or a compatible set) in its range.
-     Using `?` in an infallible function (range without `Fail`) is a
+     (or the relevant error set/payload) from the callee up to the caller.
+     The caller must also declare `Fail` or `!!` in its range.
+     Using `?` in an infallible function (range without `Fail` or `!!`) is a
      compile error.
+   - **`assert … else fail expr`** — when the predicate is false, returns
+     `fail expr` (offset-encoded) instead of jumping to the generic fail
+     sentinel. Useful inside `!!` functions to return a specific error code.
+   - **`assert … else return expr`** — when the predicate is false, returns
+     `expr` directly (early exit with a success value).
    - Three narrowing statements (not function calls); syntax and semantics
      detailed in §10:
      - `require` — static-only proof obligation: must be provable at compile
@@ -585,14 +598,16 @@ caller(n) {
 output value — their effect is on the proof state (and optionally the
 runtime), not on a value.
 
-**TODO (future syntax)**: `assert` with a custom error value:
+**`assert … else fail/return` (DECIDED)**: optionally pair with an else clause:
+
 ```
-assert x in Nat, TerriblePunError("how unnatural!")
+assert x > 0 else fail 400      -- return fail 400 on assertion failure
+assert x > 0 else return -1     -- return -1 directly on assertion failure
 ```
-The error set would be inferred from the literal (`TerriblePunError` must
-be a named error set), and the function's range would need to include it:
-`f : Int -> Nat | TerriblePunError`. Design deferred until named error sets
-and the associated syntax are worked out.
+
+The `else fail expr` form is only valid in functions whose range includes `!!`
+(the offset-encoded failure propagation machinery).  The `else return expr`
+form is valid in any function and exits early with a success value.
 
 ### Loop syntax (DECIDED)
 
@@ -682,8 +697,12 @@ Other open items (lower priority, not blocking):
 - Concurrency/async event handling model
 - Library interface versioning story (out of scope for now)
 - Solver-capability versioning (deferred, nice-to-have)
-- **Early `return` statement** — expected in imperative languages; not yet
-  designed. Does it interact with `Fail`/`?` propagation?
+- **Early `return` statement** — implemented (v0): `return expr` in a block
+  body causes an immediate early exit with value `expr`. The SMT solver
+  returns `Unknown` for any function body containing `return` (the linear
+  block encoder cannot yet model control-flow that bypasses the tail position).
+  Interaction with `?`/`Fail`: the returned value is used as-is; the caller
+  applies its `?` checks to it normally.
 - **Memory model direction** — leading candidate: persistent data structures
   → structural sharing → cheap diffing → easy reclamation; tracing GC
   during the diff phase (runs concurrently with IO). Mutable arena for
@@ -727,7 +746,9 @@ Other open items (lower priority, not blocking):
   to discharge them. Reduces to an overload generator with no new semantic
   machinery. Single new keyword: `given`. (Design explored but not finalised.)
 - **Pattern matching** — see above.
-- **Early `return`** — an open question (see §11).
+- **Early `return` extended solver modelling** — `return` is implemented at the
+  codegen level but the solver reports `Unknown` for block bodies containing it.
+  Full solver support requires modelling early exits as SSA phi-merge paths.
 - **`raise` / `emits` syntax** — see §11.
 - Float, char/string, byte primitive values.
 - BigInt runtime support for unbounded `Int` / `Nat`.
@@ -846,14 +867,30 @@ Three mechanisms in order of increasing programmer responsibility:
 
 ### Error sentinel
 
-- **`Fail`** — built-in singleton set `{⊥}` used as the failure sentinel
-  for Class 1 errors. No integer value is ever in `Fail`; it is an
-  out-of-band signal returned when an `assert` fails at runtime.
-  A fallible function declares `Fail` in its range: `f : Int -> Nat | Fail`.
-  The runtime representation is a sentinel integer (`i64::MIN` in v0 — see
-  implementation notes). Named domain-specific error sets (e.g.
-  `HTTPError = {400, 503}`) are just user-defined sets; `T | HTTPError`
-  works by the same set-union mechanism with no new language primitives.
+- **`Fail`** — built-in singleton set `{fail}` containing the unique failure
+  sentinel. No integer value is ever in `Fail`; it is the out-of-band signal
+  returned when an `assert` fails at runtime.
+  - `fail` (bare) — the singleton member of `Fail`. Runtime value: `i64::MIN`.
+  - `fail expr` — a tagged failure with integer payload. Runtime value:
+    `i64::MIN + expr + 1` (offset encoding; see `!!` below).
+  - A fallible function declares this in its range: `f : Int -> Nat | Fail`.
+
+- **`!!` error-union** — `Success !! ErrorSet` is the ergonomic form for
+  "success or one of a known set of error codes." Semantically equivalent to
+  `Success | (Fail * ErrorSet)` with v0 pragmatic encoding:
+  - `fail n` compiles to `i64::MIN + n + 1` so success `n` and `fail n` are
+    never the same i64 value (no ambiguity even when `Success` contains `n`).
+  - The `?` operator on a `!! ErrorSet` callee checks the encoded values,
+    decodes the payload (`result - i64::MIN - 1`), and returns the raw code.
+  - The solver treats `!! ErrorSet` ranges as `Unconstrained` (it cannot
+    reason about the encoding without product-type support).
+  - Both the solver and codegen hacks go away together when product types
+    land at the "Namespaces and structured data" milestone.
+
+- Named domain-specific error sets (e.g. `HTTPError = {400, 503}`) are
+  user-defined sets. `T | HTTPError` uses plain set union with no encoding
+  (the error codes propagate at face value via `?`). `T !! HTTPError` uses
+  the offset encoding so success-`T` and `fail HTTPError` are always distinct.
 
 ### Natural numbers and other named subsets
 

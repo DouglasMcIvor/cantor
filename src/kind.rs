@@ -62,6 +62,9 @@ pub fn range_kind(range: &Expr) -> Kind {
                 _ => Kind::Int,
             }
         }
+        // `Success !! ErrorSet` — the kind is the success type's kind; the error
+        // payload is always i64 and encoded out-of-band by the FAIL_SENTINEL offset.
+        ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, .. } => range_kind(lhs),
         _ => set_kind(range),
     }
 }

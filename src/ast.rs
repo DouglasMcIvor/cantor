@@ -65,6 +65,14 @@ impl Expr {
         Self::new(ExprKind::Try(Box::new(expr)), Span::dummy())
     }
 
+    pub fn fail_lit() -> Self {
+        Self::new(ExprKind::FailLit, Span::dummy())
+    }
+
+    pub fn fail_with(expr: Expr) -> Self {
+        Self::new(ExprKind::FailWith(Box::new(expr)), Span::dummy())
+    }
+
     pub fn comprehension(output: Expr, var: &str, source: Expr, filter: Option<Expr>) -> Self {
         Self::new(
             ExprKind::Comprehension {
@@ -91,6 +99,13 @@ pub enum ExprKind {
     SetLit(Vec<Expr>),
     /// `expr?` — propagate `Fail` from a fallible call up to the caller.
     Try(Box<Expr>),
+    /// Bare `fail` — the singleton failure value (member of `Fail = {fail}`).
+    FailLit,
+    /// `fail expr` — construct a tagged failure with payload `expr`.
+    /// At runtime encoded as `FAIL_SENTINEL + expr + 1` so the caller's `?`
+    /// can distinguish it from a success value even when the payload is
+    /// numerically equal to a valid success value.
+    FailWith(Box<Expr>),
     /// `{ output for var in source }` or `{ output for var in source if filter }`
     Comprehension {
         output: Box<Expr>,
@@ -118,9 +133,10 @@ pub enum BinOp {
     In,
     NotIn,
     // Set operations (codegen stubs until sets are implemented)
-    Union,     // |
-    Intersect, // &
-    SymDiff,   // ^
+    Union,      // |
+    ErrorUnion, // !! — sugar for `Success | (Fail * Error)`; solver sees a genuine disjoint union
+    Intersect,  // &
+    SymDiff,    // ^
     // Logical (expect Bool operands)
     And,
     Or,
@@ -152,8 +168,11 @@ pub enum Stmt {
     /// `require predicate` — static proof obligation; compile error if unprovable.
     Require { predicate: Expr, span: Span },
     /// `assert predicate` — graduated: elide if proved, compile error if disproved,
-    /// runtime check + Class 1 error if unknown. Deferred until monadic error story.
-    Assert { predicate: Expr, span: Span },
+    /// runtime check + Class 1 error if unknown.
+    /// Optional `else` clause overrides what is returned when the check fails:
+    ///   - `else fail expr` — return the offset-encoded failure value
+    ///   - `else return expr` — return `expr` directly (early exit, success path)
+    Assert { predicate: Expr, else_clause: Option<AssertElse>, span: Span },
     /// `assume predicate` — add predicate as a solver fact with no proof or runtime check.
     Assume { predicate: Expr, span: Span },
     /// Bare expression; the last `Expr` stmt in a block is the return value.
@@ -164,6 +183,17 @@ pub enum Stmt {
     While { cond: Expr, body: Vec<Stmt>, span: Span },
     /// `for x in S { stmts }` — iterate over each element of the set S.
     ForIn { var: Symbol, set: Expr, body: Vec<Stmt>, span: Span },
+    /// `return expr` — early return from a block body.
+    Return { value: Expr, span: Span },
+}
+
+/// The alternative action in `assert pred else <clause>`.
+#[derive(Debug, Clone)]
+pub enum AssertElse {
+    /// `else fail expr` — return `fail expr` (offset-encoded failure payload).
+    FailWith(Expr),
+    /// `else return expr` — early-return `expr` as a success value.
+    Return(Expr),
 }
 
 /// Collect all names that are assigned (by `mut` or reassignment) anywhere
@@ -329,6 +359,8 @@ impl fmt::Display for ExprKind {
                 write!(f, "}}")
             }
             Self::Try(inner) => write!(f, "{inner}?"),
+            Self::FailLit => f.write_str("fail"),
+            Self::FailWith(expr) => write!(f, "fail {expr}"),
             Self::Comprehension { output, var, source, filter } => {
                 write!(f, "{{{output} for {var} in {source}")?;
                 if let Some(pred) = filter {
@@ -361,7 +393,8 @@ fn binop_prec(op: &BinOp) -> u8 {
         BinOp::And                              => 2,
         BinOp::Eq | BinOp::Ne | BinOp::Lt
         | BinOp::Le | BinOp::Gt | BinOp::Ge
-        | BinOp::In | BinOp::NotIn             => 3,
+        | BinOp::In | BinOp::NotIn
+        | BinOp::ErrorUnion                     => 3,
         BinOp::Union                            => 4,
         BinOp::SymDiff                          => 5,
         BinOp::Intersect                        => 6,
@@ -385,9 +418,10 @@ impl fmt::Display for BinOp {
             Self::Ge        => ">=",
             Self::In        => "in",
             Self::NotIn     => "not in",
-            Self::Union     => "|",
-            Self::Intersect => "&",
-            Self::SymDiff   => "^",
+            Self::Union      => "|",
+            Self::ErrorUnion => "!!",
+            Self::Intersect  => "&",
+            Self::SymDiff    => "^",
             Self::And       => "and",
             Self::Or        => "or",
         })

@@ -284,6 +284,14 @@ pub(crate) fn encode_block<'tm>(
                 }
             }
 
+            Stmt::Return { .. } => {
+                // Early returns cannot yet be modelled in the linear-block SMT
+                // encoding.  Report Unknown so the solver never silently passes.
+                return Err(CheckResult::Unknown(
+                    "early `return` not yet supported in the SMT block encoder".into(),
+                ));
+            }
+
             Stmt::Expr(e) => {
                 let t = encode_expr(
                     e, env, name_defs, fn_env, tm, solver,

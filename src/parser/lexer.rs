@@ -23,6 +23,7 @@ pub enum Token {
     Assert,
     Assume,
     Require,
+    Return,
     // Set definitions
     Alias,
     Distinct,
@@ -30,6 +31,8 @@ pub enum Token {
     While,
     // Reserved for comprehensions (parser rejects with a "not yet" error)
     For,
+    // Failure
+    Fail,
 
     // Identifiers
     Ident(String),
@@ -41,9 +44,10 @@ pub enum Token {
     Slash,  // /
 
     // Set operators
-    Pipe,   // |  union
-    Caret,  // ^  symmetric difference
-    Amp,    // &  intersection
+    Pipe,     // |  union
+    BangBang, // !! error-union (success | (Fail * error))
+    Caret,    // ^  symmetric difference
+    Amp,      // &  intersection
 
     // Comparison
     EqEq,   // ==
@@ -88,15 +92,18 @@ impl fmt::Display for Token {
             Token::Assert   => f.write_str("assert"),
             Token::Assume   => f.write_str("assume"),
             Token::Require  => f.write_str("require"),
+            Token::Return   => f.write_str("return"),
             Token::Alias    => f.write_str("alias"),
             Token::Distinct => f.write_str("distinct"),
             Token::While    => f.write_str("while"),
             Token::For      => f.write_str("for"),
+            Token::Fail     => f.write_str("fail"),
             Token::Plus     => f.write_str("+"),
             Token::Minus    => f.write_str("-"),
             Token::Star     => f.write_str("*"),
             Token::Slash    => f.write_str("/"),
             Token::Pipe     => f.write_str("|"),
+            Token::BangBang => f.write_str("!!"),
             Token::Caret    => f.write_str("^"),
             Token::Amp      => f.write_str("&"),
             Token::EqEq     => f.write_str("=="),
@@ -182,6 +189,8 @@ impl<'src> Lexer<'src> {
             "distinct" => Token::Distinct,
             "while"    => Token::While,
             "for"      => Token::For,
+            "fail"     => Token::Fail,
+            "return"   => Token::Return,
             _          => Token::Ident(word.to_owned()),
         };
         (tok, Span::new(start as u32, self.pos as u32))
@@ -247,9 +256,12 @@ impl<'src> Lexer<'src> {
                 if self.peek_char() == Some('=') {
                     self.advance_char();
                     Token::BangEq
+                } else if self.peek_char() == Some('!') {
+                    self.advance_char();
+                    Token::BangBang
                 } else {
                     return Err(CompileError::UnexpectedToken {
-                        expected: "!=".into(),
+                        expected: "`!=` or `!!`".into(),
                         found: "!".into(),
                         span: Span::new(start as u32, self.pos as u32),
                     });

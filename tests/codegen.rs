@@ -10,3 +10,7 @@ mod runtime_fns;
 mod sets;
 #[path = "codegen/let_bindings.rs"]
 mod let_bindings;
+#[path = "codegen/named_errors.rs"]
+mod named_errors;
+#[path = "codegen/fail_and_return.rs"]
+mod fail_and_return;

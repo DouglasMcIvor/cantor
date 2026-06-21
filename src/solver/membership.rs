@@ -122,6 +122,11 @@ pub(crate) fn membership_constraint<'tm>(
             }
         }
 
+        // `!!` (error-union) — the solver cannot reason about offset-encoded failure
+        // payloads without product-type support, so we treat the whole range as
+        // unconstrained (pragmatic v0 hack; both sides go away when product types land).
+        ExprKind::BinOp { op: BinOp::ErrorUnion, .. } => Membership::Unconstrained,
+
         // `|` in signature position means set union.
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             // t ∈ A | B  ↔  (t ∈ A) ∨ (t ∈ B)
@@ -284,7 +289,7 @@ fn encode_comp_expr<'tm>(
                 BinOp::And => Kind::And,
                 BinOp::Or  => Kind::Or,
                 BinOp::In | BinOp::NotIn => unreachable!("handled above"),
-                BinOp::Union | BinOp::Intersect | BinOp::SymDiff => return None,
+                BinOp::Union | BinOp::ErrorUnion | BinOp::Intersect | BinOp::SymDiff => return None,
             };
             Some(tm.mk_term(kind, &[l, r]))
         }

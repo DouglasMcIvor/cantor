@@ -12,3 +12,5 @@ mod runtime_sets;
 mod let_bindings;
 #[path = "solver/set_defs.rs"]
 mod set_defs;
+#[path = "solver/named_errors.rs"]
+mod named_errors;

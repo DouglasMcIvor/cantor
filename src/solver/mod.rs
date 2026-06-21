@@ -176,6 +176,8 @@ fn range_contains_fail(range: &Expr) -> bool {
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             range_contains_fail(lhs) || range_contains_fail(rhs)
         }
+        // `A !! B` — always permits runtime failure (the `!!` encodes it as an offset value).
+        ExprKind::BinOp { op: BinOp::ErrorUnion, .. } => true,
         _ => false,
     }
 }
@@ -283,7 +285,7 @@ fn check_block_sig(
             params: HashMap::new(),
             output: 0,
             reason: "assert may fail at runtime but return type does not include `Fail` \
-                     — add `| Fail` to the return type or prove the assertion statically"
+                     — add `| Fail` or use `!!` on the return type, or prove the assertion statically"
                 .into(),
         };
     }

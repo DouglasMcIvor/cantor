@@ -3,7 +3,7 @@ pub mod lexer;
 use lexer::{Lexer, Token};
 
 use crate::{
-    ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef, Param, Stmt, UnOp},
+    ast::{AssertElse, BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef, Param, Stmt, UnOp},
     error::CompileError,
     span::{Span, Symbol},
 };
@@ -271,7 +271,32 @@ impl<'src> Parser<'src> {
             Token::Assert => {
                 self.advance()?;
                 let predicate = self.parse_expr(0)?;
-                Ok(Stmt::Assert { predicate, span })
+                let else_clause = if self.peek() == &Token::Else {
+                    self.advance()?;
+                    match self.peek().clone() {
+                        Token::Fail => {
+                            self.advance()?;
+                            let expr = self.parse_expr(0)?;
+                            Some(AssertElse::FailWith(expr))
+                        }
+                        Token::Return => {
+                            self.advance()?;
+                            let expr = self.parse_expr(0)?;
+                            Some(AssertElse::Return(expr))
+                        }
+                        other => {
+                            let bad_span = self.peek_span();
+                            return Err(CompileError::UnexpectedToken {
+                                expected: "`fail` or `return`".into(),
+                                found: other.to_string(),
+                                span: bad_span,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+                Ok(Stmt::Assert { predicate, else_clause, span })
             }
             Token::Assume => {
                 self.advance()?;
@@ -291,6 +316,11 @@ impl<'src> Parser<'src> {
                 let set = self.parse_set_expr()?;
                 let body = self.parse_block()?;
                 Ok(Stmt::ForIn { var, set, body, span })
+            }
+            Token::Return => {
+                self.advance()?;
+                let value = self.parse_expr(0)?;
+                Ok(Stmt::Return { value, span })
             }
             Token::LBrace => Ok(Stmt::Block(self.parse_block()?)),
             // `ident :=` → reassignment of a `mut` variable
@@ -397,6 +427,16 @@ impl<'src> Parser<'src> {
                     Span::new(span.start, end),
                 ))
             }
+            Token::Fail => {
+                self.advance()?;
+                if self.peek_starts_expr() {
+                    let inner = self.parse_expr(0)?;
+                    let end = inner.span.end;
+                    Ok(Expr::new(ExprKind::FailWith(Box::new(inner)), Span::new(span.start, end)))
+                } else {
+                    Ok(Expr::new(ExprKind::FailLit, span))
+                }
+            }
             _ => self.parse_atom(),
         }
     }
@@ -501,25 +541,46 @@ impl<'src> Parser<'src> {
 
     fn peek_infix_op(&self) -> Option<(u8, u8, BinOp)> {
         let (lbp, rbp, op) = match self.peek() {
-            Token::Or     => (1,  2,  BinOp::Or),
-            Token::And    => (3,  4,  BinOp::And),
-            Token::EqEq   => (5,  6,  BinOp::Eq),
-            Token::BangEq => (5,  6,  BinOp::Ne),
-            Token::Lt     => (5,  6,  BinOp::Lt),
-            Token::LtEq   => (5,  6,  BinOp::Le),
-            Token::Gt     => (5,  6,  BinOp::Gt),
-            Token::GtEq   => (5,  6,  BinOp::Ge),
-            Token::In     => (5,  6,  BinOp::In),
-            Token::Pipe   => (7,  8,  BinOp::Union),
-            Token::Caret  => (9,  10, BinOp::SymDiff),
-            Token::Amp    => (11, 12, BinOp::Intersect),
-            Token::Plus   => (13, 14, BinOp::Add),
-            Token::Minus  => (13, 14, BinOp::Sub),
-            Token::Star   => (15, 16, BinOp::Mul),
-            Token::Slash  => (15, 16, BinOp::Div),
+            Token::Or       => (1,  2,  BinOp::Or),
+            Token::And      => (3,  4,  BinOp::And),
+            Token::EqEq     => (5,  6,  BinOp::Eq),
+            Token::BangEq   => (5,  6,  BinOp::Ne),
+            Token::Lt       => (5,  6,  BinOp::Lt),
+            Token::LtEq     => (5,  6,  BinOp::Le),
+            Token::Gt       => (5,  6,  BinOp::Gt),
+            Token::GtEq     => (5,  6,  BinOp::Ge),
+            Token::In       => (5,  6,  BinOp::In),
+            // `!!` binds below `|` on the left (so `A | B !! C` = `(A | B) !! C`)
+            // and at the same level on the right (so `A !! B | C` = `A !! (B | C)`).
+            Token::BangBang => (6,  6,  BinOp::ErrorUnion),
+            Token::Pipe     => (7,  8,  BinOp::Union),
+            Token::Caret    => (9,  10, BinOp::SymDiff),
+            Token::Amp      => (11, 12, BinOp::Intersect),
+            Token::Plus     => (13, 14, BinOp::Add),
+            Token::Minus    => (13, 14, BinOp::Sub),
+            Token::Star     => (15, 16, BinOp::Mul),
+            Token::Slash    => (15, 16, BinOp::Div),
             _ => return None,
         };
         Some((lbp, rbp, op))
+    }
+
+    /// Returns true when the current lookahead token could start an expression.
+    ///
+    /// Used to decide whether `fail` is a bare sentinel or has a payload.
+    fn peek_starts_expr(&self) -> bool {
+        matches!(
+            self.peek(),
+            Token::Int(_)
+                | Token::True
+                | Token::False
+                | Token::Ident(_)
+                | Token::Minus
+                | Token::Not
+                | Token::If
+                | Token::LParen
+                | Token::LBrace
+        )
     }
 
     // ── Utilities ─────────────────────────────────────────────────────────────
