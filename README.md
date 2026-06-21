@@ -2,9 +2,7 @@
 
 ![Cantor programming language logo](docs/cantor_logo.png)
 
-> *A statically typed language without any types.*
-
-> *Values are all you need*
+> *A statically typed language without any types.* - *Values are all you need*
 
 Named after [Georg Cantor](https://en.wikipedia.org/wiki/Georg_Cantor), the mathematician who built the foundations of modern set theory.
 
@@ -346,15 +344,29 @@ sum_above_threshold(threshold) {
 
 ## On the roadmap
 
-- **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
-- **`distinct` values** — `ErrForbidden = distinct 403` would introduce a nominal constant: the solver treats it as opaque (not equal to `403`), while `HTTPError = {ErrForbidden, ErrNotFound}` becomes a named set whose membership the solver can track by nominal equality. The unified definition form (`name = expr` / `name : Set = expr`) is already in place; what remains is teaching the solver to handle set literals whose elements are named distinct values.
-- **`distinct` set proofs** — `distinct` sets are currently phantom types: the solver returns `unknown` for any signature involving one, including the trivial identity `volume : Litre -> Litre`. Making them useful requires two things landing together: (1) encoding `distinct` sets as uninterpreted SMT sorts so the solver can track "this value is a `Litre`" through a proof, and (2) a constructor/injection mechanism (`litre : Nat -> Litre`) so user code can actually produce a value of a distinct set from its underlying representation. Until then, `distinct` reserves the name and enforces the naming convention but proves nothing.
-- **Namespaces** — dot-access for members of a named definition (`HTTPError.Forbidden`); prerequisite for named set literal syntax below.
-- **Named set literals** — `HTTPError = distinct {Forbidden: 403, NotFound: 404}` as syntactic sugar that simultaneously declares the set and binds `HTTPError.Forbidden` and `HTTPError.NotFound` as its nominal members; requires namespaces.
-- **`raise` and `emits`** — unrecoverable errors and write-only side effects (logging, metrics)
-- **State** — mutable program state that survives between calls, with a proof that it satisfies its invariants at every boundary
-- **Module system** — imports, library compilation, separate checking
-- **cvc5 Sets theory + quantifier proofs** — the element-kind approach breaks down when a proof depends on a filter predicate holding for every element (e.g. `{x in s | x mod 2 == 0}` where the evenness property must appear in the proof obligation) or on set-operation semantics (union, intersection). These require switching to cvc5's native `Sets` theory, a combined logic like `QF_SNIA`, and universally quantified formulas (`∀x. x ∈ evens → x mod 2 == 0`). The solver will return `unknown` more often in this regime. In practice this only bites developers writing proofs that reason about derived or filtered sets — the common case of iterating and accumulating is fully covered by element-kind constraints.
+- **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` with no new language mechanism — just a named set used in a union range.
+
+- **`distinct` type proofs** — `distinct` sets are declared and named but currently phantom: the solver returns `unknown` for any signature involving one, including the trivial identity `volume : Litre -> Litre`. Making them useful requires encoding them as uninterpreted SMT sorts and adding a constructor mechanism (`litre : Nat -> Litre`). Once done, unit-safe arithmetic, newtypes, and nominal error values (`ErrForbidden = distinct 403`) all work for free.
+
+- **Namespaces and structured data** — dot-access for members of named definitions unlocks named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`) and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
+
+- **Pattern matching** — `match x { Shape.Circle(r) => …, Shape.Rect(w, h) => … }`; the natural companion to union types, and the basis for destructuring in general.
+
+- **Lambdas, closures, and higher-order functions** — anonymous functions, captured variables, and functions as first-class values. Unlocks `map`, `filter`, `fold`, and combinators without needing the full generics machinery.
+
+- **`raise` and `emits`** — unrecoverable errors (raised at the event loop boundary; Class 2 errors roll back state atomically) and write-only side effects (logging, metrics); both are fully inferred from the call graph, no annotation required.
+
+- **State** — mutable program state that survives between calls, proved to satisfy its invariants at every event boundary. Completes the `(Event, State) → (Output, State)` model.
+
+- **Module system** — imports, library compilation, separate checking; one file = one module, `::` path separator.
+
+- **More built-in types and collections** — floats, strings, bytes, ordered sets, vectors, maps. The mechanics are unexciting but the language can't do much without them.
+
+- **Generics** — a single new keyword `given` introduces a compile-time variable into scope; `require` states constraints on it; instantiation asks the solver to discharge them. Reduces to an overload generator with no other new machinery: `given A; require A <= Countable; population : Habitat(A) -> Nat`.
+
+- **Smarter diagnostics** — when the solver can't prove a claim, it extracts an unsat core and suggests the minimal constraints that would close the proof gap. Also: automatic inference of the range annotation on `mut` locals so you don't have to write it by hand.
+
+- **Advanced compiler capabilities** — two related long-game items: switching to cvc5's native `Sets` theory for proofs that must reason about every element of a filtered set; and feeding proved facts (purity, bounds, non-aliasing) to LLVM as `assume`/`range` metadata so proofs become optimisations for free.
 
 ## Are you serious!?
 
