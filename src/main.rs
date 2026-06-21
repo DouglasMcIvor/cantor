@@ -2,6 +2,8 @@ use std::process;
 
 use inkwell::context::Context;
 
+use std::collections::HashMap;
+
 use cantor::{
     ast::Item,
     codegen::{FAIL_SENTINEL, compile_file},
@@ -70,11 +72,23 @@ fn main() {
     let mut n_counter = 0usize;
     let mut n_unknown = 0usize;
 
-    for (item, (_name, sig_results)) in items.iter().zip(all_results.iter()) {
+    // Build a name → item map so we can look up the full signature display for
+    // each result without relying on positional alignment (unannotated NameDefs
+    // produce no check result, so zipping items with all_results is unsafe).
+    let item_by_name: HashMap<&str, &Item> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::FunctionDef(def) => Some((def.name.0.as_str(), item)),
+            Item::NameDef(def) => Some((def.name.0.as_str(), item)),
+        })
+        .collect();
+
+    for (name, sig_results) in &all_results {
+        let item = item_by_name.get(name.as_str());
         for (i, (label, result)) in sig_results.iter().enumerate() {
             let sig_display = match item {
-                Item::FunctionDef(def) => format!("{} : {}", def.name, def.sigs[i]),
-                Item::NameDef(_) => label.clone(),
+                Some(Item::FunctionDef(def)) => format!("{} : {}", def.name, def.sigs[i]),
+                Some(Item::NameDef(_)) | None => label.clone(),
             };
 
             match result {

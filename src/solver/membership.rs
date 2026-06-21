@@ -122,10 +122,42 @@ pub(crate) fn membership_constraint<'tm>(
             }
         }
 
-        // `!!` (error-union) — the solver cannot reason about offset-encoded failure
-        // payloads without product-type support, so we treat the whole range as
-        // unconstrained (pragmatic v0 hack; both sides go away when product types land).
-        ExprKind::BinOp { op: BinOp::ErrorUnion, .. } => Membership::Unconstrained,
+        // `A !! B`  ↔  (t ∈ A)  ∨  (t − SENTINEL_BASE ∈ B)  ∨  (t == FAIL_SENTINEL)
+        //
+        // The second clause covers `fail expr` payloads: `fail n` is encoded as
+        // FAIL_SENTINEL + n + 1 at runtime, so decoding is t − (FAIL_SENTINEL + 1).
+        // The third clause covers bare `fail` returned by assertion failures when
+        // there is no `else fail` clause.
+        ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, rhs } => {
+            let in_a = membership_constraint(tm, t.clone(), lhs, name_defs);
+
+            // Decode the potential payload and check it against the error set B.
+            let sentinel_base = tm.mk_integer(i64::MIN.wrapping_add(1));
+            let decoded = tm.mk_term(Kind::Sub, &[t.clone(), sentinel_base]);
+            let in_b = membership_constraint(tm, decoded, rhs, name_defs);
+
+            // Bare FAIL_SENTINEL — returned by asserts without an `else fail` clause.
+            let sentinel_val = tm.mk_integer(i64::MIN);
+            let is_bare_fail = tm.mk_term(Kind::Equal, &[t, sentinel_val]);
+
+            match (in_a, in_b) {
+                // If either side is unsupported we can't build a complete constraint.
+                // Fall back to Unconstrained rather than Unsupported so the solver
+                // never rejects a valid `!!` range just because B is opaque.
+                (Membership::Unsupported, _) | (_, Membership::Unsupported) => {
+                    Membership::Unconstrained
+                }
+                // A = ℤ: every integer qualifies regardless of the error set.
+                (Membership::Unconstrained, _) => Membership::Unconstrained,
+                // B = ℤ: any failure payload is valid.
+                (_, Membership::Unconstrained) => Membership::Unconstrained,
+                (Membership::Constrained(a), Membership::Constrained(b)) => {
+                    // (t ∈ A) ∨ (decoded ∈ B) ∨ (t == FAIL_SENTINEL)
+                    let fail_part = tm.mk_term(Kind::Or, &[b, is_bare_fail]);
+                    Membership::Constrained(tm.mk_term(Kind::Or, &[a, fail_part]))
+                }
+            }
+        }
 
         // `|` in signature position means set union.
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {

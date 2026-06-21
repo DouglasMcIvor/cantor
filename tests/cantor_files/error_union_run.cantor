@@ -1,0 +1,10 @@
+HTTPError = {400, 503}
+
+fetch : Int -> Nat !! HTTPError
+fetch(x) = if x > 0 then x else fail 400
+
+main : -> Nat !! HTTPError
+main() {
+    result : Int = fetch(10)?
+    result
+}

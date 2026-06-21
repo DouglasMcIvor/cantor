@@ -355,6 +355,103 @@ fn assert_pass_still_proves_sigs() {
     );
 }
 
+// ── !! (error-union) solver checks ───────────────────────────────────────────
+
+#[test]
+fn error_union_proof_exits_zero() {
+    let out = run_file("error_union_proof.cantor");
+    assert_eq!(out.code, 0, "error_union_proof.cantor should exit 0\nstdout: {}", out.stdout);
+}
+
+#[test]
+fn error_union_proof_shows_proved() {
+    let out = run_file("error_union_proof.cantor");
+    assert!(
+        out.stdout.contains("  proved  "),
+        "expected '  proved  ' result line:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  "),
+        "unexpected counterexample in output:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn error_union_proof_signature_contains_bang_bang() {
+    // The CLI should display `fetch : Int -> Nat !! HTTPError` verbatim.
+    let out = run_file("error_union_proof.cantor");
+    assert!(
+        out.stdout.contains("Nat !! HTTPError"),
+        "expected 'Nat !! HTTPError' in signature output:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn error_union_bad_exits_nonzero() {
+    // bad_fetch returns x which can be negative — not in Nat !! HTTPError.
+    let out = run_file("error_union_bad.cantor");
+    assert_ne!(out.code, 0, "error_union_bad.cantor should exit non-zero\nstdout: {}", out.stdout);
+}
+
+#[test]
+fn error_union_bad_shows_counterexample() {
+    let out = run_file("error_union_bad.cantor");
+    assert!(
+        out.stdout.contains("  counterexample  "),
+        "expected counterexample result line:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  proved  "),
+        "unexpected proved result line:\n{}", out.stdout
+    );
+}
+
+// ── !! (error-union) run tests ────────────────────────────────────────────────
+
+#[test]
+fn error_union_run_proves_all_sigs() {
+    let out = run_subcommand("error_union_run.cantor");
+    assert!(
+        out.stdout.contains("2 proved"),
+        "expected '2 proved' in summary:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  "),
+        "unexpected counterexample:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn error_union_run_success_path_returns_value() {
+    // fetch(10) succeeds; main() should return 10.
+    let out = run_subcommand("error_union_run.cantor");
+    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("main() = 10"),
+        "expected 'main() = 10' in output:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn error_union_propagate_proves_all_sigs() {
+    let out = run_subcommand("error_union_propagate.cantor");
+    assert!(
+        out.stdout.contains("2 proved"),
+        "expected '2 proved' in summary:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn error_union_propagate_returns_decoded_error_code() {
+    // fetch(-1) fails with `fail 503`; `?` in main decodes it and returns 503.
+    let out = run_subcommand("error_union_propagate.cantor");
+    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("main() = 503"),
+        "expected 'main() = 503' in output:\n{}", out.stdout
+    );
+}
+
 // ── Runtime sets ──────────────────────────────────────────────────────────────
 
 #[test]

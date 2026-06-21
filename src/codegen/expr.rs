@@ -135,19 +135,15 @@ impl<'ctx> Compiler<'ctx> {
             .map(range_contains_fail)
             .unwrap_or(true); // fallback: assume Fail when range is unknown
 
-        let named_error_sets: Vec<Vec<i64>> = callee_range
-            .map(|r| collect_named_error_vals(r, &self.user_set_vals))
-            .unwrap_or_default();
-
         // Raw error codes from `!!` error-union ranges (encoded as FAIL_SENTINEL + n + 1).
         let error_union_sets: Vec<Vec<i64>> = callee_range
             .map(|r| collect_error_union_vals(r, &self.user_set_vals))
             .unwrap_or_default();
 
-        if !check_fail && named_error_sets.is_empty() && error_union_sets.is_empty() {
+        if !check_fail && error_union_sets.is_empty() {
             return Err(CompileError::Internal(
-                "`?` used on a callee whose range contains no `Fail` and no named \
-                 error set — the callee cannot fail; remove `?`"
+                "`?` used on a callee whose range contains neither `| Fail` nor `!!` \
+                 — use `!!` to declare typed failures, or remove `?`"
                     .into(),
             ));
         }
@@ -178,32 +174,7 @@ impl<'ctx> Compiler<'ctx> {
             self.builder.position_at_end(after_fail_bb);
         }
 
-        // ── 2. Named error-set checks (`| HTTPError`): value returned unchanged ──
-        for vals in &named_error_sets {
-            let is_error = self.build_int_set_membership(result_i64, vals)?;
-
-            let err_ret_bb = self
-                .context
-                .append_basic_block(function, "try_named_err");
-            let next_bb = self
-                .context
-                .append_basic_block(function, "try_after_named");
-
-            self.builder
-                .build_conditional_branch(is_error, err_ret_bb, next_bb)
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
-
-            // On error: return the error value to the caller immediately.
-            self.builder.position_at_end(err_ret_bb);
-            let ret_val: BasicValueEnum<'ctx> = result_i64.into();
-            self.builder
-                .build_return(Some(&ret_val))
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
-
-            self.builder.position_at_end(next_bb);
-        }
-
-        // ── 3. Error-union checks (`!! HTTPError`): decode FAIL_SENTINEL+n+1 → n ──
+        // ── 2. Error-union checks (`!! HTTPError`): decode FAIL_SENTINEL+n+1 → n ──
         // The base constant is FAIL_SENTINEL + 1; decoding is `result - base`.
         let eu_base = i64_type.const_int(FAIL_SENTINEL.wrapping_add(1) as u64, true);
         for raw_vals in &error_union_sets {

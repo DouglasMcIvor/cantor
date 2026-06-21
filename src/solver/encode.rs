@@ -261,10 +261,34 @@ pub(crate) fn encode_expr<'tm>(
             Err("set expressions cannot appear in value position (only in domain/range/`in`/`for` positions)".into())
         }
 
-        // At the SMT level `?` is transparent: we reason only about the success
-        // path, so the callee's contract (domain → range) already constrains the
-        // result variable.  Runtime failure propagation is a codegen concern.
-        ExprKind::Try(inner) => enc!(inner),
+        // For `A !! B` callees, assert that the result is in the success type A.
+        // This is sound because `?` only continues on the success path — failures
+        // propagate immediately — so any value that reaches the next statement
+        // must satisfy A.  Without this assertion the solver cannot prove bindings
+        // like `result : Nat = fetch(x)?` because the callee contract allows error
+        // payloads (very negative sentinels) as well as success values.
+        ExprKind::Try(inner) => {
+            let result = enc!(inner)?;
+            if let ExprKind::Call { callee, .. } = &inner.kind {
+                if let Some(callee_def) = fn_env.get(callee) {
+                    if let Some(sig) = callee_def.sigs.first() {
+                        if let ExprKind::BinOp {
+                            op: BinOp::ErrorUnion,
+                            lhs: success_type,
+                            ..
+                        } = &sig.range.kind
+                        {
+                            if let Membership::Constrained(c) =
+                                membership_constraint(tm, result.clone(), success_type, name_defs)
+                            {
+                                solver.assert_formula(c);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(result)
+        }
 
         // `fail` — encode as the FAIL_SENTINEL constant (i64::MIN).
         ExprKind::FailLit => Ok(tm.mk_integer(i64::MIN)),

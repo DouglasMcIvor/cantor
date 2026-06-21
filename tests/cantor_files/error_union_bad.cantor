@@ -1,0 +1,4 @@
+HTTPError = {400, 503}
+
+bad_fetch : Int -> Nat !! HTTPError
+bad_fetch(x) = x

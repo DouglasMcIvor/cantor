@@ -178,12 +178,14 @@ You probably don't want to read this unless you're me.
 - Re-learned about phi nodes in SSA, that label the value taken based on where the execution path *came from*
 - Learned about alloca and how a `mem2reg` optimization will often replace it with phi nodes etc
 - Claude will often remove its own comments when editing sections of code. I'm not sure why it does this.
+- I can viscerally feel the development process slowing down as the codebase grows. The changes are getting more complex, the amount of code that needs to change is growing, and unsurprisingly this means both Claude and I are beginning to make more mistakes and need more guidance and review.
 
 # Things that surprised me
 
 - How hard it is to stop typing "types" everywhere instead of sets etc.
 - SMT solvers are branch heavy so aren't very SIMD/multi-thread friendly. Implication, I guess, is that we can at least try and run multiple solvers in parallel while compiling to make use of multi-threading in a simple way. Shame we can't just throw the problem at some beefy GPUs.
 - How quickly the tree of language features to implement exploded! I seem to add about 5 new items into my to do list for every one I cross off!
+- As I've been working with the LLMs to come up with the language it has ended being a lot more consistent and succinct than I expected.
 
 # Open questions
 
