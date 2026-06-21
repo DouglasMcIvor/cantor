@@ -254,7 +254,7 @@ fn cartesian_product_with_set_difference() {
 
 #[test]
 fn const_literal_nat() {
-    let def = parse_one_const("pi : Nat\npi = 314");
+    let def = parse_one_const("pi : Nat = 314");
     assert_eq!(def.name.0, "pi");
     assert!(matches!(def.ty.kind, ExprKind::Var(ref s) if s.0 == "Nat"));
     assert!(matches!(def.value.kind, ExprKind::IntLit(314)));
@@ -262,13 +262,13 @@ fn const_literal_nat() {
 
 #[test]
 fn const_arithmetic_value() {
-    let def = parse_one_const("tau : Nat\ntau = 2 * 314");
+    let def = parse_one_const("tau : Nat = 2 * 314");
     assert!(matches!(def.value.kind, ExprKind::BinOp { op: BinOp::Mul, .. }));
 }
 
 #[test]
 fn const_references_other_const() {
-    let items = parse_file("pi : Nat\npi = 314\ntau : Nat\ntau = 2 * pi")
+    let items = parse_file("pi : Nat = 314\ntau : Nat = 2 * pi")
         .unwrap_or_else(|e| panic!("parse error: {e}"));
     assert_eq!(items.len(), 2);
     assert!(matches!(items[0], Item::ConstDef(_)));
@@ -277,7 +277,7 @@ fn const_references_other_const() {
 
 #[test]
 fn const_and_function_in_same_file() {
-    let items = parse_file("base : Nat\nbase = 10\ndouble : Nat -> Nat\ndouble(x) = x + x")
+    let items = parse_file("base : Nat = 10\ndouble : Nat -> Nat\ndouble(x) = x + x")
         .unwrap_or_else(|e| panic!("parse error: {e}"));
     assert_eq!(items.len(), 2);
     assert!(matches!(items[0], Item::ConstDef(_)));
@@ -286,7 +286,7 @@ fn const_and_function_in_same_file() {
 
 #[test]
 fn const_negative_value() {
-    let def = parse_one_const("offset : Int\noffset = -5");
+    let def = parse_one_const("offset : Int = -5");
     assert!(matches!(def.value.kind, ExprKind::UnOp { op: cantor::ast::UnOp::Neg, .. }));
 }
 

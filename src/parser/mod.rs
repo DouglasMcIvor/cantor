@@ -87,7 +87,7 @@ impl<'src> Parser<'src> {
         //
         // Grammar:
         //   function : IDENT ':' [set_expr '->'] set_expr   impl
-        //   constant : IDENT ':'  set_expr                  IDENT '=' expr
+        //   constant : IDENT ':' set_expr '=' expr
         //
         // `parse_set_expr` stops before `->` (Arrow is not an infix op), so
         // after parsing one set_expr we can check for `->` to decide.
@@ -102,15 +102,7 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 (Some(first_expr), self.parse_set_expr()?)
             } else {
-                // No `->` found → constant: `name : type` then `name = expr`.
-                let impl_name = self.expect_ident()?;
-                if impl_name.0 != name.0 {
-                    return Err(CompileError::UnexpectedToken {
-                        expected: format!("`{}` (constant impl must follow its type)", name),
-                        found: format!("`{}`", impl_name),
-                        span: start_span,
-                    });
-                }
+                // No `->` found → constant: `name : type = expr` (one-line form).
                 self.expect(&Token::Eq)?;
                 let value = self.parse_expr(0)?;
                 let end = value.span.end;

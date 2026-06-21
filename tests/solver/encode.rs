@@ -268,14 +268,14 @@ bad(x) = x
 
 #[test]
 fn const_type_check_proved() {
-    let results = check("pi : Nat\npi = 314");
+    let results = check("pi : Nat = 314");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].1, CheckResult::Proved);
 }
 
 #[test]
 fn const_type_check_fails_wrong_type() {
-    let results = check("neg : Nat\nneg = -1");
+    let results = check("neg : Nat = -1");
     assert_eq!(results.len(), 1);
     assert!(matches!(results[0].1, CheckResult::Counterexample { .. }));
 }
@@ -283,8 +283,7 @@ fn const_type_check_fails_wrong_type() {
 #[test]
 fn const_used_in_function_proved() {
     proved_all("
-base : Nat
-base = 10
+base : Nat = 10
 
 add_base : Nat -> Nat
 add_base(x) = x + base
@@ -294,25 +293,21 @@ add_base(x) = x + base
 #[test]
 fn chained_constants_proved() {
     proved_all("
-pi : Nat
-pi = 314
-
-tau : Nat
-tau = 2 * pi
+pi : Nat = 314
+tau : Nat = 2 * pi
 ");
 }
 
 #[test]
 fn const_literal_proved() {
     proved_all("
-answer : Nat
-answer = 42
+answer : Nat = 42
 ");
 }
 
 #[test]
 fn const_negative_not_nat() {
-    let results = check("bad : Nat\nbad = -5");
+    let results = check("bad : Nat = -5");
     assert_eq!(results.len(), 1);
     assert!(matches!(results[0].1, CheckResult::Counterexample { .. }));
 }

@@ -1,8 +1,5 @@
-base : Nat
-base = 10
-
-tau : Nat
-tau = 2 * 314
+base : Nat = 10
+tau : Nat = 2 * 314
 
 add_base : Nat -> Nat
 add_base(x) = x + base

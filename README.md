@@ -4,6 +4,8 @@
 
 > *A statically typed language without any types.*
 
+> *Values are all you need*
+
 Named after [Georg Cantor](https://en.wikipedia.org/wiki/Georg_Cantor), the mathematician who built the foundations of modern set theory.
 
 ## The idea
@@ -160,11 +162,8 @@ Constants are compile-time values, type-checked against their declared set.
 They are automatically inlined everywhere they are used.
 
 ```haskell
-scale : Nat
-scale = 1000
-
-pi_scaled : Nat
-pi_scaled = 3 * scale + 141
+scale : Nat = 1000
+pi_scaled : Nat = 3 * scale + 141
 
 circumference : Nat -> Nat
 circumference(r) = 2 * pi_scaled * r / scale
@@ -348,7 +347,10 @@ sum_above_threshold(threshold) {
 ## On the roadmap
 
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
+- **`distinct` values and unified definitions** — `ErrForbidden = distinct 403` would introduce a nominal constant: the solver treats it as opaque (not equal to `403`), while `HTTPError = {ErrForbidden, ErrNotFound}` becomes a named set whose membership the solver can track by nominal equality. This requires unifying `ConstDef` and `SetDef` into a single top-level definition form (`name = expr` / `name : Set = expr`), and teaching the solver to handle set literals whose elements are named distinct values.
 - **`distinct` set proofs** — `distinct` sets are currently phantom types: the solver returns `unknown` for any signature involving one, including the trivial identity `volume : Litre -> Litre`. Making them useful requires two things landing together: (1) encoding `distinct` sets as uninterpreted SMT sorts so the solver can track "this value is a `Litre`" through a proof, and (2) a constructor/injection mechanism (`litre : Nat -> Litre`) so user code can actually produce a value of a distinct set from its underlying representation. Until then, `distinct` reserves the name and enforces the naming convention but proves nothing.
+- **Namespaces** — dot-access for members of a named definition (`HTTPError.Forbidden`); prerequisite for named set literal syntax below.
+- **Named set literals** — `HTTPError = distinct {Forbidden: 403, NotFound: 404}` as syntactic sugar that simultaneously declares the set and binds `HTTPError.Forbidden` and `HTTPError.NotFound` as its nominal members; requires namespaces.
 - **`raise` and `emits`** — unrecoverable errors and write-only side effects (logging, metrics)
 - **State** — mutable program state that survives between calls, with a proof that it satisfies its invariants at every boundary
 - **Module system** — imports, library compilation, separate checking

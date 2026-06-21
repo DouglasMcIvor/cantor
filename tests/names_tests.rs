@@ -43,12 +43,12 @@ fn param_name_uppercase_err() {
 
 #[test]
 fn const_name_lowercase_ok() {
-    ok("pi : Nat\npi = 314");
+    ok("pi : Nat = 314");
 }
 
 #[test]
 fn const_name_uppercase_err() {
-    let e = err("Pi : Nat\nPi = 314");
+    let e = err("Pi : Nat = 314");
     assert!(e.contains("Pi"), "error should name `Pi`: {e}");
 }
 
@@ -95,7 +95,7 @@ fn lowercase_range_err() {
 
 #[test]
 fn lowercase_const_type_err() {
-    let e = err("pi : nat\npi = 314");
+    let e = err("pi : nat = 314");
     assert!(e.contains("nat"), "error should name `nat`: {e}");
 }
 
