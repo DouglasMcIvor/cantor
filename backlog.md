@@ -113,6 +113,8 @@ You probably don't want to read this unless you're me.
 
 # Open questions
 
+- How should we implement built in containers like sets and so? Pull in a library or roll our own?
+- Should we represent values of lists of product sets automatically as a struct of arrays? That might be fun
 - Does all of overloading, generics and dynamic dispatch collapse into the one thing? Either the compiler proves a particular definition is used or else it outputs a vtable?
 - I wanted 'emit' for write only effects, but when we added multithreading we will need synchronoisation. Is that a problem?
 I guess it depends on how we handle threading.
