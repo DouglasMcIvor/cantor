@@ -208,9 +208,13 @@ clamp(x, lo, hi) {
 `assert` graduates: if provable, it's elided; if always false, it's a compile error; if unknown, it becomes a runtime check.
 `assume` is an escape hatch: "honest guv! the solver can't see this but I just know it's true!"
 
-### Loops and loop invariants
+### Mutables, mutation invariants and loops
 
-`while` loops use `mut name: Set = expr` to declare both a mutable local and its **loop invariant** — the set the variable must remain in across every iteration.
+Within blocks `mut name: Set = expr` is used to declare a mutable local along with it's **range invariant** — the set the variable must remain in across every mutation.
+
+The syntax for _reassignment_ is `:=` to distinguish it from introducing a new name. Each reassignment is required to fit within the declared range.
+
+This is most commonly used within `while` loops:
 
 ```haskell
 sum_to : Nat -> Nat
@@ -218,8 +222,8 @@ sum_to(n) {
     mut acc: Nat = 0   -- 0 ∈ Nat ✓  (init); Nat is the invariant for acc
     mut i: Nat = 1     -- 1 ∈ Nat ✓  (init)
     while i <= n {
-        acc := acc + i  -- acc + i ∈ Nat asserted (step: trusted, see below)
-        i   := i + 1    -- i + 1 ∈ Nat asserted (step: trusted)
+        acc := acc + i  -- acc + i ∈ Nat checked
+        i   := i + 1    -- i + 1 ∈ Nat checked
     }
     acc                -- acc ∈ Nat from invariant + ¬(i <= n) → ℵ proved
 }
@@ -230,12 +234,12 @@ $ cantor sum_to.cantor
   ℵ proved   sum_to : Nat -> Nat
 ```
 
-The declared constraint is used in three places: the initial value is checked against it, each assignment asserts the new value satisfies it, and after the loop the post-loop SSA variable inherits it as a known fact.
+The declared constraint is used in three places: the initial value is checked against it, each reassignment asserts the new value satisfies it, and after the loop the post-loop SSA variable inherits it as a known fact.
 
-> **Note — the compiler verifies the inductive step.**
-> Before trusting the invariant for post-loop reasoning, the solver checks that one body iteration actually maintains it: given `acc ∈ Nat` and the loop condition, does `acc := acc + i` leave `acc` still in `Nat`?
-> If the step cannot be proved — for example, `mut acc: Int16 = 0` with `acc := acc + 1` in an unbounded loop — the compiler reports a counterexample immediately rather than a false `proved`.
-> Loop variables declared as `mut name: Int` carry no effective constraint (Int = all integers) and behave conservatively: if the range obligation depends on such a variable, the result is `unknown` rather than a potentially spurious counterexample.
+**The compiler verifies the inductive step.**
+Before trusting the invariant for post-loop reasoning, the solver checks that one body iteration actually maintains it: given `acc ∈ Nat` and the loop condition, does `acc := acc + i` leave `acc` still in `Nat`?
+If the step cannot be proved — for example, `mut acc: Int16 = 0` with `acc := acc + 1` in an unbounded loop — the compiler reports a counterexample immediately rather than a false `proved`.
+Loop variables declared as `mut name: Int` carry no effective constraint (Int = all integers) and behave conservatively: if the range obligation depends on such a variable, the result is `unknown` rather than a potentially spurious counterexample.
 
 ### For-in loops
 

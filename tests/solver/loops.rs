@@ -68,6 +68,81 @@ bad(x) {
 ");
 }
 
+// ── Reassignment (`:=`) outside loops ────────────────────────────────────────
+
+#[test]
+fn assign_valid_constraint_proved() {
+    proved(r#"
+f : Nat -> Nat
+f(x) {
+    mut acc: Nat = 0
+    acc := x
+    acc
+}"#);
+}
+
+#[test]
+fn assign_violates_constraint_counterexample() {
+    let results = check(r#"
+f : -> Nat
+f() {
+    mut acc: Nat = 5
+    acc := 0 - 1
+    acc
+}"#);
+    assert!(
+        matches!(results[0].1, CheckResult::Counterexample { .. }),
+        "expected Counterexample (acc := -1 violates Nat), got {:?}", results[0].1
+    );
+}
+
+#[test]
+fn assign_constraint_narrower_than_range_still_enforced() {
+    // Even though the function range is Int (permissive), the declared
+    // Nat constraint on `acc` must be checked at the := site.
+    let results = check(r#"
+f : -> Int
+f() {
+    mut acc: Nat = 5
+    acc := 0 - 1
+    acc
+}"#);
+    assert!(
+        matches!(results[0].1, CheckResult::Counterexample { .. }),
+        "expected Counterexample (acc := -1 violates Nat constraint), got {:?}", results[0].1
+    );
+}
+
+#[test]
+fn assign_sequential_stays_in_nat_proved() {
+    // 2 → 1 → 0: each step stays in Nat, SSA gives the solver concrete equalities.
+    proved(r#"
+f : -> Nat
+f() {
+    mut acc: Nat = 2
+    acc := acc - 1
+    acc := acc - 1
+    acc
+}"#);
+}
+
+#[test]
+fn assign_sequential_leaves_nat_counterexample() {
+    // 1 → 0 → -1: the second subtraction violates the Nat constraint.
+    let results = check(r#"
+f : -> Nat
+f() {
+    mut acc: Nat = 1
+    acc := acc - 1
+    acc := acc - 1
+    acc
+}"#);
+    assert!(
+        matches!(results[0].1, CheckResult::Counterexample { .. }),
+        "expected Counterexample (second := takes acc to -1), got {:?}", results[0].1
+    );
+}
+
 // ── Block body: require ───────────────────────────────────────────────────────
 
 #[test]

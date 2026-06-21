@@ -109,12 +109,29 @@ pub(crate) fn encode_block<'tm>(
                 let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
                 solver.assert_formula(eq.clone());
                 accumulated_facts.push(eq);
-                // If the variable carries a declared invariant, assert it holds
-                // for the new value (trusted, used as inductive hypothesis).
-                if let Some(constraint) = constraint_env.get(name) {
-                    if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint) {
-                        solver.assert_formula(c.clone());
-                        accumulated_facts.push(c);
+                // Verify (not just trust) that the new value satisfies the declared
+                // constraint. Inside loop bodies constraint_env is empty — the
+                // inductive step checker handles loop invariants separately — so
+                // this check only fires for non-loop reassignments.
+                if let Some(constraint) = constraint_env.get(name).cloned() {
+                    if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), &constraint) {
+                        match check_require(c.clone(), tm, accumulated_facts, param_names, param_terms) {
+                            CheckResult::Proved => {
+                                solver.assert_formula(c.clone());
+                                accumulated_facts.push(c);
+                            }
+                            CheckResult::Counterexample { params, output, .. } => {
+                                return Err(CheckResult::Counterexample {
+                                    params,
+                                    output,
+                                    reason: format!(
+                                        "`{} :=` violates declared constraint `{}`",
+                                        name.0, constraint
+                                    ),
+                                });
+                            }
+                            CheckResult::Unknown(msg) => return Err(CheckResult::Unknown(msg)),
+                        }
                     }
                 }
                 env.insert(name.clone(), fresh);
