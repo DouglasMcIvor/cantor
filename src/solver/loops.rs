@@ -70,6 +70,7 @@ pub(crate) fn encode_block<'tm>(
     param_terms: &[Term<'tm>],
     constraint_env: &mut HashMap<Symbol, Expr>,
     has_runtime_assert: &mut bool,
+    immutable_names: &mut HashSet<Symbol>,
 ) -> Result<Option<Term<'tm>>, CheckResult> {
     let top_guard = tm.mk_boolean(true);
     let mut last_expr: Option<Term<'tm>> = None;
@@ -77,6 +78,47 @@ pub(crate) fn encode_block<'tm>(
     for stmt in stmts {
         last_expr = None; // only the last Expr stmt is the return value
         match stmt {
+            Stmt::Let { name, constraint, value: _, .. }
+                if matches!(set_kind(constraint), ValKind::Set(_)) =>
+            {
+                // Immutable runtime set: opaque integer (heap pointer), no value encoding.
+                let fresh_name = format!("{}_{}", name.0, ssa_counter);
+                *ssa_counter += 1;
+                let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
+                immutable_names.insert(name.clone());
+                env.insert(name.clone(), fresh);
+            }
+
+            Stmt::Let { name, constraint, value, .. } => {
+                let val = encode_expr(
+                    value, env, const_defs, fn_env, tm, solver,
+                    call_counter, builtin_obligs, top_guard.clone(),
+                )
+                .map_err(CheckResult::Unknown)?;
+                let ssa_name = format!("{}_{}", name.0, ssa_counter);
+                *ssa_counter += 1;
+                let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
+                solver.assert_formula(eq.clone());
+                accumulated_facts.push(eq);
+                // Defer constraint verification to the function-exit check.
+                // check_require uses a fresh solver seeded only from accumulated_facts
+                // and would miss call contracts added to the main solver — deferring
+                // lets the final negation+SAT check use the full solver context.
+                if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint) {
+                    builtin_obligs.push(BuiltinObligation {
+                        path_cond: top_guard.clone(),
+                        obligation: c,
+                        violated_reason: format!(
+                            "initial value of `{}` is not in `{}`",
+                            name.0, constraint
+                        ),
+                    });
+                }
+                immutable_names.insert(name.clone());
+                env.insert(name.clone(), fresh);
+            }
+
             Stmt::MutLet { name, constraint, value: _, .. }
                 if matches!(set_kind(constraint), ValKind::Set(_)) =>
             {
@@ -102,13 +144,34 @@ pub(crate) fn encode_block<'tm>(
                 let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
                 solver.assert_formula(eq.clone());
                 accumulated_facts.push(eq);
-                // Assert the declared invariant for the initial value.
+                // Defer constraint verification to the function-exit check.
+                // check_require uses a fresh solver seeded only from accumulated_facts
+                // and would miss call contracts added to the main solver — deferring
+                // lets the final negation+SAT check use the full solver context.
                 if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint) {
-                    solver.assert_formula(c.clone());
-                    accumulated_facts.push(c);
+                    builtin_obligs.push(BuiltinObligation {
+                        path_cond: top_guard.clone(),
+                        obligation: c,
+                        violated_reason: format!(
+                            "initial value of `{}` is not in `{}`",
+                            name.0, constraint
+                        ),
+                    });
                 }
                 constraint_env.insert(name.clone(), constraint.clone());
                 env.insert(name.clone(), fresh);
+            }
+
+            Stmt::Assign { name, .. } if immutable_names.contains(name) => {
+                return Err(CheckResult::Counterexample {
+                    params: HashMap::new(),
+                    output: 0,
+                    reason: format!(
+                        "cannot assign to `{}`: declared as an immutable binding \
+                         (use `mut {}` to allow reassignment)",
+                        name.0, name.0
+                    ),
+                });
             }
 
             Stmt::Assign { name, value, .. } => {
@@ -233,7 +296,7 @@ pub(crate) fn encode_block<'tm>(
                     inner, env, const_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, ssa_counter,
                     accumulated_facts, param_names, param_terms,
-                    constraint_env, has_runtime_assert,
+                    constraint_env, has_runtime_assert, immutable_names,
                 )?;
             }
 
@@ -242,7 +305,7 @@ pub(crate) fn encode_block<'tm>(
                 if let Some(step_err) = check_inductive_step(
                     cond, body, &modified, constraint_env,
                     env, accumulated_facts, const_defs, fn_env, tm,
-                    ssa_counter, param_names, param_terms,
+                    ssa_counter, param_names, param_terms, immutable_names,
                 ) {
                     return Err(step_err);
                 }
@@ -250,7 +313,11 @@ pub(crate) fn encode_block<'tm>(
                 // Post-loop approximation: replace each loop-modified variable with
                 // a fresh constant carrying its declared invariant (justified by the
                 // proved inductive step), then assert ¬cond (loop has exited).
+                // Immutable names cannot be modified in the loop body; if they appear
+                // in `modified` it is a bug that the inductive step check already
+                // reported — skip them here.
                 for name in &modified {
+                    if immutable_names.contains(name) { continue; }
                     if env.contains_key(name) {
                         let fresh_name = format!("{}_{}", name.0, ssa_counter);
                         *ssa_counter += 1;
@@ -290,7 +357,7 @@ pub(crate) fn encode_block<'tm>(
                 if let Some(step_err) = check_for_inductive_step(
                     var, set, body, &modified, constraint_env,
                     env, accumulated_facts, const_defs, fn_env, tm,
-                    ssa_counter, param_names, param_terms,
+                    ssa_counter, param_names, param_terms, immutable_names,
                 ) {
                     return Err(step_err);
                 }
@@ -298,6 +365,7 @@ pub(crate) fn encode_block<'tm>(
                 // Post-loop: replace each modified var with a fresh constant
                 // carrying its declared invariant (justified by the proved step).
                 for name in &modified {
+                    if immutable_names.contains(name) { continue; }
                     if env.contains_key(name) {
                         let fresh_name = format!("{}_{}", name.0, ssa_counter);
                         *ssa_counter += 1;
@@ -382,6 +450,7 @@ fn check_loop_inductive_step<'tm, F>(
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
     inv_label: &str,
+    outer_immutable_names: &HashSet<Symbol>,
     add_loop_entry: F,
 ) -> Option<CheckResult>
 where
@@ -431,9 +500,11 @@ where
     }
 
     // Encode one body iteration with an empty constraint env — we are checking
-    // the invariants, not assuming them.
+    // the invariants, not assuming them.  Carry over immutable names from the
+    // outer scope so the body can't reassign them.
     let mut body_env = ind_env;
     let mut empty_cenv: HashMap<Symbol, Expr> = HashMap::new();
+    let mut step_imm: HashSet<Symbol> = outer_immutable_names.clone();
     let mut cc = 0usize;
     let mut obligs: Vec<BuiltinObligation<'tm>> = Vec::new();
     let mut step_ssa = *ssa_counter;
@@ -442,6 +513,7 @@ where
         body, &mut body_env, const_defs, fn_env, tm, &mut tmp,
         &mut cc, &mut obligs, &mut step_ssa, &mut tmp_facts,
         param_names, param_terms, &mut empty_cenv, &mut _dummy_runtime_assert,
+        &mut step_imm,
     ) {
         Ok(_) => {}
         Err(e) => return Some(e),
@@ -518,11 +590,12 @@ fn check_inductive_step<'tm>(
     ssa_counter: &mut usize,
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
+    immutable_names: &HashSet<Symbol>,
 ) -> Option<CheckResult> {
     check_loop_inductive_step(
         body, modified, constraint_env, env, accumulated_facts,
         const_defs, fn_env, tm, ssa_counter, param_names, param_terms,
-        "loop invariant",
+        "loop invariant", immutable_names,
         |tmp, ind_env, tmp_facts, _ssa| {
             let mut cc = 0usize;
             let mut obligs = Vec::new();
@@ -552,6 +625,7 @@ fn check_for_inductive_step<'tm>(
     ssa_counter: &mut usize,
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
+    immutable_names: &HashSet<Symbol>,
 ) -> Option<CheckResult> {
     // If `set` is a runtime set variable, extract its element-kind expression
     // from the Set(ElemKind) constraint (e.g. Set(Nat) → Nat, Set(Int-{0}) →
@@ -572,7 +646,7 @@ fn check_for_inductive_step<'tm>(
     check_loop_inductive_step(
         body, modified, constraint_env, env, accumulated_facts,
         const_defs, fn_env, tm, ssa_counter, param_names, param_terms,
-        "for-loop invariant",
+        "for-loop invariant", immutable_names,
         |tmp, ind_env, tmp_facts, ssa| {
             let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
             *ssa += 1;

@@ -136,6 +136,11 @@ pub enum UnOp {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    /// `x: Set = expr` — introduce an immutable local with a constraint check.
+    ///
+    /// The `constraint` is verified once at the binding site; the name may not
+    /// appear on the left-hand side of `:=`.
+    Let { name: Symbol, constraint: Expr, value: Expr, span: Span },
     /// `mut x: Set = expr` — introduce a new mutable local with invariant.
     ///
     /// The `constraint` is the declared set the variable must remain in through

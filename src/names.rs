@@ -79,7 +79,7 @@ fn check_const(def: &ConstDef, errors: &mut Vec<CompileError>) {
 fn check_stmts(stmts: &[Stmt], errors: &mut Vec<CompileError>) {
     for stmt in stmts {
         match stmt {
-            Stmt::MutLet { name, span, .. } => must_be_lowercase(&name.0, *span, errors),
+            Stmt::Let { name, span, .. } | Stmt::MutLet { name, span, .. } => must_be_lowercase(&name.0, *span, errors),
             Stmt::Block(inner)              => check_stmts(inner, errors),
             Stmt::While { body, .. }        => check_stmts(body, errors),
             Stmt::ForIn { var, set, body, span, .. } => {

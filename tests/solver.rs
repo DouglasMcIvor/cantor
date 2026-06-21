@@ -8,3 +8,5 @@ mod encode;
 mod loops;
 #[path = "solver/runtime_sets.rs"]
 mod runtime_sets;
+#[path = "solver/let_bindings.rs"]
+mod let_bindings;

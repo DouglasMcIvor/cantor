@@ -22,7 +22,7 @@ mod membership;
 mod encode;
 mod loops;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cvc5::{Kind, Solver, Term, TermManager};
 
@@ -250,6 +250,7 @@ fn check_block_sig(
     let mut ssa_counter = 0usize;
     let mut constraint_env: HashMap<Symbol, Expr> = HashMap::new();
     let mut has_runtime_assert = false;
+    let mut immutable_names: HashSet<Symbol> = HashSet::new();
 
     let body_term = match encode_block(
         stmts,
@@ -266,6 +267,7 @@ fn check_block_sig(
         &param_terms,
         &mut constraint_env,
         &mut has_runtime_assert,
+        &mut immutable_names,
     ) {
         Ok(Some(t)) => t,
         Ok(None) => {

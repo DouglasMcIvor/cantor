@@ -7,6 +7,7 @@ You probably don't want to read this unless you're me.
   1. range-constraint form: `s : Set(Int) = {1, 2, 3}` desugars to `s = {1, 2, 3}; require s in Set(Int)`
   2. inference form: `s = {1, 2, 3}` infers element kind from the literal
   (currently only `mut name : constraint = value` exists; no immutable `let` form)
+- function overloads, or as ChatGPT suggests "the language should officially define an overloaded function as *the union of compatible partial functions*". In my own words "all functions are partial until linking is complete"
 - functions returning product sets
 - CLI to output IR
 - memory model
@@ -80,10 +81,16 @@ You probably don't want to read this unless you're me.
   >
   > You don't need to mention category theory anywhere in the language documentation, of course, but it's a reassuring sign. When the syntax naturally lines up with deep mathematical structures, it usually means you've found something that will remain coherent as the language grows. In Cantor, . naturally denotes projection (p.x), and Constructor(...) naturally denotes injection (Result.Ok(3m)). That symmetry feels remarkably elegant.
 - mutable range inference
-- pattern matching with `match x { a => ... , b => ...}`
+- pattern matching with `match x { a => ... , b => ...}` or maybe
+  ```
+  speak :
+    Dog   -> String
+  | Cat   -> String
+  | Table -> Error
+  ```
 - struct member functions?
 - lambdas and closures
-- dynamic dispatch?
+- dynamic dispatch? - this is just overloading a function to get a union domain and the compiler outputting a switch or a jump table!
 - macros. what is a natural Cantor way of doing code generation? functions that manipulate ASTs?
 - generics. do we need mechanisms to help define functions that work on lots of different sets? seems like it should work alongside overloading
 - automatic multithreading for semi-pure core?

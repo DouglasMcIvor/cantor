@@ -8,3 +8,5 @@ mod loops;
 mod runtime_fns;
 #[path = "codegen/sets.rs"]
 mod sets;
+#[path = "codegen/let_bindings.rs"]
+mod let_bindings;

@@ -26,7 +26,7 @@ pub(crate) type Env<'tm> = HashMap<Symbol, Term<'tm>>;
 pub(crate) struct BuiltinObligation<'tm> {
     pub(crate) path_cond: Term<'tm>,
     pub(crate) obligation: Term<'tm>,
-    pub(crate) violated_reason: &'static str,
+    pub(crate) violated_reason: String,
 }
 
 /// Domain constraint for argument `arg_idx` (0-based) of a binary built-in.
@@ -108,7 +108,7 @@ pub(crate) fn encode_expr<'tm>(
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: path_cond.clone(),
                         obligation: c,
-                        violated_reason: reason,
+                        violated_reason: reason.to_string(),
                     });
                 }
             }
@@ -168,7 +168,7 @@ pub(crate) fn encode_expr<'tm>(
                         builtin_obligs.push(BuiltinObligation {
                             path_cond: path_cond.clone(),
                             obligation: c,
-                            violated_reason: reason,
+                            violated_reason: reason.to_string(),
                         });
                     }
                 }

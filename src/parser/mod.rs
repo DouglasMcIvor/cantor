@@ -283,6 +283,15 @@ impl<'src> Parser<'src> {
                 let value = self.parse_expr(0)?;
                 Ok(Stmt::Assign { name, value, span })
             }
+            // `ident : Set = expr` → immutable local binding with constraint
+            Token::Ident(_) if self.peek2() == &Token::Colon => {
+                let name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let constraint = self.parse_set_expr()?;
+                self.expect(&Token::Eq)?;
+                let value = self.parse_expr(0)?;
+                Ok(Stmt::Let { name, constraint, value, span })
+            }
             _ => Ok(Stmt::Expr(self.parse_expr(0)?)),
         }
     }

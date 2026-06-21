@@ -28,6 +28,14 @@ impl<'ctx> Compiler<'ctx> {
         for stmt in stmts {
             last = None;
             match stmt {
+                Stmt::Let { name, value, .. } => {
+                    // Immutable: just compile the value and bind the name.
+                    // No alloca needed — this name cannot appear in alloca_map
+                    // because collect_loop_modified skips Let bindings.
+                    let result = self.compile_expr(value, env)?;
+                    env.insert(name.clone(), result);
+                }
+
                 Stmt::MutLet { name, value, .. } | Stmt::Assign { name, value, .. } => {
                     let result = self.compile_expr(value, env)?;
                     // If this variable is backed by an alloca (i.e. we're in a loop
