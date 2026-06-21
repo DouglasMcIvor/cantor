@@ -21,7 +21,7 @@ You probably don't want to read this unless you're me.
 - BigInt runtime support for our unsized Int and Nat sets
 - constants JIT'd instead of at rust level to get consistency 
 - spin up some code review agents to assess quality of rust implementation, factoring and maintainability before it gets too large
-- human intros (familiar with types, newbie with the word type taboo'd) and LLM intro
+- human intros (familiar with types, newbie with the word type taboo'd) and LLM intro. The human intros would be good to include a bunch of Venn diagrams and ye olde curved arrows between ovals representing functions to visualise the concepts along the way.
 - review and improve error messages
 - suggested constraints in error messages
 - more containers! gotta have me some vectors and maps, not just sets! ordered sets too
