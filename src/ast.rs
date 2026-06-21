@@ -142,7 +142,7 @@ pub enum Stmt {
     /// every assignment.  The solver uses it as the loop invariant when the
     /// variable is modified inside a `while` body.
     MutLet { name: Symbol, constraint: Expr, value: Expr, span: Span },
-    /// `x = expr` — reassign an existing mutable (semantic analysis validates).
+    /// `x := expr` — reassign an existing mutable (semantic analysis validates).
     Assign { name: Symbol, value: Expr, span: Span },
     /// `require predicate` — static proof obligation; compile error if unprovable.
     Require { predicate: Expr, span: Span },

@@ -109,11 +109,14 @@ You probably don't want to read this unless you're me.
 
 - How hard it is to stop typing "types" everywhere instead of sets etc.
 - SMT solvers are branch heavy so aren't very SIMD/multi-thread friendly. Implication, I guess, is that we can at least try and run multiple solvers in parallel while compiling to make use of multi-threading in a simple way. Shame we can't just throw the problem at some beefy GPUs.
-- 
+- How quickly the tree of language features to implement exploded! I seem to add about 5 new items into my to do list for every one I cross off!
 
 # Open questions
 
 - How should we implement built in containers like sets and so? Pull in a library or roll our own?
+  - For temporaries: flat arrays to start to keep it simple, deallocate entire arena each IO loop, one arena to start
+  - ChatGPT suggests `im` or `rpds` (its preference for some reason) for persistent data structures and eventually we can roll our own
+  - Will need to start with a runtime implemented in rust and an ABI for `cantor_set_new()` etc
 - Should we represent values of lists of product sets automatically as a struct of arrays? That might be fun
 - Does all of overloading, generics and dynamic dispatch collapse into the one thing? Either the compiler proves a particular definition is used or else it outputs a vtable?
 - I wanted 'emit' for write only effects, but when we added multithreading we will need synchronoisation. Is that a problem?
@@ -130,7 +133,6 @@ I guess it depends on how we handle threading.
   ```
   The persistent state can use tracing GC _during the diff_. This is also simultaneous with IO so can naturally run in parallel.
   The only gap left is that the mutable arena could grow too large. Later on we could add pages to the arena to allow partial clean up like with tcmalloc and marking the pages available to the OS!
-- Should we use `:=` for mutable re-assignment to make it visually distinct from declaring a named value?
 - Does cvc5 come with a built-in timeout or limit for complex proofs? Should we let the user configure an "effort" value?
 - Should we have an early `return` statement? Seems expected in imperative languages.
 - How to define exception handlers?

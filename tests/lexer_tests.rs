@@ -183,10 +183,21 @@ fn lex_bare_bang_is_error() {
 
 #[test]
 fn lex_bare_eq_is_token() {
-    // `=` is now valid: used for `= expr` pure bodies and `x = expr` assignments.
+    // `=` is valid: used for `= expr` pure bodies and `mut x = expr` initial bindings.
     let mut lexer = Lexer::new("=");
     let (tok, _) = lexer.next_token().unwrap();
     assert_eq!(tok, cantor::parser::lexer::Token::Eq);
+}
+
+#[test]
+fn lex_colon_eq_is_reassignment_token() {
+    assert_eq!(lex_all(":="), vec![Token::ColonEq, Token::Eof]);
+}
+
+#[test]
+fn lex_colon_eq_distinguished_from_colon() {
+    // `:` alone is Colon; `:=` is ColonEq.
+    assert_eq!(lex_all(": :="), vec![Token::Colon, Token::ColonEq, Token::Eof]);
 }
 
 #[test]

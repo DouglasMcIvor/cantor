@@ -51,9 +51,10 @@ pub enum Token {
     GtEq,   // >=
 
     // Definition / assignment
-    Eq,     // =   (assignment, pure-body connector)
-    Arrow,  // ->  (signature range separator)
-    Colon,  // :   (signature type separator)
+    Eq,       // =   (initial binding, pure-body connector)
+    ColonEq,  // :=  (reassignment of a `mut` variable)
+    Arrow,    // ->  (signature range separator)
+    Colon,    // :   (signature type separator)
 
     // Punctuation
     LParen,   // (
@@ -100,6 +101,7 @@ impl fmt::Display for Token {
             Token::Gt       => f.write_str(">"),
             Token::GtEq     => f.write_str(">="),
             Token::Eq       => f.write_str("="),
+            Token::ColonEq  => f.write_str(":="),
             Token::Arrow    => f.write_str("->"),
             Token::Colon    => f.write_str(":"),
             Token::LParen   => f.write_str("("),
@@ -205,7 +207,14 @@ impl<'src> Lexer<'src> {
             '}' => Token::RBrace,
             ',' => Token::Comma,
             '?' => Token::Question,
-            ':' => Token::Colon,
+            ':' => {
+                if self.peek_char() == Some('=') {
+                    self.advance_char();
+                    Token::ColonEq
+                } else {
+                    Token::Colon
+                }
+            }
             '-' => {
                 if self.peek_char() == Some('>') {
                     self.advance_char();

@@ -226,11 +226,11 @@ implementation detail the developer should not rely on.
 - A mutable local has a "trajectory" through some set S over the function
   body; compiler does loop-invariant-style inference, falling back to
   assert/assume when it can't determine the invariant automatically.
-- Syntax: needs a visible mutability marker (tentatively `mut` on first
-  introduction, Rust-style) so mutation is visually distinct from
-  Haskell-style immutable `let`-binding, which `name = expr` would otherwise
-  resemble. (OPEN — not fully finalized, but treat `mut` as the working
-  default.)
+- **Syntax (DECIDED)**: `mut name = expr` introduces a mutable variable with
+  its initial value. `name := expr` *re*assigns it. Plain `name = expr` inside
+  a `{ }` body is an immutable local binding — using `:=` on such a name is a
+  compile error. Compound mutation operators follow the same two-character form:
+  `+=`, `-=`, etc.
 
 ## 6. IO / Event loop
 
@@ -356,6 +356,10 @@ implementation detail the developer should not rely on.
 - `Bool` is **not** an integer and cannot be used in arithmetic or numeric
   comparisons. `true` is not `1`; `false` is not `0`. No implicit coercion
   exists. This bites developers coming from C, Python, or JavaScript.
+- `:=` is *re*assignment only — using `:=` as a first binding is a compile
+  error. Developers from Pascal/Delphi know `:=` as the general assignment
+  operator (used for all assignment including first binding); in Cantor first
+  binding is always `mut name = expr`.
 - `a < b < c` is a domain violation, not Python-style chained comparison.
   It parses as `(a < b) < c`, where `a < b : Bool` and `Bool` is disjoint
   from the domain of `<`. The intended idiom is `a < b and b < c`.
@@ -432,9 +436,9 @@ double = scale(2)   -- if scale(n)(x) = n * x
 -- Mutable locals are ONLY valid inside `{ }` blocks.
 sum_to : Nat -> Nat
 sum_to(n) {
-    mut acc = 0
+    mut acc = 0    -- initial binding: `mut` + `=`
     mut i   = 1
-    -- (loop syntax TBD)
+    -- (loop syntax TBD; reassignment inside will use `:=`, e.g. `acc := acc + i`)
     acc
 }
 
@@ -596,7 +600,6 @@ Syntax (next to design — treat as a group, not piecemeal):
   or several, and what the channel set is)
 - Library interface declaration syntax (separate interface file vs inline
   visibility annotations — see §7)
-- Finalize the mutability marker (`mut` is the working default)
 - Aliasing/references to locals within the same function scope — leaning
   banned, not confirmed
 - `decreasing by <measure>` annotation syntax (deferred past v0 but syntax

@@ -218,8 +218,8 @@ sum_to(n) {
     mut acc: Nat = 0   -- 0 ∈ Nat ✓  (init); Nat is the invariant for acc
     mut i: Nat = 1     -- 1 ∈ Nat ✓  (init)
     while i <= n {
-        acc = acc + i  -- acc + i ∈ Nat asserted (step: trusted, see below)
-        i = i + 1      -- i + 1 ∈ Nat asserted (step: trusted)
+        acc := acc + i  -- acc + i ∈ Nat asserted (step: trusted, see below)
+        i   := i + 1    -- i + 1 ∈ Nat asserted (step: trusted)
     }
     acc                -- acc ∈ Nat from invariant + ¬(i <= n) → ℵ proved
 }
@@ -233,8 +233,8 @@ $ cantor sum_to.cantor
 The declared constraint is used in three places: the initial value is checked against it, each assignment asserts the new value satisfies it, and after the loop the post-loop SSA variable inherits it as a known fact.
 
 > **Note — the compiler verifies the inductive step.**
-> Before trusting the invariant for post-loop reasoning, the solver checks that one body iteration actually maintains it: given `acc ∈ Nat` and the loop condition, does `acc = acc + i` leave `acc` still in `Nat`?
-> If the step cannot be proved — for example, `mut acc: Int16 = 0` with `acc = acc + 1` in an unbounded loop — the compiler reports a counterexample immediately rather than a false `proved`.
+> Before trusting the invariant for post-loop reasoning, the solver checks that one body iteration actually maintains it: given `acc ∈ Nat` and the loop condition, does `acc := acc + i` leave `acc` still in `Nat`?
+> If the step cannot be proved — for example, `mut acc: Int16 = 0` with `acc := acc + 1` in an unbounded loop — the compiler reports a counterexample immediately rather than a false `proved`.
 > Loop variables declared as `mut name: Int` carry no effective constraint (Int = all integers) and behave conservatively: if the range obligation depends on such a variable, the result is `unknown` rather than a potentially spurious counterexample.
 
 ### For-in loops
@@ -247,7 +247,7 @@ sum_set : -> Nat
 sum_set() {
     mut acc: Nat = 0
     for x in {1, 2, 3} {
-        acc = acc + x
+        acc := acc + x
     }
     acc      -- acc ∈ Nat proved inductively over all elements
 }
@@ -270,7 +270,7 @@ sum_doubled_odds : -> Nat
 sum_doubled_odds() {
     mut acc: Nat = 0
     for y in {x * 2 for x in {1, 2, 3, 4, 5} if x mod 2 != 0} {
-        acc = acc + y
+        acc := acc + y
     }
     acc      -- 2 + 6 + 10 = 18
 }
@@ -284,7 +284,7 @@ sum_above_threshold : Int -> Int
 sum_above_threshold(threshold) {
     mut acc: Int = 0
     for y in {x for x in {10, 20, 30, 40} if x > threshold} {
-        acc = acc + y
+        acc := acc + y
     }
     acc
 }

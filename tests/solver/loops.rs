@@ -249,8 +249,8 @@ sum_to(n) {
     mut acc: Nat = 0
     mut i: Nat = 1
     while i <= n {
-        acc = acc + i
-        i = i + 1
+        acc := acc + i
+        i := i + 1
     }
     acc
 }"#);
@@ -264,8 +264,8 @@ sum_to_pos(n) {
     mut acc: Nat = 0
     mut i: Nat = 1
     while i <= n {
-        acc = acc + i
-        i = i + 1
+        acc := acc + i
+        i := i + 1
     }
     acc
 }"#;
@@ -283,7 +283,7 @@ f : Int -> Nat
 f(n) {
     mut acc: Int = 0
     while acc < n {
-        acc = acc + 1
+        acc := acc + 1
     }
     acc
 }"#;
@@ -302,8 +302,8 @@ sum_to(n) {
     mut acc: Nat = 0
     mut i: Nat = 1
     while i <= n {
-        acc = acc + i
-        i = i + 1
+        acc := acc + i
+        i := i + 1
     }
     assume acc in Nat
     acc
@@ -317,7 +317,7 @@ f : Nat -> Nat
 f(n) {
     mut i: Nat = 0
     while i < n {
-        i = i + 1
+        i := i + 1
     }
     i
 }"#);
@@ -333,8 +333,8 @@ sum_to(n) {
     mut acc: Nat = 0
     mut i: Nat = 1
     while i <= n {
-        acc = acc + i
-        i = i + 1
+        acc := acc + i
+        i := i + 1
     }
     acc
 }"#);
@@ -347,7 +347,7 @@ count : Nat -> Int16
 count(n) {
     mut acc: Int16 = 0
     while acc < n {
-        acc = acc + 1
+        acc := acc + 1
     }
     acc
 }"#;
@@ -366,7 +366,7 @@ bounded_add : Int16 -> Int16
 bounded_add(x) {
     mut acc: Int16 = x
     while true {
-        acc = acc + 1
+        acc := acc + 1
     }
     acc
 }"#;
@@ -386,7 +386,7 @@ sum_set : -> Nat
 sum_set() {
     mut acc: Nat = 0
     for x in {1, 2, 3} {
-        acc = acc + x
+        acc := acc + x
     }
     acc
 }"#);
@@ -399,7 +399,7 @@ f : -> Nat
 f() {
     mut acc: Nat = 5
     for x in {1, 2, 3} {
-        acc = acc - 10
+        acc := acc - 10
     }
     acc
 }"#;
@@ -417,7 +417,7 @@ f : -> Nat
 f() {
     mut acc: Int = 0
     for x in {1, 2, 3} {
-        acc = acc + x
+        acc := acc + x
     }
     acc
 }"#;
@@ -435,7 +435,7 @@ f : -> Nat
 f() {
     mut acc: Nat = 0
     for x in {} {
-        acc = acc + x
+        acc := acc + x
     }
     acc
 }"#);
@@ -448,7 +448,7 @@ f : Nat -> Nat
 f(n) {
     mut acc: Nat = 0
     for x in {1, 2, 3} {
-        acc = acc + x
+        acc := acc + x
     }
     acc
 }"#);

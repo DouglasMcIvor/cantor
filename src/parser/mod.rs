@@ -276,10 +276,10 @@ impl<'src> Parser<'src> {
                 Ok(Stmt::ForIn { var, set, body, span })
             }
             Token::LBrace => Ok(Stmt::Block(self.parse_block()?)),
-            // `ident =` (not `==`) → assignment
-            Token::Ident(_) if self.peek2() == &Token::Eq => {
+            // `ident :=` → reassignment of a `mut` variable
+            Token::Ident(_) if self.peek2() == &Token::ColonEq => {
                 let name = self.expect_ident()?;
-                self.expect(&Token::Eq)?;
+                self.expect(&Token::ColonEq)?;
                 let value = self.parse_expr(0)?;
                 Ok(Stmt::Assign { name, value, span })
             }

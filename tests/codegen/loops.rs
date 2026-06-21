@@ -10,7 +10,7 @@ main : Nat -> Nat
 main(n) {
     mut i: Nat = 0
     while i < n {
-        i = i + 1
+        i := i + 1
     }
     i
 }"#;
@@ -29,8 +29,8 @@ main(n) {
     mut acc: Nat = 0
     mut i: Nat = 1
     while i <= n {
-        acc = acc + i
-        i = i + 1
+        acc := acc + i
+        i := i + 1
     }
     acc
 }"#;
@@ -48,7 +48,7 @@ main : -> Int
 main() {
     mut x: Int = 42
     while x < 0 {
-        x = x - 1
+        x := x - 1
     }
     x
 }"#;
@@ -64,8 +64,8 @@ main(n) {
     mut result: Nat = 0
     mut i: Nat = 0
     while i < n {
-        result = result + 7
-        i = i + 1
+        result := result + 7
+        i := i + 1
     }
     result
 }"#;
@@ -84,7 +84,7 @@ main : -> Int
 main() {
     mut acc: Int = 0
     for x in {1, 2, 3} {
-        acc = acc + x
+        acc := acc + x
     }
     acc
 }"#;
@@ -99,7 +99,7 @@ main : -> Int
 main() {
     mut acc: Int = 42
     for x in {} {
-        acc = acc + 1
+        acc := acc + 1
     }
     acc
 }"#;
@@ -114,7 +114,7 @@ main : -> Int
 main() {
     mut acc: Int = 0
     for x in {7} {
-        acc = acc + x
+        acc := acc + x
     }
     acc
 }"#;
@@ -130,7 +130,7 @@ main : -> Int
 main() {
     mut last: Int = 0
     for x in {10, 20, 30} {
-        last = x
+        last := x
     }
     last
 }"#;
@@ -145,7 +145,7 @@ main : Int -> Int
 main(n) {
     mut acc: Int = 0
     for x in {1, 2, 3} {
-        acc = acc + x + n
+        acc := acc + x + n
     }
     acc
 }"#;
@@ -164,7 +164,7 @@ main : -> Int
 main() {
     mut acc: Int = 0
     for y in {x * 2 for x in {1, 3, 5}} {
-        acc = acc + y
+        acc := acc + y
     }
     acc
 }"#;
@@ -179,7 +179,7 @@ main : -> Int
 main() {
     mut acc: Int = 0
     for y in {x for x in {1, 2, 3, 4, 5} if x > 2} {
-        acc = acc + y
+        acc := acc + y
     }
     acc
 }"#;
@@ -194,7 +194,7 @@ main : -> Int
 main() {
     mut acc: Int = 99
     for y in {x for x in {1, 2, 3} if x > 10} {
-        acc = acc + y
+        acc := acc + y
     }
     acc
 }"#;
@@ -210,7 +210,7 @@ main : Int -> Int
 main(n) {
     mut acc: Int = 0
     for y in {x + n for x in {1, 2, 3} if x > 1} {
-        acc = acc + y
+        acc := acc + y
     }
     acc
 }"#;
