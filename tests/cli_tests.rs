@@ -373,13 +373,21 @@ fn runtime_set_runs_and_returns_correct_result() {
 }
 
 #[test]
-fn runtime_set_has_no_counterexamples() {
-    // The solver cannot yet fully verify Set(Int) signatures (returns `unknown`),
-    // but must never produce a counterexample — that would indicate a logic error
-    // in the proof encoding, not a missing feature.
+fn runtime_set_proves_signature() {
+    // `main : -> Int` with a Set(Int) body is now fully proved — the solver
+    // models runtime sets as opaque integers and treats membership/size as
+    // unconstrained, which is sufficient for an Int return range.
     let out = run_subcommand("runtime_set.cantor");
+    assert!(
+        out.stdout.contains("  proved  "),
+        "expected proved result in output:\n{}", out.stdout
+    );
     assert!(
         !out.stdout.contains("  counterexample  "),
         "unexpected counterexample in output:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  unknown  "),
+        "unexpected unknown in output:\n{}", out.stdout
     );
 }

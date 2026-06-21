@@ -6,6 +6,7 @@ use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
     ast::{Expr, ExprKind, FunctionDef, Stmt, collect_loop_modified},
+    kind::{Kind as ValKind, set_kind},
     span::Symbol,
 };
 
@@ -76,6 +77,19 @@ pub(crate) fn encode_block<'tm>(
     for stmt in stmts {
         last_expr = None; // only the last Expr stmt is the return value
         match stmt {
+            Stmt::MutLet { name, constraint, value: _, .. }
+                if matches!(set_kind(constraint), ValKind::Set(_)) =>
+            {
+                // Runtime set values (Set(Int), Set(Bool)) can't be encoded in
+                // QF_NIA. Represent the binding as an opaque integer (the heap
+                // pointer) and skip the value encoding and membership assertion.
+                let fresh_name = format!("{}_{}", name.0, ssa_counter);
+                *ssa_counter += 1;
+                let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
+                constraint_env.insert(name.clone(), constraint.clone());
+                env.insert(name.clone(), fresh);
+            }
+
             Stmt::MutLet { name, constraint, value, .. } => {
                 let val = encode_expr(
                     value, env, const_defs, fn_env, tm, solver,
@@ -547,13 +561,24 @@ fn check_for_inductive_step<'tm>(
             let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
             *ssa += 1;
             let var_fresh = tm.mk_const(tm.integer_sort(), &var_fresh_name);
-            match membership_constraint(tm, var_fresh.clone(), set) {
-                Membership::Unconstrained => {}
-                Membership::Constrained(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); }
-                Membership::Unsupported => return Some(CheckResult::Unknown(
-                    "for loop: cannot verify inductive step — iterable set uses syntax \
-                     not yet supported in the SMT encoding".into()
-                )),
+            // When iterating over a runtime set variable, the element kind can't
+            // be expressed in QF_NIA. Treat the loop variable as unconstrained.
+            let is_runtime_set_var = if let ExprKind::Var(sym) = &set.kind {
+                constraint_env.get(sym)
+                    .map(|c| matches!(set_kind(c), ValKind::Set(_)))
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if !is_runtime_set_var {
+                match membership_constraint(tm, var_fresh.clone(), set) {
+                    Membership::Unconstrained => {}
+                    Membership::Constrained(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); }
+                    Membership::Unsupported => return Some(CheckResult::Unknown(
+                        "for loop: cannot verify inductive step — iterable set uses syntax \
+                         not yet supported in the SMT encoding".into()
+                    )),
+                }
             }
             ind_env.insert(var.clone(), var_fresh);
             None

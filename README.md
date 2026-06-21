@@ -285,17 +285,14 @@ main() {
 
 ```sh
 $ cantor run primes.cantor
-  unknown         main : -> Int
-    (set expressions cannot appear in value position ...)
+  proved          main : -> Int
 
-  0 proved, 0 counterexample(s), 1 unknown
-warning: 1 signature(s) could not be fully verified — running anyway
+  1 proved, 0 counterexample(s), 0 unknown
 
 main() = 23
 ```
 
-The solver currently returns `unknown` for functions that use `Set(…)` values — SMT encoding of set-typed variables is on the roadmap.
-The runtime result is always correct; the only gap is that the compiler cannot yet *prove* the signature holds for all inputs.
+The solver models runtime sets as opaque values and treats membership and `size` as unconstrained integers, which is sufficient to prove `Int`-range signatures statically.
 
 ### Set comprehensions
 
@@ -349,7 +346,7 @@ sum_above_threshold(threshold) {
 
 ## On the roadmap
 
-- **SMT verification of Set-typed variables** — the solver currently returns `unknown` for functions that create or consume `Set(…)` values; encoding set-typed mutation invariants in cvc5's native set theory is the next proof milestone
+- **Richer set invariants** — `mut s : Set(Int - {0})` should constrain every element; currently the element-kind constraint is not propagated to the SMT solver
 - **Named error sets** — `HTTPError = {400, 503}`; `fetch : Request -> Response | HTTPError`; richer than `Fail` without any new language mechanism
 - **User-defined named sets** — `EvenNat = { n in Nat | n mod 2 == 0 }` as a top-level definition
 - **`raise` and `emits`** — unrecoverable errors and write-only side effects (logging, metrics)

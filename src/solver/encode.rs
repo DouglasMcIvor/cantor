@@ -124,6 +124,15 @@ pub(crate) fn encode_expr<'tm>(
             // expression (not an integer term) and would fail normal encoding.
             match op {
                 BinOp::In => {
+                    // If the set RHS is a variable bound in the solver env it's a
+                    // runtime set value — membership can't be decided at proof time.
+                    if let ExprKind::Var(sym) = &rhs.kind {
+                        if env.contains_key(sym) {
+                            let fresh = format!("_in_{}", *call_counter);
+                            *call_counter += 1;
+                            return Ok(tm.mk_const(tm.boolean_sort(), &fresh));
+                        }
+                    }
                     let l = enc!(lhs)?;
                     return match membership_constraint(tm, l, rhs) {
                         Membership::Constrained(c)  => Ok(c),
@@ -132,6 +141,14 @@ pub(crate) fn encode_expr<'tm>(
                     };
                 }
                 BinOp::NotIn => {
+                    if let ExprKind::Var(sym) = &rhs.kind {
+                        if env.contains_key(sym) {
+                            let fresh = format!("_in_{}", *call_counter);
+                            *call_counter += 1;
+                            let b = tm.mk_const(tm.boolean_sort(), &fresh);
+                            return Ok(tm.mk_term(Kind::Not, &[b]));
+                        }
+                    }
                     let l = enc!(lhs)?;
                     return match membership_constraint(tm, l, rhs) {
                         Membership::Constrained(c)  => Ok(tm.mk_term(Kind::Not, &[c])),
@@ -198,6 +215,17 @@ pub(crate) fn encode_expr<'tm>(
         }
 
         ExprKind::Call { callee, args } => {
+            // `size(s)` built-in: the exact cardinality is unknown at proof time;
+            // model it as a fresh non-negative integer.
+            if callee.0 == "size" && args.len() == 1 {
+                let fresh = format!("_size_{}", *call_counter);
+                *call_counter += 1;
+                let result = tm.mk_const(tm.integer_sort(), &fresh);
+                let non_neg = tm.mk_term(Kind::Geq, &[result.clone(), tm.mk_integer(0)]);
+                solver.assert_formula(non_neg);
+                return Ok(result);
+            }
+
             let arg_terms: Vec<Term<'_>> = args
                 .iter()
                 .map(|a| enc!(a))
