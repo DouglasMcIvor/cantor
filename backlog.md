@@ -31,6 +31,7 @@ You probably don't want to read this unless you're me.
 - more containers! gotta have me some vectors and maps, not just sets! ordered sets too
 - iterators for containers 
 - fixed length arrays?
+- should we use apache arrow for runtime storage of containers so that we serialisation for free? gives us struct of arrays naturally too
 - destructuring assignment and checks for values in product sets 
   ```haskell
   assert z in X * Y
