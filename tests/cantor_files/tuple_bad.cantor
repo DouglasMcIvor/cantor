@@ -1,0 +1,2 @@
+overflow_pair : Int16 * Int16 -> Int16
+overflow_pair(t) = t.0 + t.1

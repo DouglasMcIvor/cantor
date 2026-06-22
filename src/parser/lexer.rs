@@ -73,6 +73,7 @@ pub enum Token {
     RBrace,   // }
     Comma,    // ,
     Question, // ?  (postfix propagate-failure operator)
+    Dot,      // .  (tuple projection `t.0`)
 
     Eof,
 }
@@ -127,6 +128,7 @@ impl fmt::Display for Token {
             Token::RBrace   => f.write_str("}"),
             Token::Comma    => f.write_str(","),
             Token::Question => f.write_str("?"),
+            Token::Dot      => f.write_str("."),
             Token::Eof      => f.write_str("<eof>"),
         }
     }
@@ -230,6 +232,7 @@ impl<'src> Lexer<'src> {
             '}' => Token::RBrace,
             ',' => Token::Comma,
             '?' => Token::Question,
+            '.' => Token::Dot,
             ':' => {
                 if self.peek_char() == Some('=') {
                     self.advance_char();

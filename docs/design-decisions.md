@@ -139,7 +139,7 @@ implementation detail the developer should not rely on.
      propagating, so the caller sees `400` (not the encoding). The runtime
      encoding uses `FAIL_SENTINEL + code + 1` (offset encoding); the solver
      treats `!!` ranges as unconstrained (v0 pragmatic hack — both go away
-     when product types land at the "Namespaces and structured data" milestone).
+     when product values land at the "Namespaces and structured data" milestone).
    - **Short-circuit (monadic) semantics**, explicit postfix `?` at each
      fallible call site for local visibility: `f(x)?` propagates `Fail`
      (or the relevant error set/payload) from the callee up to the caller.
@@ -390,6 +390,51 @@ implementation detail the developer should not rely on.
 | Subset / proper subset | ⊆ / ⊂ | `<=` / `<` |
 | Superset / proper superset | ⊇ / ⊃ | `>=` / `>` |
 | Cardinality | \|S\| (math convention) | `size(S)` as the actual syntax — avoids visual clash with `\|` as union, avoids `len` because it would wrongly imply an ordering |
+
+### Product set values (tuples) (DECIDED)
+
+Anonymous product values are fully supported. The `*` operator in a signature
+denotes a product set (same as Cartesian product); at the value level, `(e1, e2)`
+is a tuple literal and `t.0`, `t.1` are positional projections.
+
+```
+fst : Int * Int -> Int
+fst(t) = t.0
+
+swap : Int * Int -> Int * Int
+swap(t) = (t.1, t.0)
+
+-- Nat constraints propagate through projections
+sum_pair : Nat * Nat -> Nat
+sum_pair(t) = t.0 + t.1
+
+-- main may return a tuple; cantor run prints it as (a, b)
+main : -> Int * Int
+main() = swap((3, 9))   -- main() = (9, 3)
+```
+
+**Arity disambiguation rule (DECIDED)**: given `f : <domain> -> R` with n declared
+parameters, let `parts = flatten_product(domain)`.
+- `parts.len() == n` → n separate scalar parameters (classic behaviour, unchanged).
+- `n == 1` and `parts.len() > 1` → one tuple parameter whose set is the whole domain.
+- Otherwise → arity error.
+
+So `add(x, y)` with `Int * Int -> Int` continues to mean two scalars; only
+`add(t)` with one param becomes a tuple param.
+
+**Runtime representation**: by-value LLVM structs (`struct_type`,
+`build_insert_value`, `build_extract_value`). No heap allocation.
+
+**SMT encoding**: tuple params are always decomposed into leaf scalar constants
+assembled with `mk_tuple`. A symbolic `mk_const` with a tuple sort is never
+created — cvc5 rejects such terms in arithmetic contexts even when the element sort
+is integer. Projection uses `child(i + 1)` on `APPLY_CONSTRUCTOR` terms rather
+than `TupleProject` for the same reason. Logic must be `"ALL"` (replaces
+`"QF_UFNIA"`) to enable datatype/tuple support.
+
+**`main` trampoline**: when `main` returns a tuple, codegen emits
+`cantor_main_into(*mut i64)` which stores each leaf into a caller buffer, avoiding
+fragile struct-return FFI.
 
 ### Comprehensions
 - Mirrors Python set-comprehension syntax: `{ expr for x in S if pred(x) }`
@@ -729,7 +774,8 @@ Other open items (lower priority, not blocking):
 - **Named product sets (structs)** — `Point = distinct (x: Meter; y: Meter)`;
   constructor syntax TBD (tentatively positional `(3m, 4m)` or named
   `(x = 3m; y = 4m)`). Projection via dot: `p.x` (natural as a named
-  projection function). Requires namespace support first.
+  projection function). Requires namespace support first. (Anonymous tuples
+  with positional projection are DONE — see §10 "Product set values (tuples)".
 - **Named union sets** — `Measurement = distinct (Length: Meter | Volume: Liter)`;
   constructor via injection: `Measurement.Length(3m)`. Parallel to named
   products; requires namespaces. Aligns with products/coproducts: products
@@ -884,7 +930,7 @@ Three mechanisms in order of increasing programmer responsibility:
     decodes the payload (`result - i64::MIN - 1`), and returns the raw code.
   - The solver treats `!! ErrorSet` ranges as `Unconstrained` (it cannot
     reason about the encoding without product-type support).
-  - Both the solver and codegen hacks go away together when product types
+  - Both the solver and codegen hacks go away together when union values
     land at the "Namespaces and structured data" milestone.
 
 - Named domain-specific error sets (e.g. `HTTPError = {400, 503}`) are

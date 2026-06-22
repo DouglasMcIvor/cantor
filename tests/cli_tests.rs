@@ -488,3 +488,75 @@ fn runtime_set_proves_signature() {
         "unexpected unknown in output:\n{}", out.stdout
     );
 }
+
+// ── Tuples / anonymous product types ──────────────────────────────────────────
+
+#[test]
+fn tuple_basics_all_proved() {
+    let out = run_file("tuple_basics.cantor");
+    assert_eq!(out.code, 0, "tuple_basics.cantor should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        out.stdout.contains("5 proved"),
+        "expected '5 proved' in summary:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  "),
+        "unexpected counterexample:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn tuple_basics_shows_product_signatures() {
+    let out = run_file("tuple_basics.cantor");
+    assert!(out.stdout.contains("Int * Int -> Int"), "fst/snd sig missing:\n{}", out.stdout);
+    assert!(out.stdout.contains("Nat * Nat -> Nat"), "sum_pair sig missing:\n{}", out.stdout);
+    assert!(out.stdout.contains("Int * Int -> Int * Int"), "swap/identity sig missing:\n{}", out.stdout);
+}
+
+#[test]
+fn tuple_run_prints_tuple_result() {
+    // swap((3, 9)) = (9, 3)
+    let out = run_subcommand("tuple_run.cantor");
+    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("main() = (9, 3)"),
+        "expected 'main() = (9, 3)' in output:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn tuple_run_proves_all_sigs() {
+    let out = run_subcommand("tuple_run.cantor");
+    assert!(
+        out.stdout.contains("2 proved"),
+        "expected '2 proved' in summary:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  "),
+        "unexpected counterexample:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn tuple_bad_counterexample() {
+    // overflow_pair : Int16 * Int16 -> Int16 overflows when both elements are large.
+    let out = run_file("tuple_bad.cantor");
+    assert_ne!(out.code, 0, "tuple_bad.cantor should exit non-zero\nstdout: {}", out.stdout);
+    assert!(
+        out.stdout.contains("  counterexample  "),
+        "expected counterexample result line:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  proved  "),
+        "unexpected proved line:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn tuple_bad_counterexample_mentions_range() {
+    let out = run_file("tuple_bad.cantor");
+    assert!(
+        out.stdout.contains("not in Int16"),
+        "expected 'not in Int16' in counterexample output:\n{}", out.stdout
+    );
+}

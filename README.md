@@ -352,11 +352,54 @@ $ cantor distinct_demo.cantor
 
 Accidentally passing a plain `Nat` where a `Litre` is expected, or forgetting the constructor, produces a counterexample rather than a silent pass.
 
+### Product Sets
+
+Functions can take and return elements of product sets (aka tuples) using `*` in signatures and `(e1, e2)` syntax in bodies. Positional projection uses `.0`, `.1`, etc.
+
+```haskell
+swap : Int * Int -> Int * Int
+swap(t) = (t.1, t.0)
+
+-- The compiler proves fst(t) ∈ Nat given t ∈ Nat * Nat
+fst : Nat * Nat -> Nat
+fst(t) = t.0
+
+main : -> Int * Int
+main() = swap((3, 9))
+```
+
+```sh
+$ cantor run tuple_demo.cantor
+  proved          swap : Int * Int -> Int * Int
+  proved          fst : Nat * Nat -> Nat
+  proved          main : -> Int * Int
+
+  3 proved, 0 counterexample(s), 0 unknown
+
+main() = (9, 3)
+```
+
+The compiler also catches when a range claim fails for tuple operations:
+
+```haskell
+overflow_pair : Int16 * Int16 -> Int16
+overflow_pair(t) = t.0 + t.1   -- sum can exceed Int16 range
+```
+
+```sh
+$ cantor overflow.cantor
+  counterexample  overflow_pair : Int16 * Int16 -> Int16
+    t = 0  ->  output = -32769  (not in Int16)
+```
+
+**Disambiguation rule**: `f : Int * Int -> Int` with `f(x, y)` means two separate scalar parameters (existing behaviour); `f : Int * Int -> Int * Int` with `f(t)` means a single tuple parameter. The number of declared parameters determines which reading applies — no extra syntax needed. In the future this same pattern will be supported in destructuring assignment.
+
 ## Features (working today)
 
 - **Set-theoretic domains and ranges** — `Int`, `Nat`, `NatPos`, `NonZeroInt`, `Int8`–`Int64`, `Bool`, set literals `{0, 1, 2}`, set difference `A - B`, union `A | B`, intersection `A & B`, error-union `A !! B` (why? because when you get an error the code goes bang! bang! ... I'll let myself out ...)
 - **Bool as a first-class value kind** — `Bool` is disjoint from all integer sets; comparisons (`>`, `==`, …) produce `Bool`; `and`, `or`, `not` operate on `Bool`; no implicit coercion between `Bool` and integers
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` in domain/range/`in`/`for` positions; finite literal sources unrolled statically; infinite named sources encoded as SMT predicates
+- **Product Set values (aka tuples)** — `f : Int * Int -> Int * Int`; tuple literals `(e1, e2)`; positional projection `t.0`, `t.1`; tuples as parameters and return values; the compiler proves tuple domain and range claims end-to-end; `cantor run` prints tuple results as `(a, b)`. Disambiguation: `f(x, y)` with two params = two scalars; `f(t)` with one param = single tuple.
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis
 - **Unified named definitions** — constants (`pi : Nat = 314`) and compile-time set definitions (`Colour = {1, 2, 3}`) share the same one-line syntax and the same AST node; both are auto-inlined at compile time; constants are checked against their range annotation
@@ -377,7 +420,7 @@ Accidentally passing a plain `Nat` where a `Litre` is expected, or forgetting th
 
 ## On the roadmap
 
-- **Namespaces and structured data** — dot-access for members of named definitions unlocks named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`) and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
+- **Namespaces and structured data** — *anonymous product values are done* (see Tuples above). Still ahead: anonymous union values (to retire the `!!` offset-encoding hack), named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`), and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
 
 - **Pattern matching** — `match x { Shape.Circle(r) => …, Shape.Rect(w, h) => … }`; the natural companion to union sets, and the basis for destructuring in general.
 

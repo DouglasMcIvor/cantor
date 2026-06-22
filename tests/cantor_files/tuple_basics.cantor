@@ -1,0 +1,14 @@
+fst : Int * Int -> Int
+fst(t) = t.0
+
+snd : Int * Int -> Int
+snd(t) = t.1
+
+sum_pair : Nat * Nat -> Nat
+sum_pair(t) = t.0 + t.1
+
+swap : Int * Int -> Int * Int
+swap(t) = (t.1, t.0)
+
+identity : Int * Int -> Int * Int
+identity(t) = (t.0, t.1)

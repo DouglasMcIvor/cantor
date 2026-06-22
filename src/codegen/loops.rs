@@ -117,12 +117,12 @@ impl<'ctx> Compiler<'ctx> {
             if inner_alloca_map.contains_key(name) {
                 continue; // already backed by an outer-loop alloca
             }
-            if let Some(&(val, ty)) = env.get(name) {
+            if let Some(&(val, ref ty)) = env.get(name) {
                 let ptr = self
                     .builder
                     .build_alloca(i64_type, &name.0)
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
-                let val_i64: IntValue<'ctx> = if ty == Kind::Bool {
+                let val_i64: IntValue<'ctx> = if *ty == Kind::Bool {
                     self.builder
                         .build_int_z_extend(val.into_int_value(), i64_type, "bool_ext")
                         .map_err(|e| CompileError::Internal(e.to_string()))?
@@ -157,7 +157,7 @@ impl<'ctx> Compiler<'ctx> {
                 .builder
                 .build_load(i64_type, ptr, &name.0)
                 .map_err(|e| CompileError::Internal(e.to_string()))?;
-            let original_kind = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+            let original_kind = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
             let entry = if original_kind == Kind::Bool {
                 let i1 = self.builder
                     .build_int_truncate(val.into_int_value(), self.context.bool_type(), "reload_bool")
@@ -190,7 +190,7 @@ impl<'ctx> Compiler<'ctx> {
                 .builder
                 .build_load(i64_type, ptr, &format!("{}_final", name.0))
                 .map_err(|e| CompileError::Internal(e.to_string()))?;
-            let original_kind = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+            let original_kind = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
             let entry = if original_kind == Kind::Bool {
                 let i1 = self.builder
                     .build_int_truncate(val.into_int_value(), self.context.bool_type(), "final_bool")
@@ -283,10 +283,10 @@ impl<'ctx> Compiler<'ctx> {
         let mut inner_alloca_map: HashMap<Symbol, PointerValue<'ctx>> = outer_alloca_map.clone();
         for name in &modified {
             if inner_alloca_map.contains_key(name) { continue; }
-            if let Some(&(val, ty)) = env.get(name) {
+            if let Some(&(val, ref ty)) = env.get(name) {
                 let ptr = self.builder.build_alloca(i64t, &name.0)
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
-                let val_i64: IntValue<'ctx> = if ty == Kind::Bool {
+                let val_i64: IntValue<'ctx> = if *ty == Kind::Bool {
                     self.builder.build_int_z_extend(val.into_int_value(), i64t, "bool_ext")
                         .map_err(|e| CompileError::Internal(e.to_string()))?
                 } else {
@@ -334,7 +334,7 @@ impl<'ctx> Compiler<'ctx> {
         for (name, &ptr) in &inner_alloca_map {
             let val = self.builder.build_load(i64t, ptr, &name.0)
                 .map_err(|e| CompileError::Internal(e.to_string()))?;
-            let original_kind = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+            let original_kind = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
             let entry = if original_kind == Kind::Bool {
                 let i1 = self.builder
                     .build_int_truncate(val.into_int_value(), self.context.bool_type(), "reload_bool")
@@ -397,7 +397,7 @@ impl<'ctx> Compiler<'ctx> {
             let val = self.builder
                 .build_load(i64t, ptr, &format!("{}_final", name.0))
                 .map_err(|e| CompileError::Internal(e.to_string()))?;
-            let original_kind = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+            let original_kind = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
             let entry = if original_kind == Kind::Bool {
                 let i1 = self.builder
                     .build_int_truncate(val.into_int_value(), self.context.bool_type(), "final_bool")
@@ -456,12 +456,12 @@ impl<'ctx> Compiler<'ctx> {
             let mut amap = outer_alloca_map.clone();
             for name in &modified {
                 if amap.contains_key(name) { continue; }
-                if let Some(&(val, ty)) = env.get(name) {
+                if let Some(&(val, ref ty)) = env.get(name) {
                     let ptr = self
                         .builder
                         .build_alloca(i64_type, &name.0)
                         .map_err(|e| CompileError::Internal(e.to_string()))?;
-                    let val_i64: IntValue<'ctx> = if ty == Kind::Bool {
+                    let val_i64: IntValue<'ctx> = if *ty == Kind::Bool {
                         self.builder
                             .build_int_z_extend(val.into_int_value(), i64_type, "bool_ext")
                             .map_err(|e| CompileError::Internal(e.to_string()))?
@@ -493,7 +493,7 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_load(i64_type, ptr, &name.0)
                         .map_err(|e| CompileError::Internal(e.to_string()))?;
-                    let k = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+                    let k = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
                     let entry = if k == Kind::Bool {
                         let i1 = self.builder
                             .build_int_truncate(val.into_int_value(), self.context.bool_type(), "reload_bool")
@@ -534,7 +534,7 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_load(i64_type, ptr, &format!("{}_after", name.0))
                         .map_err(|e| CompileError::Internal(e.to_string()))?;
-                    let k = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+                    let k = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
                     let entry = if k == Kind::Bool {
                         let i1 = self.builder
                             .build_int_truncate(val.into_int_value(), self.context.bool_type(), "after_bool")
@@ -562,7 +562,7 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_load(i64_type, ptr, &format!("{}_final", name.0))
                         .map_err(|e| CompileError::Internal(e.to_string()))?;
-                    let k = env.get(name).map(|(_, k)| *k).unwrap_or(Kind::Int);
+                    let k = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
                     let entry = if k == Kind::Bool {
                         let i1 = self.builder
                             .build_int_truncate(val.into_int_value(), self.context.bool_type(), "comp_final_bool")

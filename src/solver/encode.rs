@@ -2,11 +2,10 @@
 
 use std::collections::HashMap;
 
-use cvc5::{Kind, Solver, Term, TermManager};
+use cvc5::{Kind, Solver, Sort, Term, TermManager};
 
 use crate::{
     ast::{BinOp, Expr, ExprKind, FunctionDef, FunctionSig, UnOp},
-    kind::{Kind as ValKind, range_kind},
     span::{Span, Symbol},
 };
 
@@ -283,17 +282,27 @@ pub(crate) fn encode_expr<'tm>(
 
             let fresh = format!("_call_{}", *call_counter);
             *call_counter += 1;
-            // Use the callee's return Kind to pick the right SMT sort for the
-            // fresh result variable (boolean sort for Bool-returning functions).
-            let ret_kind = callee_def.sigs.first()
-                .map(|s| range_kind(&s.range))
-                .unwrap_or(ValKind::Int);
-            let result_sort = if ret_kind == ValKind::Bool {
-                tm.boolean_sort()
+
+            // For tuple-returning callees, decompose the result into leaf scalar
+            // constants assembled with mk_tuple — same reason as for tuple params:
+            // a symbolic tuple constant can't be used with child() extraction.
+            let result_var = if let Some(first_sig) = callee_def.sigs.first() {
+                if is_product_range(&first_sig.range) {
+                    let (assembled, leaves) = mk_decomposed_tuple(tm, &fresh, &first_sig.range);
+                    for (leaf, leaf_set) in leaves {
+                        match membership_constraint(tm, leaf, leaf_set, name_defs, distinct_preds) {
+                            Membership::Constrained(c) => solver.assert_formula(c),
+                            _ => {}
+                        }
+                    }
+                    assembled
+                } else {
+                    let sort = set_sort_for_range(tm, &first_sig.range);
+                    tm.mk_const(sort, &fresh)
+                }
             } else {
-                tm.integer_sort()
+                tm.mk_const(tm.integer_sort(), &fresh)
             };
-            let result_var = tm.mk_const(result_sort, &fresh);
 
             for sig in &callee_def.sigs {
                 assert_call_contract(sig, &arg_terms, result_var.clone(), tm, solver, name_defs, distinct_preds);
@@ -345,6 +354,27 @@ pub(crate) fn encode_expr<'tm>(
             let n = enc!(inner)?;
             let base = tm.mk_integer(i64::MIN.wrapping_add(1));
             Ok(tm.mk_term(Kind::Add, &[base, n]))
+        }
+
+        // `(e0, e1, …)` — build a cvc5 tuple term.
+        ExprKind::Tuple(elems) => {
+            let terms: Vec<Term<'_>> = elems.iter()
+                .map(|e| enc!(e))
+                .collect::<Result<_, _>>()?;
+            Ok(tm.mk_tuple(&terms))
+        }
+
+        // `base.N` — project element N from a cvc5 tuple.
+        //
+        // We use `child(index + 1)` rather than `TupleProject` because
+        // APPLY_CONSTRUCTOR has the constructor as child(0) and elements at
+        // child(1+i).  TupleProject produces a datatype-theory term that
+        // cvc5 rejects in arithmetic contexts (Geq, Add, …) even though its
+        // sort is integer.  child(1+i) extracts the actual scalar child term
+        // directly, which IS recognised as arithmetic.
+        ExprKind::Proj { base, index } => {
+            let base_term = enc!(base)?;
+            Ok(base_term.child(*index + 1))
         }
     }
 }
@@ -430,6 +460,71 @@ pub(crate) fn integer_value(term: &Term<'_>) -> i64 {
 /// Extract a bool from a cvc5 boolean model term.
 pub(crate) fn boolean_value(term: &Term<'_>) -> bool {
     term.to_string().trim() == "true"
+}
+
+/// Create a decomposed representation of a tuple-typed term.
+///
+/// For a product set `A * B`, creates individual leaf scalar constants
+/// and assembles them with `mk_tuple`. This avoids symbolic tuple-sorted
+/// constants, which cvc5 rejects when used in arithmetic contexts via
+/// `TupleProject` (beta-reduction only works on `mk_tuple(...)` terms).
+///
+/// Returns `(assembled_term, leaves)` where each leaf is `(leaf_term, leaf_set_expr)`.
+/// The caller asserts membership for each leaf separately (scalars are arithmetic-safe).
+pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
+    tm: &'tm TermManager,
+    name: &str,
+    set_expr: &'e Expr,
+) -> (Term<'tm>, Vec<(Term<'tm>, &'e Expr)>) {
+    let parts = flatten_product(set_expr);
+    if parts.len() <= 1 {
+        let sort = set_sort(tm, set_expr);
+        let leaf = tm.mk_const(sort, name);
+        return (leaf.clone(), vec![(leaf, set_expr)]);
+    }
+    let mut leaves = Vec::new();
+    let mut child_terms = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        let child_name = format!("{name}__{i}");
+        let (child_term, child_leaves) = mk_decomposed_tuple(tm, &child_name, part);
+        leaves.extend(child_leaves);
+        child_terms.push(child_term);
+    }
+    (tm.mk_tuple(&child_terms), leaves)
+}
+
+/// SMT sort for a set expression: Bool → boolean, `A * B` → tuple sort, else integer.
+pub(crate) fn set_sort<'tm>(tm: &'tm TermManager, set_expr: &Expr) -> Sort<'tm> {
+    match &set_expr.kind {
+        ExprKind::Var(sym) if sym.0 == "Bool" => tm.boolean_sort(),
+        ExprKind::BinOp { op: BinOp::Mul, .. } => {
+            let parts = flatten_product(set_expr);
+            let sorts: Vec<Sort<'_>> = parts.iter().map(|p| set_sort(tm, p)).collect();
+            tm.mk_tuple_sort(&sorts)
+        }
+        _ => tm.integer_sort(),
+    }
+}
+
+/// SMT sort for a range expression (strips `Fail`, `Union`, `ErrorUnion` wrappers).
+pub(crate) fn set_sort_for_range<'tm>(tm: &'tm TermManager, range: &Expr) -> Sort<'tm> {
+    match &range.kind {
+        ExprKind::Var(sym) if sym.0 == "Fail" => tm.integer_sort(),
+        ExprKind::BinOp { op: BinOp::Union, lhs, .. } => set_sort_for_range(tm, lhs),
+        ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, .. } => set_sort_for_range(tm, lhs),
+        _ => set_sort(tm, range),
+    }
+}
+
+/// True if the range (after stripping Fail/Union/ErrorUnion wrappers) is a product type.
+fn is_product_range(range: &Expr) -> bool {
+    match &range.kind {
+        ExprKind::BinOp { op: BinOp::Mul, .. } => true,
+        ExprKind::BinOp { op: BinOp::Union, lhs, .. } => is_product_range(lhs),
+        ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, .. } => is_product_range(lhs),
+        ExprKind::Var(sym) if sym.0 == "Fail" => false,
+        _ => false,
+    }
 }
 
 /// If `callee` is the auto-generated constructor for a `distinct` set

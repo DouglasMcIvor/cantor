@@ -359,6 +359,24 @@ impl<'src> Parser<'src> {
                 continue;
             }
 
+            // Postfix `.N` — tuple projection (same precedence as `?`).
+            if self.peek() == &Token::Dot {
+                self.advance()?;
+                let idx_span = self.peek_span();
+                let index = match self.peek().clone() {
+                    Token::Int(n) if n >= 0 => n as usize,
+                    other => return Err(CompileError::UnexpectedToken {
+                        expected: "non-negative integer index after `.`".into(),
+                        found: other.to_string(),
+                        span: idx_span,
+                    }),
+                };
+                self.advance()?;
+                let span = Span::new(lhs.span.start, idx_span.end);
+                lhs = Expr::new(ExprKind::Proj { base: Box::new(lhs), index }, span);
+                continue;
+            }
+
             // Two-token `not in` binary operator.
             if self.peek() == &Token::Not && self.peek2() == &Token::In {
                 let (left_bp, right_bp) = infix_bp_not_in();
@@ -466,10 +484,24 @@ impl<'src> Parser<'src> {
             }
             Token::LParen => {
                 self.advance()?;
-                let expr = self.parse_expr(0)?;
-                let end_span = self.peek_span();
-                self.expect(&Token::RParen)?;
-                Ok(Expr::new(expr.kind, Span::new(span.start, end_span.end)))
+                let first = self.parse_expr(0)?;
+                if self.peek() == &Token::Comma {
+                    // Tuple literal: (e0, e1, …)
+                    let mut elems = vec![first];
+                    while self.peek() == &Token::Comma {
+                        self.advance()?;
+                        if self.peek() == &Token::RParen { break; }
+                        elems.push(self.parse_expr(0)?);
+                    }
+                    let end_span = self.peek_span();
+                    self.expect(&Token::RParen)?;
+                    Ok(Expr::new(ExprKind::Tuple(elems), Span::new(span.start, end_span.end)))
+                } else {
+                    // Plain grouping: (expr)
+                    let end_span = self.peek_span();
+                    self.expect(&Token::RParen)?;
+                    Ok(Expr::new(first.kind, Span::new(span.start, end_span.end)))
+                }
             }
             Token::LBrace => {
                 self.advance()?;

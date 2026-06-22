@@ -14,3 +14,5 @@ mod let_bindings;
 mod set_defs;
 #[path = "solver/named_errors.rs"]
 mod named_errors;
+#[path = "solver/tuples.rs"]
+mod tuples;

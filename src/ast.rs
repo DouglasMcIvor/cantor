@@ -113,6 +113,10 @@ pub enum ExprKind {
         source: Box<Expr>,
         filter: Option<Box<Expr>>,
     },
+    /// `(e0, e1, …)` — anonymous product value (tuple).
+    Tuple(Vec<Expr>),
+    /// `expr.N` — positional projection of element N from a tuple.
+    Proj { base: Box<Expr>, index: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,6 +372,15 @@ impl fmt::Display for ExprKind {
                 }
                 write!(f, "}}")
             }
+            Self::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{e}")?;
+                }
+                write!(f, ")")
+            }
+            Self::Proj { base, index } => write!(f, "{base}.{index}"),
         }
     }
 }

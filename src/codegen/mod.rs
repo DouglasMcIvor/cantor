@@ -1,13 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
 use inkwell::{
+    AddressSpace,
     OptimizationLevel,
     basic_block::BasicBlock,
     builder::Builder,
     context::Context,
     execution_engine::ExecutionEngine,
     module::Module,
-    values::{BasicValueEnum, FunctionValue},
+    types::{BasicType, BasicTypeEnum},
+    values::{AggregateValueEnum, BasicValueEnum, FunctionValue},
 };
 
 use crate::{
@@ -83,14 +85,45 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         name: &str,
         params: &[Param],
+        param_kinds: &[Kind],
         return_kind: Kind,
     ) -> FunctionValue<'ctx> {
         let i64_type = self.context.i64_type();
-        let param_types: Vec<_> = params.iter().map(|_| i64_type.into()).collect();
-        let fn_type = i64_type.fn_type(&param_types, false);
-        let fn_val = self.module.add_function(name, fn_type, None);
+        // Tuple params use their natural struct type; all scalar params are i64.
+        let param_types: Vec<_> = if param_kinds.is_empty() {
+            params.iter().map(|_| i64_type.into()).collect()
+        } else {
+            param_kinds.iter().map(|k| match k {
+                Kind::Tuple(_) => self.kind_to_llvm_type(k).into(),
+                _ => i64_type.into(),
+            }).collect()
+        };
+        let fn_val = match &return_kind {
+            Kind::Tuple(_) => {
+                let ret_type = self.kind_to_llvm_type(&return_kind);
+                self.module.add_function(name, ret_type.fn_type(&param_types, false), None)
+            }
+            _ => {
+                self.module.add_function(name, i64_type.fn_type(&param_types, false), None)
+            }
+        };
         self.fn_return_kinds.insert(name.to_owned(), return_kind);
         fn_val
+    }
+
+    /// Map a Kind to the natural LLVM type used inside structs and as tuple ABI types.
+    /// Scalars: Int/Set → i64, Bool → i1.  Tuple → struct of element types.
+    pub(crate) fn kind_to_llvm_type(&self, kind: &Kind) -> BasicTypeEnum<'ctx> {
+        match kind {
+            Kind::Int | Kind::Set(_) => self.context.i64_type().into(),
+            Kind::Bool => self.context.bool_type().into(),
+            Kind::Tuple(elems) => {
+                let types: Vec<BasicTypeEnum<'ctx>> = elems.iter()
+                    .map(|k| self.kind_to_llvm_type(k))
+                    .collect();
+                self.context.struct_type(&types, false).into()
+            }
+        }
     }
 
     /// Compile the body of an already-declared function (expression body).
@@ -126,13 +159,13 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.position_at_end(entry);
 
         let mut env: Env = const_env.clone();
-        for ((param, llvm_param), &kind) in params
+        for ((param, llvm_param), kind) in params
             .iter()
             .zip(function.get_param_iter())
             .zip(param_kinds.iter())
         {
             llvm_param.set_name(&param.name.0);
-            let entry = if kind == Kind::Bool {
+            let entry = if *kind == Kind::Bool {
                 let i1_val = self
                     .builder
                     .build_int_truncate(
@@ -142,6 +175,8 @@ impl<'ctx> Compiler<'ctx> {
                     )
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
                 (i1_val.into(), Kind::Bool)
+            } else if matches!(kind, Kind::Tuple(_)) {
+                (llvm_param, kind.clone())
             } else {
                 (llvm_param, Kind::Int)
             };
@@ -157,6 +192,7 @@ impl<'ctx> Compiler<'ctx> {
                 .map_err(|e| CompileError::Internal(e.to_string()))?
                 .into()
         } else {
+            // Tuples return as struct values directly; Int/Set return as i64.
             val
         };
 
@@ -196,13 +232,13 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.position_at_end(entry);
 
         let mut env: Env = const_env.clone();
-        for ((param, llvm_param), &kind) in params
+        for ((param, llvm_param), kind) in params
             .iter()
             .zip(function.get_param_iter())
             .zip(param_kinds.iter())
         {
             llvm_param.set_name(&param.name.0);
-            let entry = if kind == Kind::Bool {
+            let entry = if *kind == Kind::Bool {
                 let i1_val = self
                     .builder
                     .build_int_truncate(
@@ -212,6 +248,8 @@ impl<'ctx> Compiler<'ctx> {
                     )
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
                 (i1_val.into(), Kind::Bool)
+            } else if matches!(kind, Kind::Tuple(_)) {
+                (llvm_param, kind.clone())
             } else {
                 (llvm_param, Kind::Int)
             };
@@ -227,7 +265,7 @@ impl<'ctx> Compiler<'ctx> {
                 .build_int_z_extend(val.into_int_value(), i64_type, "bool_to_i64")
                 .map_err(|e| CompileError::Internal(e.to_string()))?
                 .into(),
-            Some((val, Kind::Int)) | Some((val, Kind::Set(_))) => val,
+            Some((val, Kind::Int)) | Some((val, Kind::Set(_))) | Some((val, Kind::Tuple(_))) => val,
             None => {
                 return Err(CompileError::Internal(
                     "block body has no return expression".into(),
@@ -253,7 +291,7 @@ impl<'ctx> Compiler<'ctx> {
         body: &Expr,
     ) -> Result<FunctionValue<'ctx>, CompileError> {
         let all_int: Vec<Kind> = vec![Kind::Int; params.len()];
-        let function = self.declare_function(name, params, Kind::Int);
+        let function = self.declare_function(name, params, &all_int, Kind::Int);
         self.compile_function_body(function, params, &all_int, body, false, &Env::new())
     }
 
@@ -456,10 +494,13 @@ fn compile_items<'ctx>(
         .filter_map(|item| match item {
             Item::FunctionDef(def) => {
                 let first_sig = def.sigs.first();
+                let p_kinds: Vec<Kind> = first_sig
+                    .map(|s| param_kinds(s, def.params.len()))
+                    .unwrap_or_else(|| vec![Kind::Int; def.params.len()]);
                 let ret_kind = first_sig
                     .map(|s| range_kind(&s.range))
                     .unwrap_or(Kind::Int);
-                let fn_val = compiler.declare_function(&def.name.0, &def.params, ret_kind);
+                let fn_val = compiler.declare_function(&def.name.0, &def.params, &p_kinds, ret_kind);
                 // Record the range expression so `compile_try` can determine what
                 // error values `?` should propagate for this callee.
                 if let Some(sig) = first_sig {
@@ -477,7 +518,7 @@ fn compile_items<'ctx>(
         let p_kinds: Vec<Kind> = def
             .sigs
             .first()
-            .map(|s| param_kinds(s))
+            .map(|s| param_kinds(s, def.params.len()))
             .unwrap_or_else(|| vec![Kind::Int; def.params.len()]);
 
         match &def.body {
@@ -494,7 +535,101 @@ fn compile_items<'ctx>(
         }
     }
 
+    // If `main` returns a tuple, emit an ABI-safe `cantor_main_into(ptr)` trampoline
+    // that calls main and stores each scalar leaf into the caller-supplied buffer.
+    if let Some(main_fn) = compiler.module.get_function("main") {
+        let ret_kind = compiler.fn_return_kinds.get("main").cloned().unwrap_or(Kind::Int);
+        if let Kind::Tuple(_) = &ret_kind {
+            compiler.emit_tuple_main_trampoline(main_fn, &ret_kind)?;
+        }
+    }
+
     Ok(compiler)
+}
+
+impl<'ctx> Compiler<'ctx> {
+    /// Emit `void @cantor_main_into(ptr %out)` which calls `main()` (struct return)
+    /// and stores every i64 leaf of the tuple into the caller-supplied buffer.
+    /// Booleans are zero-extended to i64 before storing.
+    fn emit_tuple_main_trampoline(
+        &self,
+        main_fn: FunctionValue<'ctx>,
+        ret_kind: &Kind,
+    ) -> Result<(), CompileError> {
+        let i64t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let fn_type = self.context.void_type().fn_type(&[ptr_t.into()], false);
+        let trampoline = self.module.add_function("cantor_main_into", fn_type, None);
+
+        let bb = self.context.append_basic_block(trampoline, "entry");
+        self.builder.position_at_end(bb);
+
+        let out_ptr = trampoline.get_nth_param(0).unwrap().into_pointer_value();
+
+        let call = self.builder
+            .build_call(main_fn, &[], "main_result")
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        let result = call
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::Internal("main returned void in trampoline".into()))?;
+
+        let mut leaf_idx = 0usize;
+        Self::trampoline_store_leaves(
+            &self.builder, &self.context, result, ret_kind, out_ptr, i64t, &mut leaf_idx,
+        )?;
+
+        self.builder
+            .build_return(None)
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    fn trampoline_store_leaves(
+        builder: &inkwell::builder::Builder<'ctx>,
+        ctx: &'ctx Context,
+        val: BasicValueEnum<'ctx>,
+        kind: &Kind,
+        out_ptr: inkwell::values::PointerValue<'ctx>,
+        i64t: inkwell::types::IntType<'ctx>,
+        leaf_idx: &mut usize,
+    ) -> Result<(), CompileError> {
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        match kind {
+            Kind::Bool => {
+                let wide = builder.build_int_z_extend(val.into_int_value(), i64t, "bl").map_err(err)?;
+                let ptr = if *leaf_idx == 0 {
+                    out_ptr
+                } else {
+                    let idx = i64t.const_int(*leaf_idx as u64, false);
+                    // Safety: GEP into a caller-allocated i64 array; index is in-bounds
+                    // because run_main allocates n_leaves elements.
+                    unsafe { builder.build_gep(i64t, out_ptr, &[idx], "gp").map_err(err)? }
+                };
+                builder.build_store(ptr, wide).map_err(err)?;
+                *leaf_idx += 1;
+            }
+            Kind::Int | Kind::Set(_) => {
+                let ptr = if *leaf_idx == 0 {
+                    out_ptr
+                } else {
+                    let idx = i64t.const_int(*leaf_idx as u64, false);
+                    // Safety: same as above.
+                    unsafe { builder.build_gep(i64t, out_ptr, &[idx], "gp").map_err(err)? }
+                };
+                builder.build_store(ptr, val.into_int_value()).map_err(err)?;
+                *leaf_idx += 1;
+            }
+            Kind::Tuple(elem_kinds) => {
+                let sv = AggregateValueEnum::StructValue(val.into_struct_value());
+                for (i, ek) in elem_kinds.iter().enumerate() {
+                    let elem = builder.build_extract_value(sv, i as u32, "te").map_err(err)?;
+                    Self::trampoline_store_leaves(builder, ctx, elem, ek, out_ptr, i64t, leaf_idx)?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Compile a parsed file to a JIT execution engine.

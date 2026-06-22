@@ -207,6 +207,28 @@ pub(crate) fn membership_constraint<'tm>(
             comprehension_membership(tm, t, output, var, source, filter.as_deref(), name_defs, distinct_preds)
         }
 
+        // `t ∈ A * B`  ↔  `proj0(t) ∈ A ∧ proj1(t) ∈ B`
+        // `t` is always a mk_tuple(…) term; use child(i+1) to extract
+        // element i (child 0 is the APPLY_CONSTRUCTOR constructor).
+        ExprKind::BinOp { op: BinOp::Mul, .. } => {
+            use super::encode::flatten_product;
+            let parts = flatten_product(set_expr);
+            let mut constraints: Vec<Term<'_>> = Vec::new();
+            for (i, part) in parts.iter().enumerate() {
+                let proj = t.child(i + 1);
+                match membership_constraint(tm, proj, part, name_defs, distinct_preds) {
+                    Membership::Unsupported => return Membership::Unsupported,
+                    Membership::Unconstrained => {}
+                    Membership::Constrained(c) => constraints.push(c),
+                }
+            }
+            match constraints.len() {
+                0 => Membership::Unconstrained,
+                1 => Membership::Constrained(constraints.remove(0)),
+                _ => Membership::Constrained(tm.mk_term(Kind::And, &constraints)),
+            }
+        }
+
         _ => Membership::Unsupported,
     }
 }

@@ -17,7 +17,10 @@ pub enum SetElemKind {
 }
 
 /// The LLVM type a Cantor value compiles to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Copy` was intentionally dropped when `Tuple(Vec<Kind>)` was added; use
+/// `.clone()` where a copy was previously implicit.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
     /// i64 — integers, all named integer subsets (Nat, NatPos, Int8 … Int64, …)
     Int,
@@ -25,6 +28,8 @@ pub enum Kind {
     Bool,
     /// i64 (pointer-as-i64) — heap-allocated sorted array; element kind tracked for dispatch.
     Set(SetElemKind),
+    /// LLVM struct — anonymous product type `(A, B, …)`.
+    Tuple(Vec<Kind>),
 }
 
 /// The runtime Kind of a value drawn from `set_expr`.
@@ -37,6 +42,11 @@ pub fn set_kind(set_expr: &Expr) -> Kind {
                 Kind::Bool => Kind::Set(SetElemKind::Bool),
                 _ => Kind::Set(SetElemKind::Int),
             }
+        }
+        // `A * B * C` — Cartesian product → tuple.
+        ExprKind::BinOp { op: BinOp::Mul, .. } => {
+            let parts = flatten_domain(set_expr);
+            Kind::Tuple(parts.into_iter().map(set_kind).collect())
         }
         _ => Kind::Int,
     }
@@ -54,11 +64,14 @@ pub fn range_kind(range: &Expr) -> Kind {
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             let lk = range_kind(lhs);
             let rk = range_kind(rhs);
-            // Set dominates Bool dominates Int (Fail contributes Int and must not
-            // override the real success-path kind).
+            // Set dominates Bool dominates Tuple dominates Int (Fail contributes
+            // Int and must not override the real success-path kind).
             match (lk, rk) {
-                (Kind::Set(ek), _) | (_, Kind::Set(ek)) => Kind::Set(ek),
+                (Kind::Set(ek), _) => Kind::Set(ek),
+                (_, Kind::Set(ek)) => Kind::Set(ek),
                 (Kind::Bool, _) | (_, Kind::Bool) => Kind::Bool,
+                (Kind::Tuple(ek), _) => Kind::Tuple(ek),
+                (_, Kind::Tuple(ek)) => Kind::Tuple(ek),
                 _ => Kind::Int,
             }
         }
@@ -71,16 +84,48 @@ pub fn range_kind(range: &Expr) -> Kind {
 
 /// The per-parameter Kinds for a function signature's domain.
 ///
+/// `n_params` is `def.params.len()` — the number of named parameters in the
+/// function definition.  Uses `param_set_exprs` so that a single-tuple-param
+/// function yields `[Kind::Tuple(...)]` rather than the individual element kinds.
+///
 /// Returns an empty vec for zero-argument functions (domain is `None`).
-pub fn param_kinds(sig: &FunctionSig) -> Vec<Kind> {
-    match &sig.domain {
-        None => vec![],
-        Some(domain) => flatten_domain(domain).into_iter().map(set_kind).collect(),
+pub fn param_kinds(sig: &FunctionSig, n_params: usize) -> Vec<Kind> {
+    match param_set_exprs(sig.domain.as_ref(), n_params) {
+        Ok(parts) => parts.into_iter().map(set_kind).collect(),
+        Err(_) => vec![Kind::Int; n_params],
+    }
+}
+
+/// Map each function parameter to its set expression, implementing the
+/// arity disambiguation rule:
+///
+/// - `parts.len() == n_params` → N scalar params (each part is one param's set).
+/// - `n_params == 1` and `parts.len() > 1` → the single param is a tuple whose
+///   set is the entire domain expression.
+/// - Otherwise → arity error.
+pub fn param_set_exprs<'a>(domain: Option<&'a Expr>, n_params: usize) -> Result<Vec<&'a Expr>, String> {
+    match domain {
+        None if n_params == 0 => Ok(vec![]),
+        None => Err(format!("domain has 0 parts but function has {n_params} parameters")),
+        Some(domain_expr) => {
+            let parts = flatten_domain(domain_expr);
+            if parts.len() == n_params {
+                Ok(parts)
+            } else if n_params == 1 {
+                // Single tuple parameter covering the whole product domain.
+                Ok(vec![domain_expr])
+            } else {
+                Err(format!(
+                    "domain arity {} doesn't match parameter count {}",
+                    parts.len(), n_params
+                ))
+            }
+        }
     }
 }
 
 /// Flatten a left-associative `A * B * C` product into `[A, B, C]`.
-fn flatten_domain(expr: &Expr) -> Vec<&Expr> {
+pub(crate) fn flatten_domain(expr: &Expr) -> Vec<&Expr> {
     match &expr.kind {
         ExprKind::BinOp { op: BinOp::Mul, lhs, rhs } => {
             let mut parts = flatten_domain(lhs);

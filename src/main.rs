@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use cantor::{
     ast::Item,
     codegen::{FAIL_SENTINEL, compile_file},
+    kind::{Kind, range_kind},
     names::check_names,
     parser::parse_file,
     solver::{CheckResult, check_file},
@@ -165,20 +166,65 @@ fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
         }
     };
 
-    let result = unsafe {
-        let f = engine
-            .get_function::<unsafe extern "C" fn() -> i64>("main")
-            .unwrap_or_else(|e| {
-                eprintln!("internal error: could not find `main` in compiled module: {e}");
-                process::exit(1);
-            });
-        f.call()
-    };
+    // Determine main's return Kind from the first signature.
+    let main_return_kind = items.iter().find_map(|item| match item {
+        Item::FunctionDef(def) if def.name.0 == "main" && def.params.is_empty() => {
+            def.sigs.first().map(|s| range_kind(&s.range))
+        }
+        _ => None,
+    }).unwrap_or(Kind::Int);
 
-    if result == FAIL_SENTINEL {
-        eprintln!("\nmain() failed: assertion failed at runtime");
-        process::exit(1);
-    } else {
-        println!("\nmain() = {result}");
+    match &main_return_kind {
+        Kind::Tuple(_) => {
+            let n_leaves = count_kind_leaves(&main_return_kind);
+            let mut buf = vec![0i64; n_leaves];
+            unsafe {
+                let f = engine
+                    .get_function::<unsafe extern "C" fn(*mut i64)>("cantor_main_into")
+                    .unwrap_or_else(|e| {
+                        eprintln!("internal error: could not find `cantor_main_into`: {e}");
+                        process::exit(1);
+                    });
+                f.call(buf.as_mut_ptr());
+            }
+            let display = format_kind_val(&main_return_kind, &buf, &mut 0);
+            println!("\nmain() = {display}");
+        }
+        _ => {
+            let result = unsafe {
+                let f = engine
+                    .get_function::<unsafe extern "C" fn() -> i64>("main")
+                    .unwrap_or_else(|e| {
+                        eprintln!("internal error: could not find `main` in compiled module: {e}");
+                        process::exit(1);
+                    });
+                f.call()
+            };
+
+            if result == FAIL_SENTINEL {
+                eprintln!("\nmain() failed: assertion failed at runtime");
+                process::exit(1);
+            } else {
+                println!("\nmain() = {result}");
+            }
+        }
+    }
+}
+
+fn count_kind_leaves(kind: &Kind) -> usize {
+    match kind {
+        Kind::Int | Kind::Bool | Kind::Set(_) => 1,
+        Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
+    }
+}
+
+fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
+    match kind {
+        Kind::Bool => { let v = buf[*offset] != 0; *offset += 1; format!("{v}") }
+        Kind::Int | Kind::Set(_) => { let v = buf[*offset]; *offset += 1; format!("{v}") }
+        Kind::Tuple(elems) => {
+            let parts: Vec<String> = elems.iter().map(|k| format_kind_val(k, buf, offset)).collect();
+            format!("({})", parts.join(", "))
+        }
     }
 }

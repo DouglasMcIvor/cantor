@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use inkwell::{
     IntPredicate,
-    values::BasicValueEnum,
+    values::{AggregateValueEnum, BasicValueEnum},
 };
 
 use crate::{
@@ -74,7 +74,7 @@ impl<'ctx> Compiler<'ctx> {
             }
             ExprKind::Var(sym) => env
                 .get(sym)
-                .map(|&(v, t)| (v, t))
+                .map(|(v, t)| (*v, t.clone()))
                 .ok_or_else(|| CompileError::UndefinedVariable {
                     name: sym.0.clone(),
                     span: expr.span,
@@ -105,6 +105,8 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
                 Ok((encoded.into(), Kind::Int))
             }
+            ExprKind::Tuple(elems) => self.compile_tuple(elems, env),
+            ExprKind::Proj { base, index } => self.compile_proj(base, *index, env),
         }
     }
 
@@ -452,21 +454,23 @@ impl<'ctx> Compiler<'ctx> {
             .left()
             .ok_or_else(|| CompileError::Internal("void return in expression position".into()))?;
 
-        // Restore the correct Kind: Bool-returning functions widen to i64 at
-        // their boundary; truncate back to i1 so downstream bool ops work.
-        let return_kind = self.fn_return_kinds.get(&callee.0).copied().unwrap_or(Kind::Int);
-        if return_kind == Kind::Bool {
-            let i1_val = self
-                .builder
-                .build_int_truncate(
-                    result_i64.into_int_value(),
-                    self.context.bool_type(),
-                    "call_bool",
-                )
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
-            Ok((i1_val.into(), Kind::Bool))
-        } else {
-            Ok((result_i64, Kind::Int))
+        // Restore the correct Kind after the call.
+        let return_kind = self.fn_return_kinds.get(&callee.0).cloned().unwrap_or(Kind::Int);
+        match &return_kind {
+            Kind::Bool => {
+                let i1_val = self
+                    .builder
+                    .build_int_truncate(
+                        result_i64.into_int_value(),
+                        self.context.bool_type(),
+                        "call_bool",
+                    )
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                Ok((i1_val.into(), Kind::Bool))
+            }
+            // Tuples are returned as struct values directly — no conversion needed.
+            Kind::Tuple(_) => Ok((result_i64, return_kind)),
+            _ => Ok((result_i64, Kind::Int)),
         }
     }
 
@@ -495,9 +499,9 @@ impl<'ctx> Compiler<'ctx> {
             .map(|e| self.compile_expr(e, env))
             .collect::<Result<_, _>>()?;
 
-        let elem_kind = compiled[0].1;
-        for &(_, k) in &compiled {
-            if k != elem_kind {
+        let elem_kind = compiled[0].1.clone();
+        for (_, k) in &compiled {
+            if *k != elem_kind {
                 return Err(CompileError::Internal(
                     "mixed element kinds in set literal — \
                      heterogeneous sets not yet supported"
@@ -506,11 +510,14 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
-        let (set_elem_kind, new_fn, insert_fn) = match elem_kind {
+        let (set_elem_kind, new_fn, insert_fn) = match &elem_kind {
             Kind::Int  => (SetElemKind::Int,  "cantor_set_new_i64",  "cantor_set_insert_i64"),
             Kind::Bool => (SetElemKind::Bool, "cantor_set_new_bool", "cantor_set_insert_bool"),
             Kind::Set(_) => return Err(CompileError::Internal(
                 "sets of sets not yet supported".into(),
+            )),
+            Kind::Tuple(_) => return Err(CompileError::Internal(
+                "sets of tuples not yet supported".into(),
             )),
         };
 
@@ -546,5 +553,60 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         Ok((ptr, Kind::Set(set_elem_kind)))
+    }
+
+    /// Compile `(e0, e1, …)` into an LLVM struct value.
+    fn compile_tuple(
+        &self,
+        elems: &[Expr],
+        env: &Env<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let compiled: Vec<(BasicValueEnum<'ctx>, Kind)> = elems
+            .iter()
+            .map(|e| self.compile_expr(e, env))
+            .collect::<Result<_, _>>()?;
+
+        let elem_kinds: Vec<Kind> = compiled.iter().map(|(_, k)| k.clone()).collect();
+        let llvm_types: Vec<_> = elem_kinds.iter().map(|k| self.kind_to_llvm_type(k)).collect();
+        let struct_type = self.context.struct_type(&llvm_types, false);
+
+        let mut agg: AggregateValueEnum<'ctx> = struct_type.get_undef().into();
+        for (i, (val, _)) in compiled.into_iter().enumerate() {
+            agg = self.builder
+                .build_insert_value(agg, val, i as u32, "tf")
+                .map_err(|e| CompileError::Internal(e.to_string()))?;
+        }
+
+        Ok((agg.into_struct_value().into(), Kind::Tuple(elem_kinds)))
+    }
+
+    /// Compile `base.N` — extract element N from a tuple.
+    fn compile_proj(
+        &self,
+        base: &Expr,
+        index: usize,
+        env: &Env<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let (base_val, base_kind) = self.compile_expr(base, env)?;
+        let elem_kinds = match base_kind {
+            Kind::Tuple(ek) => ek,
+            _ => return Err(CompileError::Internal(
+                "projection `.N` applied to non-tuple value".into(),
+            )),
+        };
+        if index >= elem_kinds.len() {
+            return Err(CompileError::Internal(format!(
+                "tuple index {index} out of bounds (tuple has {} elements)",
+                elem_kinds.len()
+            )));
+        }
+        let elem_val = self.builder
+            .build_extract_value(
+                AggregateValueEnum::StructValue(base_val.into_struct_value()),
+                index as u32,
+                "proj",
+            )
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        Ok((elem_val, elem_kinds[index].clone()))
     }
 }

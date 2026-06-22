@@ -31,9 +31,9 @@ use crate::{
     span::Symbol,
 };
 
-use crate::kind::{Kind as ValKind, set_kind};
+use crate::kind::{Kind as ValKind, param_set_exprs, set_kind};
 
-use self::encode::{Env, BuiltinObligation, encode_expr, flatten_product, integer_value, boolean_value};
+use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, set_sort, mk_decomposed_tuple};
 use self::loops::{encode_block, body_has_unconstrained_loop_var};
 use self::membership::{DistinctPreds, Membership, membership_constraint};
 
@@ -151,7 +151,7 @@ fn sig_label(name: &str, idx: usize, total: usize) -> String {
 fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs: &NameDefs<'_>) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
-    solver.set_logic("QF_UFNIA");
+    solver.set_logic("ALL");
     solver.set_option("produce-models", "true");
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
@@ -212,55 +212,52 @@ fn check_block_sig(
 ) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
-    solver.set_logic("QF_UFNIA");
+    solver.set_logic("ALL");
     solver.set_option("produce-models", "true");
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
-    let int_sort  = tm.integer_sort();
-    let bool_sort = tm.boolean_sort();
-
-    let domain_parts: Vec<&Expr> = match &sig.domain {
-        None => vec![],
-        Some(domain_expr) => {
-            let parts = flatten_product(domain_expr);
-            if parts.len() != param_names.len() {
-                return CheckResult::Unknown(format!(
-                    "domain arity {} doesn't match parameter count {}",
-                    parts.len(),
-                    param_names.len()
-                ));
-            }
-            parts
-        }
+    let domain_parts: Vec<&Expr> = match param_set_exprs(sig.domain.as_ref(), param_names.len()) {
+        Ok(parts) => parts,
+        Err(msg) => return CheckResult::Unknown(msg),
     };
-
-    let param_terms: Vec<Term<'_>> = param_names
-        .iter()
-        .zip(domain_parts.iter().map(|p| set_kind(p)).chain(std::iter::repeat(ValKind::Int)))
-        .map(|(n, k)| {
-            if k == ValKind::Bool {
-                tm.mk_const(bool_sort.clone(), &n.0)
-            } else {
-                tm.mk_const(int_sort.clone(), &n.0)
-            }
-        })
-        .take(param_names.len())
-        .collect();
 
     let mut accumulated_facts: Vec<Term<'_>> = Vec::new();
 
-    for (term, part) in param_terms.iter().zip(domain_parts.iter()) {
-        if set_kind(part) == ValKind::Bool { continue; }
-        match membership_constraint(&tm, term.clone(), part, name_defs, &distinct_preds) {
-            Membership::Unconstrained => {}
-            Membership::Constrained(c) => {
-                solver.assert_formula(c.clone());
-                accumulated_facts.push(c);
+    // Same decomposition as check_sig: tuple params → leaf constants + mk_tuple.
+    let mut param_terms: Vec<Term<'_>> = Vec::new();
+    for (n, part) in param_names.iter().zip(domain_parts.iter()) {
+        let k = set_kind(part);
+        if matches!(k, ValKind::Tuple(_)) {
+            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part);
+            for (leaf, leaf_set) in leaves {
+                match membership_constraint(&tm, leaf.clone(), leaf_set, name_defs, &distinct_preds) {
+                    Membership::Unconstrained => {}
+                    Membership::Constrained(c) => {
+                        solver.assert_formula(c.clone());
+                        accumulated_facts.push(c);
+                    }
+                    Membership::Unsupported => {
+                        return CheckResult::Unknown("unsupported domain set expression".into());
+                    }
+                }
             }
-            Membership::Unsupported => {
-                return CheckResult::Unknown("unsupported domain set expression".into());
+            param_terms.push(assembled);
+        } else {
+            let term = tm.mk_const(set_sort(&tm, part), &n.0);
+            if k != ValKind::Bool {
+                match membership_constraint(&tm, term.clone(), part, name_defs, &distinct_preds) {
+                    Membership::Unconstrained => {}
+                    Membership::Constrained(c) => {
+                        solver.assert_formula(c.clone());
+                        accumulated_facts.push(c);
+                    }
+                    Membership::Unsupported => {
+                        return CheckResult::Unknown("unsupported domain set expression".into());
+                    }
+                }
             }
+            param_terms.push(term);
         }
     }
 
@@ -364,8 +361,11 @@ fn check_block_sig(
             .map(|((n, t), p)| (n, t, p))
         {
             let val = solver.get_value(term.clone());
-            let n = if set_kind(part) == ValKind::Bool {
+            let k = set_kind(part);
+            let n = if k == ValKind::Bool {
                 boolean_value(&val) as i64
+            } else if matches!(k, ValKind::Tuple(_)) {
+                0 // TODO: render tuple model value in counterexample display
             } else {
                 integer_value(&val)
             };
@@ -401,55 +401,48 @@ fn check_sig(
 ) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
-    solver.set_logic("QF_UFNIA");
+    solver.set_logic("ALL");
     solver.set_option("produce-models", "true");
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
-    let int_sort  = tm.integer_sort();
-    let bool_sort = tm.boolean_sort();
-
-    let domain_parts: Vec<&Expr> = match &sig.domain {
-        None => vec![],
-        Some(domain_expr) => {
-            let parts = flatten_product(domain_expr);
-            if parts.len() != param_names.len() {
-                return CheckResult::Unknown(format!(
-                    "domain arity {} doesn't match parameter count {}",
-                    parts.len(),
-                    param_names.len()
-                ));
-            }
-            parts
-        }
+    // param_set_exprs guarantees domain_parts.len() == param_names.len() on Ok.
+    let domain_parts: Vec<&Expr> = match param_set_exprs(sig.domain.as_ref(), param_names.len()) {
+        Ok(parts) => parts,
+        Err(msg) => return CheckResult::Unknown(msg),
     };
 
-    // Create each param constant in the sort that matches its domain Kind.
-    // Bool-domain params use the boolean sort so `not b`, `b and c`, etc. work
-    // without sort mismatches; integer-domain params use the integer sort.
-    let param_terms: Vec<Term<'_>> = param_names
-        .iter()
-        .zip(domain_parts.iter().map(|p| set_kind(p)).chain(std::iter::repeat(ValKind::Int)))
-        .map(|(n, k)| {
-            if k == ValKind::Bool {
-                tm.mk_const(bool_sort.clone(), &n.0)
-            } else {
-                tm.mk_const(int_sort.clone(), &n.0)
+    // Create each param constant.  For tuple params, decompose into leaf scalar
+    // constants assembled with mk_tuple — this ensures TupleProject in the body
+    // always operates on a concrete mk_tuple term (not a symbolic tuple constant),
+    // which is required for cvc5's arithmetic beta-reduction to apply.
+    let mut param_terms: Vec<Term<'_>> = Vec::new();
+    for (n, part) in param_names.iter().zip(domain_parts.iter()) {
+        let k = set_kind(part);
+        if matches!(k, ValKind::Tuple(_)) {
+            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part);
+            for (leaf, leaf_set) in leaves {
+                match membership_constraint(&tm, leaf, leaf_set, name_defs, &distinct_preds) {
+                    Membership::Unconstrained => {}
+                    Membership::Constrained(c) => solver.assert_formula(c),
+                    Membership::Unsupported => {
+                        return CheckResult::Unknown("unsupported domain set expression".into())
+                    }
+                }
             }
-        })
-        .take(param_names.len())
-        .collect();
-
-    // Assert domain membership for integer-domain params.
-    // Bool-domain params are already constrained by their sort; skip them.
-    for (term, part) in param_terms.iter().zip(domain_parts.iter()) {
-        if set_kind(part) == ValKind::Bool { continue; }
-        match membership_constraint(&tm, term.clone(), part, name_defs, &distinct_preds) {
-            Membership::Unconstrained => {}
-            Membership::Constrained(c) => solver.assert_formula(c),
-            Membership::Unsupported => {
-                return CheckResult::Unknown("unsupported domain set expression".into())
+            param_terms.push(assembled);
+        } else {
+            let term = tm.mk_const(set_sort(&tm, part), &n.0);
+            if k != ValKind::Bool {
+                match membership_constraint(&tm, term.clone(), part, name_defs, &distinct_preds) {
+                    Membership::Unconstrained => {}
+                    Membership::Constrained(c) => solver.assert_formula(c),
+                    Membership::Unsupported => {
+                        return CheckResult::Unknown("unsupported domain set expression".into())
+                    }
+                }
             }
+            param_terms.push(term);
         }
     }
 
@@ -516,8 +509,11 @@ fn check_sig(
             .map(|((n, t), p)| (n, t, p))
         {
             let val = solver.get_value(term.clone());
-            let n = if set_kind(part) == ValKind::Bool {
+            let k = set_kind(part);
+            let n = if k == ValKind::Bool {
                 boolean_value(&val) as i64
+            } else if matches!(k, ValKind::Tuple(_)) {
+                0 // TODO: render tuple model value in counterexample display
             } else {
                 integer_value(&val)
             };

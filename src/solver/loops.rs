@@ -413,7 +413,7 @@ pub(crate) fn check_require<'tm>(
     param_terms: &[Term<'tm>],
 ) -> CheckResult {
     let mut tmp = Solver::new(tm);
-    tmp.set_logic("QF_UFNIA");
+    tmp.set_logic("ALL");
     tmp.set_option("produce-models", "true");
 
     for fact in accumulated_facts {
@@ -483,7 +483,7 @@ where
     }
 
     let mut tmp = Solver::new(tm);
-    tmp.set_logic("QF_UFNIA");
+    tmp.set_logic("ALL");
     tmp.set_option("produce-models", "true");
 
     let mut tmp_facts: Vec<Term<'tm>> = Vec::new();

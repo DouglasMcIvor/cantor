@@ -1,0 +1,5 @@
+swap : Int * Int -> Int * Int
+swap(t) = (t.1, t.0)
+
+main : -> Int * Int
+main() = swap((3, 9))
