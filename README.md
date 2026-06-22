@@ -151,8 +151,7 @@ $ cantor bool_demo.cantor
   3 proved, 0 counterexample(s), 0 unknown
 ```
 
-Bool values are represented as `i1` at runtime (not as integers) so `true` is never silently treated as `1`.
-The compiler widens to `i64` only at function-call boundaries and narrows back immediately, keeping Bool and integer values structurally separate throughout.
+Bool values are distinct from integers so accidental conversion to 0 or 1 isn't possible.
 
 ### Constants
 
