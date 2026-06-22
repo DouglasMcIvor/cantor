@@ -18,6 +18,10 @@ You probably don't want to read this unless you're me.
   - float
   - char, string (unicode I guess)
   - byte
+- more operators: modulo, bitwise ops on bytes
+- operator overloading for things like List(Byte)?
+  - custom operator overloading syntax like with haskell? I don't care for inventing new ops but supporting existing ones might be important
+  - automatic operator overloading for disinct sets, like allowing arithmetic on Litre, maybe via generics mechanism below?
 - BigInt runtime support for our unsized Int and Nat sets
 - constants JIT'd instead of at rust level to get consistency 
 - spin up some code review agents to assess quality of rust implementation, factoring and maintainability before it gets too large
