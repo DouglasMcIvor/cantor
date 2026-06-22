@@ -30,6 +30,7 @@ You probably don't want to read this unless you're me.
 - suggested constraints in error messages
 - more containers! gotta have me some vectors and maps, not just sets! ordered sets too
 - iterators for containers 
+- fixed length arrays?
 - destructuring assignment and checks for values in product sets 
   ```haskell
   assert z in X * Y
