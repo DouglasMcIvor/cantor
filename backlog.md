@@ -37,7 +37,8 @@ You probably don't want to read this unless you're me.
 - write-only side effects via `emit`
 - compiled binaries
 - linker integration
-- "named types" (Type vs NewType?) or whatever the thingy is called but in set language. I want to be able to make Litres that are numbers but form a distinct set.
+- enums. like distinct these create new distinct values. Sugar for distinct Nat with named
+values?
 - literal suffix support for e.g. 3m for 3 meters
 - structs/"named product sets" and same for unions. product sets are either fully not named or fully named.
   Tentative syntax for products:
