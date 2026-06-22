@@ -30,7 +30,9 @@ You probably don't want to read this unless you're me.
 - suggested constraints in error messages
 - more containers! gotta have me some vectors and maps, not just sets! ordered sets too
 - iterators for containers 
-- fixed length arrays?
+- fixed length arrays? yes! only needs two new syntax:
+  x : X * 3 -- define a repeated product set
+  x = [1, 2, 3] -- same as (...) but [...] forces homogeneity 
 - should we use apache arrow for runtime storage of containers so that we serialisation for free? gives us struct of arrays naturally too
 - destructuring assignment and checks for values in product sets 
   ```haskell
