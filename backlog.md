@@ -33,7 +33,8 @@ You probably don't want to read this unless you're me.
 - fixed length arrays? yes! only needs two new syntax:
   x : X * 3 -- define a repeated product set
   x = [1, 2, 3] -- same as (...) but [...] forces homogeneity 
-- vectors be something like Vector(X) = Union(n : Nat) (X * n)
+- ~vectors be something like Vector(X) = Union(n : Nat) (X * n)~ NOPE! Vectors are the Kleene star!!! X* - we get it being both the
+union of all products over n in Nat _and_ the free monoid over X!
 - should we use apache arrow for runtime storage of containers so that we serialisation for free? gives us struct of arrays naturally too
 - destructuring assignment and checks for values in product sets 
   ```haskell
