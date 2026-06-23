@@ -203,6 +203,49 @@ pub(crate) fn membership_constraint<'tm>(
             }
         }
 
+        // `+` in set position means disjoint union.  Membership is identical to plain
+        // union — the disjointness constraint is verified separately at signature
+        // check time via `validate_disjoint_unions`.
+        ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
+            let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
+            let in_b = membership_constraint(tm, t, rhs, name_defs, distinct_preds);
+            match (in_a, in_b) {
+                (Membership::Unsupported, _) | (_, Membership::Unsupported) => Membership::Unsupported,
+                (Membership::Unconstrained, _) | (_, Membership::Unconstrained) => Membership::Unconstrained,
+                (Membership::Constrained(a), Membership::Constrained(b)) => {
+                    Membership::Constrained(tm.mk_term(Kind::Or, &[a, b]))
+                }
+            }
+        }
+
+        // `^` means set symmetric difference: t ∈ A ^ B ↔ (t ∈ A) XOR (t ∈ B).
+        ExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
+            let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
+            let in_b = membership_constraint(tm, t, rhs, name_defs, distinct_preds);
+            match (in_a, in_b) {
+                (Membership::Unsupported, _) | (_, Membership::Unsupported) => Membership::Unsupported,
+                // ℤ ^ ℤ = ∅: every element is in both, so none is in exactly one.
+                (Membership::Unconstrained, Membership::Unconstrained) => {
+                    Membership::Constrained(tm.mk_boolean(false))
+                }
+                // ℤ ^ B = ℤ − B (complement of B in ℤ).
+                (Membership::Unconstrained, Membership::Constrained(b)) => {
+                    Membership::Constrained(tm.mk_term(Kind::Not, &[b]))
+                }
+                // A ^ ℤ = ℤ − A.
+                (Membership::Constrained(a), Membership::Unconstrained) => {
+                    Membership::Constrained(tm.mk_term(Kind::Not, &[a]))
+                }
+                // (a ∨ b) ∧ ¬(a ∧ b)
+                (Membership::Constrained(a), Membership::Constrained(b)) => {
+                    let or_ab  = tm.mk_term(Kind::Or,  &[a.clone(), b.clone()]);
+                    let and_ab = tm.mk_term(Kind::And, &[a, b]);
+                    let xor    = tm.mk_term(Kind::And, &[or_ab, tm.mk_term(Kind::Not, &[and_ab])]);
+                    Membership::Constrained(xor)
+                }
+            }
+        }
+
         ExprKind::Comprehension { output, var, source, filter } => {
             comprehension_membership(tm, t, output, var, source, filter.as_deref(), name_defs, distinct_preds)
         }

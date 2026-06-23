@@ -61,11 +61,13 @@ pub fn range_kind(range: &Expr) -> Kind {
         ExprKind::Var(sym) => {
             if sym.0 == "Fail" { Kind::Int } else { set_kind(range) }
         }
-        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
             let lk = range_kind(lhs);
             let rk = range_kind(rhs);
             // Set dominates Bool dominates Tuple dominates Int (Fail contributes
             // Int and must not override the real success-path kind).
+            // TODO(Stage 2): `Add` (disjoint union) should produce Kind::Union(vec![lk, rk])
+            // once the tagged-union runtime representation is implemented.
             match (lk, rk) {
                 (Kind::Set(ek), _) => Kind::Set(ek),
                 (_, Kind::Set(ek)) => Kind::Set(ek),

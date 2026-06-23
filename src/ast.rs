@@ -121,10 +121,10 @@ pub enum ExprKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
-    // Arithmetic
-    Add,
-    Sub, // also set difference at the semantic level; type checker disambiguates
-    Mul, // also Cartesian product in signature position
+    // Arithmetic / set constructors (context disambiguates)
+    Add, // arithmetic addition in value position; disjoint union in set position (A + B requires A ∩ B = ∅)
+    Sub, // arithmetic subtraction in value position; set difference in set position
+    Mul, // arithmetic multiplication in value position; Cartesian product in set position
     Div,
     // Comparison (produce Bool)
     Eq,

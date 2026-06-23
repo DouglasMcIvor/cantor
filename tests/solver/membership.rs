@@ -286,3 +286,52 @@ f(n) {
 }
 ");
 }
+
+// ── Disjoint union (`+`) ──────────────────────────────────────────────────────
+
+#[test]
+fn disjoint_union_domain_proved() {
+    // {0} and NatPos are disjoint (0 vs > 0); together they cover all of Nat.
+    proved("
+id_nat : {0} + NatPos -> Nat
+id_nat(x) = x
+");
+}
+
+#[test]
+fn disjoint_union_range_proved() {
+    // Returning x where x : Nat satisfies {0} + NatPos since that equals Nat.
+    proved("
+split : Nat -> {0} + NatPos
+split(x) = x
+");
+}
+
+#[test]
+fn disjoint_union_overlap_counterexample() {
+    // Nat and NatPos overlap at 1, 2, 3, … — disjointness check must reject this.
+    counterexample("
+bad : Nat + NatPos -> Int
+bad(x) = x
+");
+}
+
+// ── Symmetric difference (`^`) ────────────────────────────────────────────────
+
+#[test]
+fn sym_diff_strips_zero_from_nat() {
+    // Nat ^ {0} = NatPos (elements in Nat but not {0}, plus elements in {0} but not Nat — the latter is empty).
+    proved("
+strip_zero : Nat ^ {0} -> NatPos
+strip_zero(x) = x
+");
+}
+
+#[test]
+fn sym_diff_strips_zero_counterexample() {
+    // Nat ^ {0} = NatPos, so 0 is excluded; body returns 0 for any input.
+    counterexample("
+bad_strip : Nat ^ {0} -> Nat ^ {0}
+bad_strip(x) = 0
+");
+}

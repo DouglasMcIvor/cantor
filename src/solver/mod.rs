@@ -150,6 +150,7 @@ fn sig_label(name: &str, idx: usize, total: usize) -> String {
 }
 
 fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs: &NameDefs<'_>) -> CheckResult {
+    if let Some(result) = validate_disjoint_unions(ty, name_defs) { return result; }
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
     solver.set_logic("ALL");
@@ -193,12 +194,73 @@ fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs:
 fn range_contains_fail(range: &Expr) -> bool {
     match &range.kind {
         ExprKind::Var(sym) => sym.0 == "Fail",
-        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
             range_contains_fail(lhs) || range_contains_fail(rhs)
         }
         // `A !! B` — always permits runtime failure (the `!!` encodes it as an offset value).
         ExprKind::BinOp { op: BinOp::ErrorUnion, .. } => true,
         _ => false,
+    }
+}
+
+/// Verify that every `+` (disjoint union) in `set_expr` has genuinely disjoint operands.
+///
+/// Returns `Some(CheckResult)` on failure or `None` if all `+` nodes are proved disjoint.
+/// Uses a fresh SMT solver per `+` node to avoid polluting the main check's solver state.
+///
+/// TODO: also validate `+` that appears inside function bodies (e.g. in `in` expressions).
+fn validate_disjoint_unions(set_expr: &Expr, name_defs: &NameDefs<'_>) -> Option<CheckResult> {
+    match &set_expr.kind {
+        ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
+            if let Some(err) = validate_disjoint_unions(lhs, name_defs) { return Some(err); }
+            if let Some(err) = validate_disjoint_unions(rhs, name_defs) { return Some(err); }
+
+            let tm = TermManager::new();
+            let mut solver = Solver::new(&tm);
+            solver.set_logic("ALL");
+            let distinct_preds = build_distinct_preds(&tm, name_defs);
+            let t = tm.mk_const(tm.integer_sort(), "__disjoint_check");
+            let in_a = membership_constraint(&tm, t.clone(), lhs, name_defs, &distinct_preds);
+            let in_b = membership_constraint(&tm, t, rhs, name_defs, &distinct_preds);
+
+            match (in_a, in_b) {
+                (Membership::Unsupported, _) | (_, Membership::Unsupported) => Some(
+                    CheckResult::Unknown(format!("cannot verify disjointness of `{lhs}` and `{rhs}`"))
+                ),
+                (ca, cb) => {
+                    if let Membership::Constrained(c) = ca { solver.assert_formula(c); }
+                    if let Membership::Constrained(c) = cb { solver.assert_formula(c); }
+                    let sat = solver.check_sat();
+                    if sat.is_unsat() {
+                        None // proved disjoint
+                    } else if sat.is_sat() {
+                        Some(CheckResult::Counterexample {
+                            params: HashMap::new(),
+                            output: 0,
+                            reason: format!(
+                                "`{lhs}` and `{rhs}` are not disjoint \
+                                 — `+` requires disjoint sets; use `|` for plain union"
+                            ),
+                        })
+                    } else {
+                        Some(CheckResult::Unknown(format!(
+                            "cannot prove `{lhs}` and `{rhs}` are disjoint"
+                        )))
+                    }
+                }
+            }
+        }
+        ExprKind::BinOp { lhs, rhs, .. } => {
+            if let Some(err) = validate_disjoint_unions(lhs, name_defs) { return Some(err); }
+            validate_disjoint_unions(rhs, name_defs)
+        }
+        ExprKind::Call { args, .. } => {
+            for arg in args {
+                if let Some(err) = validate_disjoint_unions(arg, name_defs) { return Some(err); }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -211,6 +273,11 @@ fn check_block_sig(
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs<'_>,
 ) -> CheckResult {
+    if let Some(dom) = &sig.domain {
+        if let Some(result) = validate_disjoint_unions(dom, name_defs) { return result; }
+    }
+    if let Some(result) = validate_disjoint_unions(&sig.range, name_defs) { return result; }
+
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
     solver.set_logic("ALL");
@@ -400,6 +467,11 @@ fn check_sig(
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs<'_>,
 ) -> CheckResult {
+    if let Some(dom) = &sig.domain {
+        if let Some(result) = validate_disjoint_unions(dom, name_defs) { return result; }
+    }
+    if let Some(result) = validate_disjoint_unions(&sig.range, name_defs) { return result; }
+
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
     solver.set_logic("ALL");

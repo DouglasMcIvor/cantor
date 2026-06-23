@@ -510,7 +510,7 @@ pub(crate) fn set_sort<'tm>(tm: &'tm TermManager, set_expr: &Expr) -> Sort<'tm> 
 pub(crate) fn set_sort_for_range<'tm>(tm: &'tm TermManager, range: &Expr) -> Sort<'tm> {
     match &range.kind {
         ExprKind::Var(sym) if sym.0 == "Fail" => tm.integer_sort(),
-        ExprKind::BinOp { op: BinOp::Union, lhs, .. } => set_sort_for_range(tm, lhs),
+        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, .. } => set_sort_for_range(tm, lhs),
         ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, .. } => set_sort_for_range(tm, lhs),
         _ => set_sort(tm, range),
     }
@@ -520,7 +520,7 @@ pub(crate) fn set_sort_for_range<'tm>(tm: &'tm TermManager, range: &Expr) -> Sor
 fn is_product_range(range: &Expr) -> bool {
     match &range.kind {
         ExprKind::BinOp { op: BinOp::Mul, .. } => true,
-        ExprKind::BinOp { op: BinOp::Union, lhs, .. } => is_product_range(lhs),
+        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, .. } => is_product_range(lhs),
         ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, .. } => is_product_range(lhs),
         ExprKind::Var(sym) if sym.0 == "Fail" => false,
         _ => false,
