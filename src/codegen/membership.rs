@@ -111,11 +111,30 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CompileError::Internal(e.to_string()))
             }
 
+            // t ∈ A + B  →  (t ∈ A) || (t ∈ B)  (disjointness is proved statically)
+            ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
+                let in_a = self.compile_membership(val, lhs)?;
+                let in_b = self.compile_membership(val, rhs)?;
+                b.build_or(in_a, in_b, "djunion_mem")
+                    .map_err(|e| CompileError::Internal(e.to_string()))
+            }
+
             // t ∈ A & B  →  (t ∈ A) && (t ∈ B)
             ExprKind::BinOp { op: BinOp::Intersect, lhs, rhs } => {
                 let in_a = self.compile_membership(val, lhs)?;
                 let in_b = self.compile_membership(val, rhs)?;
                 b.build_and(in_a, in_b, "set_inter")
+                    .map_err(|e| CompileError::Internal(e.to_string()))
+            }
+
+            // t ∈ A ^ B  →  (t ∈ A) XOR (t ∈ B)  =  (a || b) && !(a && b)
+            ExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
+                let in_a = self.compile_membership(val, lhs)?;
+                let in_b = self.compile_membership(val, rhs)?;
+                let or_ab  = b.build_or (in_a, in_b, "symdiff_or" ).map_err(|e| CompileError::Internal(e.to_string()))?;
+                let and_ab = b.build_and(in_a, in_b, "symdiff_and").map_err(|e| CompileError::Internal(e.to_string()))?;
+                let not_and = b.build_not(and_ab, "symdiff_not").map_err(|e| CompileError::Internal(e.to_string()))?;
+                b.build_and(or_ab, not_and, "symdiff_xor")
                     .map_err(|e| CompileError::Internal(e.to_string()))
             }
 

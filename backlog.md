@@ -15,14 +15,16 @@ You probably don't want to read this unless you're me.
   - multi-binder `{x+y for x in A for y in B}` desugaring to Cartesian product (deferred)
 - immutable set constants like `s = {1, 2, 3}`, need to be baked in as statics
 - more basic values:
-  - float
-  - char, string (unicode I guess)
+  - float (Float32 and Float64 as distinct sets, FiniteFloat32 and explicit inf zero and NaN values)
+  - char (unicode)
   - byte
-- more operators: modulo, bitwise ops on bytes
+- more operators: modulo (see below for quot and rem support under Rational - maybe we want true wrapping quotient sets like Z/5Z), bitwise ops on bytes
+- fix / to have Rational as it's range rather than truncating
 - operator overloading for things like List(Byte)?
   - custom operator overloading syntax like with haskell? I don't care for inventing new ops but supporting existing ones might be important
   - automatic operator overloading for disinct sets, like allowing arithmetic on Litre, maybe via generics mechanism below?
 - BigInt runtime support for our unsized Int and Nat sets
+- Rational support, including making / for Int return Rational and adding quot and rem to keep Int inside Int
 - constants JIT'd instead of at rust level to get consistency 
 - spin up some code review agents to assess quality of rust implementation, factoring and maintainability before it gets too large
 - human intros (familiar with types, newbie with the word type taboo'd) and LLM intro. The human intros would be good to include a bunch of Venn diagrams and ye olde curved arrows between ovals representing functions to visualise the concepts along the way.
@@ -33,10 +35,11 @@ You probably don't want to read this unless you're me.
 - fixed length arrays? yes! only needs two new syntax:
   x : X * 3 -- define a repeated product set
   x = [1, 2, 3] -- same as (...) but [...] forces homogeneity 
-- ~vectors be something like Vector(X) = Union(n : Nat) (X * n)~ 
-  NOPE! Vectors are the Kleene star!!! X* - we get it being both the
-union of all products over n in Nat _and_ the free monoid over X!
-  Then maybe we use x[i] as the syntax for runtime indexing. The dot operator is compile time only, [] allows both.
+- ~vectors be something like `Vector(X) = Union(n : Nat) (X * n)`~ 
+  NOPE! Vectors are the Kleene star!!! `X*` - we get it being both the
+union of all products over n in Nat _and_ the free monoid over `X`!
+  Then maybe we use `x[i]` as the syntax for runtime indexing. The dot operator is compile time only, `[]` allows both.
+  I have also just realised that makes our string type `Char*` which is just too perfect to be true.
 - should we use apache arrow for runtime storage of containers so that we serialisation for free? gives us struct of arrays naturally too
 - ~~destructuring assignment and checks for values in product sets~~ **DONE** (v0)
   - ~~Known parser limitation: bare identifier at end of a statement value, followed by `(` at
@@ -99,10 +102,23 @@ values?
   | Table -> Error
   ```
 - higher order functions: X -> Y is already the set of functions from X -> Y and we can use Haskell precedence rules for X -> Y -> Z.
-- partial application via _ as a placeholder add(_, 1) or sub(1, _) or f(x, _, y, _)
-- infix operators as named functions (+)(1, 2), combines nicely _ as a placeholder 
+- partial application via `_` as a placeholder `add(_, 1)` or `sub(1, _)` or `f(x, _, y, _)`
+- infix operators as named functions `(+)(1, 2)`, combines nicely `_` with as a placeholder 
+- once we have higher order functions we can add 'Litre = distinct Float32 deriving Ordered + Arithmetic + Printable' 
+  by letting the compiler apply the litre isomorphism to any relevant slot in the domain and its inverse if Float32 is in the range
+- then we could add quotient sets! IntMod5 = Int / (x, y -> (x - y) rem 5 == 0) deriving Arithmetic gives us a ring!
+- actually needs to be Int / (x -> x rem 5) so the compiler knows how to produce a canonical representation 
 - struct member functions?
 - lambdas and closures
+  - lambda syntax is just `x -> x + 1` with automatic domain and range inference
+  - domain constraints are just `(x : Int) -> x + 1`
+  - range constraints are a bit awkward as they would need one of
+    ```
+    (x -> x + 5) : (X -> Y)
+    (x : X) -> ((x + 5) : Y)
+    ```
+    I think the first is slightly less ugly until we get automatic inference
+  - closures capture everything used within the body of the lambda. They capture mutables by reference, _unless_ they escape via the funcion return in which case they take ownership of the captured variables and copies of the constants.
 - dynamic dispatch? - this is just overloading a function to get a union domain and the compiler outputting a switch or a jump table!
 - macros. what is a natural Cantor way of doing code generation? functions that manipulate ASTs?
 - generics. do we need mechanisms to help define functions that work on lots of different sets? seems like it should work alongside overloading.

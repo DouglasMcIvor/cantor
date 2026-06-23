@@ -114,10 +114,10 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Map a Kind to the natural LLVM type used inside structs and as tuple ABI types.
-    /// Scalars: Int/Set → i64, Bool → i1.  Tuple → struct of element types.
+    /// Scalars: Int/Set/Union → i64, Bool → i1.  Tuple → struct of element types.
     pub(crate) fn kind_to_llvm_type(&self, kind: &Kind) -> BasicTypeEnum<'ctx> {
         match kind {
-            Kind::Int | Kind::Set(_) => self.context.i64_type().into(),
+            Kind::Int | Kind::Set(_) | Kind::Union(_) => self.context.i64_type().into(),
             Kind::Bool => self.context.bool_type().into(),
             Kind::Tuple(elems) => {
                 let types: Vec<BasicTypeEnum<'ctx>> = elems.iter()
@@ -267,7 +267,7 @@ impl<'ctx> Compiler<'ctx> {
                 .build_int_z_extend(val.into_int_value(), i64_type, "bool_to_i64")
                 .map_err(|e| CompileError::Internal(e.to_string()))?
                 .into(),
-            Some((val, Kind::Int)) | Some((val, Kind::Set(_))) | Some((val, Kind::Tuple(_))) => val,
+            Some((val, Kind::Int)) | Some((val, Kind::Set(_))) | Some((val, Kind::Tuple(_))) | Some((val, Kind::Union(_))) => val,
             None => {
                 return Err(CompileError::Internal(
                     "block body has no return expression".into(),
@@ -571,7 +571,7 @@ impl<'ctx> Compiler<'ctx> {
                 builder.build_store(ptr, wide).map_err(err)?;
                 *leaf_idx += 1;
             }
-            Kind::Int | Kind::Set(_) => {
+            Kind::Int | Kind::Set(_) | Kind::Union(_) => {
                 let ptr = if *leaf_idx == 0 {
                     out_ptr
                 } else {

@@ -382,6 +382,7 @@ implementation detail the developer should not rely on.
 | Concept | Unicode | ASCII |
 |---|---|---|
 | Union | ∪ | `\|` |
+| Disjoint union | — | `+` (operands must be proved disjoint; statically checked) |
 | Intersection | ∩ | `&` |
 | Symmetric difference | — | `^` (matches XOR intuition deliberately — symmetric difference IS set-XOR) |
 | Set difference | ∖ | `-` (NOT `\` — avoid escape-char/path-separator overload) |

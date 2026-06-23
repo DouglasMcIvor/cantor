@@ -1,0 +1,14 @@
+-- Disjoint union (+) and symmetric difference (^) in signatures.
+-- All three functions should be proved.
+
+-- Nat ^ {0} = NatPos: stripping zero from Nat gives a positive integer.
+strip_zero : Nat ^ {0} -> NatPos
+strip_zero(x) = x
+
+-- Accepting either zero or a positive integer covers all of Nat.
+accept_nat : {0} + NatPos -> Nat
+accept_nat(x) = x
+
+-- Symmetric difference is its own inverse: Nat ^ {0} ^ {0} = Nat.
+double_diff : Nat ^ {0} -> NatPos
+double_diff(x) = x

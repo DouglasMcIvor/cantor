@@ -605,6 +605,53 @@ fn destructure_mut_run_produces_correct_output() {
     );
 }
 
+// ── Set operations (`+` disjoint union, `^` symmetric difference) ────────────
+
+#[test]
+fn set_ops_proof_all_proved() {
+    let out = run_file("set_ops_proof.cantor");
+    assert_eq!(out.code, 0, "set_ops_proof.cantor should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        out.stdout.contains("3 proved"),
+        "expected '3 proved' in summary:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  "),
+        "unexpected counterexample:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn set_ops_proof_shows_set_op_signatures() {
+    let out = run_file("set_ops_proof.cantor");
+    assert!(out.stdout.contains("Nat ^ {0} -> NatPos"), "strip_zero sig missing:\n{}", out.stdout);
+    assert!(out.stdout.contains("{0} + NatPos -> Nat"), "accept_nat sig missing:\n{}", out.stdout);
+}
+
+#[test]
+fn set_ops_bad_overlapping_union_gives_counterexample() {
+    // {0, 1} + {1, 2} is invalid because 1 is in both sets.
+    let out = run_file("set_ops_bad.cantor");
+    assert_ne!(out.code, 0, "set_ops_bad.cantor should exit non-zero\nstdout: {}", out.stdout);
+    assert!(
+        out.stdout.contains("  counterexample  "),
+        "expected counterexample result line:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  proved  "),
+        "unexpected proved line:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn set_ops_bad_counterexample_mentions_not_disjoint() {
+    let out = run_file("set_ops_bad.cantor");
+    assert!(
+        out.stdout.contains("not disjoint"),
+        "expected 'not disjoint' in counterexample message:\n{}", out.stdout
+    );
+}
+
 // ── Bracket-depth newlines ────────────────────────────────────────────────────
 
 #[test]

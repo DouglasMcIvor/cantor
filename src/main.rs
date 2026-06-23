@@ -213,7 +213,7 @@ fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
 
 fn count_kind_leaves(kind: &Kind) -> usize {
     match kind {
-        Kind::Int | Kind::Bool | Kind::Set(_) => 1,
+        Kind::Int | Kind::Bool | Kind::Set(_) | Kind::Union(_) => 1,
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
     }
 }
@@ -221,7 +221,7 @@ fn count_kind_leaves(kind: &Kind) -> usize {
 fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
     match kind {
         Kind::Bool => { let v = buf[*offset] != 0; *offset += 1; format!("{v}") }
-        Kind::Int | Kind::Set(_) => { let v = buf[*offset]; *offset += 1; format!("{v}") }
+        Kind::Int | Kind::Set(_) | Kind::Union(_) => { let v = buf[*offset]; *offset += 1; format!("{v}") }
         Kind::Tuple(elems) => {
             let parts: Vec<String> = elems.iter().map(|k| format_kind_val(k, buf, offset)).collect();
             format!("({})", parts.join(", "))

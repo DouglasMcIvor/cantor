@@ -30,6 +30,12 @@ pub enum Kind {
     Set(SetElemKind),
     /// LLVM struct — anonymous product type `(A, B, …)`.
     Tuple(Vec<Kind>),
+    /// i64 (Stage 2: same wire type as Int) — disjoint union `A + B`.
+    ///
+    /// Each element is the Kind of one arm, in declaration order.
+    /// TODO(Stage 3): replace the i64 wire type with a tagged `{i32 tag, <payload>}` struct
+    /// once `match` and `distinct`-arm discrimination are implemented.
+    Union(Vec<Kind>),
 }
 
 /// The runtime Kind of a value drawn from `set_expr`.
@@ -48,7 +54,24 @@ pub fn set_kind(set_expr: &Expr) -> Kind {
             let parts = flatten_domain(set_expr);
             Kind::Tuple(parts.into_iter().map(set_kind).collect())
         }
+        // `A + B + C` — disjoint union → Union.
+        ExprKind::BinOp { op: BinOp::Add, .. } => {
+            let arms = flatten_disjoint_union(set_expr);
+            Kind::Union(arms.into_iter().map(set_kind).collect())
+        }
         _ => Kind::Int,
+    }
+}
+
+/// Flatten a left-associated disjoint union `((A + B) + C)` into `[A, B, C]`.
+pub fn flatten_disjoint_union(expr: &Expr) -> Vec<&Expr> {
+    match &expr.kind {
+        ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
+            let mut arms = flatten_disjoint_union(lhs);
+            arms.extend(flatten_disjoint_union(rhs));
+            arms
+        }
+        _ => vec![expr],
     }
 }
 
@@ -61,13 +84,12 @@ pub fn range_kind(range: &Expr) -> Kind {
         ExprKind::Var(sym) => {
             if sym.0 == "Fail" { Kind::Int } else { set_kind(range) }
         }
-        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
+        // `A | B` — plain union; dominant-kind rule strips Fail/Union wrappers so
+        // the success-path kind is not masked by the failure sentinel.
+        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             let lk = range_kind(lhs);
             let rk = range_kind(rhs);
-            // Set dominates Bool dominates Tuple dominates Int (Fail contributes
-            // Int and must not override the real success-path kind).
-            // TODO(Stage 2): `Add` (disjoint union) should produce Kind::Union(vec![lk, rk])
-            // once the tagged-union runtime representation is implemented.
+            // Set dominates Bool dominates Tuple dominates Int.
             match (lk, rk) {
                 (Kind::Set(ek), _) => Kind::Set(ek),
                 (_, Kind::Set(ek)) => Kind::Set(ek),
@@ -76,6 +98,11 @@ pub fn range_kind(range: &Expr) -> Kind {
                 (_, Kind::Tuple(ek)) => Kind::Tuple(ek),
                 _ => Kind::Int,
             }
+        }
+        // `A + B + C` — disjoint union; each arm retains its own kind.
+        ExprKind::BinOp { op: BinOp::Add, .. } => {
+            let arms = flatten_disjoint_union(range);
+            Kind::Union(arms.into_iter().map(range_kind).collect())
         }
         // `Success !! ErrorSet` — the kind is the success type's kind; the error
         // payload is always i64 and encoded out-of-band by the FAIL_SENTINEL offset.

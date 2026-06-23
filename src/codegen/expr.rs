@@ -469,7 +469,8 @@ impl<'ctx> Compiler<'ctx> {
                 Ok((i1_val.into(), Kind::Bool))
             }
             // Tuples are returned as struct values directly — no conversion needed.
-            Kind::Tuple(_) => Ok((result_i64, return_kind)),
+            // Union is i64 at this stage but we preserve the Kind for future stages.
+            Kind::Tuple(_) | Kind::Union(_) => Ok((result_i64, return_kind)),
             _ => Ok((result_i64, Kind::Int)),
         }
     }
@@ -516,8 +517,8 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Set(_) => return Err(CompileError::Internal(
                 "sets of sets not yet supported".into(),
             )),
-            Kind::Tuple(_) => return Err(CompileError::Internal(
-                "sets of tuples not yet supported".into(),
+            Kind::Tuple(_) | Kind::Union(_) => return Err(CompileError::Internal(
+                "sets of tuples/unions not yet supported".into(),
             )),
         };
 

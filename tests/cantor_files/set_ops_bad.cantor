@@ -1,0 +1,3 @@
+-- {0, 1} and {1, 2} overlap at 1 — `+` requires disjoint operands.
+overlap : {0, 1} + {1, 2} -> Nat
+overlap(x) = x

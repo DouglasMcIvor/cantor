@@ -16,3 +16,5 @@ mod named_errors;
 mod fail_and_return;
 #[path = "codegen/destructuring.rs"]
 mod destructuring;
+#[path = "codegen/set_ops.rs"]
+mod set_ops;
