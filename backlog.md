@@ -100,7 +100,8 @@ values?
   | Table -> Error
   ```
 - higher order functions: X -> Y is already the set of functions from X -> Y and we can use Haskell precedence rules for X -> Y -> Z.
-  partial application via _ as a placeholder add(_, 1) or sub(1, _) or f(x, _, y, _)
+- partial application via _ as a placeholder add(_, 1) or sub(1, _) or f(x, _, y, _)
+- infix operators as named functions (+)(1, 2), combines nicely _ as a placeholder 
 - struct member functions?
 - lambdas and closures
 - dynamic dispatch? - this is just overloading a function to get a union domain and the compiler outputting a switch or a jump table!
