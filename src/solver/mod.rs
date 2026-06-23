@@ -18,9 +18,10 @@
 //! - Only named built-in sets as domain/range (`Int`, `Nat`, `NatPos`, `NonZeroInt`, `IntN`).
 //! - Only integer-sorted parameters and return values.
 
-mod membership;
+mod blocks;
 mod encode;
 mod loops;
+mod membership;
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,7 +35,7 @@ use crate::{
 use crate::kind::{Kind as ValKind, param_set_exprs, set_kind};
 
 use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, set_sort, mk_decomposed_tuple};
-use self::loops::{encode_block, body_has_unconstrained_loop_var};
+use self::blocks::{encode_block, body_has_unconstrained_loop_var};
 use self::membership::{DistinctPreds, Membership, membership_constraint};
 
 // ── Public types ──────────────────────────────────────────────────────────────
