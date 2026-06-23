@@ -604,3 +604,28 @@ fn destructure_mut_run_produces_correct_output() {
         "expected output 1 from destructure_mut.cantor main:\n{}", out.stdout
     );
 }
+
+// ── Bracket-depth newlines ────────────────────────────────────────────────────
+
+#[test]
+fn newline_paren_all_proved() {
+    // Regression: bare ident at end of assignment followed by ( on the next line
+    // must not be parsed as a function call (old bug: `b := tmp\n(a,b)` → `b := tmp(a,b)`).
+    let out = run_file("newline_paren.cantor");
+    assert_eq!(out.code, 0, "newline_paren.cantor should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected no failures:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn newline_paren_run_produces_correct_output() {
+    let out = run_subcommand("newline_paren.cantor");
+    assert_eq!(out.code, 0, "newline_paren.cantor run should exit 0\nstdout: {}", out.stdout);
+    // swap_test((-3, 7)) = (7, -3); main returns x + y = 7 + (-3) = 4
+    assert!(
+        out.stdout.contains("4"),
+        "expected output 4 from newline_paren.cantor main:\n{}", out.stdout
+    );
+}

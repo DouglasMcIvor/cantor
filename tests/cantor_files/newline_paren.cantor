@@ -1,0 +1,19 @@
+-- Regression test: bare ident at end of a statement followed by ( on the
+-- next line must not be parsed as a function call.
+--
+-- Previously `first := second\n(first, second)` was misread as
+-- `first := second(first, second)` because the lexer discarded newlines.
+swap_test : Int * Int -> Int * Int
+swap_test(p) {
+    mut first : Int = p.0
+    mut second : Int = p.1
+    first := second
+    second := p.0
+    (first, second)
+}
+
+main : -> Int
+main() {
+    x, y = swap_test((-3, 7))
+    x + y
+}

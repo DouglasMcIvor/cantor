@@ -75,6 +75,7 @@ pub enum Token {
     Question, // ?  (postfix propagate-failure operator)
     Dot,      // .  (tuple projection `t.0`)
 
+    Newline,  // \n at paren-depth 0 (statement terminator)
     Eof,
 }
 
@@ -129,6 +130,7 @@ impl fmt::Display for Token {
             Token::Comma    => f.write_str(","),
             Token::Question => f.write_str("?"),
             Token::Dot      => f.write_str("."),
+            Token::Newline  => f.write_str("<newline>"),
             Token::Eof      => f.write_str("<eof>"),
         }
     }
@@ -138,11 +140,13 @@ impl fmt::Display for Token {
 pub struct Lexer<'src> {
     src: &'src str,
     pos: usize,
+    /// Nesting depth of `(` and `)`. At depth > 0 newlines are suppressed.
+    paren_depth: usize,
 }
 
 impl<'src> Lexer<'src> {
     pub fn new(src: &'src str) -> Self {
-        Self { src, pos: 0 }
+        Self { src, pos: 0, paren_depth: 0 }
     }
 
     fn peek_char(&self) -> Option<char> {
@@ -156,7 +160,7 @@ impl<'src> Lexer<'src> {
     }
 
     fn skip_whitespace(&mut self) {
-        while matches!(self.peek_char(), Some(c) if c.is_whitespace()) {
+        while matches!(self.peek_char(), Some(' ' | '\t' | '\r')) {
             self.advance_char();
         }
     }
@@ -206,102 +210,117 @@ impl<'src> Lexer<'src> {
     }
 
     /// Consume and return the next token with its source span.
+    ///
+    /// At paren-depth 0, `\n` emits `Token::Newline` (statement terminator).
+    /// At depth > 0, `\n` is silently skipped so multi-line sub-expressions inside
+    /// `(...)` work without special syntax.  `{` does not affect depth — set literal
+    /// parsers call `skip_newlines()` explicitly between elements.
     pub fn next_token(&mut self) -> Result<(Token, Span), CompileError> {
-        self.skip_whitespace();
-        let start = self.pos;
+        loop {
+            self.skip_whitespace();
+            let start = self.pos;
 
-        let ch = match self.advance_char() {
-            None => return Ok((Token::Eof, Span::new(start as u32, start as u32))),
-            Some(c) => c,
-        };
-
-        let tok = match ch {
-            '0'..='9' => return self.scan_int(start),
-            c if c.is_alphabetic() || c == '_' => {
-                return Ok(self.scan_ident_or_keyword(start));
-            }
-            '+' => Token::Plus,
-            '*' => Token::Star,
-            '/' => Token::Slash,
-            '|' => Token::Pipe,
-            '^' => Token::Caret,
-            '&' => Token::Amp,
-            '(' => Token::LParen,
-            ')' => Token::RParen,
-            '{' => Token::LBrace,
-            '}' => Token::RBrace,
-            ',' => Token::Comma,
-            '?' => Token::Question,
-            '.' => Token::Dot,
-            ':' => {
-                if self.peek_char() == Some('=') {
-                    self.advance_char();
-                    Token::ColonEq
-                } else {
-                    Token::Colon
+            if self.peek_char() == Some('\n') {
+                self.advance_char();
+                if self.paren_depth == 0 {
+                    return Ok((Token::Newline, Span::new(start as u32, self.pos as u32)));
                 }
+                continue;
             }
-            '-' => {
-                if self.peek_char() == Some('>') {
-                    self.advance_char();
-                    Token::Arrow
-                } else if self.peek_char() == Some('-') {
-                    while !matches!(self.peek_char(), Some('\n') | None) {
+
+            let ch = match self.advance_char() {
+                None => return Ok((Token::Eof, Span::new(start as u32, start as u32))),
+                Some(c) => c,
+            };
+
+            let tok = match ch {
+                '0'..='9' => return self.scan_int(start),
+                c if c.is_alphabetic() || c == '_' => {
+                    return Ok(self.scan_ident_or_keyword(start));
+                }
+                '+' => Token::Plus,
+                '*' => Token::Star,
+                '/' => Token::Slash,
+                '|' => Token::Pipe,
+                '^' => Token::Caret,
+                '&' => Token::Amp,
+                '(' => { self.paren_depth += 1; Token::LParen }
+                ')' => { self.paren_depth = self.paren_depth.saturating_sub(1); Token::RParen }
+                '{' => Token::LBrace,
+                '}' => Token::RBrace,
+                ',' => Token::Comma,
+                '?' => Token::Question,
+                '.' => Token::Dot,
+                ':' => {
+                    if self.peek_char() == Some('=') {
                         self.advance_char();
+                        Token::ColonEq
+                    } else {
+                        Token::Colon
                     }
-                    return self.next_token();
-                } else {
-                    Token::Minus
                 }
-            }
-            '=' => {
-                if self.peek_char() == Some('=') {
-                    self.advance_char();
-                    Token::EqEq
-                } else {
-                    Token::Eq
+                '-' => {
+                    if self.peek_char() == Some('>') {
+                        self.advance_char();
+                        Token::Arrow
+                    } else if self.peek_char() == Some('-') {
+                        while !matches!(self.peek_char(), Some('\n') | None) {
+                            self.advance_char();
+                        }
+                        continue; // \n still in stream; loop handles it
+                    } else {
+                        Token::Minus
+                    }
                 }
-            }
-            '!' => {
-                if self.peek_char() == Some('=') {
-                    self.advance_char();
-                    Token::BangEq
-                } else if self.peek_char() == Some('!') {
-                    self.advance_char();
-                    Token::BangBang
-                } else {
+                '=' => {
+                    if self.peek_char() == Some('=') {
+                        self.advance_char();
+                        Token::EqEq
+                    } else {
+                        Token::Eq
+                    }
+                }
+                '!' => {
+                    if self.peek_char() == Some('=') {
+                        self.advance_char();
+                        Token::BangEq
+                    } else if self.peek_char() == Some('!') {
+                        self.advance_char();
+                        Token::BangBang
+                    } else {
+                        return Err(CompileError::UnexpectedToken {
+                            expected: "`!=` or `!!`".into(),
+                            found: "!".into(),
+                            span: Span::new(start as u32, self.pos as u32),
+                        });
+                    }
+                }
+                '<' => {
+                    if self.peek_char() == Some('=') {
+                        self.advance_char();
+                        Token::LtEq
+                    } else {
+                        Token::Lt
+                    }
+                }
+                '>' => {
+                    if self.peek_char() == Some('=') {
+                        self.advance_char();
+                        Token::GtEq
+                    } else {
+                        Token::Gt
+                    }
+                }
+                other => {
                     return Err(CompileError::UnexpectedToken {
-                        expected: "`!=` or `!!`".into(),
-                        found: "!".into(),
+                        expected: "a valid token".into(),
+                        found: format!("`{other}`"),
                         span: Span::new(start as u32, self.pos as u32),
                     });
                 }
-            }
-            '<' => {
-                if self.peek_char() == Some('=') {
-                    self.advance_char();
-                    Token::LtEq
-                } else {
-                    Token::Lt
-                }
-            }
-            '>' => {
-                if self.peek_char() == Some('=') {
-                    self.advance_char();
-                    Token::GtEq
-                } else {
-                    Token::Gt
-                }
-            }
-            other => {
-                return Err(CompileError::UnexpectedToken {
-                    expected: "a valid token".into(),
-                    found: format!("`{other}`"),
-                    span: Span::new(start as u32, self.pos as u32),
-                });
-            }
-        };
+            };
 
-        Ok((tok, Span::new(start as u32, self.pos as u32)))
+            return Ok((tok, Span::new(start as u32, self.pos as u32)));
+        }
     }
 }

@@ -470,13 +470,6 @@ keeps this simple; per-binding mutability is deferred).
 **Reassignment (`a, b :=`)**: all names must have been declared with `mut`; set
 constraints are checked for each element as with single-name `:=`.
 
-**Parser limitation (known)**: a bare identifier immediately before a newline followed
-by a `(` on the next line is currently parsed as a function call (the lexer discards
-newlines, making `b\n(x, y)` and `b(x, y)` identical to the parser). Avoid ending an
-assignment value with a bare identifier when the next statement starts with `(`.
-Workaround: end the expression with a projection (`p.1`), a literal, or a binary expression
-instead. Tracked in the backlog.
-
 **Deferred**: tuple-level constraint form `x, y : Int * Nat = (...)` (both constraints in one
 annotation); nested destructuring `(x, (y, z)) = ...`; `_` wildcard; per-binding mutability.
 
@@ -562,6 +555,42 @@ f(x) {
 
 The `= expr` / `{ stmts }` split is a deliberate visual signal:
 `=` marks a pure function; `{ }` marks one that does local mutation.
+
+### Statement termination — bracket-depth newlines (DECIDED)
+
+Newlines are the statement terminator. A `\n` at **paren-depth 0** ends the
+current statement; a `\n` inside `(…)` or `[…]` is silently discarded, allowing
+multi-line sub-expressions.
+
+```
+-- All fine — single-line statements:
+x : Int = 1
+a, b := (b, a)
+
+-- Multi-line tuple or call: wrap in ( ):
+result = (
+    very_long_call(arg1, arg2)
+    + another_call(arg3)
+)
+
+-- This is TWO statements (not a call):
+a := b
+(c, d)    -- parsed as a standalone tuple expression, not b(c, d)
+```
+
+`{` does **not** affect paren-depth. Set literals `{1, 2, 3}` and block
+bodies `{ stmts }` both use `{}`; the set-literal parser explicitly skips
+newlines between elements. A newline immediately after `{` inside a block
+body terminates the preceding statement (if any) — block parsers call
+`skip_newlines()` at the start and after each statement.
+
+Alternatives considered and rejected:
+- **Semicolons**: breaks the existing body of written Cantor code; inconsistent
+  with the current aesthetic.
+- **Go's trailing-token rule**: forces `{` placement; penalises certain
+  formatting styles.
+- **Haskell layout rule**: significant complexity; conflicts with Cantor's
+  explicit `{}` blocks.
 
 ### Constants and zero-argument functions (DECIDED)
 

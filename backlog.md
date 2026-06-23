@@ -39,10 +39,8 @@ union of all products over n in Nat _and_ the free monoid over X!
   Then maybe we use x[i] as the syntax for runtime indexing. The dot operator is compile time only, [] allows both.
 - should we use apache arrow for runtime storage of containers so that we serialisation for free? gives us struct of arrays naturally too
 - ~~destructuring assignment and checks for values in product sets~~ **DONE** (v0)
-  - Known parser limitation: bare identifier at end of a statement value, followed by `(` at
-    the start of the next line, is misread as a function call (lexer discards newlines). Fix
-    requires either adding newline tokens or a smarter statement-end heuristic. Workaround:
-    end the assignment value with a projection, literal, or binary op rather than a bare name.
+  - ~~Known parser limitation: bare identifier at end of a statement value, followed by `(` at
+    the start of the next line, is misread as a function call~~ **FIXED** by bracket-depth newlines
   - Deferred: tuple-level constraint `x, y : Int * Nat = ...`; nested patterns; `_` wildcard;
     per-binding mutability
 - natural `for i, x in foo` syntax to combine destructuring should fall out from the above without additional work

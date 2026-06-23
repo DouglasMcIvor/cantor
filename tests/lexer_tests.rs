@@ -146,10 +146,30 @@ fn lex_ignores_whitespace() {
 }
 
 #[test]
-fn lex_newlines_as_whitespace() {
+fn lex_newlines_emit_tokens_at_depth_zero() {
     assert_eq!(
         lex_all("x\n+\ny"),
-        vec![Token::Ident("x".into()), Token::Plus, Token::Ident("y".into()), Token::Eof]
+        vec![
+            Token::Ident("x".into()), Token::Newline,
+            Token::Plus, Token::Newline,
+            Token::Ident("y".into()), Token::Eof,
+        ]
+    );
+}
+
+#[test]
+fn lex_newlines_suppressed_inside_parens() {
+    assert_eq!(
+        lex_all("(\nx\n)"),
+        vec![Token::LParen, Token::Ident("x".into()), Token::RParen, Token::Eof]
+    );
+}
+
+#[test]
+fn lex_newlines_not_suppressed_inside_braces() {
+    assert_eq!(
+        lex_all("{\nx\n}"),
+        vec![Token::LBrace, Token::Newline, Token::Ident("x".into()), Token::Newline, Token::RBrace, Token::Eof]
     );
 }
 
@@ -210,9 +230,10 @@ fn lex_unknown_char_is_error() {
 
 #[test]
 fn line_comment_skipped() {
+    // The comment itself is discarded; the \n after it emits Newline at depth 0.
     assert_eq!(
         lex_all("-- this is a comment\n42"),
-        vec![Token::Int(42), Token::Eof]
+        vec![Token::Newline, Token::Int(42), Token::Eof]
     );
 }
 
@@ -233,6 +254,6 @@ fn comment_at_eof_skipped() {
 fn comment_does_not_consume_next_line() {
     assert_eq!(
         lex_all("1 -- first\n2"),
-        vec![Token::Int(1), Token::Int(2), Token::Eof]
+        vec![Token::Int(1), Token::Newline, Token::Int(2), Token::Eof]
     );
 }

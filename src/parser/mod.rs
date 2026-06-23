@@ -46,6 +46,14 @@ impl<'src> Parser<'src> {
         Ok(std::mem::replace(&mut self.peek0, old_peek1))
     }
 
+    /// Consume all leading `Newline` tokens from the lookahead buffer.
+    fn skip_newlines(&mut self) -> Result<(), CompileError> {
+        while self.peek() == &Token::Newline {
+            self.advance()?;
+        }
+        Ok(())
+    }
+
     fn expect(&mut self, expected: &Token) -> Result<Span, CompileError> {
         let span = self.peek_span();
         let (tok, _) = self.advance()?;
@@ -65,8 +73,10 @@ impl<'src> Parser<'src> {
     /// Parse a whole source file as a sequence of top-level items.
     pub fn parse_file(&mut self) -> Result<Vec<Item>, CompileError> {
         let mut items = Vec::new();
+        self.skip_newlines()?;
         while self.peek() != &Token::Eof {
             items.push(self.parse_item()?);
+            self.skip_newlines()?;
         }
         Ok(items)
     }
@@ -125,7 +135,11 @@ impl<'src> Parser<'src> {
 
         // Collect additional sig lines sharing the same name.
         let mut sigs = vec![first_sig];
-        while self.peek() == &Token::Ident(name.0.clone()) && self.peek2() == &Token::Colon {
+        loop {
+            self.skip_newlines()?;
+            if !(self.peek() == &Token::Ident(name.0.clone()) && self.peek2() == &Token::Colon) {
+                break;
+            }
             self.advance()?; // consume repeated name
             sigs.push(self.parse_sig_tail()?);
         }
@@ -143,6 +157,7 @@ impl<'src> Parser<'src> {
         self.expect(&Token::LParen)?;
         let params = self.parse_params()?;
         self.expect(&Token::RParen)?;
+        self.skip_newlines()?;
 
         let body = if self.peek() == &Token::Eq {
             self.advance()?;
@@ -243,9 +258,11 @@ impl<'src> Parser<'src> {
     /// Parse `{ stmt* }`, returning the statement list.
     fn parse_block(&mut self) -> Result<Vec<Stmt>, CompileError> {
         self.expect(&Token::LBrace)?;
+        self.skip_newlines()?;
         let mut stmts = Vec::new();
         while self.peek() != &Token::RBrace && self.peek() != &Token::Eof {
             stmts.push(self.parse_stmt()?);
+            self.skip_newlines()?;
         }
         self.expect(&Token::RBrace)?;
         Ok(stmts)
@@ -285,6 +302,7 @@ impl<'src> Parser<'src> {
             Token::Assert => {
                 self.advance()?;
                 let predicate = self.parse_expr(0)?;
+                self.skip_newlines()?;
                 let else_clause = if self.peek() == &Token::Else {
                     self.advance()?;
                     match self.peek().clone() {
@@ -320,6 +338,7 @@ impl<'src> Parser<'src> {
             Token::While => {
                 self.advance()?;
                 let cond = self.parse_expr(0)?;
+                self.skip_newlines()?;
                 let body = self.parse_block()?;
                 Ok(Stmt::While { cond, body, span })
             }
@@ -328,6 +347,7 @@ impl<'src> Parser<'src> {
                 let var = self.expect_ident()?;
                 self.expect(&Token::In)?;
                 let set = self.parse_set_expr()?;
+                self.skip_newlines()?;
                 let body = self.parse_block()?;
                 Ok(Stmt::ForIn { var, set, body, span })
             }
@@ -606,21 +626,26 @@ impl<'src> Parser<'src> {
             }
             Token::LBrace => {
                 self.advance()?;
+                self.skip_newlines()?;
                 if self.peek() == &Token::RBrace {
                     let end_span = self.peek_span();
                     self.advance()?;
                     return Ok(Expr::new(ExprKind::SetLit(vec![]), Span::new(span.start, end_span.end)));
                 }
                 let first = self.parse_expr(0)?;
+                self.skip_newlines()?;
                 // One token of lookahead: `for` → comprehension, else set literal.
                 if self.peek() == &Token::For {
                     self.advance()?;
                     let var = self.expect_ident()?;
                     self.expect(&Token::In)?;
                     let source = self.parse_set_expr()?;
+                    self.skip_newlines()?;
                     let filter = if self.peek() == &Token::If {
                         self.advance()?;
-                        Some(self.parse_expr(0)?)
+                        let f = self.parse_expr(0)?;
+                        self.skip_newlines()?;
+                        Some(f)
                     } else {
                         None
                     };
@@ -639,8 +664,10 @@ impl<'src> Parser<'src> {
                 let mut elements = vec![first];
                 while self.peek() == &Token::Comma {
                     self.advance()?;
+                    self.skip_newlines()?;
                     if self.peek() == &Token::RBrace { break; } // trailing comma
                     elements.push(self.parse_expr(0)?);
+                    self.skip_newlines()?;
                 }
                 let end_span = self.peek_span();
                 self.expect(&Token::RBrace)?;
@@ -745,6 +772,7 @@ impl<'src> Parser<'src> {
     /// Parse a single expression followed by EOF (used in tests and REPL).
     pub fn parse_expr_eof(&mut self) -> Result<Expr, CompileError> {
         let expr = self.parse_expr(0)?;
+        self.skip_newlines()?;
         if self.peek() != &Token::Eof {
             return Err(CompileError::UnexpectedToken {
                 expected: "<eof>".into(),
