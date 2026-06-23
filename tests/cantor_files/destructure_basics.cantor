@@ -1,0 +1,20 @@
+-- Basic immutable destructuring (no constraints)
+sum_destruct : Int * Int -> Int
+sum_destruct(p) {
+    x, y = (p.0, p.1)
+    x + y
+}
+
+-- Per-element constraints on each binding
+constrained_sum : Nat * Nat -> Nat
+constrained_sum(p) {
+    x : Nat, y : Nat = (p.0, p.1)
+    x + y
+}
+
+-- Destructuring a literal tuple directly; main returns -3 + 4 = 1
+main : -> Int
+main() {
+    x, y = (-3, 4)
+    x + y
+}

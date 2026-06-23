@@ -16,3 +16,5 @@ mod set_defs;
 mod named_errors;
 #[path = "solver/tuples.rs"]
 mod tuples;
+#[path = "solver/destructuring.rs"]
+mod destructuring;

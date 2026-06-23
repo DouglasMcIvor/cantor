@@ -14,3 +14,5 @@ mod let_bindings;
 mod named_errors;
 #[path = "codegen/fail_and_return.rs"]
 mod fail_and_return;
+#[path = "codegen/destructuring.rs"]
+mod destructuring;

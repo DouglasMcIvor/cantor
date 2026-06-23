@@ -436,6 +436,50 @@ than `TupleProject` for the same reason. Logic must be `"ALL"` (replaces
 `cantor_main_into(*mut i64)` which stores each leaf into a caller buffer, avoiding
 fragile struct-return FFI.
 
+### Destructuring assignment (DECIDED)
+
+Tuple values can be destructured into multiple bindings in one statement.
+`mut` applies to all bindings in the pattern.
+
+```
+-- Immutable, no per-element constraints
+x, y = (-3, 4)
+x + y             -- 1
+
+-- Immutable, per-element set constraints
+x : Int, y : Nat = (-3, 4)   -- solver checks each element against its constraint
+
+-- All-mutable destructuring
+mut a : Int, b : Int = (p.0, p.1)
+a := b            -- reassignment; b stays in its declared set
+
+-- Destructuring reassignment of already-declared mutables
+mut a : Int, b : Int = (10, 20)
+a, b := (b, a)    -- swap
+```
+
+The LHS pattern requires no parentheses; the commas alone signal a destructure.
+Parens on the RHS are required (consistent with tuple literal syntax).
+
+**Constraints**: each binding may carry an optional `: Set` annotation that acts as
+a membership proof obligation — identical in semantics to the constraint in `mut name : Set = expr`.
+
+**`mut` scope**: `mut` before the first binding applies to every binding in the pattern (v0
+keeps this simple; per-binding mutability is deferred).
+
+**Reassignment (`a, b :=`)**: all names must have been declared with `mut`; set
+constraints are checked for each element as with single-name `:=`.
+
+**Parser limitation (known)**: a bare identifier immediately before a newline followed
+by a `(` on the next line is currently parsed as a function call (the lexer discards
+newlines, making `b\n(x, y)` and `b(x, y)` identical to the parser). Avoid ending an
+assignment value with a bare identifier when the next statement starts with `(`.
+Workaround: end the expression with a projection (`p.1`), a literal, or a binary expression
+instead. Tracked in the backlog.
+
+**Deferred**: tuple-level constraint form `x, y : Int * Nat = (...)` (both constraints in one
+annotation); nested destructuring `(x, (y, z)) = ...`; `_` wildcard; per-binding mutability.
+
 ### Comprehensions
 - Mirrors Python set-comprehension syntax: `{ expr for x in S if pred(x) }`
   — isomorphic to math notation `{ expr | x ∈ S, pred(x) }`, no semantic
@@ -784,8 +828,8 @@ Other open items (lower priority, not blocking):
   call. Design depends on named product sets landing first.
 - **Pattern matching** — `match x { a => …, b => … }` or overloaded-signature
   form; exact syntax undecided. Natural complement to named unions.
-- **Destructuring** — `assert z in X * Y; x, y = z`; `for i, x in collection`
-  falls out as sugar over destructuring + for-in.
+- **Destructuring** — implemented in v0 (see §10 "Destructuring assignment").
+  `for i, x in collection` falls out as sugar over destructuring + for-in (deferred).
 - **Generics via `given`** — `given A; require A <= Countable; f(x: A) -> Nat`.
   Introduce a compile-time variable into scope; obligations stated with
   `require`; instantiation substitutes concrete values and asks the solver

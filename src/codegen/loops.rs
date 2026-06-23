@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use inkwell::{IntPredicate, values::{BasicValueEnum, IntValue, PointerValue}};
+use inkwell::{IntPredicate, values::{AggregateValueEnum, BasicValueEnum, IntValue, PointerValue}};
 
 use crate::{
     ast::{AssertElse, Expr, ExprKind, Stmt, collect_loop_modified},
@@ -55,6 +55,99 @@ impl<'ctx> Compiler<'ctx> {
                             .map_err(|e| CompileError::Internal(e.to_string()))?;
                     }
                     env.insert(name.clone(), result);
+                }
+
+                Stmt::DestructLet { bindings, value, .. } => {
+                    let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
+                    let elem_kinds = match rhs_kind {
+                        Kind::Tuple(ek) => ek,
+                        _ => return Err(CompileError::Internal(
+                            "destructuring `=` requires a tuple on the right-hand side".into(),
+                        )),
+                    };
+                    if bindings.len() != elem_kinds.len() {
+                        return Err(CompileError::Internal(format!(
+                            "destructuring arity mismatch: {} binding(s) but tuple has {} element(s)",
+                            bindings.len(), elem_kinds.len()
+                        )));
+                    }
+                    let sv = AggregateValueEnum::StructValue(rhs_val.into_struct_value());
+                    for (i, binding) in bindings.iter().enumerate() {
+                        let elem = self.builder
+                            .build_extract_value(sv, i as u32, &binding.name.0)
+                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        env.insert(binding.name.clone(), (elem, elem_kinds[i].clone()));
+                    }
+                }
+
+                Stmt::DestructMutLet { bindings, value, .. } => {
+                    let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
+                    let elem_kinds = match rhs_kind {
+                        Kind::Tuple(ek) => ek,
+                        _ => return Err(CompileError::Internal(
+                            "destructuring `=` requires a tuple on the right-hand side".into(),
+                        )),
+                    };
+                    if bindings.len() != elem_kinds.len() {
+                        return Err(CompileError::Internal(format!(
+                            "destructuring arity mismatch: {} binding(s) but tuple has {} element(s)",
+                            bindings.len(), elem_kinds.len()
+                        )));
+                    }
+                    let sv = AggregateValueEnum::StructValue(rhs_val.into_struct_value());
+                    for (i, binding) in bindings.iter().enumerate() {
+                        let elem = self.builder
+                            .build_extract_value(sv, i as u32, &binding.name.0)
+                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        if let Some(&ptr) = alloca_map.get(&binding.name) {
+                            let i64_type = self.context.i64_type();
+                            let val_i64: IntValue<'ctx> = if elem_kinds[i] == Kind::Bool {
+                                self.builder
+                                    .build_int_z_extend(elem.into_int_value(), i64_type, "bool_ext")
+                                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                            } else {
+                                elem.into_int_value()
+                            };
+                            self.builder.build_store(ptr, val_i64)
+                                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        }
+                        env.insert(binding.name.clone(), (elem, elem_kinds[i].clone()));
+                    }
+                }
+
+                Stmt::DestructAssign { names: dest_names, value, .. } => {
+                    let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
+                    let elem_kinds = match rhs_kind {
+                        Kind::Tuple(ek) => ek,
+                        _ => return Err(CompileError::Internal(
+                            "destructuring `:=` requires a tuple on the right-hand side".into(),
+                        )),
+                    };
+                    if dest_names.len() != elem_kinds.len() {
+                        return Err(CompileError::Internal(format!(
+                            "destructuring arity mismatch: {} name(s) but tuple has {} element(s)",
+                            dest_names.len(), elem_kinds.len()
+                        )));
+                    }
+                    let sv = AggregateValueEnum::StructValue(rhs_val.into_struct_value());
+                    for (i, name) in dest_names.iter().enumerate() {
+                        let elem = self.builder
+                            .build_extract_value(sv, i as u32, &name.0)
+                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        if let Some(&ptr) = alloca_map.get(name) {
+                            let i64_type = self.context.i64_type();
+                            let val_i64: IntValue<'ctx> = if elem_kinds[i] == Kind::Bool {
+                                self.builder
+                                    .build_int_z_extend(elem.into_int_value(), i64_type, "bool_ext")
+                                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                            } else {
+                                elem.into_int_value()
+                            };
+                            self.builder.build_store(ptr, val_i64)
+                                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        }
+                        env.insert(name.clone(), (elem, elem_kinds[i].clone()));
+                    }
                 }
 
                 // Static-only constructs — no runtime representation.

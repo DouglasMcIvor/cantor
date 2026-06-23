@@ -1,0 +1,14 @@
+-- Constraint violation: binding x to NatPos but n : Int can be zero or negative
+bad_constraint : Int -> Int
+bad_constraint(n) {
+    x : NatPos, y : Int = (n, 0)
+    x + y
+}
+
+-- Immutability violation: x is bound by DestructLet (immutable) but reassigned with :=
+immut_reassign : Int -> Int
+immut_reassign(n) {
+    x, y = (n, n + 1)
+    x := y
+    x
+}

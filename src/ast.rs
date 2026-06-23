@@ -154,6 +154,14 @@ pub enum UnOp {
 
 // ── Statements (imperative block bodies) ─────────────────────────────────────
 
+/// One binding in a destructuring pattern, e.g. the `x : Int` in `x : Int, y = (...)`.
+#[derive(Debug, Clone)]
+pub struct DestructBinding {
+    pub name: Symbol,
+    /// Optional per-element set constraint (e.g. `: Int`). None means unconstrained.
+    pub constraint: Option<Expr>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Stmt {
     /// `x: Set = expr` — introduce an immutable local with a constraint check.
@@ -169,6 +177,16 @@ pub enum Stmt {
     MutLet { name: Symbol, constraint: Expr, value: Expr, span: Span },
     /// `x := expr` — reassign an existing mutable (semantic analysis validates).
     Assign { name: Symbol, value: Expr, span: Span },
+    /// `x, y = (e0, e1)` or `x : Int, y : Nat = (e0, e1)` — immutable destructure.
+    ///
+    /// `tuple_constraint` is `Some` for the `x, y : Int * Nat = (...)` form and
+    /// `None` for the per-element constraint form.  Currently the parser always
+    /// emits `None`; tuple-level constraints are a planned future extension.
+    DestructLet { bindings: Vec<DestructBinding>, tuple_constraint: Option<Expr>, value: Expr, span: Span },
+    /// `mut a : Int, b : Nat = (e0, e1)` — mutable destructure; `mut` applies to all bindings.
+    DestructMutLet { bindings: Vec<DestructBinding>, tuple_constraint: Option<Expr>, value: Expr, span: Span },
+    /// `a, b := (e0, e1)` — destructuring reassignment; all names must already be `mut`.
+    DestructAssign { names: Vec<Symbol>, value: Expr, span: Span },
     /// `require predicate` — static proof obligation; compile error if unprovable.
     Require { predicate: Expr, span: Span },
     /// `assert predicate` — graduated: elide if proved, compile error if disproved,
@@ -215,6 +233,12 @@ fn collect_loop_modified_rec(stmts: &[Stmt], names: &mut std::collections::HashS
     for stmt in stmts {
         match stmt {
             Stmt::MutLet { name, .. } | Stmt::Assign { name, .. } => { names.insert(name.clone()); }
+            Stmt::DestructMutLet { bindings, .. } => {
+                for b in bindings { names.insert(b.name.clone()); }
+            }
+            Stmt::DestructAssign { names: dest_names, .. } => {
+                for n in dest_names { names.insert(n.clone()); }
+            }
             Stmt::While { body, .. } | Stmt::ForIn { body, .. } => collect_loop_modified_rec(body, names),
             Stmt::Block(inner) => collect_loop_modified_rec(inner, names),
             _ => {}

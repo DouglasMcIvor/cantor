@@ -166,6 +166,122 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
+            Stmt::DestructLet { bindings, tuple_constraint, value, .. }
+            | Stmt::DestructMutLet { bindings, tuple_constraint, value, .. } => {
+                let is_mut = matches!(stmt, Stmt::DestructMutLet { .. });
+
+                let rhs_term = encode_expr(
+                    value, env, name_defs, fn_env, tm, solver,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                ).map_err(CheckResult::Unknown)?;
+
+                // Optional tuple-level constraint (e.g. `x, y : Int * Nat = ...`).
+                // The parser currently always emits None; this path is future use.
+                if let Some(tc) = tuple_constraint {
+                    if let Membership::Constrained(c) = membership_constraint(tm, rhs_term.clone(), tc, name_defs, distinct_preds) {
+                        builtin_obligs.push(BuiltinObligation {
+                            path_cond: top_guard.clone(),
+                            obligation: c,
+                            violated_reason: format!("destructured value is not in `{}`", tc),
+                        });
+                    }
+                }
+
+                for (i, binding) in bindings.iter().enumerate() {
+                    // child(0) is the APPLY_CONSTRUCTOR node; elements start at child(1).
+                    let proj = rhs_term.child(i + 1);
+                    let ssa_name = format!("{}_{}", binding.name.0, ssa_counter);
+                    *ssa_counter += 1;
+                    let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                    let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
+                    solver.assert_formula(eq.clone());
+                    accumulated_facts.push(eq);
+
+                    if let Some(constraint) = &binding.constraint {
+                        if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
+                            builtin_obligs.push(BuiltinObligation {
+                                path_cond: top_guard.clone(),
+                                obligation: c,
+                                violated_reason: format!(
+                                    "destructured element {} (`{}`) is not in `{}`",
+                                    i, binding.name.0, constraint
+                                ),
+                            });
+                        }
+                    }
+
+                    if is_mut {
+                        if let Some(constraint) = &binding.constraint {
+                            constraint_env.insert(binding.name.clone(), constraint.clone());
+                        }
+                    } else {
+                        immutable_names.insert(binding.name.clone());
+                    }
+                    env.insert(binding.name.clone(), fresh);
+                }
+            }
+
+            Stmt::DestructAssign { names: dest_names, value, .. } => {
+                for name in dest_names.iter() {
+                    if immutable_names.contains(name) {
+                        return Err(CheckResult::Counterexample {
+                            params: HashMap::new(),
+                            output: 0,
+                            reason: format!(
+                                "cannot assign to `{}`: declared as an immutable binding \
+                                 (use `mut {}` to allow reassignment)",
+                                name.0, name.0
+                            ),
+                        });
+                    }
+                    if !env.contains_key(name) {
+                        return Err(CheckResult::Unknown(format!(
+                            "unbound variable `{}` in destructuring assignment",
+                            name.0
+                        )));
+                    }
+                }
+
+                let rhs_term = encode_expr(
+                    value, env, name_defs, fn_env, tm, solver,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                ).map_err(CheckResult::Unknown)?;
+
+                for (i, name) in dest_names.iter().enumerate() {
+                    let proj = rhs_term.child(i + 1);
+                    let ssa_name = format!("{}_{}", name.0, ssa_counter);
+                    *ssa_counter += 1;
+                    let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                    let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
+                    solver.assert_formula(eq.clone());
+                    accumulated_facts.push(eq);
+
+                    if let Some(constraint) = constraint_env.get(name).cloned() {
+                        if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), &constraint, name_defs, distinct_preds) {
+                            match check_require(c.clone(), tm, accumulated_facts, param_names, param_terms) {
+                                CheckResult::Proved => {
+                                    solver.assert_formula(c.clone());
+                                    accumulated_facts.push(c);
+                                }
+                                CheckResult::Counterexample { params, output, .. } => {
+                                    return Err(CheckResult::Counterexample {
+                                        params,
+                                        output,
+                                        reason: format!(
+                                            "`{} :=` (destructured) violates declared constraint `{}`",
+                                            name.0, constraint
+                                        ),
+                                    });
+                                }
+                                CheckResult::Unknown(msg) => return Err(CheckResult::Unknown(msg)),
+                            }
+                        }
+                    }
+
+                    env.insert(name.clone(), fresh);
+                }
+            }
+
             Stmt::Assign { name, .. } if immutable_names.contains(name) => {
                 return Err(CheckResult::Counterexample {
                     params: HashMap::new(),

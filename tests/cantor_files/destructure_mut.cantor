@@ -1,0 +1,20 @@
+-- Mutable destructuring: `mut` applies to all bindings.
+-- swap_pair demonstrates DestructMutLet followed by individual reassignments.
+-- Note: `a := b` cannot precede a tuple-expression next line due to a current
+-- parser limitation (bare ident before `\n(` is parsed as a call). See backlog.
+swap_pair : Int * Int -> Int * Int
+swap_pair(p) {
+    mut a : Int, b : Int = (p.0, p.1)
+    a := p.1
+    b := p.0
+    (a, b)
+}
+
+-- Destructuring reassignment: both a and b must already be `mut`
+-- main() swaps (-3, 4) → (4, -3); returns 4 + (-3) = 1
+main : -> Int
+main() {
+    mut a : Int, b : Int = (-3, 4)
+    a, b := (b, a)
+    a + b
+}

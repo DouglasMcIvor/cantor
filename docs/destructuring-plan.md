@@ -1,4 +1,10 @@
-# Destructuring assignment — implementation plan
+# Destructuring assignment — implementation plan (IMPLEMENTED in v0)
+
+> This plan has been fully implemented. See `src/ast.rs`, `src/parser/mod.rs`,
+> `src/solver/loops.rs`, `src/codegen/loops.rs`, `src/names.rs`,
+> and `tests/solver/destructuring.rs`, `tests/codegen/destructuring.rs`,
+> `tests/cantor_files/destructure_*.cantor`.
+> The parser limitation noted in the Open questions section is tracked in `backlog.md`.
 
 ## Agreed syntax
 

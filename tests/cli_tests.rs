@@ -560,3 +560,47 @@ fn tuple_bad_counterexample_mentions_range() {
         "expected 'not in Int16' in counterexample output:\n{}", out.stdout
     );
 }
+
+// ── Destructuring ─────────────────────────────────────────────────────────────
+
+#[test]
+fn destructure_basics_all_proved() {
+    let out = run_file("destructure_basics.cantor");
+    assert_eq!(out.code, 0, "destructure_basics.cantor should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected no failures:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn destructure_basics_run_produces_correct_output() {
+    let out = run_subcommand("destructure_basics.cantor");
+    assert_eq!(out.code, 0, "destructure_basics.cantor run should exit 0\nstdout: {}", out.stdout);
+    // main() returns -3 + 4 = 1
+    assert!(
+        out.stdout.contains("1"),
+        "expected output 1 from destructure_basics.cantor main:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn destructure_bad_gives_counterexample() {
+    let out = run_file("destructure_bad.cantor");
+    assert_ne!(out.code, 0, "destructure_bad.cantor should exit non-zero\nstdout: {}", out.stdout);
+    assert!(
+        out.stdout.contains("  counterexample  "),
+        "expected counterexample result line:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn destructure_mut_run_produces_correct_output() {
+    let out = run_subcommand("destructure_mut.cantor");
+    assert_eq!(out.code, 0, "destructure_mut.cantor run should exit 0\nstdout: {}", out.stdout);
+    // main() computes (-3 + 4) + (4 + -3) = 1 after swap; a+b = 4 + (-3) = 1
+    assert!(
+        out.stdout.contains("1"),
+        "expected output 1 from destructure_mut.cantor main:\n{}", out.stdout
+    );
+}

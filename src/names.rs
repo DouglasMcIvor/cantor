@@ -97,6 +97,11 @@ fn check_stmts(stmts: &[Stmt], errors: &mut Vec<CompileError>) {
     for stmt in stmts {
         match stmt {
             Stmt::Let { name, span, .. } | Stmt::MutLet { name, span, .. } => must_be_lowercase(&name.0, *span, errors),
+            Stmt::DestructLet { bindings, span, .. } | Stmt::DestructMutLet { bindings, span, .. } => {
+                for binding in bindings {
+                    must_be_lowercase(&binding.name.0, *span, errors);
+                }
+            }
             Stmt::Block(inner)              => check_stmts(inner, errors),
             Stmt::While { body, .. }        => check_stmts(body, errors),
             Stmt::ForIn { var, set, body, span, .. } => {
