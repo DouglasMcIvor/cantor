@@ -189,7 +189,7 @@ pub(crate) fn encode_expr<'tm>(
                 BinOp::And => Kind::And,
                 BinOp::Or  => Kind::Or,
                 BinOp::In | BinOp::NotIn => unreachable!("handled above"),
-                BinOp::Union | BinOp::ErrorUnion | BinOp::Intersect | BinOp::SymDiff => {
+                BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
                     return Err(format!("set operation `{op:?}` not yet encodable"))
                 }
             };
@@ -321,17 +321,15 @@ pub(crate) fn encode_expr<'tm>(
         // must satisfy A.  Without this assertion the solver cannot prove bindings
         // like `result : Nat = fetch(x)?` because the callee contract allows error
         // payloads (very negative sentinels) as well as success values.
+        // After `?` propagation succeeds, the result must be in the success set.
+        // We assert this so the solver knows the failure arm has been stripped.
+        // This is needed for both `| Fail` and `!! Y` (= `| (Fail * Y)`) callees.
         ExprKind::Try(inner) => {
             let result = enc!(inner)?;
             if let ExprKind::Call { callee, .. } = &inner.kind {
                 if let Some(callee_def) = fn_env.get(callee) {
                     if let Some(sig) = callee_def.sigs.first() {
-                        if let ExprKind::BinOp {
-                            op: BinOp::ErrorUnion,
-                            lhs: success_type,
-                            ..
-                        } = &sig.range.kind
-                        {
+                        if let Some(success_type) = success_arm_of_range(&sig.range) {
                             if let Membership::Constrained(c) =
                                 membership_constraint(tm, result.clone(), success_type, name_defs, distinct_preds)
                             {
@@ -506,22 +504,67 @@ pub(crate) fn set_sort<'tm>(tm: &'tm TermManager, set_expr: &Expr) -> Sort<'tm> 
     }
 }
 
-/// SMT sort for a range expression (strips `Fail`, `Union`, `ErrorUnion` wrappers).
+/// Return the success-only arm of a fallible range.
+///
+/// Strips `Fail` and `Fail * Y` arms from a union, returning the sub-expression
+/// that represents the success set.  Used by the `Try` encoding to assert that,
+/// after `?` propagation, the result lies in the success set.
+///
+/// Examples:
+///   `Nat | Fail`          → `Some(Nat)`
+///   `Nat | (Fail * Y)`    → `Some(Nat)`
+///   `Nat | Fail | (Fail * Y)` → `Some(Nat)`
+///   `Fail`                → `None`
+fn success_arm_of_range(range: &Expr) -> Option<&Expr> {
+    fn is_fail_arm(e: &Expr) -> bool {
+        matches!(&e.kind, ExprKind::Var(sym) if sym.0 == "Fail")
+            || matches!(
+                &e.kind,
+                ExprKind::BinOp { op: BinOp::Mul, lhs, .. }
+                    if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
+            )
+    }
+    if is_fail_arm(range) { return None; }
+    if let ExprKind::BinOp { op: BinOp::Union, lhs, rhs } = &range.kind {
+        if is_fail_arm(rhs) { return success_arm_of_range(lhs); }
+        if is_fail_arm(lhs) { return success_arm_of_range(rhs); }
+    }
+    Some(range)
+}
+
+/// SMT sort for a range expression (strips `Fail` and `Fail * Y` union wrappers).
 pub(crate) fn set_sort_for_range<'tm>(tm: &'tm TermManager, range: &Expr) -> Sort<'tm> {
     match &range.kind {
         ExprKind::Var(sym) if sym.0 == "Fail" => tm.integer_sort(),
-        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, .. } => set_sort_for_range(tm, lhs),
-        ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, .. } => set_sort_for_range(tm, lhs),
+        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
+            // Strip `Fail * Y` arm — the success sort is the other side.
+            let is_fail_product = |e: &Expr| matches!(
+                &e.kind,
+                ExprKind::BinOp { op: BinOp::Mul, lhs, .. }
+                    if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
+            );
+            if is_fail_product(rhs) { return set_sort_for_range(tm, lhs); }
+            if is_fail_product(lhs) { return set_sort_for_range(tm, rhs); }
+            set_sort_for_range(tm, lhs)
+        }
         _ => set_sort(tm, range),
     }
 }
 
-/// True if the range (after stripping Fail/Union/ErrorUnion wrappers) is a product type.
+/// True if the range (after stripping Fail/Union wrappers) is a product type.
 fn is_product_range(range: &Expr) -> bool {
     match &range.kind {
         ExprKind::BinOp { op: BinOp::Mul, .. } => true,
-        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, .. } => is_product_range(lhs),
-        ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, .. } => is_product_range(lhs),
+        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
+            let is_fail_product = |e: &Expr| matches!(
+                &e.kind,
+                ExprKind::BinOp { op: BinOp::Mul, lhs, .. }
+                    if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
+            );
+            if is_fail_product(rhs) { return is_product_range(lhs); }
+            if is_fail_product(lhs) { return is_product_range(rhs); }
+            is_product_range(lhs)
+        }
         ExprKind::Var(sym) if sym.0 == "Fail" => false,
         _ => false,
     }

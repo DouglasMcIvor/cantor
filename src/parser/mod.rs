@@ -512,6 +512,19 @@ impl<'src> Parser<'src> {
                 continue;
             }
 
+            // `!!` desugars to `lhs | (Fail * rhs)` — same precedences as before:
+            // lbp=6 so `A | B !! C` = `(A | B) !! C`, rbp=6 so `A !! B | C` = `A !! (B | C)`.
+            if self.peek() == &Token::BangBang {
+                if 6 <= min_bp { break; }
+                let op_span = self.peek_span();
+                self.advance()?;
+                let rhs = self.parse_expr(6)?;
+                let fail_var = Expr::new(ExprKind::Var(Symbol::new("Fail")), op_span);
+                let fail_product = make_binop(BinOp::Mul, fail_var, rhs, op_span);
+                lhs = make_binop(BinOp::Union, lhs, fail_product, op_span);
+                continue;
+            }
+
             let Some((left_bp, right_bp, op)) = self.peek_infix_op() else {
                 break;
             };
@@ -719,9 +732,6 @@ impl<'src> Parser<'src> {
             Token::Gt       => (5,  6,  BinOp::Gt),
             Token::GtEq     => (5,  6,  BinOp::Ge),
             Token::In       => (5,  6,  BinOp::In),
-            // `!!` binds below `|` on the left (so `A | B !! C` = `(A | B) !! C`)
-            // and at the same level on the right (so `A !! B | C` = `A !! (B | C)`).
-            Token::BangBang => (6,  6,  BinOp::ErrorUnion),
             Token::Pipe     => (7,  8,  BinOp::Union),
             Token::Caret    => (9,  10, BinOp::SymDiff),
             Token::Amp      => (11, 12, BinOp::Intersect),

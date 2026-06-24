@@ -37,15 +37,17 @@ fn collect_named_error_vals(range: &Expr, user_set_vals: &HashMap<String, Vec<i6
     }
 }
 
-/// Collect value lists for error sets declared via `!!` (error-union operator).
+/// Collect value lists for error sets declared via `!!` (desugared to `| (Fail * Y)`).
 ///
-/// For `Success !! ErrorSet`, the RHS is walked like a union of named sets.
+/// Walks the range looking for `Fail * ErrorSet` arms (each desugared from `!! ErrorSet`).
 /// The values are raw error codes; `compile_try` encodes them as
-/// `FAIL_SENTINEL + code + 1` for the comparison, and decodes on match.
+/// `FAIL_SENTINEL + code + 1` for the comparison and decodes on match.
 fn collect_error_union_vals(range: &Expr, user_set_vals: &HashMap<String, Vec<i64>>) -> Vec<Vec<i64>> {
     match &range.kind {
-        ExprKind::BinOp { op: BinOp::ErrorUnion, rhs, .. } => {
-            // RHS is the error set: may be a single named set or a union of named sets.
+        // `Fail * ErrorSet` — the RHS is the error set.
+        ExprKind::BinOp { op: BinOp::Mul, lhs, rhs }
+            if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail") =>
+        {
             collect_named_error_vals(rhs, user_set_vals)
         }
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
@@ -369,7 +371,7 @@ impl<'ctx> Compiler<'ctx> {
             BinOp::And => bool_op!(build_and, "and"),
             BinOp::Or  => bool_op!(build_or,  "or"),
             BinOp::In | BinOp::NotIn => unreachable!("handled above"),
-            BinOp::Union | BinOp::ErrorUnion | BinOp::Intersect | BinOp::SymDiff => {
+            BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
                 Err(CompileError::Internal("set operations not yet implemented".into()))
             }
         }

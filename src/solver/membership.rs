@@ -38,11 +38,13 @@ pub(crate) fn membership_constraint<'tm>(
     match &set_expr.kind {
         ExprKind::Var(sym) => match sym.0.as_str() {
             "Int"        => Membership::Unconstrained,
-            // Fail is the out-of-band failure sentinel — no integer value is ever
-            // in Fail.  Constrained(false) means "this predicate never holds for
-            // an integer t", which causes Nat | Fail to simplify to Nat >= 0
-            // correctly: (t >= 0) || false = (t >= 0).
-            "Fail"       => Membership::Constrained(tm.mk_boolean(false)),
+            // Fail is the failure singleton.  In the solver's integer model it is
+            // encoded as i64::MIN so that `Nat | Fail` correctly accepts the
+            // fail sentinel while rejecting all integers below zero.
+            "Fail"       => {
+                let sentinel = tm.mk_integer(i64::MIN);
+                Membership::Constrained(tm.mk_term(Kind::Equal, &[t, sentinel]))
+            }
             // Bool is handled at the sort level: boolean-sort terms are trivially
             // in Bool, and Bool-domain params are created as boolean-sort constants
             // (so no integer-theory constraint is needed).  Returning Unconstrained
@@ -137,40 +139,22 @@ pub(crate) fn membership_constraint<'tm>(
             }
         }
 
-        // `A !! B`  ↔  (t ∈ A)  ∨  (t − SENTINEL_BASE ∈ B)  ∨  (t == FAIL_SENTINEL)
+        // `Fail * B` — desugared from `!! B`.
         //
-        // The second clause covers `fail expr` payloads: `fail n` is encoded as
-        // FAIL_SENTINEL + n + 1 at runtime, so decoding is t − (FAIL_SENTINEL + 1).
-        // The third clause covers bare `fail` returned by assertion failures when
-        // there is no `else fail` clause.
-        ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, rhs } => {
-            let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
-
-            // Decode the potential payload and check it against the error set B.
+        // In the solver's integer model, `fail n` is encoded as i64::MIN + n + 1,
+        // so t ∈ Fail * B  ↔  (t − (i64::MIN + 1)) ∈ B.
+        // Bare `fail` (i64::MIN) is NOT in `Fail * B`; it belongs to bare `Fail`.
+        //
+        // We fall back to Unconstrained when B is unsupported so that an opaque
+        // error set never causes a valid `!!` range to be rejected.
+        ExprKind::BinOp { op: BinOp::Mul, lhs, rhs }
+            if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail") =>
+        {
             let sentinel_base = tm.mk_integer(i64::MIN.wrapping_add(1));
-            let decoded = tm.mk_term(Kind::Sub, &[t.clone(), sentinel_base]);
-            let in_b = membership_constraint(tm, decoded, rhs, name_defs, distinct_preds);
-
-            // Bare FAIL_SENTINEL — returned by asserts without an `else fail` clause.
-            let sentinel_val = tm.mk_integer(i64::MIN);
-            let is_bare_fail = tm.mk_term(Kind::Equal, &[t, sentinel_val]);
-
-            match (in_a, in_b) {
-                // If either side is unsupported we can't build a complete constraint.
-                // Fall back to Unconstrained rather than Unsupported so the solver
-                // never rejects a valid `!!` range just because B is opaque.
-                (Membership::Unsupported, _) | (_, Membership::Unsupported) => {
-                    Membership::Unconstrained
-                }
-                // A = ℤ: every integer qualifies regardless of the error set.
-                (Membership::Unconstrained, _) => Membership::Unconstrained,
-                // B = ℤ: any failure payload is valid.
-                (_, Membership::Unconstrained) => Membership::Unconstrained,
-                (Membership::Constrained(a), Membership::Constrained(b)) => {
-                    // (t ∈ A) ∨ (decoded ∈ B) ∨ (t == FAIL_SENTINEL)
-                    let fail_part = tm.mk_term(Kind::Or, &[b, is_bare_fail]);
-                    Membership::Constrained(tm.mk_term(Kind::Or, &[a, fail_part]))
-                }
+            let decoded = tm.mk_term(Kind::Sub, &[t, sentinel_base]);
+            match membership_constraint(tm, decoded, rhs, name_defs, distinct_preds) {
+                Membership::Unsupported => Membership::Unconstrained,
+                other => other,
             }
         }
 
@@ -403,7 +387,7 @@ fn encode_comp_expr<'tm>(
                 BinOp::And => Kind::And,
                 BinOp::Or  => Kind::Or,
                 BinOp::In | BinOp::NotIn => unreachable!("handled above"),
-                BinOp::Union | BinOp::ErrorUnion | BinOp::Intersect | BinOp::SymDiff => return None,
+                BinOp::Union | BinOp::Intersect | BinOp::SymDiff => return None,
             };
             Some(tm.mk_term(kind, &[l, r]))
         }

@@ -335,16 +335,17 @@ impl<'ctx> Compiler<'ctx> {
 
 /// True if the range expression can produce a failure value at runtime.
 ///
-/// This covers both the traditional `| Fail` union and the new `!!` error-union
-/// operator (which encodes errors as FAIL_SENTINEL + payload + 1).
+/// Covers `| Fail`, `| (Fail * Y)` (desugared from `!! Y`), and their unions.
 pub fn range_contains_fail(range: &Expr) -> bool {
     match &range.kind {
         ExprKind::Var(sym) => sym.0 == "Fail",
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             range_contains_fail(lhs) || range_contains_fail(rhs)
         }
-        // `A !! B` always permits runtime failure.
-        ExprKind::BinOp { op: BinOp::ErrorUnion, .. } => true,
+        // `Fail * Y` — desugared from `!! Y`; always a failure arm.
+        ExprKind::BinOp { op: BinOp::Mul, lhs, .. } => {
+            matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
+        }
         _ => false,
     }
 }

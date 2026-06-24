@@ -137,8 +137,7 @@ pub enum BinOp {
     In,
     NotIn,
     // Set operations (codegen stubs until sets are implemented)
-    Union,      // |
-    ErrorUnion, // !! — sugar for `Success | (Fail * Error)`; solver sees a genuine disjoint union
+    Union,      // |  — `X !! Y` desugars to `X | (Fail * Y)` at parse time
     Intersect,  // &
     SymDiff,    // ^
     // Logical (expect Bool operands)
@@ -430,8 +429,7 @@ fn binop_prec(op: &BinOp) -> u8 {
         BinOp::And                              => 2,
         BinOp::Eq | BinOp::Ne | BinOp::Lt
         | BinOp::Le | BinOp::Gt | BinOp::Ge
-        | BinOp::In | BinOp::NotIn
-        | BinOp::ErrorUnion                     => 3,
+        | BinOp::In | BinOp::NotIn              => 3,
         BinOp::Union                            => 4,
         BinOp::SymDiff                          => 5,
         BinOp::Intersect                        => 6,
@@ -456,7 +454,6 @@ impl fmt::Display for BinOp {
             Self::In        => "in",
             Self::NotIn     => "not in",
             Self::Union      => "|",
-            Self::ErrorUnion => "!!",
             Self::Intersect  => "&",
             Self::SymDiff    => "^",
             Self::And       => "and",

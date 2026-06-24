@@ -197,8 +197,10 @@ fn range_contains_fail(range: &Expr) -> bool {
         ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
             range_contains_fail(lhs) || range_contains_fail(rhs)
         }
-        // `A !! B` — always permits runtime failure (the `!!` encodes it as an offset value).
-        ExprKind::BinOp { op: BinOp::ErrorUnion, .. } => true,
+        // `Fail * Y` — desugared from `!! Y`; always a failure arm.
+        ExprKind::BinOp { op: BinOp::Mul, lhs, .. } => {
+            matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
+        }
         _ => false,
     }
 }

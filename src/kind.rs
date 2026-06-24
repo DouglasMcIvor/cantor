@@ -75,6 +75,19 @@ pub fn flatten_disjoint_union(expr: &Expr) -> Vec<&Expr> {
     }
 }
 
+/// True if an expression is a pure failure arm — either bare `Fail` or `Fail * Y`
+/// (the desugared form of `!! Y`).  These arms do not contribute to the success
+/// wire kind and are stripped by `range_kind`'s Union rule.
+fn is_fail_arm(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Var(sym) if sym.0 == "Fail" => true,
+        ExprKind::BinOp { op: BinOp::Mul, lhs, .. } => {
+            matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
+        }
+        _ => false,
+    }
+}
+
 /// The runtime Kind of a function's return value, given its range expression.
 ///
 /// `Fail` is the out-of-band failure sentinel and does not change the Kind of
@@ -85,8 +98,12 @@ pub fn range_kind(range: &Expr) -> Kind {
             if sym.0 == "Fail" { Kind::Int } else { set_kind(range) }
         }
         // `A | B` — plain union; dominant-kind rule strips Fail/Union wrappers so
-        // the success-path kind is not masked by the failure sentinel.
+        // the success-path kind is not masked by the failure arm.
+        // `Fail * Y` arms (desugared from `!!`) are also stripped: they are always
+        // failure-only and do not contribute to the success wire kind.
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+            if is_fail_arm(lhs) { return range_kind(rhs); }
+            if is_fail_arm(rhs) { return range_kind(lhs); }
             let lk = range_kind(lhs);
             let rk = range_kind(rhs);
             // Set dominates Bool dominates Tuple dominates Int.
@@ -104,9 +121,6 @@ pub fn range_kind(range: &Expr) -> Kind {
             let arms = flatten_disjoint_union(range);
             Kind::Union(arms.into_iter().map(range_kind).collect())
         }
-        // `Success !! ErrorSet` — the kind is the success type's kind; the error
-        // payload is always i64 and encoded out-of-band by the FAIL_SENTINEL offset.
-        ExprKind::BinOp { op: BinOp::ErrorUnion, lhs, .. } => range_kind(lhs),
         _ => set_kind(range),
     }
 }

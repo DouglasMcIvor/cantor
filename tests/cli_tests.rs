@@ -377,12 +377,13 @@ fn error_union_proof_shows_proved() {
 }
 
 #[test]
-fn error_union_proof_signature_contains_bang_bang() {
-    // The CLI should display `fetch : Int -> Nat !! HTTPError` verbatim.
+fn error_union_proof_signature_shows_desugared_range() {
+    // `!!` desugars to `| (Fail * ...)` at parse time, so the displayed signature
+    // shows the canonical form rather than the original `!!` notation.
     let out = run_file("error_union_proof.cantor");
     assert!(
-        out.stdout.contains("Nat !! HTTPError"),
-        "expected 'Nat !! HTTPError' in signature output:\n{}", out.stdout
+        out.stdout.contains("Nat | Fail * HTTPError"),
+        "expected 'Nat | Fail * HTTPError' in signature output:\n{}", out.stdout
     );
 }
 
