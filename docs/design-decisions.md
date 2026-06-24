@@ -125,30 +125,28 @@ implementation detail the developer should not rely on.
 1. **Class 1 — domain/range violations ("normal" errors).**
    - **`Fail` as built-in set, explicit `| Fail` in range**: a function
      that can fail at runtime declares this in its range: `f : Int -> Nat | Fail`.
-     `Fail` is a named built-in singleton set containing the sentinel value `fail`;
-     it is not a generic `Option`/`Result` wrapper from a type system.
-   - **`fail` literal and `fail expr`**: `fail` produces the bare sentinel;
-     `fail 400` constructs a tagged failure with payload 400. Inside a `!!`
-     function (see below) the payload is offset-encoded to stay distinguishable
-     from success values even when they are numerically equal (`Int !! HTTPError`
-     can return both a success 400 and a fail 400).
-   - **Error-union operator `!!`** — `Success !! ErrorSet` is shorthand for
-     the disjoint union of a success type and a set of tagged failure payloads.
-     Example: `fetch : Int -> Int !! HTTPError`. The `?` operator on a `!!`
-     callee **decodes** the failure payload back to its raw value before
-     propagating, so the caller sees `400` (not the encoding). The runtime
-     encoding uses `FAIL_SENTINEL + code + 1` (offset encoding); the solver
-     treats `!!` ranges as unconstrained (v0 pragmatic hack — both go away
-     when product values land at the "Namespaces and structured data" milestone).
+     `Fail` is a named built-in singleton set; it is the tag, not a generic
+     `Option`/`Result` wrapper.
+   - **`fail` literal and `fail expr`**: `fail` produces a bare failure; `fail
+     400` constructs a tagged failure with payload 400. Fallible functions return
+     a `{i1, i64}` struct at the LLVM level: flag i1=1 means failure, flag i1=0
+     means success. Success and failure are always distinguishable regardless of
+     the numeric value — `success 400` and `fail 400` are distinct because the
+     flag bit differs.
+   - **Error-union operator `!!`** — `Success !! ErrorSet` desugars at parse
+     time to `Success | (Fail * ErrorSet)`. Example: `fetch : Int -> Int !!
+     HTTPError`. Semantically equivalent to `Success | (Fail * HTTPError)`.
+     The `?` operator on any fallible callee propagates the failure struct
+     unchanged; no decoding is needed since the error code is the payload field.
    - **Short-circuit (monadic) semantics**, explicit postfix `?` at each
-     fallible call site for local visibility: `f(x)?` propagates `Fail`
-     (or the relevant error set/payload) from the callee up to the caller.
+     fallible call site for local visibility: `f(x)?` propagates the failure
+     struct from the callee up to the caller unchanged.
      The caller must also declare `Fail` or `!!` in its range.
      Using `?` in an infallible function (range without `Fail` or `!!`) is a
      compile error.
    - **`assert … else fail expr`** — when the predicate is false, returns
-     `fail expr` (offset-encoded) instead of jumping to the generic fail
-     sentinel. Useful inside `!!` functions to return a specific error code.
+     `{i1=1, i64=expr}` (a typed failure struct). Useful inside `!!` functions
+     to return a specific error code.
    - **`assert … else return expr`** — when the predicate is false, returns
      `expr` directly (early exit with a success value).
    - Three narrowing statements (not function calls); syntax and semantics
@@ -724,8 +722,8 @@ assert x > 0 else fail 400      -- return fail 400 on assertion failure
 assert x > 0 else return -1     -- return -1 directly on assertion failure
 ```
 
-The `else fail expr` form is only valid in functions whose range includes `!!`
-(the offset-encoded failure propagation machinery).  The `else return expr`
+The `else fail expr` form is only valid in functions whose range includes
+`| Fail` or `!!` (i.e. declares a fallible return).  The `else return expr`
 form is valid in any function and exits early with a success value.
 
 ### Loop syntax (DECIDED)
@@ -985,32 +983,30 @@ Three mechanisms in order of increasing programmer responsibility:
    wrong — produces silently incorrect results at runtime, same as
    `assume` everywhere else in the language (§4).
 
-### Error sentinel
+### Error handling wire format
 
-- **`Fail`** — built-in singleton set `{fail}` containing the unique failure
-  sentinel. No integer value is ever in `Fail`; it is the out-of-band signal
-  returned when an `assert` fails at runtime.
-  - `fail` (bare) — the singleton member of `Fail`. Runtime value: `i64::MIN`.
-  - `fail expr` — a tagged failure with integer payload. Runtime value:
-    `i64::MIN + expr + 1` (offset encoding; see `!!` below).
-  - A fallible function declares this in its range: `f : Int -> Nat | Fail`.
+- **`Fail`** — built-in singleton set representing the failure tag. A fallible
+  function declares `Fail` in its range: `f : Int -> Nat | Fail`.
+  - `fail` (bare) — produces `{i1=1, i64=0}` at the LLVM level.
+  - `fail expr` — a typed failure with integer payload: `{i1=1, i64=expr}`.
+    Success `n` and `fail n` are always distinct because the i1 flag differs.
+  - At the LLVM level, any function whose range includes `Fail` (directly or
+    via `!!`) returns a `{i1, i64}` struct. Flag i1=0 means success (payload
+    is the return value); flag i1=1 means failure (payload is the error code,
+    or 0 for a bare `fail`).
 
-- **`!!` error-union** — `Success !! ErrorSet` is the ergonomic form for
-  "success or one of a known set of error codes." Semantically equivalent to
-  `Success | (Fail * ErrorSet)` with v0 pragmatic encoding:
-  - `fail n` compiles to `i64::MIN + n + 1` so success `n` and `fail n` are
-    never the same i64 value (no ambiguity even when `Success` contains `n`).
-  - The `?` operator on a `!! ErrorSet` callee checks the encoded values,
-    decodes the payload (`result - i64::MIN - 1`), and returns the raw code.
-  - The solver treats `!! ErrorSet` ranges as `Unconstrained` (it cannot
-    reason about the encoding without product-type support).
-  - Both the solver and codegen hacks go away together when union values
-    land at the "Namespaces and structured data" milestone.
+- **`!!` error-union** — `Success !! ErrorSet` desugars at parse time to
+  `Success | (Fail * ErrorSet)`. No offset encoding, no runtime decoding:
+  the failure struct carries the error code directly in the i64 payload field.
+  The solver treats `Fail * ErrorSet` union arms using membership constraints
+  on the product set.
 
 - Named domain-specific error sets (e.g. `HTTPError = {400, 503}`) are
-  user-defined sets. `T | HTTPError` uses plain set union with no encoding
-  (the error codes propagate at face value via `?`). `T !! HTTPError` uses
-  the offset encoding so success-`T` and `fail HTTPError` are always distinct.
+  user-defined sets. `T | HTTPError` and `T !! HTTPError` are both represented
+  as `{i1, i64}` at runtime; the error code propagates at face value via `?`.
+  `T | HTTPError` is plain set union (success values may overlap error codes
+  numerically, distinguished only by the flag). `T !! HTTPError` desugars to
+  `T | (Fail * HTTPError)` and has the same wire format.
 
 ### Natural numbers and other named subsets
 

@@ -443,13 +443,13 @@ fn error_union_propagate_proves_all_sigs() {
 }
 
 #[test]
-fn error_union_propagate_returns_decoded_error_code() {
-    // fetch(-1) fails with `fail 503`; `?` in main decodes it and returns 503.
+fn error_union_propagate_exits_with_error_code() {
+    // fetch(-1) fails with `fail 503`; `?` propagates it; main exits 1 reporting 503.
     let out = run_subcommand("error_union_propagate.cantor");
-    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert_eq!(out.code, 1, "expected exit 1 (failure)\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
     assert!(
-        out.stdout.contains("main() = 503"),
-        "expected 'main() = 503' in output:\n{}", out.stdout
+        out.stderr.contains("503"),
+        "expected error code 503 in stderr:\n{}", out.stderr
     );
 }
 

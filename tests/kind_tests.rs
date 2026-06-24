@@ -22,9 +22,10 @@ fn set_kind_of_set_nat() {
 
 #[test]
 fn range_kind_set_int_or_fail() {
-    // `Set(Int) | Fail` — the Fail branch must not clobber the Set kind.
+    // `Set(Int) | Fail` — the presence of Fail produces the fallible struct wire type.
+    // On success the i64 payload holds the set pointer; on failure flag=1, payload=0.
     let set_int = Expr::call("Set", vec![Expr::var("Int")]);
     let fail    = Expr::var("Fail");
     let union   = Expr::binop(BinOp::Union, set_int, fail);
-    assert_eq!(range_kind(&union), Kind::Set(SetElemKind::Int));
+    assert_eq!(range_kind(&union), Kind::Tuple(vec![Kind::Fail, Kind::Int]));
 }

@@ -40,7 +40,7 @@ This codebase is growing! Which means our development requires a bit more care a
 
 ## Design process
 
-1. I strongly appreciate being that I'm wrong, particularly with succinct counter examples! That's how I learn! Some LLMs can be overly syncophantic at times, don't feel the need to keep me happy!
+1. I strongly appreciate being told that I'm wrong, particularly with succinct counter examples! That's how I learn! Some LLMs can be overly syncophantic at times, don't feel the need to keep me happy!
 2. In a similar vein: try not to make assumptions about things if you are unsure. I like to know how confident you feel whenyou tell me something. I find someone jumping to a conclusion that I can immediately tell is wrong, and then stating it _with confidence_ quite offputting. Being wrong is absolutely fine! What I don't like is someone being unjustifiably confident or unjustifiably unsure. (Perhaps you can tell that I'm a fan of the Bayesian approach to probability? :-P)
 
 ## Code changes
@@ -48,7 +48,9 @@ This codebase is growing! Which means our development requires a bit more care a
 1. If a suggested change is very large then consider suggesting to the user that it is made in multiple steps.
 2. One natural way to break down some large changes could be parser/codegen/solver changes as three distinct steps.
 3. Temporary short cuts are fine and to be expected, but be explicit to the user about any short cuts you have taken so that they know to address them in future! A TODO that sneaks in and isn't addressed in a timely manner may cost us later on.
-4. All code changes should be concluded with both new CLI end-to-end tests and documentation updates.
+4. All temporary short cuts or hacks need be marked clearly with a TODO comment so they are easy to discover in the future
+5. All code changes should be concluded with both new CLI end-to-end tests and documentation updates.
+6. Use TDD where sensible! If we are introducing new functionality and we are very confident on the interface it exposes then it makes sense to write the tests first and watch them go incrementally green over each step of the change.
 
 ## Documentation updates
 

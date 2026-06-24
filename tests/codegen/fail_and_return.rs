@@ -1,39 +1,54 @@
-use super::helpers::{jit_src_one_arg, jit_src_zero_arg};
-
-const FAIL_SENTINEL: i64 = i64::MIN;
+use super::helpers::{jit_src_one_arg, jit_src_zero_arg, jit_src_zero_arg_fallible};
 
 // ── `fail` literal and `fail expr` expressions ────────────────────────────────
 
-/// A function returning bare `fail` emits FAIL_SENTINEL.
+/// A zero-arg function returning bare `fail` returns a failure struct (flag=1, code=0).
 #[test]
-fn fail_lit_returns_sentinel() {
+fn fail_lit_causes_failure() {
     let src = r#"
 main : -> Int | Fail
 main() = fail
 "#;
-    assert_eq!(jit_src_zero_arg(src), FAIL_SENTINEL);
+    assert_eq!(jit_src_zero_arg_fallible(src), Err(0));
 }
 
-/// `fail 400` encodes as FAIL_SENTINEL + 401 (offset-encoded; distinguishable from success 400).
+/// `fail 400` causes a failure with error code 400.
 #[test]
-fn fail_with_encodes_offset() {
+fn fail_with_carries_error_code() {
     let src = r#"
 HTTPError = {400, 503}
 
 fetch : Int -> Int !! HTTPError
 fetch(x) = if x > 0 then x else fail 400
 
-main : Int -> Int
-main(x) = fetch(x)
+main : -> Int !! HTTPError
+main() {
+    result : Int = fetch(0)?
+    result
+}
 "#;
-    // On success (x=1): raw value is 1.
-    assert_eq!(jit_src_one_arg(src, 1), 1);
-    // On failure (x=0): raw encoded value is FAIL_SENTINEL + 401.
-    let encoded_400 = FAIL_SENTINEL.wrapping_add(401);
-    assert_eq!(jit_src_one_arg(src, 0), encoded_400);
+    assert_eq!(jit_src_zero_arg_fallible(src), Err(400));
 }
 
-/// Success value 400 is NOT confused with `fail 400` — they are distinct i64 values.
+/// Success path: `fail 400` is not emitted when the predicate holds.
+#[test]
+fn fail_with_success_path() {
+    let src = r#"
+HTTPError = {400, 503}
+
+fetch : Int -> Int !! HTTPError
+fetch(x) = if x > 0 then x else fail 400
+
+main : -> Int !! HTTPError
+main() {
+    result : Int = fetch(1)?
+    result
+}
+"#;
+    assert_eq!(jit_src_zero_arg_fallible(src), Ok(1));
+}
+
+/// Success value 400 is NOT confused with `fail 400` — the flag bit distinguishes them.
 #[test]
 fn success_400_not_confused_with_fail_400() {
     let src = r#"
@@ -42,13 +57,14 @@ HTTPError = {400, 503}
 fetch : Int -> Int !! HTTPError
 fetch(x) = if x > 0 then x else fail 400
 
-main : Int -> Int
-main(x) = fetch(x)
+main : -> Int !! HTTPError
+main() {
+    result : Int = fetch(400)?
+    result
+}
 "#;
-    // fetch(400) returns success 400, not fail 400.
-    assert_eq!(jit_src_one_arg(src, 400), 400);
-    // fetch(0) returns fail 400, encoded as FAIL_SENTINEL + 401.
-    assert_ne!(jit_src_one_arg(src, 0), 400);
+    // fetch(400) returns success 400 (flag=0, payload=400).
+    assert_eq!(jit_src_zero_arg_fallible(src), Ok(400));
 }
 
 // ── `?` on `!!` callees: success path ─────────────────────────────────────────
@@ -62,36 +78,34 @@ HTTPError = {400, 503}
 fetch : Int -> Int !! HTTPError
 fetch(x) = if x > 0 then x else fail 400
 
-main : Int -> Int !! HTTPError
-main(x) {
-    result : Int = fetch(x)?
+main : -> Int !! HTTPError
+main() {
+    result : Int = fetch(42)?
     result
 }
 "#;
-    assert_eq!(jit_src_one_arg(src, 42), 42);
-    assert_eq!(jit_src_one_arg(src, 1), 1);
+    assert_eq!(jit_src_zero_arg_fallible(src), Ok(42));
 }
 
-/// `?` on a `!!` callee decodes `fail 400` → 400 and returns it.
+/// `?` on a `!!` callee propagates `fail 400` as an error with code 400.
 #[test]
-fn error_union_try_propagates_decoded_error() {
+fn error_union_try_propagates_error() {
     let src = r#"
 HTTPError = {400, 503}
 
 fetch : Int -> Int !! HTTPError
 fetch(x) = if x > 0 then x else fail 400
 
-main : Int -> Int !! HTTPError
-main(x) {
-    result : Int = fetch(x)?
+main : -> Int !! HTTPError
+main() {
+    result : Int = fetch(0)?
     result
 }
 "#;
-    // x=0: fetch returns fail 400, ? decodes to 400 and main returns 400.
-    assert_eq!(jit_src_one_arg(src, 0), 400);
+    assert_eq!(jit_src_zero_arg_fallible(src), Err(400));
 }
 
-/// `?` decodes `fail 503` → 503 correctly.
+/// `?` propagates `fail 503` with the correct error code.
 #[test]
 fn error_union_try_propagates_503() {
     let src = r#"
@@ -100,17 +114,16 @@ HTTPError = {400, 503}
 fetch : Int -> Int !! HTTPError
 fetch(x) = if x > 0 then x else fail 503
 
-main : Int -> Int !! HTTPError
-main(x) {
-    result : Int = fetch(x)?
+main : -> Int !! HTTPError
+main() {
+    result : Int = fetch(0)?
     result
 }
 "#;
-    assert_eq!(jit_src_one_arg(src, 0), 503);
-    assert_eq!(jit_src_one_arg(src, 7), 7);
+    assert_eq!(jit_src_zero_arg_fallible(src), Err(503));
 }
 
-/// Chained `?` calls: first failure short-circuits.
+/// Chained `?` calls: first failure short-circuits before the second call.
 #[test]
 fn error_union_chained_try_first_fails() {
     let src = r#"
@@ -119,17 +132,34 @@ HTTPError = {400, 503}
 fetch : Int -> Int !! HTTPError
 fetch(x) = if x > 0 then x else fail 400
 
-main : Int -> Int !! HTTPError
-main(x) {
-    a : Int = fetch(x)?
-    b : Int = fetch(x + 1)?
+main : -> Int !! HTTPError
+main() {
+    a : Int = fetch(0)?
+    b : Int = fetch(1)?
     a + b
 }
 "#;
-    // x=0: fetch(0) → fail 400, propagated immediately; b never called.
-    assert_eq!(jit_src_one_arg(src, 0), 400);
-    // x=5: fetch(5)=5, fetch(6)=6 → 11.
-    assert_eq!(jit_src_one_arg(src, 5), 11);
+    // fetch(0) fails; b is never evaluated.
+    assert_eq!(jit_src_zero_arg_fallible(src), Err(400));
+}
+
+/// Chained `?` calls succeed when all callees succeed.
+#[test]
+fn error_union_chained_try_both_succeed() {
+    let src = r#"
+HTTPError = {400, 503}
+
+fetch : Int -> Int !! HTTPError
+fetch(x) = if x > 0 then x else fail 400
+
+main : -> Int !! HTTPError
+main() {
+    a : Int = fetch(5)?
+    b : Int = fetch(6)?
+    a + b
+}
+"#;
+    assert_eq!(jit_src_zero_arg_fallible(src), Ok(11));
 }
 
 // ── `return` statement ────────────────────────────────────────────────────────
@@ -166,30 +196,39 @@ main(x) {
 
 // ── `assert … else fail expr` ────────────────────────────────────────────────
 
-/// `assert pred else fail expr` returns the encoded failure when pred is false.
+/// `assert pred else fail expr` causes failure with the given code when pred is false.
 #[test]
-fn assert_else_fail_returns_encoded_error() {
+fn assert_else_fail_causes_failure() {
     let src = r#"
 HTTPError = {400, 503}
 
-main : Int -> Int !! HTTPError
-main(x) {
-    assert x > 0 else fail 400
-    x
+main : -> Int !! HTTPError
+main() {
+    assert 0 > 0 else fail 400
+    42
 }
 "#;
-    // x=5: assertion passes, returns 5.
-    assert_eq!(jit_src_one_arg(src, 5), 5);
-    // x=0: assertion fails, returns fail 400 → caller sees 400 after decode.
-    // (In main the raw encoded value is returned; from outside the !! contract
-    //  the encoded value propagates as-is since no outer ? is applied here.)
-    let encoded_400 = FAIL_SENTINEL.wrapping_add(401);
-    assert_eq!(jit_src_one_arg(src, 0), encoded_400);
+    assert_eq!(jit_src_zero_arg_fallible(src), Err(400));
 }
 
-/// Caller uses `?` to decode the `else fail` result.
+/// `assert pred else fail expr` succeeds normally when pred is true.
 #[test]
-fn assert_else_fail_decoded_by_caller() {
+fn assert_else_fail_success_path() {
+    let src = r#"
+HTTPError = {400, 503}
+
+main : -> Int !! HTTPError
+main() {
+    assert 1 > 0 else fail 400
+    42
+}
+"#;
+    assert_eq!(jit_src_zero_arg_fallible(src), Ok(42));
+}
+
+/// Caller uses `?` to propagate the `else fail` failure.
+#[test]
+fn assert_else_fail_propagated_by_try() {
     let src = r#"
 HTTPError = {400, 503}
 
@@ -199,16 +238,34 @@ guard(x) {
     x
 }
 
-main : Int -> Int !! HTTPError
-main(x) {
-    v : Int = guard(x)?
+main : -> Int !! HTTPError
+main() {
+    v : Int = guard(0)?
     v
 }
 "#;
-    // x=7: guard passes, main returns 7.
-    assert_eq!(jit_src_one_arg(src, 7), 7);
-    // x=0: guard fails with fail 400, ? decodes to 400, main returns 400.
-    assert_eq!(jit_src_one_arg(src, 0), 400);
+    assert_eq!(jit_src_zero_arg_fallible(src), Err(400));
+}
+
+/// `assert pred else fail` success path passes through the result.
+#[test]
+fn assert_else_fail_caller_success() {
+    let src = r#"
+HTTPError = {400, 503}
+
+guard : Int -> Int !! HTTPError
+guard(x) {
+    assert x > 0 else fail 400
+    x
+}
+
+main : -> Int !! HTTPError
+main() {
+    v : Int = guard(7)?
+    v
+}
+"#;
+    assert_eq!(jit_src_zero_arg_fallible(src), Ok(7));
 }
 
 // ── `assert … else return expr` ──────────────────────────────────────────────
@@ -227,4 +284,16 @@ main(x) {
     assert_eq!(jit_src_one_arg(src, 5), 10);
     // x=0: assertion fails, returns -1 directly.
     assert_eq!(jit_src_one_arg(src, 0), -1);
+}
+
+// ── zero-arg helpers (non-fallible) ──────────────────────────────────────────
+
+/// Basic zero-arg smoke test (non-fallible).
+#[test]
+fn zero_arg_constant_return() {
+    let src = r#"
+main : -> Int
+main() = 42
+"#;
+    assert_eq!(jit_src_zero_arg(src), 42);
 }

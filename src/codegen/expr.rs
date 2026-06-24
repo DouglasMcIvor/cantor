@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use inkwell::{
     IntPredicate,
     values::{AggregateValueEnum, BasicValueEnum},
@@ -12,52 +10,8 @@ use crate::{
     span::{Span, Symbol},
 };
 
-use super::{Compiler, Env, FAIL_SENTINEL, range_contains_fail};
+use super::{Compiler, Env};
 
-/// Collect the pre-expanded integer-value lists for all user-defined named sets
-/// that appear in a range union.  `Fail` and built-in sets (Nat, Int, Bool, …)
-/// are ignored — only sets present in `user_set_vals` are returned.
-fn collect_named_error_vals(range: &Expr, user_set_vals: &HashMap<String, Vec<i64>>) -> Vec<Vec<i64>> {
-    match &range.kind {
-        ExprKind::Var(sym) => {
-            if sym.0 == "Fail" {
-                return vec![];
-            }
-            if let Some(vals) = user_set_vals.get(sym.0.as_str()) {
-                return vec![vals.clone()];
-            }
-            vec![]
-        }
-        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
-            let mut sets = collect_named_error_vals(lhs, user_set_vals);
-            sets.extend(collect_named_error_vals(rhs, user_set_vals));
-            sets
-        }
-        _ => vec![],
-    }
-}
-
-/// Collect value lists for error sets declared via `!!` (desugared to `| (Fail * Y)`).
-///
-/// Walks the range looking for `Fail * ErrorSet` arms (each desugared from `!! ErrorSet`).
-/// The values are raw error codes; `compile_try` encodes them as
-/// `FAIL_SENTINEL + code + 1` for the comparison and decodes on match.
-fn collect_error_union_vals(range: &Expr, user_set_vals: &HashMap<String, Vec<i64>>) -> Vec<Vec<i64>> {
-    match &range.kind {
-        // `Fail * ErrorSet` — the RHS is the error set.
-        ExprKind::BinOp { op: BinOp::Mul, lhs, rhs }
-            if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail") =>
-        {
-            collect_named_error_vals(rhs, user_set_vals)
-        }
-        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
-            let mut sets = collect_error_union_vals(lhs, user_set_vals);
-            sets.extend(collect_error_union_vals(rhs, user_set_vals));
-            sets
-        }
-        _ => vec![],
-    }
-}
 
 impl<'ctx> Compiler<'ctx> {
     pub(crate) fn compile_expr(
@@ -93,19 +47,16 @@ impl<'ctx> Compiler<'ctx> {
             )),
             ExprKind::Try(inner) => self.compile_try(inner, env),
             ExprKind::FailLit => {
-                let sentinel = self.context.i64_type().const_int(FAIL_SENTINEL as u64, true);
-                Ok((sentinel.into(), Kind::Int))
+                // fail → {i1=1, i64=0}
+                let zero = self.context.i64_type().const_int(0, false);
+                let v = self.build_fail_struct(zero.into())?;
+                Ok((v, Kind::Tuple(vec![Kind::Fail, Kind::Int])))
             }
             ExprKind::FailWith(inner) => {
+                // fail n → {i1=1, i64=n}
                 let (v, _) = self.compile_expr(inner, env)?;
-                let n = v.into_int_value();
-                let i64t = self.context.i64_type();
-                // fail n → FAIL_SENTINEL + n + 1 (offset-encoded so 400 != fail 400)
-                let base = i64t.const_int(FAIL_SENTINEL.wrapping_add(1) as u64, true);
-                let encoded = self.builder
-                    .build_int_add(base, n, "fail_encoded")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
-                Ok((encoded.into(), Kind::Int))
+                let s = self.build_fail_struct(v)?;
+                Ok((s, Kind::Tuple(vec![Kind::Fail, Kind::Int])))
             }
             ExprKind::Tuple(elems) => self.compile_tuple(elems, env),
             ExprKind::Proj { base, index } => self.compile_proj(base, *index, env),
@@ -117,106 +68,45 @@ impl<'ctx> Compiler<'ctx> {
         inner: &Expr,
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
-        let (val, _) = self.compile_expr(inner, env)?;
-        let result_i64 = val.into_int_value();
+        let (val, _kind) = self.compile_expr(inner, env)?;
+
+        if !val.is_struct_value() {
+            return Err(CompileError::Internal(
+                "`?` applied to a non-fallible expression (expected `{i1, i64}` struct return)"
+                    .into(),
+            ));
+        }
 
         let function = self
             .current_fn
             .ok_or_else(|| CompileError::Internal("`?` outside a function".into()))?;
 
-        let i64_type = self.context.i64_type();
+        let struct_val = val.into_struct_value();
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
 
-        // Determine error-checking strategy from the callee's declared range.
-        // When `?` wraps a non-Call expression (unusual) we fall back to the
-        // Fail-sentinel check so existing behaviour is preserved.
-        let callee_range: Option<&Expr> = if let ExprKind::Call { callee, .. } = &inner.kind {
-            self.fn_ranges.get(&callee.0)
-        } else {
-            None
-        };
+        // Extract the fail flag (field 0 = i1).
+        let fail_flag = self.builder
+            .build_extract_value(struct_val, 0, "try_flag")
+            .map_err(err)?
+            .into_int_value();
 
-        let check_fail = callee_range
-            .map(range_contains_fail)
-            .unwrap_or(true); // fallback: assume Fail when range is unknown
-
-        // Raw error codes from `!!` error-union ranges (encoded as FAIL_SENTINEL + n + 1).
-        let error_union_sets: Vec<Vec<i64>> = callee_range
-            .map(|r| collect_error_union_vals(r, &self.user_set_vals))
-            .unwrap_or_default();
-
-        if !check_fail && error_union_sets.is_empty() {
-            return Err(CompileError::Internal(
-                "`?` used on a callee whose range contains neither `| Fail` nor `!!` \
-                 — use `!!` to declare typed failures, or remove `?`"
-                    .into(),
-            ));
-        }
-
-        // ── 1. Fail-sentinel check (for `| Fail` and `!!` callees) ──
-        // `!!` callees can also return bare FAIL_SENTINEL from assert failures.
-        if check_fail {
-            let Some(fail_bb) = self.fail_bb else {
-                return Err(CompileError::Internal(
-                    "`?` propagates `Fail` but the current function does not declare \
-                     `| Fail` or `!!` in its range"
-                        .into(),
-                ));
-            };
-
-            let sentinel = i64_type.const_int(FAIL_SENTINEL as u64, true);
-            let is_fail = self
-                .builder
-                .build_int_compare(IntPredicate::EQ, result_i64, sentinel, "is_fail")
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
-
-            let after_fail_bb = self
-                .context
-                .append_basic_block(function, "try_after_fail");
-            self.builder
-                .build_conditional_branch(is_fail, fail_bb, after_fail_bb)
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
-            self.builder.position_at_end(after_fail_bb);
-        }
-
-        // ── 2. Error-union checks (`!! HTTPError`): decode FAIL_SENTINEL+n+1 → n ──
-        // The base constant is FAIL_SENTINEL + 1; decoding is `result - base`.
-        let eu_base = i64_type.const_int(FAIL_SENTINEL.wrapping_add(1) as u64, true);
-        for raw_vals in &error_union_sets {
-            // Compute the encoded sentinel value for each raw error code.
-            let encoded_vals: Vec<i64> = raw_vals
-                .iter()
-                .map(|&n| FAIL_SENTINEL.wrapping_add(n).wrapping_add(1))
-                .collect();
-            let is_error = self.build_int_set_membership(result_i64, &encoded_vals)?;
-
-            let err_ret_bb = self.context.append_basic_block(function, "try_eu_err");
-            let next_bb   = self.context.append_basic_block(function, "try_eu_after");
-
-            self.builder
-                .build_conditional_branch(is_error, err_ret_bb, next_bb)
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
-
-            // On error: decode the payload (result - base) and return it.
-            self.builder.position_at_end(err_ret_bb);
-            let decoded = self.builder
-                .build_int_sub(result_i64, eu_base, "eu_decoded")
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
-            let ret_val: BasicValueEnum<'ctx> = decoded.into();
-            self.builder
-                .build_return(Some(&ret_val))
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
-
-            self.builder.position_at_end(next_bb);
-        }
-
-        // Success path lands here.
-        let ok_bb = self.context.append_basic_block(function, "try_ok");
+        // If fail_flag = 1: propagate — return the struct to the caller.
+        // If fail_flag = 0: extract the i64 success payload and continue.
+        let propagate_bb = self.context.append_basic_block(function, "try_fail");
+        let success_bb   = self.context.append_basic_block(function, "try_ok");
         self.builder
-            .build_unconditional_branch(ok_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
-        self.builder.position_at_end(ok_bb);
+            .build_conditional_branch(fail_flag, propagate_bb, success_bb)
+            .map_err(err)?;
 
-        Ok((result_i64.into(), Kind::Int))
+        self.builder.position_at_end(propagate_bb);
+        self.builder.build_return(Some(&inkwell::values::BasicValueEnum::StructValue(struct_val))).map_err(err)?;
+
+        self.builder.position_at_end(success_bb);
+        let payload = self.builder
+            .build_extract_value(struct_val, 1, "try_payload")
+            .map_err(err)?;
+
+        Ok((payload, Kind::Int))
     }
 
     fn compile_if(
@@ -242,14 +132,36 @@ impl<'ctx> Compiler<'ctx> {
             .map_err(|e| CompileError::Internal(e.to_string()))?;
 
         self.builder.position_at_end(then_bb);
-        let (then_val, then_ty) = self.compile_expr(then_expr, env)?;
+        let (then_val_raw, then_ty) = self.compile_expr(then_expr, env)?;
+        let then_bb_cur = self.builder.get_insert_block().unwrap();
+
+        self.builder.position_at_end(else_bb);
+        let (else_val_raw, else_ty) = self.compile_expr(else_expr, env)?;
+        let else_bb_cur = self.builder.get_insert_block().unwrap();
+
+        // When one branch is a fail struct and the other is not, coerce the
+        // non-struct branch to {i1=0, i64=val} before the phi merge.
+        let is_fail_struct = |k: &Kind| matches!(k, Kind::Tuple(e) if e.first() == Some(&Kind::Fail));
+        let needs_coerce = is_fail_struct(&then_ty) || is_fail_struct(&else_ty);
+
+        let (then_val, else_val, result_ty) = if needs_coerce {
+            self.builder.position_at_end(then_bb_cur);
+            let tv = self.coerce_to_fail_struct(then_val_raw, &then_ty)?;
+            self.builder.position_at_end(else_bb_cur);
+            let ev = self.coerce_to_fail_struct(else_val_raw, &else_ty)?;
+            (tv, ev, Kind::Tuple(vec![Kind::Fail, Kind::Int]))
+        } else {
+            (then_val_raw, else_val_raw, then_ty)
+        };
+
+        // Emit unconditional branches and capture the ending blocks.
+        self.builder.position_at_end(then_bb_cur);
         self.builder
             .build_unconditional_branch(merge_bb)
             .map_err(|e| CompileError::Internal(e.to_string()))?;
         let then_bb_end = self.builder.get_insert_block().unwrap();
 
-        self.builder.position_at_end(else_bb);
-        let (else_val, _else_ty) = self.compile_expr(else_expr, env)?;
+        self.builder.position_at_end(else_bb_cur);
         self.builder
             .build_unconditional_branch(merge_bb)
             .map_err(|e| CompileError::Internal(e.to_string()))?;
@@ -262,7 +174,7 @@ impl<'ctx> Compiler<'ctx> {
             .map_err(|e| CompileError::Internal(e.to_string()))?;
         phi.add_incoming(&[(&then_val, then_bb_end), (&else_val, else_bb_end)]);
 
-        Ok((phi.as_basic_value(), then_ty))
+        Ok((phi.as_basic_value(), result_ty))
     }
 
     fn compile_unop(
@@ -519,8 +431,8 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Set(_) => return Err(CompileError::Internal(
                 "sets of sets not yet supported".into(),
             )),
-            Kind::Tuple(_) | Kind::Union(_) => return Err(CompileError::Internal(
-                "sets of tuples/unions not yet supported".into(),
+            Kind::Fail | Kind::Tuple(_) | Kind::Union(_) => return Err(CompileError::Internal(
+                "sets of fail/tuples/unions not yet supported".into(),
             )),
         };
 

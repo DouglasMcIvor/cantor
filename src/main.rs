@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use cantor::{
     ast::Item,
-    codegen::{FAIL_SENTINEL, compile_file},
+    codegen::compile_file,
     kind::{Kind, range_kind},
     names::check_names,
     parser::parse_file,
@@ -175,6 +175,39 @@ fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
     }).unwrap_or(Kind::Int);
 
     match &main_return_kind {
+        // Fallible main: the runner converts {i1, i64} → flat i64 (sentinel on failure).
+        Kind::Tuple(elems) if elems.first() == Some(&Kind::Fail) => {
+            let _ = elems; // used in the match guard only
+            let result = unsafe {
+                let f = engine
+                    .get_function::<unsafe extern "C" fn() -> i64>("__cantor_main_runner")
+                    .unwrap_or_else(|e| {
+                        eprintln!("internal error: could not find `__cantor_main_runner`: {e}");
+                        process::exit(1);
+                    });
+                f.call()
+            };
+            if result == i64::MIN {
+                // Read the typed error code stored by the runner via the JIT getter.
+                let error_code: i64 = unsafe {
+                    match engine.get_function::<unsafe extern "C" fn() -> i64>(
+                        "__cantor_get_fail_code",
+                    ) {
+                        Ok(f) => f.call(),
+                        Err(_) => 0,
+                    }
+                };
+                if error_code != 0 {
+                    eprintln!("\nmain() failed with error code {error_code}");
+                } else {
+                    eprintln!("\nmain() failed: assertion failed at runtime");
+                }
+                process::exit(1);
+            } else {
+                println!("\nmain() = {result}");
+            }
+        }
+        // Tuple-returning main: use the buffer trampoline.
         Kind::Tuple(_) => {
             let n_leaves = count_kind_leaves(&main_return_kind);
             let mut buf = vec![0i64; n_leaves];
@@ -190,6 +223,7 @@ fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
             let display = format_kind_val(&main_return_kind, &buf, &mut 0);
             println!("\nmain() = {display}");
         }
+        // Non-fallible scalar main.
         _ => {
             let result = unsafe {
                 let f = engine
@@ -200,20 +234,14 @@ fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
                     });
                 f.call()
             };
-
-            if result == FAIL_SENTINEL {
-                eprintln!("\nmain() failed: assertion failed at runtime");
-                process::exit(1);
-            } else {
-                println!("\nmain() = {result}");
-            }
+            println!("\nmain() = {result}");
         }
     }
 }
 
 fn count_kind_leaves(kind: &Kind) -> usize {
     match kind {
-        Kind::Int | Kind::Bool | Kind::Set(_) | Kind::Union(_) => 1,
+        Kind::Int | Kind::Bool | Kind::Fail | Kind::Set(_) | Kind::Union(_) => 1,
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
     }
 }
@@ -221,6 +249,7 @@ fn count_kind_leaves(kind: &Kind) -> usize {
 fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
     match kind {
         Kind::Bool => { let v = buf[*offset] != 0; *offset += 1; format!("{v}") }
+        Kind::Fail => { *offset += 1; "fail".to_string() }
         Kind::Int | Kind::Set(_) | Kind::Union(_) => { let v = buf[*offset]; *offset += 1; format!("{v}") }
         Kind::Tuple(elems) => {
             let parts: Vec<String> = elems.iter().map(|k| format_kind_val(k, buf, offset)).collect();

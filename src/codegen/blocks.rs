@@ -9,7 +9,7 @@ use crate::{
     span::Symbol,
 };
 
-use super::{Compiler, Env, FAIL_SENTINEL};
+use super::{Compiler, Env};
 
 impl<'ctx> Compiler<'ctx> {
     /// Process a sequence of statements, returning the last expression value.
@@ -250,26 +250,14 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.position_at_end(fail_out_bb);
         let else_val: BasicValueEnum<'ctx> = match else_clause {
             AssertElse::FailWith(fail_expr) => {
+                // `assert pred else fail n` → return {i1=1, i64=n}
                 let (v, _) = self.compile_expr(fail_expr, env)?;
-                let n = v.into_int_value();
-                let i64t = self.context.i64_type();
-                let base = i64t.const_int(FAIL_SENTINEL.wrapping_add(1) as u64, true);
-                self.builder
-                    .build_int_add(base, n, "fail_encoded")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?
-                    .into()
+                self.build_fail_struct(v)?
             }
             AssertElse::Return(ret_expr) => {
+                // `assert pred else return expr` → return normally (may be success or fail struct)
                 let (v, kind) = self.compile_expr(ret_expr, env)?;
-                if kind == Kind::Bool {
-                    let i64t = self.context.i64_type();
-                    self.builder
-                        .build_int_z_extend(v.into_int_value(), i64t, "ret_bool_ext")
-                        .map_err(|e| CompileError::Internal(e.to_string()))?
-                        .into()
-                } else {
-                    v
-                }
+                self.wrap_return_value(v, &kind)?
             }
         };
         self.builder
@@ -300,15 +288,7 @@ impl<'ctx> Compiler<'ctx> {
             .ok_or_else(|| CompileError::Internal("`return` outside a function".into()))?;
 
         let (v, kind) = self.compile_expr(value, env)?;
-        let i64t = self.context.i64_type();
-        let ret_val: BasicValueEnum<'ctx> = if kind == Kind::Bool {
-            self.builder
-                .build_int_z_extend(v.into_int_value(), i64t, "ret_bool_ext")
-                .map_err(|e| CompileError::Internal(e.to_string()))?
-                .into()
-        } else {
-            v
-        };
+        let ret_val = self.wrap_return_value(v, &kind)?;
         self.builder
             .build_return(Some(&ret_val))
             .map_err(|e| CompileError::Internal(e.to_string()))?;

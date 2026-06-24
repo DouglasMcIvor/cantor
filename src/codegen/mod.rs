@@ -25,13 +25,9 @@ mod membership;
 
 pub use jit::compile_file;
 
-/// Return value used to signal assertion failure at runtime.
-///
-/// `i64::MIN` is used as a sentinel because the sets appearing in Cantor
-/// signatures today (Nat, NatPos, NonZeroInt, IntN) exclude i64::MIN.
-/// Known limitation: `Int | Fail` functions cannot successfully return the
-/// integer -9223372036854775808. A proper tagged-union ABI will fix this later.
-pub const FAIL_SENTINEL: i64 = i64::MIN;
+/// Sentinel used only at the JIT runner boundary (main.rs → __cantor_main_runner).
+/// Not part of general codegen; all internal functions use `{i1, i64}` structs.
+const JIT_RUNNER_SENTINEL: i64 = i64::MIN;
 
 type Env<'ctx> = HashMap<Symbol, (BasicValueEnum<'ctx>, Kind)>;
 
@@ -118,7 +114,7 @@ impl<'ctx> Compiler<'ctx> {
     pub(crate) fn kind_to_llvm_type(&self, kind: &Kind) -> BasicTypeEnum<'ctx> {
         match kind {
             Kind::Int | Kind::Set(_) | Kind::Union(_) => self.context.i64_type().into(),
-            Kind::Bool => self.context.bool_type().into(),
+            Kind::Bool | Kind::Fail => self.context.bool_type().into(),
             Kind::Tuple(elems) => {
                 let types: Vec<BasicTypeEnum<'ctx>> = elems.iter()
                     .map(|k| self.kind_to_llvm_type(k))
@@ -126,6 +122,111 @@ impl<'ctx> Compiler<'ctx> {
                 self.context.struct_type(&types, false).into()
             }
         }
+    }
+
+    /// Returns the `{i1, i64}` struct type used for all fallible function returns.
+    pub(crate) fn fail_struct_type(&self) -> inkwell::types::StructType<'ctx> {
+        self.context.struct_type(&[
+            self.context.bool_type().into(),
+            self.context.i64_type().into(),
+        ], false)
+    }
+
+    /// Build a `{i1=0, i64=payload}` success-tagged struct.
+    pub(crate) fn build_success_struct(
+        &self,
+        payload: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let zero_i1 = self.context.bool_type().const_int(0, false);
+        let s = self.fail_struct_type().get_undef();
+        let s = self.builder
+            .build_insert_value(s, zero_i1, 0, "sv_flag")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .into_struct_value();
+        let s = self.builder
+            .build_insert_value(s, payload, 1, "sv_payload")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .into_struct_value();
+        Ok(s.into())
+    }
+
+    /// Build a `{i1=1, i64=payload}` fail-tagged struct.
+    pub(crate) fn build_fail_struct(
+        &self,
+        payload: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let one_i1 = self.context.bool_type().const_int(1, false);
+        let s = self.fail_struct_type().get_undef();
+        let s = self.builder
+            .build_insert_value(s, one_i1, 0, "fv_flag")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .into_struct_value();
+        let s = self.builder
+            .build_insert_value(s, payload, 1, "fv_payload")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .into_struct_value();
+        Ok(s.into())
+    }
+
+    /// Coerce a value to `{i1=0, i64=val}` when one branch of an `if` is a fail struct.
+    /// Fail structs pass through unchanged.
+    pub(crate) fn coerce_to_fail_struct(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        kind: &Kind,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        if matches!(kind, Kind::Tuple(e) if e.first() == Some(&Kind::Fail)) {
+            return Ok(val);
+        }
+        let i64t = self.context.i64_type();
+        let payload = match kind {
+            Kind::Bool => self.builder
+                .build_int_z_extend(val.into_int_value(), i64t, "coerce_bool")
+                .map_err(|e| CompileError::Internal(e.to_string()))?
+                .into(),
+            Kind::Int => val,
+            _ => return Err(CompileError::Internal(
+                "cannot coerce value to fail struct: unsupported kind".into(),
+            )),
+        };
+        self.build_success_struct(payload)
+    }
+
+    /// Wrap a return value for a fallible function if needed.
+    ///
+    /// - Already a fail struct → pass through (e.g. from `FailLit`, `compile_try`)
+    /// - Bool in non-fallible function → zero-extend to i64
+    /// - Any other value in non-fallible function → pass through
+    /// - Any non-struct value in fallible function → wrap in `{i1=0, i64=val}`
+    pub(crate) fn wrap_return_value(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        kind: &Kind,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        if self.fail_bb.is_none() {
+            // Non-fallible: apply Bool-to-i64 extension and pass through.
+            return Ok(if *kind == Kind::Bool {
+                self.builder
+                    .build_int_z_extend(val.into_int_value(), self.context.i64_type(), "bool_ret")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                    .into()
+            } else {
+                val
+            });
+        }
+        // Fallible function: ensure the value is a {i1, i64} struct.
+        if matches!(kind, Kind::Tuple(e) if e.first() == Some(&Kind::Fail)) {
+            return Ok(val); // already a fail struct
+        }
+        let i64t = self.context.i64_type();
+        let payload = match kind {
+            Kind::Bool => self.builder
+                .build_int_z_extend(val.into_int_value(), i64t, "bool_ret")
+                .map_err(|e| CompileError::Internal(e.to_string()))?
+                .into(),
+            _ => val,
+        };
+        self.build_success_struct(payload)
     }
 
     /// Compile the body of an already-declared function (expression body).
@@ -149,9 +250,13 @@ impl<'ctx> Compiler<'ctx> {
         self.fail_bb = if is_fallible {
             let bb = self.context.append_basic_block(function, "fail");
             self.builder.position_at_end(bb);
-            let sentinel = self.context.i64_type().const_int(FAIL_SENTINEL as u64, true);
+            // Bare assert failure returns {i1=1, i64=0} — no typed error code.
+            let fail_struct = self.fail_struct_type().const_named_struct(&[
+                self.context.bool_type().const_int(1, false).into(),
+                self.context.i64_type().const_int(0, false).into(),
+            ]);
             self.builder
-                .build_return(Some(&sentinel))
+                .build_return(Some(&BasicValueEnum::StructValue(fail_struct)))
                 .map_err(|e| CompileError::Internal(e.to_string()))?;
             Some(bb)
         } else {
@@ -186,17 +291,7 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let (val, ty) = self.compile_expr(body, &env)?;
-
-        let i64_type = self.context.i64_type();
-        let ret_val = if ty == Kind::Bool {
-            self.builder
-                .build_int_z_extend(val.into_int_value(), i64_type, "bool_to_i64")
-                .map_err(|e| CompileError::Internal(e.to_string()))?
-                .into()
-        } else {
-            // Tuples return as struct values directly; Int/Set return as i64.
-            val
-        };
+        let ret_val = self.wrap_return_value(val, &ty)?;
 
         self.builder
             .build_return(Some(&ret_val))
@@ -222,9 +317,13 @@ impl<'ctx> Compiler<'ctx> {
         self.fail_bb = if is_fallible {
             let bb = self.context.append_basic_block(function, "fail");
             self.builder.position_at_end(bb);
-            let sentinel = self.context.i64_type().const_int(FAIL_SENTINEL as u64, true);
+            // Bare assert failure returns {i1=1, i64=0} — no typed error code.
+            let fail_struct = self.fail_struct_type().const_named_struct(&[
+                self.context.bool_type().const_int(1, false).into(),
+                self.context.i64_type().const_int(0, false).into(),
+            ]);
             self.builder
-                .build_return(Some(&sentinel))
+                .build_return(Some(&BasicValueEnum::StructValue(fail_struct)))
                 .map_err(|e| CompileError::Internal(e.to_string()))?;
             Some(bb)
         } else {
@@ -260,14 +359,8 @@ impl<'ctx> Compiler<'ctx> {
 
         let return_val = self.compile_stmts(stmts, &mut env, &HashMap::new())?;
 
-        let i64_type = self.context.i64_type();
         let ret_val = match return_val {
-            Some((val, Kind::Bool)) => self
-                .builder
-                .build_int_z_extend(val.into_int_value(), i64_type, "bool_to_i64")
-                .map_err(|e| CompileError::Internal(e.to_string()))?
-                .into(),
-            Some((val, Kind::Int)) | Some((val, Kind::Set(_))) | Some((val, Kind::Tuple(_))) | Some((val, Kind::Union(_))) => val,
+            Some((val, kind)) => self.wrap_return_value(val, &kind)?,
             None => {
                 return Err(CompileError::Internal(
                     "block body has no return expression".into(),
@@ -498,12 +591,19 @@ pub(super) fn compile_items<'ctx>(
         }
     }
 
-    // If `main` returns a tuple, emit an ABI-safe `cantor_main_into(ptr)` trampoline
-    // that calls main and stores each scalar leaf into the caller-supplied buffer.
+    // Emit trampolines for `main` depending on its return kind.
     if let Some(main_fn) = compiler.module.get_function("main") {
         let ret_kind = compiler.fn_return_kinds.get("main").cloned().unwrap_or(Kind::Int);
-        if let Kind::Tuple(_) = &ret_kind {
-            compiler.emit_tuple_main_trampoline(main_fn, &ret_kind)?;
+        match &ret_kind {
+            // Fallible main: emit an i64-returning runner that converts {i1, i64} to flat i64.
+            Kind::Tuple(elems) if elems.first() == Some(&Kind::Fail) => {
+                compiler.emit_fallible_main_runner(main_fn)?;
+            }
+            // Regular tuple main: emit the existing ptr-buffer trampoline.
+            Kind::Tuple(_) => {
+                compiler.emit_tuple_main_trampoline(main_fn, &ret_kind)?;
+            }
+            _ => {}
         }
     }
 
@@ -511,6 +611,89 @@ pub(super) fn compile_items<'ctx>(
 }
 
 impl<'ctx> Compiler<'ctx> {
+    /// Emit `i64 @__cantor_main_runner()` for fallible `main`.
+    ///
+    /// Calls `main()` which returns `{i1, i64}`, then:
+    ///  - Success (flag=0): returns the i64 payload directly.
+    ///  - Failure (flag=1): stores the error code to `@__cantor_fail_code`, returns
+    ///    `JIT_RUNNER_SENTINEL` so the Rust caller can detect failure.
+    ///
+    /// `@__cantor_fail_code` (global i64) can be read by Rust after the call via
+    /// `get_global_value_address` to surface a typed error code to the user.
+    ///
+    /// The sentinel is only used at the thin JIT boundary; all internal codegen
+    /// uses `{i1, i64}` structs directly.
+    fn emit_fallible_main_runner(
+        &self,
+        main_fn: FunctionValue<'ctx>,
+    ) -> Result<(), CompileError> {
+        let i64t = self.context.i64_type();
+
+        // Global that the runner fills with the error code on failure.
+        let fail_code_global = self.module.add_global(i64t, None, "__cantor_fail_code");
+        fail_code_global.set_initializer(&i64t.const_int(0, false));
+
+        let runner = self.module.add_function(
+            "__cantor_main_runner",
+            i64t.fn_type(&[], false),
+            None,
+        );
+
+        let entry_bb = self.context.append_basic_block(runner, "entry");
+        let fail_bb  = self.context.append_basic_block(runner, "fail");
+        let ok_bb    = self.context.append_basic_block(runner, "ok");
+
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+
+        self.builder.position_at_end(entry_bb);
+        let call = self.builder
+            .build_call(main_fn, &[], "main_result")
+            .map_err(err)?;
+        let struct_val = call
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::Internal("main returned void in runner".into()))?
+            .into_struct_value();
+        let flag = self.builder
+            .build_extract_value(struct_val, 0, "runner_flag")
+            .map_err(err)?
+            .into_int_value();
+        self.builder.build_conditional_branch(flag, fail_bb, ok_bb).map_err(err)?;
+
+        self.builder.position_at_end(fail_bb);
+        let error_code = self.builder
+            .build_extract_value(struct_val, 1, "runner_err_code")
+            .map_err(err)?;
+        let fail_code_ptr = fail_code_global.as_pointer_value();
+        self.builder
+            .build_store(fail_code_ptr, error_code)
+            .map_err(err)?;
+        let sentinel = i64t.const_int(JIT_RUNNER_SENTINEL as u64, true);
+        self.builder.build_return(Some(&sentinel)).map_err(err)?;
+
+        self.builder.position_at_end(ok_bb);
+        let payload = self.builder
+            .build_extract_value(struct_val, 1, "runner_payload")
+            .map_err(err)?;
+        self.builder.build_return(Some(&payload)).map_err(err)?;
+
+        // Emit a getter so Rust can read the error code via JIT without needing
+        // inkwell's (missing) `get_global_value_address` API.
+        let getter = self.module.add_function(
+            "__cantor_get_fail_code",
+            i64t.fn_type(&[], false),
+            None,
+        );
+        let getter_bb = self.context.append_basic_block(getter, "entry");
+        self.builder.position_at_end(getter_bb);
+        let loaded = self.builder
+            .build_load(i64t, fail_code_global.as_pointer_value(), "fail_code")
+            .map_err(err)?;
+        self.builder.build_return(Some(&loaded)).map_err(err)?;
+
+        Ok(())
+    }
+
     /// Emit `void @cantor_main_into(ptr %out)` which calls `main()` (struct return)
     /// and stores every i64 leaf of the tuple into the caller-supplied buffer.
     /// Booleans are zero-extended to i64 before storing.
@@ -559,7 +742,7 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CompileError> {
         let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
         match kind {
-            Kind::Bool => {
+            Kind::Bool | Kind::Fail => {
                 let wide = builder.build_int_z_extend(val.into_int_value(), i64t, "bl").map_err(err)?;
                 let ptr = if *leaf_idx == 0 {
                     out_ptr

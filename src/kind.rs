@@ -26,6 +26,9 @@ pub enum Kind {
     Int,
     /// i1 — the two-element Bool set {true, false}, disjoint from all integers
     Bool,
+    /// i1 — the `fail` singleton; always has value 1 when constructed.
+    /// Used as the flag field in `{i1, i64}` fallible-function return structs.
+    Fail,
     /// i64 (pointer-as-i64) — heap-allocated sorted array; element kind tracked for dispatch.
     Set(SetElemKind),
     /// LLVM struct — anonymous product type `(A, B, …)`.
@@ -95,15 +98,15 @@ fn is_fail_arm(expr: &Expr) -> bool {
 pub fn range_kind(range: &Expr) -> Kind {
     match &range.kind {
         ExprKind::Var(sym) => {
-            if sym.0 == "Fail" { Kind::Int } else { set_kind(range) }
+            // Bare `Fail` has its own Kind; it becomes the flag field of {Fail, Int} structs.
+            if sym.0 == "Fail" { Kind::Fail } else { set_kind(range) }
         }
-        // `A | B` — plain union; dominant-kind rule strips Fail/Union wrappers so
-        // the success-path kind is not masked by the failure arm.
-        // `Fail * Y` arms (desugared from `!!`) are also stripped: they are always
-        // failure-only and do not contribute to the success wire kind.
+        // `A | B` — any union with a fail arm produces the fallible struct wire type {i1, i64}.
+        // Unions without fail arms use the standard dominant-kind rule.
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
-            if is_fail_arm(lhs) { return range_kind(rhs); }
-            if is_fail_arm(rhs) { return range_kind(lhs); }
+            if is_fail_arm(lhs) || is_fail_arm(rhs) {
+                return Kind::Tuple(vec![Kind::Fail, Kind::Int]);
+            }
             let lk = range_kind(lhs);
             let rk = range_kind(rhs);
             // Set dominates Bool dominates Tuple dominates Int.
