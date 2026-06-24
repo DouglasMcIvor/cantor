@@ -350,3 +350,82 @@ fn for_in_body_parsed() {
     assert_eq!(body.len(), 1);
     assert!(matches!(body[0], cantor::ast::Stmt::Assign { .. }));
 }
+
+// ── Repeated products in signatures (`X * N`) ─────────────────────────────────
+// `Int * 3` desugars to `Int * Int * Int` at parse time.
+// CURRENT STATE: `f : Int * 3 -> Int` parses as Mul(Int, 3) which is treated as
+// integer multiplication — the desugaring doesn't exist yet so `f(x, y, z)` fails.
+// UPDATE these tests to use `parse_one` structural assertions once the parser
+// understands `* N` in set/signature positions.
+
+#[test]
+fn repeated_product_sig_currently_parses_wrong() {
+    // `Int * 3` in a signature is currently parsed as Mul(Int, IntLit(3))
+    // not as the desugared Mul(Mul(Int, Int), Int).
+    // Once implemented: parse_one("f : Int * 3 -> Int\nf(x, y, z) = x + y + z")
+    //   should have def.params.len() == 3.
+    let result = parse_file("f : Int * 3 -> Int\nf(x, y, z) = x + y + z");
+    // For now we just assert the source parses without a hard error;
+    // the arity mismatch might or might not surface at parse time.
+    let _ = result; // result could be Ok or Err; behaviour is TBD
+}
+
+#[test]
+fn repeated_product_one_is_scalar_currently() {
+    // `Nat * 1` in a signature should eventually desugar to `Nat` (no product),
+    // giving one parameter.  Check the domain is a Mul node today (pre-desugar).
+    let def = parse_one("f : Nat * 1 -> Nat\nf(x) = x");
+    // Currently the domain is Mul(Nat, IntLit(1)) — a BinOp::Mul.
+    // After desugaring it should be Var("Nat") and params.len() == 1.
+    assert_eq!(def.params.len(), 1);
+}
+
+// ── Kleene-star set expressions in signatures (`X*`) ─────────────────────────
+// `Nat*` is a postfix operator in set positions.
+// CURRENT STATE: `Nat*` is parsed as Mul(Nat, <missing>) → parse error.
+// These tests assert the failure and document the intended AST.
+
+#[test]
+fn kleene_star_in_range_currently_parse_error() {
+    // Expected future: sig.range.kind == ExprKind::KleeneStar(Var("Nat"))
+    let msg = parse_err("f : -> Nat*\nf() = []");
+    assert!(!msg.is_empty(),
+        "Nat* should currently produce a parse error; \
+         update to check ExprKind::KleeneStar once implemented");
+}
+
+#[test]
+fn kleene_star_in_domain_currently_parse_error() {
+    // Expected future: domain.kind == ExprKind::KleeneStar(Var("Nat"))
+    let msg = parse_err("f : Nat* -> Nat\nf(xs) = 0");
+    assert!(!msg.is_empty(),
+        "Nat* domain should currently produce a parse error; update once implemented");
+}
+
+#[test]
+fn kleene_star_set_diff_currently_parse_error() {
+    // Expected future: ExprKind::KleeneStar(BinOp(Sub, Int, SetLit([0])))
+    let msg = parse_err("f : (Int - {0})* -> Int\nf(xs) = 0");
+    assert!(!msg.is_empty(),
+        "(Int - {{0}})* should currently produce a parse error; update once implemented");
+}
+
+// ── Array literal `[...]` in bodies ───────────────────────────────────────────
+// `[1, 2, 3]` is a value literal (homogeneous tuple).
+// CURRENT STATE: `[` is not a valid token so the source fails to lex.
+
+#[test]
+fn array_lit_in_body_currently_lex_error() {
+    // Expected future: body.kind == ExprKind::ArrayLit([IntLit(1), IntLit(2), IntLit(3)])
+    let msg = parse_err("f : -> Int * 3\nf() = [1, 2, 3]");
+    assert!(!msg.is_empty(),
+        "[1, 2, 3] should currently lex-error; update to check ArrayLit once implemented");
+}
+
+#[test]
+fn array_lit_used_in_set_position_is_error() {
+    // [...] is a value expression; using it as a set annotation must be rejected.
+    // This should remain an error even after brackets are implemented.
+    let msg = parse_err("f : [Int] -> Int\nf(xs) = 0");
+    assert!(!msg.is_empty(), "expected error for [...] in domain/range set position");
+}

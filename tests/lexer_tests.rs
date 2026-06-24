@@ -193,6 +193,33 @@ fn lex_span_of_two_char_op() {
     assert_eq!(span.end, 2);
 }
 
+// ── Bracket delimiters (for homogeneous tuple literals `[...]`) ───────────────
+// These tests document the *intended* behaviour once `[` and `]` are added to
+// the lexer as Token::LBracket / Token::RBracket.  Until then they assert that
+// the characters produce a lex error, so they pass today and will need to be
+// updated when the tokens are introduced.
+
+#[test]
+fn lex_lbracket_currently_unknown() {
+    // Expected future: lex_all("[ ]") == vec![Token::LBracket, Token::RBracket, Token::Eof]
+    let mut lexer = Lexer::new("[");
+    assert!(lexer.next_token().is_err(), "`[` must produce a lex error until LBracket is added");
+}
+
+#[test]
+fn lex_rbracket_currently_unknown() {
+    // Expected future: Token::RBracket
+    let mut lexer = Lexer::new("]");
+    assert!(lexer.next_token().is_err(), "`]` must produce a lex error until RBracket is added");
+}
+
+#[test]
+fn lex_array_lit_currently_lex_error() {
+    // Expected future: [Token::LBracket, Int(1), Comma, Int(2), Comma, Int(3), Token::RBracket, Eof]
+    let mut lexer = Lexer::new("[1, 2, 3]");
+    assert!(lexer.next_token().is_err(), "array literal must lex-error until brackets are added");
+}
+
 // ── Error cases ───────────────────────────────────────────────────────────────
 
 #[test]

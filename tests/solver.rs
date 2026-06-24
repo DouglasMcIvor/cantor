@@ -20,3 +20,5 @@ mod tuples;
 mod destructuring;
 #[path = "solver/set_ops.rs"]
 mod set_ops;
+#[path = "solver/vectors.rs"]
+mod vectors;

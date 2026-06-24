@@ -40,13 +40,55 @@ You probably don't want to read this unless you're me.
 union of all products over n in Nat _and_ the free monoid over `X`!
   Then maybe we use `x[i]` as the syntax for runtime indexing. The dot operator is compile time only, `[]` allows both.
   I have also just realised that makes our string type `Char*` which is just too perfect to be true.
+- recursive set definitions:
+  ```
+  Tree = Int | Tree * Tree
+  Vector : {} | X * Vector
+  ```
+  where the second is just the same as `X*`
+  Some rules: no recursion in set comprehension predicates to ban Russell's barber.
+  We will need to extend this to a cycle check on the graph of comprehension dependencies, prior to the solver.
+  Some way to verify that structural definitions like the above are well founded, even with mutual references:
+  > Every recursively-defined set that is intended to be inhabited must be generating.
+Algorithm:
+1. Mark every set with a production consisting entirely of already-known finite sets as generating.
+2. Repeat until no new sets become generating.
+3. Reject any recursive SCC (strongly connected component) that never becomes generating.
 - should we use apache arrow for runtime storage of containers so that we serialisation for free? gives us struct of arrays naturally too
-- ~~destructuring assignment and checks for values in product sets~~ **DONE** (v0)
-  - ~~Known parser limitation: bare identifier at end of a statement value, followed by `(` at
-    the start of the next line, is misread as a function call~~ **FIXED** by bracket-depth newlines
-  - Deferred: tuple-level constraint `x, y : Int * Nat = ...`; nested patterns; `_` wildcard;
-    per-binding mutability
 - natural `for i, x in foo` syntax to combine destructuring should fall out from the above without additional work
+- destructuring assignment should work when we "don't provide enough binders" so that
+  ```
+  x, y = (1, 2, 3)
+
+  x = 1
+  y = (2, 3)
+  ```
+  are equivalent, without needing cons lists. The rule is simply "tail goes into the last binder".
+- could also add: tuple-level constraint `x, y : Int * Nat = ...`; nested patterns; `_` wildcard; per-binding mutability
+- allow overloading with literals, like `factorial(0) = 1` as sugar for the domain being `{0}`
+- nice syntax for guards, e.g.
+  ```
+  sign(x) | x < 0 = -1
+  sign(0)         = 0
+  sign(x)         = 1
+  ```
+  clearly needs just one domain and range declaration then the equivalent might be
+  ```
+  sign(x : {x for x < 0}) = -x
+  ```
+  so the sugar is
+  ```
+  sign(x for x < 0) -x
+  ```
+  which is lovely
+  impl again as overloading on distinct domains
+- along with recursive set definitions we get should allow constructors in binders
+  ```
+  Tree = leaf: Int | leaf2: (X * Y) | node: (Tree * Tree)
+
+  size(x, y : X, Y) = ...
+  size(Tree.leaf2(x, y)) = ..
+  ```
 - outer IO loop
 - write-only side effects via `emit`
 - compiled binaries
@@ -149,6 +191,11 @@ values?
   > 3. Instantiation substitutes concrete values and asks the solver to discharge those obligations.
   >
   > Everything else—monomorphisation, overload generation, even "generic constraints"—falls out as implementation details. That's about as small a conceptual core as I can imagine, and it fits remarkably well with the direction Cantor has been taking.
+  Then we can do the equivalent of typeclasses too
+  ```
+  given A Tree(A) = A | Tree(A) * Tree(A)
+  ```
+  assuming we also have recursive set definitions from above
 - automatic multithreading for semi-pure core?
 - multiple concurrent IO threads? ChatGPT convo suggests developing a _scheduler_ using optimisitic concurrency control, taking adaptive measurements on which events conflicts, both statically and dynamically determining state partitions for different event handlers, letting the developer declare that events are `ordered` or `unordered` or `mostly independent` so that we know the "shape" of events. Lots of fun stuff we could do!
 - small runtime sets optimized as bitmasks. Once we get to the homogeneous set level the runtime doesn't actually care what the values are. So a cardinality 64 set can be encoded as just a uint64. It may make sense to extend this to fairly large sets with vectors of uint64. It would be nice to benchmark when this breaks down (time space tradeoff right?)

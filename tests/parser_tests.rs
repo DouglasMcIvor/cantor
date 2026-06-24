@@ -257,6 +257,91 @@ fn span_covers_binop() {
     assert_eq!(expr.span.end, 5);
 }
 
+// ── Homogeneous tuple literals `[...]` ────────────────────────────────────────
+// Once `[`/`]` are added to the lexer these tests should be updated to assert
+// `ExprKind::ArrayLit(elems)` AST nodes.  For now they document the current
+// lex-error state so that the transition is clearly visible in test diffs.
+
+#[test]
+fn parse_array_lit_currently_lex_error() {
+    // Expected future: parses as ExprKind::ArrayLit with 3 Int elements.
+    assert!(parse_expr("[1, 2, 3]").is_err(), "expected lex error until `[` is added");
+}
+
+#[test]
+fn parse_array_lit_bool_elements_currently_lex_error() {
+    // Expected future: ExprKind::ArrayLit([BoolLit(true), BoolLit(false)]).
+    assert!(parse_expr("[true, false]").is_err(), "expected lex error until `[` is added");
+}
+
+#[test]
+fn parse_empty_array_lit_currently_lex_error() {
+    // Expected future: ExprKind::ArrayLit([]).
+    assert!(parse_expr("[]").is_err(), "expected lex error until `[` is added");
+}
+
+// ── Repeated products `X * N` ─────────────────────────────────────────────────
+// `Int * 3` should desugar at parse time into `(Int * Int) * Int` (left-assoc).
+// Currently `* 3` is parsed as arithmetic Mul(Int, 3) — wrong.  These tests
+// assert the INTENDED desugaring and will fail until the parser is updated.
+
+#[test]
+#[ignore = "X * N desugaring not yet implemented in parser"]
+fn parse_repeated_product_two() {
+    // X * 2  should desugar to  Mul(X, X) — two Var nodes, not Mul(X, IntLit(2)).
+    let ExprKind::BinOp { op, lhs, rhs } = parse("Int * 2") else { panic!() };
+    assert_eq!(op, BinOp::Mul);
+    assert!(matches!(lhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
+        "lhs should be Int, not something else");
+    assert!(matches!(rhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
+        "rhs should be Int (desugared copy), not IntLit(2)");
+}
+
+#[test]
+#[ignore = "X * N desugaring not yet implemented in parser"]
+fn parse_repeated_product_three() {
+    // X * 3  →  Mul(Mul(X, X), X)  — left-associated tree of Var nodes.
+    let ExprKind::BinOp { op: outer_op, lhs: outer_lhs, rhs: outer_rhs } = parse("Int * 3")
+        else { panic!() };
+    assert_eq!(outer_op, BinOp::Mul);
+    assert!(matches!(outer_rhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
+        "outer rhs should be Int Var");
+    let ExprKind::BinOp { op: inner_op, lhs: inner_lhs, rhs: inner_rhs } = outer_lhs.kind
+        else { panic!("lhs of outer Mul should itself be a Mul") };
+    assert_eq!(inner_op, BinOp::Mul);
+    assert!(matches!(inner_lhs.kind, ExprKind::Var(ref s) if s.0 == "Int"));
+    assert!(matches!(inner_rhs.kind, ExprKind::Var(ref s) if s.0 == "Int"));
+}
+
+#[test]
+#[ignore = "X * N desugaring not yet implemented in parser"]
+fn parse_repeated_product_one_is_identity() {
+    // X * 1  should produce just the base set (no Mul wrapper).
+    let kind = parse("Nat * 1");
+    assert!(matches!(kind, ExprKind::Var(ref s) if s.0 == "Nat"),
+        "Nat * 1 should desugar to bare Nat; got {kind:?}");
+}
+
+// ── Kleene-star set expressions `X*` ─────────────────────────────────────────
+// `Nat*` is a postfix unary operator in set-expression positions that should
+// produce ExprKind::KleeneStar(Box<Expr>).  Currently the `*` is consumed as
+// binary Mul and fails; these tests document the intended parse.
+
+#[test]
+fn parse_kleene_star_currently_parse_error() {
+    // Expected future: ExprKind::KleeneStar(Box<Var("Nat")>).
+    // Currently either parses as `Mul(Nat, <missing>)` or fails outright.
+    assert!(parse_expr("Nat*").is_err(),
+        "Nat* should currently fail; update to assert KleeneStar once implemented");
+}
+
+#[test]
+fn parse_kleene_star_parenthesised_set_currently_error() {
+    // Expected future: ExprKind::KleeneStar(BinOp(Sub, Nat, SetLit([0]))).
+    assert!(parse_expr("(Nat - {0})*").is_err(),
+        "(Nat - {{0}})* should currently fail; update once KleeneStar is implemented");
+}
+
 // ── Error cases ───────────────────────────────────────────────────────────────
 
 #[test]

@@ -18,3 +18,5 @@ mod fail_and_return;
 mod destructuring;
 #[path = "codegen/set_ops.rs"]
 mod set_ops;
+#[path = "codegen/vectors.rs"]
+mod vectors;
