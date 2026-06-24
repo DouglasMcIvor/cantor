@@ -420,9 +420,13 @@ $ cantor overflow.cantor
 
 ## On the roadmap
 
-- **Namespaces and structured data** — *anonymous product values are done* (see Tuples above). Still ahead: anonymous union values (to retire the `!!` offset-encoding hack), named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`), and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
+- **Clean up** - anonymous union values currently have no runtime representation, and are not correctly represented in return types in the solver
 
-- **Pattern matching** — `match x { Shape.Circle(r) => …, Shape.Rect(w, h) => … }`; the natural companion to union sets, and the basis for destructuring in general.
+- **Fixed length arrays and vectors** - extend product sets to include `X * 5` for arrays and `X*` (Kleene star) for vectors. Allow `[1, 2, 3]` syntax for homogenous tuples.
+
+- **Namespaces and named structured data** — Named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`), and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
+
+- **Function overloading and pattern matching** — functions can be overloaded on distinct sets, `match x { Shape.Circle(r) => …, Shape.Rect(w, h) => … }` or some similar syntax for pattern matching
 
 - **Lambdas, closures, and higher-order functions** — anonymous functions, captured variables, and functions as first-class values. Unlocks `map`, `filter`, `fold`, and combinators without needing the full generics machinery.
 
@@ -432,7 +436,7 @@ $ cantor overflow.cantor
 
 - **Module system** — imports, library compilation, separate checking; one file = one module, `::` path separator.
 
-- **More built-in values and collections** — floats, strings, bytes, ordered sets, vectors, maps. The mechanics are unexciting but the language can't do much without them.
+- **More built-in values and collections** — floats, rationals, characters, bytes, ordered sets, maps.
 
 - **Generics** — a single new keyword `given` introduces a compile-time variable into scope; `require` states constraints on it; instantiation asks the solver to discharge them. Reduces to an overload generator with no other new machinery: `given A; require A <= Countable; population : Habitat(A) -> Nat`.
 
