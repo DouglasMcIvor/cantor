@@ -46,6 +46,15 @@ This codebase is growing! Which means our development requires a bit more care a
 ## Code changes
 
 1. If a suggested change is very large then consider suggesting to the user that it is made in multiple steps.
+0. **Unimplemented paths must fail loudly, never silently.**
+   When a feature is only partially implemented, every unimplemented code path must
+   panic (or return a `CompileError`) with a clear "not yet implemented / TODO: <feature>"
+   message.  A wildcard match arm that silently falls back to a plausible-looking default
+   (e.g. `_ => Kind::Int` for an unhandled union variant) creates "accidentally passing"
+   tests that mask missing functionality and give false confidence.  The same principle
+   applies to tests: a test whose inputs never exercise the unimplemented path is not a
+   real test of that path — pair each `#[ignore]` with a comment explaining *why* it
+   fails and what needs to be implemented for it to pass.
 2. One natural way to break down some large changes could be parser/codegen/solver changes as three distinct steps.
 3. Temporary short cuts are fine and to be expected, but be explicit to the user about any short cuts you have taken so that they know to address them in future! A TODO that sneaks in and isn't addressed in a timely manner may cost us later on.
 4. All temporary short cuts or hacks need be marked clearly with a TODO comment so they are easy to discover in the future

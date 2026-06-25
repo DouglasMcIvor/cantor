@@ -62,6 +62,24 @@ pub fn set_kind(set_expr: &Expr) -> Kind {
             let arms = flatten_disjoint_union(set_expr);
             Kind::Union(arms.into_iter().map(set_kind).collect())
         }
+        // `A | B` — union in domain position.
+        // Scalar arms (Int, Bool, Set) all share i64 ABI and can be mixed freely.
+        // Tuple arms have struct ABI; mixing a Tuple with a non-Tuple needs
+        // tagged-union IR to distinguish arms at runtime.
+        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+            let lk = set_kind(lhs);
+            let rk = set_kind(rhs);
+            let lhs_tuple = matches!(&lk, Kind::Tuple(_));
+            let rhs_tuple = matches!(&rk, Kind::Tuple(_));
+            if lhs_tuple != rhs_tuple {
+                // TODO: tagged-union IR — mixed Tuple/scalar union needs {tag, payload} repr
+                panic!(
+                    "internal compiler error: mixed-kind union in domain \
+                     ({lk:?} | {rk:?}) is not yet supported (needs tagged-union IR)"
+                );
+            }
+            if lhs_tuple { lk } else { Kind::Int }
+        }
         _ => Kind::Int,
     }
 }
@@ -109,6 +127,16 @@ pub fn range_kind(range: &Expr) -> Kind {
             }
             let lk = range_kind(lhs);
             let rk = range_kind(rhs);
+            // Mixing a Tuple arm with a non-Tuple arm requires tagged-union IR.
+            let lhs_tuple = matches!(&lk, Kind::Tuple(_));
+            let rhs_tuple = matches!(&rk, Kind::Tuple(_));
+            if lhs_tuple != rhs_tuple {
+                // TODO: tagged-union IR — mixed Tuple/scalar union needs {tag, payload} repr
+                panic!(
+                    "internal compiler error: mixed-kind union in range \
+                     ({lk:?} | {rk:?}) is not yet supported (needs tagged-union IR)"
+                );
+            }
             // Set dominates Bool dominates Tuple dominates Int.
             match (lk, rk) {
                 (Kind::Set(ek), _) => Kind::Set(ek),
