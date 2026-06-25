@@ -39,6 +39,13 @@ pub enum Kind {
     /// TODO(Stage 3): replace the i64 wire type with a tagged `{i32 tag, <payload>}` struct
     /// once `match` and `distinct`-arm discrimination are implemented.
     Union(Vec<Kind>),
+    /// `{ i32 tag, i64 leaf_0, …, i64 leaf_N }` — cross-kind union `A | B | …`
+    /// where at least one arm is a `Tuple`.
+    ///
+    /// `tag` is the zero-based arm index.  The remaining fields are enough i64
+    /// slots to hold the widest arm (see `tagged_union_leaf_count`).  Bool fields
+    /// are zero-extended to i64; tuple fields are serialised leaf-by-leaf.
+    TaggedUnion(Vec<Kind>),
 }
 
 /// The runtime Kind of a value drawn from `set_expr`.
@@ -63,24 +70,62 @@ pub fn set_kind(set_expr: &Expr) -> Kind {
             Kind::Union(arms.into_iter().map(set_kind).collect())
         }
         // `A | B` — union in domain position.
-        // Scalar arms (Int, Bool, Set) all share i64 ABI and can be mixed freely.
-        // Tuple arms have struct ABI; mixing a Tuple with a non-Tuple needs
-        // tagged-union IR to distinguish arms at runtime.
-        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
-            let lk = set_kind(lhs);
-            let rk = set_kind(rhs);
-            let lhs_tuple = matches!(&lk, Kind::Tuple(_));
-            let rhs_tuple = matches!(&rk, Kind::Tuple(_));
-            if lhs_tuple != rhs_tuple {
-                // TODO: tagged-union IR — mixed Tuple/scalar union needs {tag, payload} repr
-                panic!(
-                    "internal compiler error: mixed-kind union in domain \
-                     ({lk:?} | {rk:?}) is not yet supported (needs tagged-union IR)"
-                );
+        // Scalar-only unions share i64 ABI, no tag needed.
+        // Any union involving a Tuple arm needs a tagged-union repr; flatten
+        // nested unions so `(A | B) | C` produces a single TaggedUnion([A,B,C]).
+        ExprKind::BinOp { op: BinOp::Union, .. } => {
+            let arm_exprs = flatten_union(set_expr);
+            let arm_kinds: Vec<Kind> = arm_exprs.into_iter().map(set_kind).collect();
+            if arm_kinds.iter().any(|k| matches!(k, Kind::Tuple(_) | Kind::TaggedUnion(_))) {
+                // Flatten any nested TaggedUnions that arose from recursive set_kind calls.
+                let arms = flatten_tag_arms(arm_kinds);
+                Kind::TaggedUnion(arms)
+            } else {
+                Kind::Int
             }
-            if lhs_tuple { lk } else { Kind::Int }
         }
         _ => Kind::Int,
+    }
+}
+
+/// Number of i64 leaf fields when a Kind is serialised into a tagged-union payload.
+/// Bool and Int each occupy one slot; Tuple recurses into its element kinds.
+pub fn leaf_count(kind: &Kind) -> usize {
+    match kind {
+        Kind::Bool | Kind::Int | Kind::Set(_) | Kind::Fail | Kind::Union(_) => 1,
+        Kind::Tuple(elems) => elems.iter().map(leaf_count).sum(),
+        Kind::TaggedUnion(arms) => 1 + tagged_union_leaf_count(arms),
+    }
+}
+
+/// Maximum leaf count over all arms; gives the payload width of the tagged-union struct.
+pub fn tagged_union_leaf_count(arms: &[Kind]) -> usize {
+    arms.iter().map(leaf_count).max().unwrap_or(0)
+}
+
+/// Flatten any `Kind::TaggedUnion` elements in `arms` into their inner arms,
+/// producing a single flat list.  Used when building a TaggedUnion from nested
+/// `|` expressions so that `(A | B) | C` gives `[A, B, C]` not `[[A,B], C]`.
+fn flatten_tag_arms(arms: Vec<Kind>) -> Vec<Kind> {
+    let mut out = Vec::with_capacity(arms.len());
+    for k in arms {
+        match k {
+            Kind::TaggedUnion(inner) => out.extend(inner),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Flatten a left-associated `|` union `((A | B) | C)` into `[A, B, C]`.
+pub fn flatten_union(expr: &Expr) -> Vec<&Expr> {
+    match &expr.kind {
+        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+            let mut arms = flatten_union(lhs);
+            arms.extend(flatten_union(rhs));
+            arms
+        }
+        _ => vec![expr],
     }
 }
 
@@ -120,31 +165,25 @@ pub fn range_kind(range: &Expr) -> Kind {
             if sym.0 == "Fail" { Kind::Fail } else { set_kind(range) }
         }
         // `A | B` — any union with a fail arm produces the fallible struct wire type {i1, i64}.
-        // Unions without fail arms use the standard dominant-kind rule.
+        // Unions without fail arms: scalar-only uses the dominant-kind rule; any
+        // Tuple arm triggers tagged-union IR (flatten n-ary unions as one TaggedUnion).
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             if is_fail_arm(lhs) || is_fail_arm(rhs) {
                 return Kind::Tuple(vec![Kind::Fail, Kind::Int]);
             }
-            let lk = range_kind(lhs);
-            let rk = range_kind(rhs);
-            // Mixing a Tuple arm with a non-Tuple arm requires tagged-union IR.
-            let lhs_tuple = matches!(&lk, Kind::Tuple(_));
-            let rhs_tuple = matches!(&rk, Kind::Tuple(_));
-            if lhs_tuple != rhs_tuple {
-                // TODO: tagged-union IR — mixed Tuple/scalar union needs {tag, payload} repr
-                panic!(
-                    "internal compiler error: mixed-kind union in range \
-                     ({lk:?} | {rk:?}) is not yet supported (needs tagged-union IR)"
-                );
+            let arm_exprs = flatten_union(range);
+            let arm_kinds: Vec<Kind> = arm_exprs.iter().map(|e| range_kind(e)).collect();
+            if arm_kinds.iter().any(|k| matches!(k, Kind::Tuple(_) | Kind::TaggedUnion(_))) {
+                let arms = flatten_tag_arms(arm_kinds);
+                return Kind::TaggedUnion(arms);
             }
-            // Set dominates Bool dominates Tuple dominates Int.
-            match (lk, rk) {
-                (Kind::Set(ek), _) => Kind::Set(ek),
-                (_, Kind::Set(ek)) => Kind::Set(ek),
-                (Kind::Bool, _) | (_, Kind::Bool) => Kind::Bool,
-                (Kind::Tuple(ek), _) => Kind::Tuple(ek),
-                (_, Kind::Tuple(ek)) => Kind::Tuple(ek),
-                _ => Kind::Int,
+            // All scalar: Set dominates Bool dominates Int.
+            if let Some(ek) = arm_kinds.iter().find_map(|k| match k { Kind::Set(e) => Some(*e), _ => None }) {
+                Kind::Set(ek)
+            } else if arm_kinds.iter().any(|k| *k == Kind::Bool) {
+                Kind::Bool
+            } else {
+                Kind::Int
             }
         }
         // `A + B + C` — disjoint union; each arm retains its own kind.

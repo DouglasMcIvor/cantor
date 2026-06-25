@@ -87,17 +87,17 @@ impl<'ctx> Compiler<'ctx> {
         return_kind: Kind,
     ) -> FunctionValue<'ctx> {
         let i64_type = self.context.i64_type();
-        // Tuple params use their natural struct type; all scalar params are i64.
+        // Tuple and TaggedUnion params use their natural struct type; scalars are i64.
         let param_types: Vec<_> = if param_kinds.is_empty() {
             params.iter().map(|_| i64_type.into()).collect()
         } else {
             param_kinds.iter().map(|k| match k {
-                Kind::Tuple(_) => self.kind_to_llvm_type(k).into(),
+                Kind::Tuple(_) | Kind::TaggedUnion(_) => self.kind_to_llvm_type(k).into(),
                 _ => i64_type.into(),
             }).collect()
         };
         let fn_val = match &return_kind {
-            Kind::Tuple(_) => {
+            Kind::Tuple(_) | Kind::TaggedUnion(_) => {
                 let ret_type = self.kind_to_llvm_type(&return_kind);
                 self.module.add_function(name, ret_type.fn_type(&param_types, false), None)
             }
@@ -111,7 +111,9 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Map a Kind to the natural LLVM type used inside structs and as tuple ABI types.
     /// Scalars: Int/Set/Union → i64, Bool → i1.  Tuple → struct of element types.
+    /// TaggedUnion → `{ i32 tag, i64, …, i64 }` with enough i64 slots for the widest arm.
     pub(crate) fn kind_to_llvm_type(&self, kind: &Kind) -> BasicTypeEnum<'ctx> {
+        use crate::kind::tagged_union_leaf_count;
         match kind {
             Kind::Int | Kind::Set(_) | Kind::Union(_) => self.context.i64_type().into(),
             Kind::Bool | Kind::Fail => self.context.bool_type().into(),
@@ -120,6 +122,14 @@ impl<'ctx> Compiler<'ctx> {
                     .map(|k| self.kind_to_llvm_type(k))
                     .collect();
                 self.context.struct_type(&types, false).into()
+            }
+            Kind::TaggedUnion(arms) => {
+                let n = tagged_union_leaf_count(arms);
+                let i32t: BasicTypeEnum = self.context.i32_type().into();
+                let i64t: BasicTypeEnum = self.context.i64_type().into();
+                let mut fields = vec![i32t];
+                fields.extend(std::iter::repeat(i64t).take(n));
+                self.context.struct_type(&fields, false).into()
             }
         }
     }
@@ -282,7 +292,7 @@ impl<'ctx> Compiler<'ctx> {
                     )
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
                 (i1_val.into(), Kind::Bool)
-            } else if matches!(kind, Kind::Tuple(_)) {
+            } else if matches!(kind, Kind::Tuple(_) | Kind::TaggedUnion(_)) {
                 (llvm_param, kind.clone())
             } else {
                 (llvm_param, Kind::Int)
@@ -349,7 +359,7 @@ impl<'ctx> Compiler<'ctx> {
                     )
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
                 (i1_val.into(), Kind::Bool)
-            } else if matches!(kind, Kind::Tuple(_)) {
+            } else if matches!(kind, Kind::Tuple(_) | Kind::TaggedUnion(_)) {
                 (llvm_param, kind.clone())
             } else {
                 (llvm_param, Kind::Int)
@@ -772,6 +782,13 @@ impl<'ctx> Compiler<'ctx> {
                     let elem = builder.build_extract_value(sv, i as u32, "te").map_err(err)?;
                     Self::trampoline_store_leaves(builder, ctx, elem, ek, out_ptr, i64t, leaf_idx)?;
                 }
+            }
+            // TODO: tagged-union IR — emit the raw struct fields for now;
+            // a proper trampoline would inspect the tag and decode each arm.
+            Kind::TaggedUnion(_) => {
+                return Err(CompileError::Internal(
+                    "trampoline_store_leaves: TaggedUnion output not yet supported".into(),
+                ));
             }
         }
         Ok(())

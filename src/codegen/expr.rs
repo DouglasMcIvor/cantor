@@ -219,7 +219,10 @@ impl<'ctx> Compiler<'ctx> {
         match op {
             BinOp::In | BinOp::NotIn => {
                 let (lv, lk) = self.compile_expr(lhs, env)?;
-                let pred = if let ExprKind::Var(sym) = &rhs.kind {
+                let pred = if let Kind::TaggedUnion(ref arms) = lk {
+                    // Tagged-union values: check the tag against the matching arm.
+                    self.compile_tagged_union_membership(lv, arms, rhs)?
+                } else if let ExprKind::Var(sym) = &rhs.kind {
                     if let Some(&(set_ptr, Kind::Set(ek))) = env.get(sym) {
                         self.compile_runtime_contains(lv, lk, set_ptr, ek)?
                     } else {
@@ -382,9 +385,9 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CompileError::Internal(e.to_string()))?;
                 Ok((i1_val.into(), Kind::Bool))
             }
-            // Tuples are returned as struct values directly — no conversion needed.
+            // Tuples and TaggedUnions are returned as struct values directly.
             // Union is i64 at this stage but we preserve the Kind for future stages.
-            Kind::Tuple(_) | Kind::Union(_) => Ok((result_i64, return_kind)),
+            Kind::Tuple(_) | Kind::Union(_) | Kind::TaggedUnion(_) => Ok((result_i64, return_kind)),
             _ => Ok((result_i64, Kind::Int)),
         }
     }
@@ -431,7 +434,7 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Set(_) => return Err(CompileError::Internal(
                 "sets of sets not yet supported".into(),
             )),
-            Kind::Fail | Kind::Tuple(_) | Kind::Union(_) => return Err(CompileError::Internal(
+            Kind::Fail | Kind::Tuple(_) | Kind::Union(_) | Kind::TaggedUnion(_) => return Err(CompileError::Internal(
                 "sets of fail/tuples/unions not yet supported".into(),
             )),
         };

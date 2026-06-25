@@ -243,6 +243,8 @@ fn count_kind_leaves(kind: &Kind) -> usize {
     match kind {
         Kind::Int | Kind::Bool | Kind::Fail | Kind::Set(_) | Kind::Union(_) => 1,
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
+        // TODO: tagged-union IR — count tag field + widest arm
+        Kind::TaggedUnion(_) => 1,
     }
 }
 
@@ -255,5 +257,7 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
             let parts: Vec<String> = elems.iter().map(|k| format_kind_val(k, buf, offset)).collect();
             format!("({})", parts.join(", "))
         }
+        // TODO: tagged-union IR — decode tag and display the active arm
+        Kind::TaggedUnion(_) => { let v = buf[*offset]; *offset += 1; format!("<tagged-union {v}>") }
     }
 }

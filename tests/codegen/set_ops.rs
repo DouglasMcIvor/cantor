@@ -249,9 +249,8 @@ fn cross_kind_nat_to_bool_or_nat_range() {
 
 
 #[test]
-#[ignore] // needs tagged-union IR: mixed Tuple/scalar union in domain panics at compile time
 fn cross_kind_bool_or_tuple_bool_arm() {
-    // Pass a Bool value (arm 0) through a Bool | (Nat * Nat) domain.
+    // Pass a Bool value (arm 0) through a Bool | (Nat * Nat) domain; body ignores x.
     assert_eq!(
         jit_src_one_arg("main : Bool | (Nat * Nat) -> Int\nmain(x) = 1", 0),
         1,
@@ -259,9 +258,8 @@ fn cross_kind_bool_or_tuple_bool_arm() {
 }
 
 #[test]
-#[ignore] // needs tagged-union IR: mixed Tuple/scalar union in domain panics at compile time
 fn cross_kind_tuple_or_nat_nat_arm() {
-    // Pass a Nat value (arm 1) through a (Nat * Nat) | Nat domain.
+    // Pass a Nat value (arm 1) through a (Nat * Nat) | Nat domain; body ignores x.
     assert_eq!(
         jit_src_one_arg("main : (Nat * Nat) | Nat -> Int\nmain(x) = 1", 7),
         1,
@@ -269,13 +267,13 @@ fn cross_kind_tuple_or_nat_nat_arm() {
 }
 
 #[test]
-#[ignore] // needs tagged-union IR: compile_membership doesn't handle Mul (Nat * Nat) expressions
 fn cross_kind_tuple_arm_domain_membership_check() {
-    // Distinguishing which arm of a (Nat * Nat) | Nat value was taken requires
-    // tagged-union IR so the tag bit can be inspected at runtime.
+    // Check which arm of a (Nat * Nat) | Nat value was passed by inspecting the tag.
+    // A scalar passed as jit_src_one_arg occupies the Nat arm (tag = 1), so the
+    // membership check `x in (Nat * Nat)` (arm 0) should return false → 0.
     let src = "
 main : (Nat * Nat) | Nat -> Int
 main(x) = if x in (Nat * Nat) then 1 else 0
 ";
-    assert_eq!(jit_src_one_arg(src, 5), 0); // 5 is the Nat arm, not a tuple
+    assert_eq!(jit_src_one_arg(src, 5), 0);
 }

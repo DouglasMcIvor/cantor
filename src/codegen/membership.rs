@@ -3,7 +3,7 @@ use inkwell::{IntPredicate, values::{BasicValueEnum, IntValue}};
 use crate::{
     ast::{BinOp, Expr, ExprKind},
     error::CompileError,
-    kind::{Kind, SetElemKind},
+    kind::{Kind, SetElemKind, set_kind},
 };
 
 use super::Compiler;
@@ -142,6 +142,41 @@ impl<'ctx> Compiler<'ctx> {
                 "unsupported set expression in membership check".into(),
             )),
         }
+    }
+
+    /// Emit a tag check for `val ∈ set_expr` where `val : TaggedUnion(arms)`.
+    ///
+    /// Finds the arm index whose Kind matches `set_kind(set_expr)` and returns
+    /// `(tag == arm_idx) as i1`.  Only supports set expressions that exactly match
+    /// one arm by kind; anything more complex returns a compile error.
+    pub(in crate::codegen) fn compile_tagged_union_membership(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        arms: &[Kind],
+        set_expr: &Expr,
+    ) -> Result<IntValue<'ctx>, CompileError> {
+        let target_kind = set_kind(set_expr);
+        let arm_idx = arms.iter().position(|k| *k == target_kind)
+            .ok_or_else(|| CompileError::Internal(format!(
+                "tagged-union membership: set expression kind {target_kind:?} \
+                 does not match any arm in {arms:?}"
+            )))?;
+
+        let struct_val = val.into_struct_value();
+        let tag = self.builder
+            .build_extract_value(struct_val, 0, "tu_tag")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .into_int_value();
+
+        // Widen i32 tag to i64 for comparison.
+        let tag_i64 = self.builder
+            .build_int_z_extend(tag, self.context.i64_type(), "tu_tag64")
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+
+        let expected = self.context.i64_type().const_int(arm_idx as u64, false);
+        self.builder
+            .build_int_compare(IntPredicate::EQ, tag_i64, expected, "tu_arm_eq")
+            .map_err(|e| CompileError::Internal(e.to_string()))
     }
 
     /// Emit a `cantor_set_contains_*` call for `val ∈ runtime_set`.
