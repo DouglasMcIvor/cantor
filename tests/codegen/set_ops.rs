@@ -266,6 +266,50 @@ fn cross_kind_tuple_or_nat_nat_arm() {
     );
 }
 
+// ── Cross-kind: tagged-union return values (Steps 4–5) ───────────────────────
+
+#[test]
+fn cross_kind_return_nat_arm_from_tagged_union() {
+    // f returns x as the Nat arm of (Nat * Nat) | Nat; main checks membership.
+    let src = "
+f : Nat -> (Nat * Nat) | Nat
+f(x) = x
+
+main : Nat -> Int
+main(x) = if f(x) in Nat then 1 else 0
+";
+    assert_eq!(jit_src_one_arg(src, 5), 1);
+    assert_eq!(jit_src_one_arg(src, 0), 1);
+}
+
+#[test]
+fn cross_kind_return_tuple_arm_from_tagged_union() {
+    // f returns (x, x+1) as the tuple arm of (Nat * Nat) | Nat; main checks membership.
+    let src = "
+f : Nat -> (Nat * Nat) | Nat
+f(x) = (x, x + 1)
+
+main : Nat -> Int
+main(x) = if f(x) in (Nat * Nat) then 1 else 0
+";
+    assert_eq!(jit_src_one_arg(src, 5), 1);
+    assert_eq!(jit_src_one_arg(src, 0), 1);
+}
+
+#[test]
+fn cross_kind_if_else_picks_correct_arm() {
+    // f chooses the tuple arm when x > 0 and the Nat arm when x == 0.
+    let src = "
+f : Nat -> (Nat * Nat) | Nat
+f(x) = if x > 0 then (x, x) else x
+
+main : Nat -> Int
+main(x) = if f(x) in (Nat * Nat) then 1 else 0
+";
+    assert_eq!(jit_src_one_arg(src, 5), 1); // x > 0 → tuple arm
+    assert_eq!(jit_src_one_arg(src, 0), 0); // x == 0 → scalar arm
+}
+
 #[test]
 fn cross_kind_tuple_arm_domain_membership_check() {
     // Check which arm of a (Nat * Nat) | Nat value was passed by inspecting the tag.

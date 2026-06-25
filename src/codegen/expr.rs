@@ -144,12 +144,28 @@ impl<'ctx> Compiler<'ctx> {
         let is_fail_struct = |k: &Kind| matches!(k, Kind::Tuple(e) if e.first() == Some(&Kind::Fail));
         let needs_coerce = is_fail_struct(&then_ty) || is_fail_struct(&else_ty);
 
+        // Detect cross-kind branches that need a tagged-union wrapper.
+        // Handles `then : Kind::Tuple` vs `else : Kind::Int` (and vice versa).
+        // TODO: merging a TaggedUnion branch with a non-matching kind (3+ arm unions).
+        let needs_tagged_union = !needs_coerce
+            && then_ty != else_ty
+            && (matches!(&then_ty, Kind::Tuple(_)) || matches!(&else_ty, Kind::Tuple(_)))
+            && !matches!(&then_ty, Kind::TaggedUnion(_))
+            && !matches!(&else_ty, Kind::TaggedUnion(_));
+
         let (then_val, else_val, result_ty) = if needs_coerce {
             self.builder.position_at_end(then_bb_cur);
             let tv = self.coerce_to_fail_struct(then_val_raw, &then_ty)?;
             self.builder.position_at_end(else_bb_cur);
             let ev = self.coerce_to_fail_struct(else_val_raw, &else_ty)?;
             (tv, ev, Kind::Tuple(vec![Kind::Fail, Kind::Int]))
+        } else if needs_tagged_union {
+            let arms = vec![then_ty.clone(), else_ty.clone()];
+            self.builder.position_at_end(then_bb_cur);
+            let tv = self.build_tagged_union_value(0, then_val_raw, &then_ty, &arms)?;
+            self.builder.position_at_end(else_bb_cur);
+            let ev = self.build_tagged_union_value(1, else_val_raw, &else_ty, &arms)?;
+            (tv, ev, Kind::TaggedUnion(arms))
         } else {
             (then_val_raw, else_val_raw, then_ty)
         };

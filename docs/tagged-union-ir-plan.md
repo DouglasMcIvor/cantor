@@ -1,7 +1,7 @@
 # Tagged-Union IR: Implementation Plan
 
-**Status:** planning (as of 2026-06-25)  
-**Blocked tests:** 3 `#[ignore]` tests in `tests/codegen/set_ops.rs`  
+**Status:** Steps 1–5 complete (as of 2026-06-25); Step 6 (solver) is the remaining work  
+**Blocked tests:** none — all codegen tagged-union tests are active  
 **Companion solver work:** `src/solver/encode.rs:522` (CVC5 algebraic datatype TODO)
 
 ---
@@ -76,7 +76,7 @@ pub fn tagged_union_leaf_count(arms: &[Kind]) -> usize {
 
 ## Implementation steps (in order)
 
-### Step 1 — `Kind::TaggedUnion` + `kind.rs` kind derivation
+### Step 1 — `Kind::TaggedUnion` + `kind.rs` kind derivation ✓ DONE
 
 **Files:** `src/kind.rs`
 
@@ -104,7 +104,7 @@ passes.
 
 ---
 
-### Step 2 — LLVM type + codegen infrastructure
+### Step 2 — LLVM type + codegen infrastructure ✓ DONE
 
 **Files:** `src/codegen/mod.rs`
 
@@ -147,7 +147,7 @@ passes.
 
 ---
 
-### Step 3 — membership check for tagged unions
+### Step 3 — membership check for tagged unions ✓ DONE
 
 **Files:** `src/codegen/membership.rs`, `src/codegen/expr.rs`
 
@@ -184,7 +184,7 @@ After this step the third `#[ignore]` test (`cross_kind_tuple_arm_domain_members
 
 ---
 
-### Step 4 — constructing tagged-union return values
+### Step 4 — constructing tagged-union return values ✓ DONE
 
 **Files:** `src/codegen/mod.rs` (`wrap_return_value`)
 
@@ -203,7 +203,7 @@ similar range-position unions compile correctly.
 
 ---
 
-### Step 5 — if/then/else across tagged-union arms
+### Step 5 — if/then/else across tagged-union arms ✓ DONE
 
 **Files:** `src/codegen/expr.rs` (`compile_if`)
 

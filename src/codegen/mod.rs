@@ -142,6 +142,100 @@ impl<'ctx> Compiler<'ctx> {
         ], false)
     }
 
+    /// Serialise `val : arm_kind` into the i64 leaf fields of a tagged-union
+    /// struct, starting at `field_idx` (1-based; field 0 is the tag).
+    fn insert_kind_leaves(
+        &self,
+        agg: &mut AggregateValueEnum<'ctx>,
+        val: BasicValueEnum<'ctx>,
+        arm_kind: &Kind,
+        field_idx: &mut u32,
+    ) -> Result<(), CompileError> {
+        let i64t = self.context.i64_type();
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        match arm_kind {
+            Kind::Int | Kind::Set(_) | Kind::Union(_) => {
+                *agg = self.builder
+                    .build_insert_value(*agg, val.into_int_value(), *field_idx, "tu_l")
+                    .map_err(err)?;
+                *field_idx += 1;
+            }
+            Kind::Bool | Kind::Fail => {
+                let wide = self.builder
+                    .build_int_z_extend(val.into_int_value(), i64t, "tu_lb")
+                    .map_err(err)?;
+                *agg = self.builder
+                    .build_insert_value(*agg, wide, *field_idx, "tu_l")
+                    .map_err(err)?;
+                *field_idx += 1;
+            }
+            Kind::Tuple(elems) => {
+                let sv = AggregateValueEnum::StructValue(val.into_struct_value());
+                for (i, ek) in elems.iter().enumerate() {
+                    let elem = self.builder
+                        .build_extract_value(sv, i as u32, "tu_te")
+                        .map_err(err)?;
+                    self.insert_kind_leaves(agg, elem, ek, field_idx)?;
+                }
+            }
+            Kind::TaggedUnion(_) => {
+                return Err(CompileError::Internal(
+                    "insert_kind_leaves: nested TaggedUnion not yet supported".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Pack `arm_value : arm_kind` into the `{ i32 tag, i64… }` tagged-union struct
+    /// for `Kind::TaggedUnion(all_arms)`, placing the tag at field 0 and the
+    /// serialised leaves in fields 1..N.
+    pub(crate) fn build_tagged_union_value(
+        &self,
+        arm_idx: usize,
+        arm_value: BasicValueEnum<'ctx>,
+        arm_kind: &Kind,
+        all_arms: &[Kind],
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let struct_ty = self.kind_to_llvm_type(&Kind::TaggedUnion(all_arms.to_vec()))
+            .into_struct_type();
+        let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
+        let tag = self.context.i32_type().const_int(arm_idx as u64, false);
+        agg = self.builder
+            .build_insert_value(agg, tag, 0, "tu_tag")
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        let mut field_idx = 1u32;
+        self.insert_kind_leaves(&mut agg, arm_value, arm_kind, &mut field_idx)?;
+        Ok(agg.into_struct_value().into())
+    }
+
+    /// If the function's declared return kind is `Kind::TaggedUnion(arms)` and
+    /// `val_kind` is not already that union, find the matching arm and wrap.
+    /// Returns `(val, kind)` — unchanged if no coercion is needed.
+    pub(crate) fn coerce_tagged_union_return(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_kind: Kind,
+        function: FunctionValue<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let fn_name = function.get_name().to_str().unwrap_or("");
+        let expected = self.fn_return_kinds.get(fn_name).cloned().unwrap_or_else(|| val_kind.clone());
+        let arms = match &expected {
+            Kind::TaggedUnion(a) => a.clone(),
+            _ => return Ok((val, val_kind)),
+        };
+        if matches!(&val_kind, Kind::TaggedUnion(a) if a == &arms) {
+            return Ok((val, val_kind)); // already the right TaggedUnion
+        }
+        let arm_idx = arms.iter().position(|k| *k == val_kind)
+            .ok_or_else(|| CompileError::Internal(format!(
+                "coerce_tagged_union_return: body kind {val_kind:?} does not match \
+                 any arm of declared return {arms:?}"
+            )))?;
+        let wrapped = self.build_tagged_union_value(arm_idx, val, &val_kind, &arms)?;
+        Ok((wrapped, expected))
+    }
+
     /// Build a `{i1=0, i64=payload}` success-tagged struct.
     pub(crate) fn build_success_struct(
         &self,
@@ -301,6 +395,7 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let (val, ty) = self.compile_expr(body, &env)?;
+        let (val, ty) = self.coerce_tagged_union_return(val, ty, function)?;
         let ret_val = self.wrap_return_value(val, &ty)?;
 
         self.builder
@@ -370,7 +465,10 @@ impl<'ctx> Compiler<'ctx> {
         let return_val = self.compile_stmts(stmts, &mut env, &HashMap::new())?;
 
         let ret_val = match return_val {
-            Some((val, kind)) => self.wrap_return_value(val, &kind)?,
+            Some((val, kind)) => {
+                let (val, kind) = self.coerce_tagged_union_return(val, kind, function)?;
+                self.wrap_return_value(val, &kind)?
+            }
             None => {
                 return Err(CompileError::Internal(
                     "block body has no return expression".into(),
