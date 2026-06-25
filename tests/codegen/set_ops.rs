@@ -311,6 +311,29 @@ main(x) = if f(x) in (Nat * Nat) then 1 else 0
 }
 
 #[test]
+#[ignore]
+// compile_if's `needs_tagged_union` path only handles the two-arm case where
+// neither branch is already a TaggedUnion.  Here the outer if has
+//   then : TaggedUnion([Tuple([Int,Int]), Int])  (from the inner if)
+//   else : Bool
+// which hits the `else` fallthrough instead of merging into a 3-arm
+// TaggedUnion([Tuple, Int, Bool]).  Fix: detect when one branch is a
+// TaggedUnion and the other is a different kind; flatten the arms and wrap
+// both values into the combined TaggedUnion before the phi merge.
+fn cross_kind_three_arm_union_if_else() {
+    let src = "
+f : Nat -> (Nat * Nat) | Nat | Bool
+f(x) = if x > 2 then (if x > 5 then (x, x) else x) else false
+
+main : Nat -> Int
+main(x) = if f(x) in (Nat * Nat) then 1 else 0
+";
+    assert_eq!(jit_src_one_arg(src, 7), 1); // x > 5  → tuple arm
+    assert_eq!(jit_src_one_arg(src, 4), 0); // 2 < x ≤ 5 → Nat arm
+    assert_eq!(jit_src_one_arg(src, 1), 0); // x ≤ 2  → Bool arm
+}
+
+#[test]
 fn cross_kind_tuple_arm_domain_membership_check() {
     // Check which arm of a (Nat * Nat) | Nat value was passed by inspecting the tag.
     // A scalar passed as jit_src_one_arg occupies the Nat arm (tag = 1), so the
