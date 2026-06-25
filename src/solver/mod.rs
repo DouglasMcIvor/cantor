@@ -314,7 +314,15 @@ fn check_block_sig(
             }
             param_terms.push(assembled);
         } else {
-            let term = tm.mk_const(set_sort(&tm, part), &n.0);
+            let sort = match set_sort(&tm, part) {
+                Some(s) => s,
+                None => return CheckResult::Unknown(format!(
+                    "parameter `{}` has a cross-kind union domain with no single CVC5 sort \
+                     — see set_sort TODO for Option A (datatype encoding)",
+                    n.0
+                )),
+            };
+            let term = tm.mk_const(sort, &n.0);
             if k != ValKind::Bool {
                 match membership_constraint(&tm, term.clone(), part, name_defs, &distinct_preds) {
                     Membership::Unconstrained => {}
@@ -507,7 +515,15 @@ fn check_sig(
             }
             param_terms.push(assembled);
         } else {
-            let term = tm.mk_const(set_sort(&tm, part), &n.0);
+            let sort = match set_sort(&tm, part) {
+                Some(s) => s,
+                None => return CheckResult::Unknown(format!(
+                    "parameter `{}` has a cross-kind union domain with no single CVC5 sort \
+                     — see set_sort TODO for Option A (datatype encoding)",
+                    n.0
+                )),
+            };
+            let term = tm.mk_const(sort, &n.0);
             if k != ValKind::Bool {
                 match membership_constraint(&tm, term.clone(), part, name_defs, &distinct_preds) {
                     Membership::Unconstrained => {}

@@ -22,6 +22,36 @@ pub(crate) enum Membership<'tm> {
     Unsupported,
 }
 
+/// Evaluate a constant integer expression to an `i64`, or return `None` if
+/// the expression is not a compile-time constant.  Handles `IntLit` and
+/// `UnOp::Neg` so that set literals like `{-1}` work correctly (the parser
+/// emits `-1` as `Neg(IntLit(1))`, not as `IntLit(-1)`).
+fn eval_const_int(expr: &Expr) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::IntLit(n) => Some(*n),
+        ExprKind::UnOp { op: UnOp::Neg, expr: inner } => eval_const_int(inner).map(|n| -n),
+        _ => None,
+    }
+}
+
+/// Coerce a cvc5 term to integer sort for use in arithmetic membership constraints.
+///
+/// In Cantor's model every value has an integer representation: integers pass
+/// through unchanged; booleans are encoded as 0 (false) or 1 (true).  Any
+/// other sort (e.g. a CVC5 tuple sort) cannot be represented as an integer —
+/// such a term can never be a member of any scalar (integer-valued) set, so
+/// callers should return `Constrained(false)` when this returns `None`.
+fn to_integer_term<'tm>(tm: &'tm TermManager, t: Term<'tm>) -> Option<Term<'tm>> {
+    if t.sort().is_integer() {
+        Some(t)
+    } else if t.sort().is_boolean() {
+        // Bool = {false=0, true=1}: represent as the integer 0 or 1.
+        Some(tm.mk_term(Kind::Ite, &[t, tm.mk_integer(1), tm.mk_integer(0)]))
+    } else {
+        None
+    }
+}
+
 /// Recursively build a membership predicate for structured set expressions.
 ///
 /// Handles named built-in sets, user-defined alias sets (expanded inline),
@@ -42,23 +72,51 @@ pub(crate) fn membership_constraint<'tm>(
             // encoded as i64::MIN so that `Nat | Fail` correctly accepts the
             // fail sentinel while rejecting all integers below zero.
             "Fail"       => {
+                let Some(t) = to_integer_term(tm, t) else {
+                    return Membership::Constrained(tm.mk_boolean(false));
+                };
                 let sentinel = tm.mk_integer(i64::MIN);
                 Membership::Constrained(tm.mk_term(Kind::Equal, &[t, sentinel]))
             }
-            // Bool is handled at the sort level: boolean-sort terms are trivially
-            // in Bool, and Bool-domain params are created as boolean-sort constants
-            // (so no integer-theory constraint is needed).  Returning Unconstrained
-            // avoids sort mismatches when the term is already boolean-sort.
-            "Bool"       => Membership::Unconstrained,
+            // Bool = {0, 1} (false = 0, true = 1).
+            // • boolean-sort terms are trivially in Bool — no constraint needed.
+            // • integer-sort terms (e.g. from a Bool|Nat domain) need t = 0 OR t = 1.
+            // Checking the term's sort avoids creating arithmetic constraints on
+            // boolean-sort terms, which would cause a fatal CVC5 sort error.
+            "Bool"       => {
+                if t.sort().is_boolean() {
+                    Membership::Unconstrained
+                } else {
+                    // Use to_integer_term so that tuple-sort terms correctly
+                    // resolve to Constrained(false) — a tuple is never in Bool.
+                    match to_integer_term(tm, t) {
+                        None => Membership::Constrained(tm.mk_boolean(false)),
+                        Some(t_int) => {
+                            let eq0 = tm.mk_term(Kind::Equal, &[t_int.clone(), tm.mk_integer(0)]);
+                            let eq1 = tm.mk_term(Kind::Equal, &[t_int, tm.mk_integer(1)]);
+                            Membership::Constrained(tm.mk_term(Kind::Or, &[eq0, eq1]))
+                        }
+                    }
+                }
+            }
             "Nat"        => {
+                let Some(t) = to_integer_term(tm, t) else {
+                    return Membership::Constrained(tm.mk_boolean(false));
+                };
                 let zero = tm.mk_integer(0);
                 Membership::Constrained(tm.mk_term(Kind::Geq, &[t, zero]))
             }
             "NatPos"     => {
+                let Some(t) = to_integer_term(tm, t) else {
+                    return Membership::Constrained(tm.mk_boolean(false));
+                };
                 let zero = tm.mk_integer(0);
                 Membership::Constrained(tm.mk_term(Kind::Gt, &[t, zero]))
             }
             "NonZeroInt" => {
+                let Some(t) = to_integer_term(tm, t) else {
+                    return Membership::Constrained(tm.mk_boolean(false));
+                };
                 let zero = tm.mk_integer(0);
                 Membership::Constrained(tm.mk_term(Kind::Distinct, &[t, zero]))
             }
@@ -75,8 +133,11 @@ pub(crate) fn membership_constraint<'tm>(
                         // Distinct: apply the uninterpreted predicate `is_D(t)`.
                         DefKind::Distinct => {
                             if let Some(pred) = distinct_preds.get(sym) {
+                                let Some(t_int) = to_integer_term(tm, t) else {
+                                    return Membership::Constrained(tm.mk_boolean(false));
+                                };
                                 Membership::Constrained(
-                                    tm.mk_term(Kind::ApplyUf, &[pred.clone(), t])
+                                    tm.mk_term(Kind::ApplyUf, &[pred.clone(), t_int])
                                 )
                             } else {
                                 Membership::Unsupported
@@ -94,16 +155,16 @@ pub(crate) fn membership_constraint<'tm>(
                 return Membership::Unsupported; // empty set — caller gets Unknown
             }
             // t ∈ {v₁, v₂, …}  ↔  t == v₁  ∨  t == v₂  ∨  …
-            // Only integer literals are supported inside set literals for now.
+            // Constant-fold integer expressions (including negation like `-1`).
+            let Some(t_int) = to_integer_term(tm, t) else {
+                return Membership::Constrained(tm.mk_boolean(false));
+            };
             let eqs: Option<Vec<Term<'_>>> = elements
                 .iter()
-                .map(|e| match &e.kind {
-                    ExprKind::IntLit(n) => {
-                        let n_term = tm.mk_integer(*n);
-                        Some(tm.mk_term(Kind::Equal, &[t.clone(), n_term]))
-                    }
-                    _ => None,
-                })
+                .map(|e| eval_const_int(e).map(|n| {
+                    let n_term = tm.mk_integer(n);
+                    tm.mk_term(Kind::Equal, &[t_int.clone(), n_term])
+                }))
                 .collect();
 
             match eqs {
@@ -150,6 +211,9 @@ pub(crate) fn membership_constraint<'tm>(
         ExprKind::BinOp { op: BinOp::Mul, lhs, rhs }
             if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail") =>
         {
+            let Some(t) = to_integer_term(tm, t) else {
+                return Membership::Constrained(tm.mk_boolean(false));
+            };
             let sentinel_base = tm.mk_integer(i64::MIN.wrapping_add(1));
             let decoded = tm.mk_term(Kind::Sub, &[t, sentinel_base]);
             match membership_constraint(tm, decoded, rhs, name_defs, distinct_preds) {
@@ -161,7 +225,14 @@ pub(crate) fn membership_constraint<'tm>(
         // `|` in signature position means set union.
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             // t ∈ A | B  ↔  (t ∈ A) ∨ (t ∈ B)
+            // Short-circuit: evaluate lhs first; if already Unconstrained the union
+            // is trivially Unconstrained and we avoid constructing the rhs term
+            // (which could trigger a CVC5 sort error, e.g. `bool_term >= 0` when
+            // the lhs is Bool and t has boolean sort).
             let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
+            if matches!(in_a, Membership::Unconstrained) {
+                return Membership::Unconstrained;
+            }
             let in_b = membership_constraint(tm, t, rhs, name_defs, distinct_preds);
             match (in_a, in_b) {
                 (Membership::Unsupported, _) | (_, Membership::Unsupported) => Membership::Unsupported,
@@ -192,6 +263,9 @@ pub(crate) fn membership_constraint<'tm>(
         // check time via `validate_disjoint_unions`.
         ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
             let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
+            if matches!(in_a, Membership::Unconstrained) {
+                return Membership::Unconstrained;
+            }
             let in_b = membership_constraint(tm, t, rhs, name_defs, distinct_preds);
             match (in_a, in_b) {
                 (Membership::Unsupported, _) | (_, Membership::Unsupported) => Membership::Unsupported,
@@ -237,7 +311,11 @@ pub(crate) fn membership_constraint<'tm>(
         // `t ∈ A * B`  ↔  `proj0(t) ∈ A ∧ proj1(t) ∈ B`
         // `t` is always a mk_tuple(…) term; use child(i+1) to extract
         // element i (child 0 is the APPLY_CONSTRUCTOR constructor).
+        // A non-tuple term (integer, boolean) can never be a product-set member.
         ExprKind::BinOp { op: BinOp::Mul, .. } => {
+            if !t.sort().is_tuple() {
+                return Membership::Constrained(tm.mk_boolean(false));
+            }
             use super::encode::flatten_product;
             let parts = flatten_product(set_expr);
             let mut constraints: Vec<Term<'_>> = Vec::new();
@@ -396,6 +474,9 @@ fn encode_comp_expr<'tm>(
 }
 
 pub(crate) fn bounded<'tm>(tm: &'tm TermManager, t: Term<'tm>, min: i64, max: i64) -> Membership<'tm> {
+    let Some(t) = to_integer_term(tm, t) else {
+        return Membership::Constrained(tm.mk_boolean(false));
+    };
     let lo  = tm.mk_integer(min);
     let hi  = tm.mk_integer(max);
     let geq = tm.mk_term(Kind::Geq, &[t.clone(), lo]);

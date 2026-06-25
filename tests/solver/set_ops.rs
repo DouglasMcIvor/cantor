@@ -426,10 +426,7 @@ f(x) = x
 }
 
 // Bool & Nat = Bool; returning from Bool domain into Bool & Nat range is proved.
-// Range position for Bool & <integer-set> currently crashes CVC5
-// ("expecting an arithmetic subterm for arithmetic relation").
 #[test]
-#[ignore = "Bool & Nat in range position triggers a fatal CVC5 sort error; fix range encoding first"]
 fn cross_kind_bool_to_bool_and_nat_proved() {
     proved("
 f : Bool -> Bool & Nat
@@ -456,7 +453,6 @@ f(x) = x
 // Bool ⊆ Nat (false=0, true=1), so Bool | Nat = Nat.
 // Returning a Nat value should be proved.
 #[test]
-#[ignore = "Bool | Nat triggers a fatal CVC5 sort error; fix the union sort encoding first"]
 fn cross_kind_bool_or_nat_range_from_nat_proved() {
     proved("
 f : Nat -> Bool | Nat
@@ -466,7 +462,6 @@ f(x) = x
 
 // Bool ⊆ Bool | Nat; returning Bool values into that range is proved.
 #[test]
-#[ignore = "Bool | Nat triggers a fatal CVC5 sort error; fix the union sort encoding first"]
 fn cross_kind_bool_or_nat_range_from_bool_proved() {
     proved("
 f : Bool -> Bool | Nat
@@ -476,7 +471,6 @@ f(x) = x
 
 // Bool | Nat = Nat as a domain; identity into Nat is proved.
 #[test]
-#[ignore = "Bool | Nat triggers a fatal CVC5 sort error; fix the union sort encoding first"]
 fn cross_kind_bool_or_nat_domain_to_nat_proved() {
     proved("
 f : Bool | Nat -> Nat
@@ -486,7 +480,6 @@ f(x) = if x then 1 else 0
 
 // A Nat value like 2 is in Bool | Nat but not in Bool; counterexample.
 #[test]
-#[ignore = "Bool | Nat triggers a fatal CVC5 sort error; fix the union sort encoding first"]
 fn cross_kind_bool_or_nat_to_bool_counterexample() {
     counterexample("
 bad : Bool | Nat -> Bool
@@ -499,9 +492,97 @@ bad(x) = x
 // requires a tagged-union datatype that the solver doesn't yet emit.
 // These tests document the intended semantics; un-ignore once fixed.
 
-// Nat arm of (Nat * Nat) | Nat: returning 1 (∈ Nat ⊆ anything) from any domain.
+// Returning a tuple into (Nat * Nat) | Nat range.
+// The tuple body (x,x) satisfies the (Nat*Nat) arm; the Nat arm gives
+// Constrained(false) for a tuple term (tuples aren't integers), so the
+// union resolves to the tuple arm's constraint: x >= 0, which the domain proves.
 #[test]
-#[ignore = "(Nat * Nat) | Nat requires a tagged-union sort; fix the union sort encoding first"]
+fn cross_kind_nat_to_tuple_or_nat_proved() {
+    proved("
+f : Nat -> (Nat * Nat) | Nat
+f(x) = (x, x)
+");
+}
+
+// ── Distinct sets in unions ───────────────────────────────────────────────────
+// `distinct` sets have an uninterpreted membership predicate (`is_Litre : Int -> Bool`).
+// The solver does not automatically know that Litre values satisfy their basis (Nat) —
+// it only learns this when constructors or destructors are used.  So `Litre | Nat`
+// as a domain is strictly broader than `Nat`: Litre values may fall outside Nat.
+
+// Returning a Litre value into a Litre | Nat range: is_Litre(x) satisfies the Litre arm.
+#[test]
+fn distinct_in_union_range_proved() {
+    proved("
+Litre = distinct Nat
+f : Litre -> Litre | Nat
+f(x) = x
+");
+}
+
+// Returning a NatPos value into a Litre | Nat range: NatPos ⊆ Nat satisfies the Nat arm.
+#[test]
+fn scalar_in_distinct_union_range_proved() {
+    proved("
+Litre = distinct Nat
+f : NatPos -> Litre | Nat
+f(x) = x
+");
+}
+
+// Identity from Litre | Nat into Nat: a Litre-tagged integer may not satisfy Nat.
+// The solver assigns is_Litre(-1) = true, x = -1 to refute the range claim.
+#[test]
+fn distinct_union_to_nat_counterexample() {
+    counterexample("
+Litre = distinct Nat
+f : Litre | Nat -> Nat
+f(x) = x
+");
+}
+
+// Two distinct sets based on Nat: a Metre value satisfies the Metre arm of Metre | Litre.
+#[test]
+fn two_distinct_sets_in_union_proved() {
+    proved("
+Metre = distinct Nat
+Litre = distinct Nat
+f : Metre -> Metre | Litre
+f(x) = x
+");
+}
+
+// Metre and Litre are independent uninterpreted predicates; a Metre value need not
+// satisfy is_Litre.  Identity from Metre into Litre gives a counterexample.
+#[test]
+fn two_distinct_sets_cross_arm_counterexample() {
+    counterexample("
+Metre = distinct Nat
+Litre = distinct Nat
+f : Metre -> Litre
+f(x) = x
+");
+}
+
+// Constructor wraps a NatPos into Litre, satisfying the Litre arm of Litre | NatPos.
+#[test]
+fn distinct_constructor_in_union_range_proved() {
+    proved("
+Litre = distinct Nat
+f : NatPos -> Litre | NatPos
+f(x) = litre(x)
+");
+}
+
+// ── Cross-kind: tuple | scalar in domain (needs tagged-union CVC5 sort) ───────
+// Creating a parameter variable from a domain like `(Nat * Nat) | Nat` requires a
+// single CVC5 sort that can represent both a tuple and an integer — which does not
+// exist without an algebraic datatype encoding (see set_sort TODO for Option A).
+// These tests document the intended semantics; un-ignore once Option A is implemented.
+
+// Constant body: should be proved regardless of the cross-kind domain.
+#[test]
+#[ignore = "(Nat * Nat) | Nat domain needs algebraic datatype sort; see set_sort TODO Option A"]
 fn cross_kind_tuple_or_nat_const_proved() {
     proved("
 f : (Nat * Nat) | Nat -> Nat
@@ -509,12 +590,46 @@ f(x) = 1
 ");
 }
 
-// Returning a tuple into (Nat * Nat) | Nat range.
+// Identity into Nat should be a counterexample: if x is a tuple, x ∉ Nat.
 #[test]
-#[ignore = "(Nat * Nat) | Nat requires a tagged-union sort; fix the union sort encoding first"]
-fn cross_kind_nat_to_tuple_or_nat_proved() {
+#[ignore = "(Nat * Nat) | Nat domain needs algebraic datatype sort; see set_sort TODO Option A"]
+fn cross_kind_tuple_or_nat_domain_identity_counterexample() {
+    counterexample("
+f : (Nat * Nat) | Nat -> Nat
+f(x) = x
+");
+}
+
+// Arms reversed: Nat | (Nat * Nat) with constant body.
+#[test]
+#[ignore = "Nat | (Nat * Nat) domain needs algebraic datatype sort; see set_sort TODO Option A"]
+fn cross_kind_nat_or_tuple_domain_const_proved() {
     proved("
-f : Nat -> (Nat * Nat) | Nat
+f : Nat | (Nat * Nat) -> Nat
+f(x) = 1
+");
+}
+
+// Bool | tuple cross-kind domain.
+#[test]
+#[ignore = "Bool | (Nat * Nat) domain needs algebraic datatype sort; see set_sort TODO Option A"]
+fn cross_kind_bool_or_tuple_domain_const_proved() {
+    proved("
+f : Bool | (Nat * Nat) -> Nat
+f(x) = 1
+");
+}
+
+// ── Kind mismatch: body and range have incompatible kinds ─────────────────────
+// Cantor has no type-checking phase, so kind-mismatched programs reach the solver.
+// The solver gives a spurious counterexample because
+// `membership_constraint(tuple_body, Nat)` returns `Constrained(false)` — a tuple
+// can never be an integer — making the range obligation trivially SAT for any model.
+// The codegen would catch this mismatch later; the solver does not diagnose it.
+#[test]
+fn kind_mismatch_tuple_body_scalar_range_counterexample() {
+    counterexample("
+f : Nat -> Nat
 f(x) = (x, x)
 ");
 }

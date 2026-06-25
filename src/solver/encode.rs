@@ -199,20 +199,29 @@ pub(crate) fn encode_expr<'tm>(
         ExprKind::If { cond, then_expr, else_expr } => {
             let c = enc!(cond)?;
 
+            // CVC5 requires a boolean-sort condition for Ite.  If the encoded
+            // condition is integer-sort (e.g. a variable from a Bool|Nat domain),
+            // coerce it to boolean via `c != 0` (0 = false, non-zero = true).
+            let c_bool = if c.sort().is_boolean() {
+                c
+            } else {
+                tm.mk_term(Kind::Distinct, &[c, tm.mk_integer(0)])
+            };
+
             // Then-branch: path_cond ∧ cond
-            let then_guard = tm.mk_term(Kind::And, &[path_cond.clone(), c.clone()]);
+            let then_guard = tm.mk_term(Kind::And, &[path_cond.clone(), c_bool.clone()]);
             let t = encode_expr(
                 then_expr, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, then_guard, distinct_preds,
             )?;
 
             // Else-branch: path_cond ∧ ¬cond
-            let not_c = tm.mk_term(Kind::Not, &[c.clone()]);
+            let not_c = tm.mk_term(Kind::Not, &[c_bool.clone()]);
             let else_guard = tm.mk_term(Kind::And, &[path_cond, not_c]);
             let e = encode_expr(
                 else_expr, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, else_guard, distinct_preds,
             )?;
 
-            Ok(tm.mk_term(Kind::Ite, &[c, t, e]))
+            Ok(tm.mk_term(Kind::Ite, &[c_bool, t, e]))
         }
 
         ExprKind::Call { callee, args } => {
@@ -297,8 +306,14 @@ pub(crate) fn encode_expr<'tm>(
                     }
                     assembled
                 } else {
-                    let sort = set_sort_for_range(tm, &first_sig.range);
-                    tm.mk_const(sort, &fresh)
+                    match set_sort_for_range(tm, &first_sig.range) {
+                        Some(sort) => tm.mk_const(sort, &fresh),
+                        None => return Err(format!(
+                            "call to `{}` returns a cross-kind union range with no single \
+                             CVC5 sort — see set_sort TODO for Option A (datatype encoding)",
+                            callee.0
+                        )),
+                    }
                 }
             } else {
                 tm.mk_const(tm.integer_sort(), &fresh)
@@ -476,7 +491,9 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
 ) -> (Term<'tm>, Vec<(Term<'tm>, &'e Expr)>) {
     let parts = flatten_product(set_expr);
     if parts.len() <= 1 {
-        let sort = set_sort(tm, set_expr);
+        // Only called for product set expressions whose leaves always have a defined sort.
+        let sort = set_sort(tm, set_expr)
+            .expect("mk_decomposed_tuple: leaf set expression has no representable CVC5 sort");
         let leaf = tm.mk_const(sort, name);
         return (leaf.clone(), vec![(leaf, set_expr)]);
     }
@@ -491,17 +508,98 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
     (tm.mk_tuple(&child_terms), leaves)
 }
 
-/// SMT sort for a set expression: Bool → boolean, `A * B` → tuple sort, else integer.
-pub(crate) fn set_sort<'tm>(tm: &'tm TermManager, set_expr: &Expr) -> Sort<'tm> {
-    match &set_expr.kind {
+/// SMT sort for a set expression, or `None` if the set spans incompatible CVC5 sorts.
+///
+/// Returns `None` for cross-kind unions where one arm is a tuple sort and another is
+/// a scalar sort — there is no single CVC5 sort that covers both.  Callers should
+/// convert `None` to `CheckResult::Unknown(…)` rather than panicking.
+///
+/// Every `ExprKind` variant that can appear in set-expression position is listed
+/// explicitly.  Adding a new `ExprKind` to the AST will cause a compile error here,
+/// forcing a conscious decision about its CVC5 sort rather than silently falling
+/// through to integer sort.
+///
+/// # TODO: Option A — CVC5 algebraic datatype sort for cross-kind unions
+///
+/// Cross-kind unions like `(Nat * Nat) | Nat` currently return `None` because CVC5
+/// has no built-in "sum of sorts."  The correct encoding is a CVC5 algebraic datatype:
+///
+/// ```text
+/// let arms = [("TupleArm", &[int_sort, int_sort]), ("ScalarArm", &[int_sort])];
+/// let dt   = tm.mk_dt_sorts(&arms)[0];   // one constructor per union arm
+/// let x    = tm.mk_const(dt, "x");
+/// ```
+///
+/// Membership then uses `ApplyTester` / `ApplySelector` against the constructors:
+/// ```text
+/// t ∈ (Nat * Nat) | Nat
+///   ↔  (is_TupleArm(t) ∧ sel_0(t) ≥ 0 ∧ sel_1(t) ≥ 0)
+///      ∨ (is_ScalarArm(t) ∧ sel_0(t) ≥ 0)
+/// ```
+///
+/// Implementation checklist (do in one commit after agreeing on the approach):
+/// 1. Detect cross-kind unions here and build the CVC5 datatype sort with one
+///    constructor per arm (recurse into each arm's `set_sort` to get field sorts).
+/// 2. Return `Some(dt_sort)` instead of `None`.
+/// 3. Teach `membership_constraint` to emit `ApplyTester`/`ApplySelector` terms
+///    when the term's sort `.is_datatype()`, mirroring how tuple membership uses `child()`.
+/// 4. Update counterexample extraction in `check_sig`/`check_block_sig` to decode which
+///    arm the model value inhabits and display it meaningfully.
+pub(crate) fn set_sort<'tm>(tm: &'tm TermManager, set_expr: &Expr) -> Option<Sort<'tm>> {
+    Some(match &set_expr.kind {
+        // Bool is the only named set with CVC5's distinct boolean sort.
         ExprKind::Var(sym) if sym.0 == "Bool" => tm.boolean_sort(),
+        // All other named sets (Nat, NatPos, Int, Int8…Int64, NonZeroInt, …) → integer.
+        ExprKind::Var(_) => tm.integer_sort(),
+        // Set literals {0}, {1, 2, 3} — elements are always integers.
+        ExprKind::SetLit(_) => tm.integer_sort(),
+        // Comprehensions {x for x in S} — elements are always integers.
+        ExprKind::Comprehension { .. } => tm.integer_sort(),
+        // Built-in set constructors Set(Int), Set(Bool) — variable holds an i64 pointer.
+        ExprKind::Call { .. } => tm.integer_sort(),
+        // `A * B * C` — Cartesian product → CVC5 tuple sort.
         ExprKind::BinOp { op: BinOp::Mul, .. } => {
             let parts = flatten_product(set_expr);
-            let sorts: Vec<Sort<'_>> = parts.iter().map(|p| set_sort(tm, p)).collect();
+            let sorts: Vec<Sort<'_>> = parts.iter()
+                .map(|p| set_sort(tm, p))
+                .collect::<Option<Vec<_>>>()?;
             tm.mk_tuple_sort(&sorts)
         }
-        _ => tm.integer_sort(),
-    }
+        // Set diff (`-`), symmetric diff (`^`), intersection (`&`): always subsets of ℤ.
+        ExprKind::BinOp { op: BinOp::Sub | BinOp::SymDiff | BinOp::Intersect, .. } => {
+            tm.integer_sort()
+        }
+        // Union (`|`) and disjoint union (`+`): scalar unions → integer sort.
+        // Bool | <integer-set> works because Bool ⊆ ℤ in Cantor; integer covers both arms.
+        // Cross-kind (tuple arm ∪ scalar arm) → None (see TODO above for Option A).
+        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
+            let ls = set_sort(tm, lhs)?;
+            let rs = set_sort(tm, rhs)?;
+            if ls.is_tuple() || rs.is_tuple() {
+                return None;
+            }
+            // Both arms are scalar; Bool ⊆ ℤ so integer sort covers both.
+            tm.integer_sort()
+        }
+        // Value-position BinOp operators must not appear in set-expression context.
+        ExprKind::BinOp {
+            op: BinOp::Div | BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le
+                | BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or
+                | BinOp::In | BinOp::NotIn,
+            ..
+        } => unreachable!(
+            "set_sort: value-position BinOp in set-expression context: {:?}",
+            set_expr.kind
+        ),
+        // Value-position ExprKind variants must never appear as set expressions.
+        // Listed explicitly so adding a new ExprKind causes a compile error here.
+        ExprKind::IntLit(_) | ExprKind::BoolLit(_) | ExprKind::UnOp { .. }
+        | ExprKind::If { .. } | ExprKind::Tuple(_) | ExprKind::Proj { .. }
+        | ExprKind::Try(_) | ExprKind::FailLit | ExprKind::FailWith(_) => unreachable!(
+            "set_sort: value-position expression in set-expression context: {:?}",
+            set_expr.kind
+        ),
+    })
 }
 
 /// Return the success-only arm of a fallible range.
@@ -532,10 +630,13 @@ fn success_arm_of_range(range: &Expr) -> Option<&Expr> {
     Some(range)
 }
 
-/// SMT sort for a range expression (strips `Fail` and `Fail * Y` union wrappers).
-pub(crate) fn set_sort_for_range<'tm>(tm: &'tm TermManager, range: &Expr) -> Sort<'tm> {
+/// SMT sort for a range expression, or `None` for cross-kind unions.
+///
+/// Strips `Fail` and `Fail * Y` union wrappers to find the success sort.
+/// Delegates to `set_sort` for non-union expressions.
+pub(crate) fn set_sort_for_range<'tm>(tm: &'tm TermManager, range: &Expr) -> Option<Sort<'tm>> {
     match &range.kind {
-        ExprKind::Var(sym) if sym.0 == "Fail" => tm.integer_sort(),
+        ExprKind::Var(sym) if sym.0 == "Fail" => Some(tm.integer_sort()),
         ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
             // Strip `Fail * Y` arm — the success sort is the other side.
             let is_fail_product = |e: &Expr| matches!(
@@ -545,7 +646,13 @@ pub(crate) fn set_sort_for_range<'tm>(tm: &'tm TermManager, range: &Expr) -> Sor
             );
             if is_fail_product(rhs) { return set_sort_for_range(tm, lhs); }
             if is_fail_product(lhs) { return set_sort_for_range(tm, rhs); }
-            set_sort_for_range(tm, lhs)
+            // Non-fail union: compute both arm sorts; cross-kind → None.
+            let ls = set_sort_for_range(tm, lhs)?;
+            let rs = set_sort_for_range(tm, rhs)?;
+            if ls.is_tuple() || rs.is_tuple() {
+                return None;
+            }
+            Some(tm.integer_sort())
         }
         _ => set_sort(tm, range),
     }
@@ -563,7 +670,10 @@ fn is_product_range(range: &Expr) -> bool {
             );
             if is_fail_product(rhs) { return is_product_range(lhs); }
             if is_fail_product(lhs) { return is_product_range(rhs); }
-            is_product_range(lhs)
+            // Non-fail union: no single arm defines the product structure.
+            // Previously this silently returned is_product_range(lhs), which caused
+            // (Nat * Nat) | Nat to be treated as a product range even though it isn't.
+            false
         }
         ExprKind::Var(sym) if sym.0 == "Fail" => false,
         _ => false,
