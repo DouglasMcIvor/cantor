@@ -504,6 +504,21 @@ keeps this simple; per-binding mutability is deferred).
 **Reassignment (`a, b :=`)**: all names must have been declared with `mut`; set
 constraints are checked for each element as with single-name `:=`.
 
+**Partial destructuring**: when fewer binders are given than tuple elements, the last binder
+collects the remaining elements as a sub-tuple.
+
+```
+a, rest = (1, 2, 3)   -- a = 1, rest = (2, 3)
+rest.0                 -- 2
+rest.1                 -- 3
+
+-- With a constraint on the tail
+a : Nat, rest : Nat * Nat = (p.0, p.1, p.2)
+```
+
+The tail binder can carry a set constraint (`rest : Nat * Nat`), which is checked as a proof
+obligation in the same way as any per-element constraint.
+
 **Deferred**: tuple-level constraint form `x, y : Int * Nat = (...)` (both constraints in one
 annotation); nested destructuring `(x, (y, z)) = ...`; `_` wildcard; per-binding mutability.
 

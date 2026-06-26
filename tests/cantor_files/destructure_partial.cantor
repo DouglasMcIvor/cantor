@@ -1,0 +1,13 @@
+-- Partial destructuring: first element plus the tail sub-tuple
+head_plus_tail : Int * Int * Int -> Int
+head_plus_tail(p) {
+    a, rest = (p.0, p.1, p.2)
+    a + rest.0 + rest.1
+}
+
+-- main returns 1 + (2 + 3) = 6
+main : -> Int
+main() {
+    a, rest = (1, 2, 3)
+    a + rest.0 + rest.1
+}

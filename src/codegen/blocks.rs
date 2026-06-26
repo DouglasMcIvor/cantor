@@ -65,18 +65,41 @@ impl<'ctx> Compiler<'ctx> {
                             "destructuring `=` requires a tuple on the right-hand side".into(),
                         )),
                     };
-                    if bindings.len() != elem_kinds.len() {
+                    if bindings.len() > elem_kinds.len() {
                         return Err(CompileError::Internal(format!(
-                            "destructuring arity mismatch: {} binding(s) but tuple has {} element(s)",
+                            "destructuring arity mismatch: {} binding(s) but tuple has only {} element(s)",
                             bindings.len(), elem_kinds.len()
                         )));
                     }
                     let sv = AggregateValueEnum::StructValue(rhs_val.into_struct_value());
+                    let last_i = bindings.len() - 1;
                     for (i, binding) in bindings.iter().enumerate() {
-                        let elem = self.builder
-                            .build_extract_value(sv, i as u32, &binding.name.0)
-                            .map_err(|e| CompileError::Internal(e.to_string()))?;
-                        env.insert(binding.name.clone(), (elem, elem_kinds[i].clone()));
+                        let tail_count = elem_kinds.len() - i;
+                        let (elem, kind) = if i < last_i || tail_count == 1 {
+                            let e = self.builder
+                                .build_extract_value(sv, i as u32, &binding.name.0)
+                                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            (e, elem_kinds[i].clone())
+                        } else {
+                            // Last binder receives the remaining elements as a sub-tuple.
+                            let tail_kinds: Vec<Kind> = elem_kinds[i..].to_vec();
+                            let llvm_types: Vec<_> = tail_kinds.iter()
+                                .map(|k| self.kind_to_llvm_type(k))
+                                .collect();
+                            let struct_ty = self.context.struct_type(&llvm_types, false);
+                            let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
+                            for (j, _) in tail_kinds.iter().enumerate() {
+                                let e = self.builder
+                                    .build_extract_value(sv, (i + j) as u32,
+                                        &format!("{}_t{}", binding.name.0, j))
+                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                agg = self.builder
+                                    .build_insert_value(agg, e, j as u32, "ts")
+                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            }
+                            (agg.into_struct_value().into(), Kind::Tuple(tail_kinds))
+                        };
+                        env.insert(binding.name.clone(), (elem, kind));
                     }
                 }
 
@@ -88,20 +111,52 @@ impl<'ctx> Compiler<'ctx> {
                             "destructuring `=` requires a tuple on the right-hand side".into(),
                         )),
                     };
-                    if bindings.len() != elem_kinds.len() {
+                    if bindings.len() > elem_kinds.len() {
                         return Err(CompileError::Internal(format!(
-                            "destructuring arity mismatch: {} binding(s) but tuple has {} element(s)",
+                            "destructuring arity mismatch: {} binding(s) but tuple has only {} element(s)",
                             bindings.len(), elem_kinds.len()
                         )));
                     }
                     let sv = AggregateValueEnum::StructValue(rhs_val.into_struct_value());
+                    let last_i = bindings.len() - 1;
                     for (i, binding) in bindings.iter().enumerate() {
-                        let elem = self.builder
-                            .build_extract_value(sv, i as u32, &binding.name.0)
-                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        let tail_count = elem_kinds.len() - i;
+                        let (elem, kind) = if i < last_i || tail_count == 1 {
+                            let e = self.builder
+                                .build_extract_value(sv, i as u32, &binding.name.0)
+                                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            (e, elem_kinds[i].clone())
+                        } else {
+                            // Last binder receives the remaining elements as a sub-tuple.
+                            // TODO: loop alloca write-through for tuple tail binders is not yet
+                            // implemented; panic if the tail binding is loop-modified.
+                            if alloca_map.contains_key(&binding.name) {
+                                panic!(
+                                    "TODO: mutable tuple tail binder `{}` modified inside a loop \
+                                     is not yet supported",
+                                    binding.name.0
+                                );
+                            }
+                            let tail_kinds: Vec<Kind> = elem_kinds[i..].to_vec();
+                            let llvm_types: Vec<_> = tail_kinds.iter()
+                                .map(|k| self.kind_to_llvm_type(k))
+                                .collect();
+                            let struct_ty = self.context.struct_type(&llvm_types, false);
+                            let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
+                            for (j, _) in tail_kinds.iter().enumerate() {
+                                let e = self.builder
+                                    .build_extract_value(sv, (i + j) as u32,
+                                        &format!("{}_t{}", binding.name.0, j))
+                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                agg = self.builder
+                                    .build_insert_value(agg, e, j as u32, "ts")
+                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            }
+                            (agg.into_struct_value().into(), Kind::Tuple(tail_kinds))
+                        };
                         if let Some(&ptr) = alloca_map.get(&binding.name) {
                             let i64_type = self.context.i64_type();
-                            let val_i64: IntValue<'ctx> = if elem_kinds[i] == Kind::Bool {
+                            let val_i64: IntValue<'ctx> = if kind == Kind::Bool {
                                 self.builder
                                     .build_int_z_extend(elem.into_int_value(), i64_type, "bool_ext")
                                     .map_err(|e| CompileError::Internal(e.to_string()))?
@@ -111,7 +166,7 @@ impl<'ctx> Compiler<'ctx> {
                             self.builder.build_store(ptr, val_i64)
                                 .map_err(|e| CompileError::Internal(e.to_string()))?;
                         }
-                        env.insert(binding.name.clone(), (elem, elem_kinds[i].clone()));
+                        env.insert(binding.name.clone(), (elem, kind));
                     }
                 }
 
@@ -123,20 +178,50 @@ impl<'ctx> Compiler<'ctx> {
                             "destructuring `:=` requires a tuple on the right-hand side".into(),
                         )),
                     };
-                    if dest_names.len() != elem_kinds.len() {
+                    if dest_names.len() > elem_kinds.len() {
                         return Err(CompileError::Internal(format!(
-                            "destructuring arity mismatch: {} name(s) but tuple has {} element(s)",
+                            "destructuring arity mismatch: {} name(s) but tuple has only {} element(s)",
                             dest_names.len(), elem_kinds.len()
                         )));
                     }
                     let sv = AggregateValueEnum::StructValue(rhs_val.into_struct_value());
+                    let last_i = dest_names.len() - 1;
                     for (i, name) in dest_names.iter().enumerate() {
-                        let elem = self.builder
-                            .build_extract_value(sv, i as u32, &name.0)
-                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        let tail_count = elem_kinds.len() - i;
+                        let (elem, kind) = if i < last_i || tail_count == 1 {
+                            let e = self.builder
+                                .build_extract_value(sv, i as u32, &name.0)
+                                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            (e, elem_kinds[i].clone())
+                        } else {
+                            // TODO: loop alloca write-through for tuple tail binders not yet supported.
+                            if alloca_map.contains_key(name) {
+                                panic!(
+                                    "TODO: tuple tail binder `{}` modified inside a loop \
+                                     is not yet supported",
+                                    name.0
+                                );
+                            }
+                            let tail_kinds: Vec<Kind> = elem_kinds[i..].to_vec();
+                            let llvm_types: Vec<_> = tail_kinds.iter()
+                                .map(|k| self.kind_to_llvm_type(k))
+                                .collect();
+                            let struct_ty = self.context.struct_type(&llvm_types, false);
+                            let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
+                            for (j, _) in tail_kinds.iter().enumerate() {
+                                let e = self.builder
+                                    .build_extract_value(sv, (i + j) as u32,
+                                        &format!("{}_t{}", name.0, j))
+                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                agg = self.builder
+                                    .build_insert_value(agg, e, j as u32, "ts")
+                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            }
+                            (agg.into_struct_value().into(), Kind::Tuple(tail_kinds))
+                        };
                         if let Some(&ptr) = alloca_map.get(name) {
                             let i64_type = self.context.i64_type();
-                            let val_i64: IntValue<'ctx> = if elem_kinds[i] == Kind::Bool {
+                            let val_i64: IntValue<'ctx> = if kind == Kind::Bool {
                                 self.builder
                                     .build_int_z_extend(elem.into_int_value(), i64_type, "bool_ext")
                                     .map_err(|e| CompileError::Internal(e.to_string()))?
@@ -146,7 +231,7 @@ impl<'ctx> Compiler<'ctx> {
                             self.builder.build_store(ptr, val_i64)
                                 .map_err(|e| CompileError::Internal(e.to_string()))?;
                         }
-                        env.insert(name.clone(), (elem, elem_kinds[i].clone()));
+                        env.insert(name.clone(), (elem, kind));
                     }
                 }
 

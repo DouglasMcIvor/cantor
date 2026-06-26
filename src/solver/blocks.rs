@@ -190,37 +190,70 @@ pub(crate) fn encode_block<'tm>(
                     }
                 }
 
+                // child(0) of an APPLY_CONSTRUCTOR tuple is the constructor; elements at child(1+i).
+                let tuple_arity = rhs_term.num_children().saturating_sub(1);
+                let last_i = bindings.len() - 1;
+
                 for (i, binding) in bindings.iter().enumerate() {
-                    // child(0) is the APPLY_CONSTRUCTOR node; elements start at child(1).
-                    let proj = rhs_term.child(i + 1);
-                    let ssa_name = format!("{}_{}", binding.name.0, ssa_counter);
-                    *ssa_counter += 1;
-                    let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
-                    let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
-                    solver.assert_formula(eq.clone());
-                    accumulated_facts.push(eq);
+                    let is_tail = i == last_i && bindings.len() < tuple_arity;
 
-                    if let Some(constraint) = &binding.constraint {
-                        if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
-                            builtin_obligs.push(BuiltinObligation {
-                                path_cond: top_guard.clone(),
-                                obligation: c,
-                                violated_reason: format!(
-                                    "destructured element {} (`{}`) is not in `{}`",
-                                    i, binding.name.0, constraint
-                                ),
-                            });
-                        }
-                    }
-
-                    if is_mut {
+                    if is_tail {
+                        // Last binder collects remaining elements as a sub-tuple.
+                        let tail: Vec<Term<'_>> = (i..tuple_arity)
+                            .map(|j| rhs_term.child(j + 1))
+                            .collect();
+                        let sub_tuple = tm.mk_tuple(&tail);
                         if let Some(constraint) = &binding.constraint {
-                            constraint_env.insert(binding.name.clone(), constraint.clone());
+                            if let Membership::Constrained(c) = membership_constraint(tm, sub_tuple.clone(), constraint, name_defs, distinct_preds) {
+                                builtin_obligs.push(BuiltinObligation {
+                                    path_cond: top_guard.clone(),
+                                    obligation: c,
+                                    violated_reason: format!(
+                                        "destructured tail `{}` is not in `{}`",
+                                        binding.name.0, constraint
+                                    ),
+                                });
+                            }
                         }
+                        if is_mut {
+                            if let Some(constraint) = &binding.constraint {
+                                constraint_env.insert(binding.name.clone(), constraint.clone());
+                            }
+                        } else {
+                            immutable_names.insert(binding.name.clone());
+                        }
+                        env.insert(binding.name.clone(), sub_tuple);
                     } else {
-                        immutable_names.insert(binding.name.clone());
+                        let proj = rhs_term.child(i + 1);
+                        let ssa_name = format!("{}_{}", binding.name.0, ssa_counter);
+                        *ssa_counter += 1;
+                        let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                        let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
+                        solver.assert_formula(eq.clone());
+                        accumulated_facts.push(eq);
+
+                        if let Some(constraint) = &binding.constraint {
+                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
+                                builtin_obligs.push(BuiltinObligation {
+                                    path_cond: top_guard.clone(),
+                                    obligation: c,
+                                    violated_reason: format!(
+                                        "destructured element {} (`{}`) is not in `{}`",
+                                        i, binding.name.0, constraint
+                                    ),
+                                });
+                            }
+                        }
+
+                        if is_mut {
+                            if let Some(constraint) = &binding.constraint {
+                                constraint_env.insert(binding.name.clone(), constraint.clone());
+                            }
+                        } else {
+                            immutable_names.insert(binding.name.clone());
+                        }
+                        env.insert(binding.name.clone(), fresh);
                     }
-                    env.insert(binding.name.clone(), fresh);
                 }
             }
 
@@ -250,38 +283,73 @@ pub(crate) fn encode_block<'tm>(
                     call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
                 ).map_err(CheckResult::Unknown)?;
 
-                for (i, name) in dest_names.iter().enumerate() {
-                    let proj = rhs_term.child(i + 1);
-                    let ssa_name = format!("{}_{}", name.0, ssa_counter);
-                    *ssa_counter += 1;
-                    let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
-                    let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
-                    solver.assert_formula(eq.clone());
-                    accumulated_facts.push(eq);
+                let tuple_arity = rhs_term.num_children().saturating_sub(1);
+                let last_i = dest_names.len() - 1;
 
-                    if let Some(constraint) = constraint_env.get(name).cloned() {
-                        if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), &constraint, name_defs, distinct_preds) {
-                            match check_require(c.clone(), tm, accumulated_facts, param_names, param_terms) {
-                                CheckResult::Proved => {
-                                    solver.assert_formula(c.clone());
-                                    accumulated_facts.push(c);
+                for (i, name) in dest_names.iter().enumerate() {
+                    let is_tail = i == last_i && dest_names.len() < tuple_arity;
+
+                    if is_tail {
+                        // Last binder collects remaining elements as a sub-tuple.
+                        let tail: Vec<Term<'_>> = (i..tuple_arity)
+                            .map(|j| rhs_term.child(j + 1))
+                            .collect();
+                        let sub_tuple = tm.mk_tuple(&tail);
+                        if let Some(constraint) = constraint_env.get(name).cloned() {
+                            if let Membership::Constrained(c) = membership_constraint(tm, sub_tuple.clone(), &constraint, name_defs, distinct_preds) {
+                                match check_require(c.clone(), tm, accumulated_facts, param_names, param_terms) {
+                                    CheckResult::Proved => {
+                                        solver.assert_formula(c.clone());
+                                        accumulated_facts.push(c);
+                                    }
+                                    CheckResult::Counterexample { params, output, .. } => {
+                                        return Err(CheckResult::Counterexample {
+                                            params,
+                                            output,
+                                            reason: format!(
+                                                "`{} :=` (destructured tail) violates declared constraint `{}`",
+                                                name.0, constraint
+                                            ),
+                                        });
+                                    }
+                                    CheckResult::Unknown(msg) => return Err(CheckResult::Unknown(msg)),
                                 }
-                                CheckResult::Counterexample { params, output, .. } => {
-                                    return Err(CheckResult::Counterexample {
-                                        params,
-                                        output,
-                                        reason: format!(
-                                            "`{} :=` (destructured) violates declared constraint `{}`",
-                                            name.0, constraint
-                                        ),
-                                    });
-                                }
-                                CheckResult::Unknown(msg) => return Err(CheckResult::Unknown(msg)),
                             }
                         }
-                    }
+                        env.insert(name.clone(), sub_tuple);
+                    } else {
+                        let proj = rhs_term.child(i + 1);
+                        let ssa_name = format!("{}_{}", name.0, ssa_counter);
+                        *ssa_counter += 1;
+                        let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                        let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
+                        solver.assert_formula(eq.clone());
+                        accumulated_facts.push(eq);
 
-                    env.insert(name.clone(), fresh);
+                        if let Some(constraint) = constraint_env.get(name).cloned() {
+                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), &constraint, name_defs, distinct_preds) {
+                                match check_require(c.clone(), tm, accumulated_facts, param_names, param_terms) {
+                                    CheckResult::Proved => {
+                                        solver.assert_formula(c.clone());
+                                        accumulated_facts.push(c);
+                                    }
+                                    CheckResult::Counterexample { params, output, .. } => {
+                                        return Err(CheckResult::Counterexample {
+                                            params,
+                                            output,
+                                            reason: format!(
+                                                "`{} :=` (destructured) violates declared constraint `{}`",
+                                                name.0, constraint
+                                            ),
+                                        });
+                                    }
+                                    CheckResult::Unknown(msg) => return Err(CheckResult::Unknown(msg)),
+                                }
+                            }
+                        }
+
+                        env.insert(name.clone(), fresh);
+                    }
                 }
             }
 

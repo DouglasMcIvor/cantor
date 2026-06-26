@@ -16,22 +16,17 @@ You probably don't want to read this unless you're me.
   - char (unicode)
   - byte
 - more operators: modulo (see below for quot and rem support under Rational - maybe we want true wrapping quotient sets like Z/5Z), bitwise ops on bytes
-- fix / to have Rational as it's range rather than truncating
+- Rational support, including making / for Int return Rational and adding quot and rem to keep Int inside Int
 - operator overloading for things like List(Byte)?
   - custom operator overloading syntax like with haskell? I don't care for inventing new ops but supporting existing ones might be important
   - automatic operator overloading for disinct sets, like allowing arithmetic on Litre, maybe via generics mechanism below?
 - BigInt runtime support for our unsized Int and Nat sets
-- Rational support, including making / for Int return Rational and adding quot and rem to keep Int inside Int
 - constants JIT'd instead of at rust level to get consistency 
 - spin up some code review agents to assess quality of rust implementation, factoring and maintainability before it gets too large
 - human intros (familiar with types, newbie with the word type taboo'd) and LLM intro. The human intros would be good to include a bunch of Venn diagrams and ye olde curved arrows between ovals representing functions to visualise the concepts along the way.
 - review and improve error messages
 - suggested constraints in error messages
 - more containers! gotta have me some vectors and maps, not just sets! ordered sets too
-- iterators for containers 
-- fixed length arrays? yes! only needs two new syntax:
-  x : X * 3 -- define a repeated product set
-  x = [1, 2, 3] -- same as (...) but [...] forces homogeneity 
 - ~vectors be something like `Vector(X) = Union(n : Nat) (X * n)`~ 
   NOPE! Vectors are the Kleene star!!! `X*` - we get it being both the
 union of all products over n in Nat _and_ the free monoid over `X`!

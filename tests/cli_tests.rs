@@ -606,6 +606,27 @@ fn destructure_mut_run_produces_correct_output() {
     );
 }
 
+#[test]
+fn destructure_partial_all_proved() {
+    let out = run_file("destructure_partial.cantor");
+    assert_eq!(out.code, 0, "destructure_partial.cantor should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected no failures:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn destructure_partial_run_produces_correct_output() {
+    let out = run_subcommand("destructure_partial.cantor");
+    assert_eq!(out.code, 0, "destructure_partial.cantor run should exit 0\nstdout: {}", out.stdout);
+    // main() returns 1 + 2 + 3 = 6
+    assert!(
+        out.stdout.contains("6"),
+        "expected output 6 from destructure_partial.cantor main:\n{}", out.stdout
+    );
+}
+
 // ── Set operations (`+` disjoint union, `^` symmetric difference) ────────────
 
 #[test]

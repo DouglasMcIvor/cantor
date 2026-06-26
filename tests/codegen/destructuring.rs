@@ -65,6 +65,45 @@ main() {
     assert_eq!(result, 4);
 }
 
+// ── Partial destructuring: last binder collects tail ─────────────────────────
+
+#[test]
+fn partial_destruct_two_binders_runs() {
+    let result = jit_src_zero_arg("
+main : -> Int
+main() {
+    a, rest = (1, 2, 3)
+    a + rest.0 + rest.1
+}
+");
+    assert_eq!(result, 6);
+}
+
+#[test]
+fn partial_destruct_three_binders_runs() {
+    let result = jit_src_zero_arg("
+main : -> Int
+main() {
+    a, b, rest = (1, 2, 3, 4)
+    a + b + rest.0 + rest.1
+}
+");
+    assert_eq!(result, 10);
+}
+
+#[test]
+fn partial_destruct_from_param_runs() {
+    let result = jit_src_one_arg("
+main : Int -> Int
+main(n) {
+    a, rest = (n, n + 1, n + 2)
+    a + rest.0 + rest.1
+}
+", 10);
+    // 10 + 11 + 12 = 33
+    assert_eq!(result, 33);
+}
+
 // ── DestructAssign: reassignment of existing mutables ────────────────────────
 
 #[test]

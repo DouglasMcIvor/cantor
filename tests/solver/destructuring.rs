@@ -86,6 +86,41 @@ f(p) {
 ");
 }
 
+// ── Partial destructuring: last binder collects tail ─────────────────────────
+
+#[test]
+fn partial_destruct_proved() {
+    proved("
+f : Int * Int * Int -> Int
+f(p) {
+    a, rest = (p.0, p.1, p.2)
+    a + rest.0 + rest.1
+}
+");
+}
+
+#[test]
+fn partial_destruct_nat_constraint_proved() {
+    proved("
+f : Nat * Nat * Nat -> Nat
+f(p) {
+    a : Nat, rest : Nat * Nat = (p.0, p.1, p.2)
+    a + rest.0 + rest.1
+}
+");
+}
+
+#[test]
+fn partial_destruct_bad_head_counterexample() {
+    counterexample("
+f : Int -> Int
+f(n) {
+    a : NatPos, rest = (n, 0, 0)
+    a + rest.0
+}
+");
+}
+
 // ── DestructAssign: reassignment of existing mutables ────────────────────────
 
 #[test]
