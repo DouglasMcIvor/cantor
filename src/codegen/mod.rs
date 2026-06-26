@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use inkwell::{
     AddressSpace,
+    IntPredicate,
     basic_block::BasicBlock,
     builder::Builder,
     context::Context,
@@ -207,6 +208,89 @@ impl<'ctx> Compiler<'ctx> {
         let mut field_idx = 1u32;
         self.insert_kind_leaves(&mut agg, arm_value, arm_kind, &mut field_idx)?;
         Ok(agg.into_struct_value().into())
+    }
+
+    /// Low-level: copy the leaf i64 fields from a TaggedUnion struct into a
+    /// (possibly wider) merged struct, using `new_tag` as the tag field.
+    ///
+    /// Extra i64 leaf fields beyond `old_leaf_count` are left undef — safe because
+    /// they are only ever read via the arm that originally wrote them.
+    fn rewrap_tagged_union_with_tag(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        old_arms: &[Kind],
+        new_arms: &[Kind],
+        new_tag: inkwell::values::IntValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        use crate::kind::tagged_union_leaf_count;
+        let old_leaf_count = tagged_union_leaf_count(old_arms);
+        let new_struct_ty = self.kind_to_llvm_type(&Kind::TaggedUnion(new_arms.to_vec()))
+            .into_struct_type();
+        let old_struct = AggregateValueEnum::StructValue(val.into_struct_value());
+        let mut agg: AggregateValueEnum<'ctx> = new_struct_ty.get_undef().into();
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        agg = self.builder.build_insert_value(agg, new_tag, 0, "tu_rw_t").map_err(err)?;
+        for i in 0..old_leaf_count {
+            let leaf = self.builder
+                .build_extract_value(old_struct, (i + 1) as u32, "tu_rw_l")
+                .map_err(err)?;
+            agg = self.builder
+                .build_insert_value(agg, leaf, (i + 1) as u32, "tu_rw_li")
+                .map_err(err)?;
+        }
+        Ok(agg.into_struct_value().into())
+    }
+
+    /// Extend a `TaggedUnion(old_arms)` value into a wider `TaggedUnion(new_arms)` struct.
+    ///
+    /// `old_arms` must be a prefix of `new_arms` (arm indices are preserved).
+    pub(crate) fn rewrap_tagged_union_value(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        old_arms: &[Kind],
+        new_arms: &[Kind],
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let old_struct = AggregateValueEnum::StructValue(val.into_struct_value());
+        let tag = self.builder
+            .build_extract_value(old_struct, 0, "tu_rw_tag")
+            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .into_int_value();
+        self.rewrap_tagged_union_with_tag(val, old_arms, new_arms, tag)
+    }
+
+    /// Remap an i32 tag value using `mapping[old_arm_idx] = new_arm_idx`.
+    ///
+    /// Emits a chain of LLVM `select` instructions that evaluate at runtime.
+    pub(crate) fn remap_tagged_union_tag(
+        &self,
+        old_tag: inkwell::values::IntValue<'ctx>,
+        mapping: &[usize],
+    ) -> Result<inkwell::values::IntValue<'ctx>, CompileError> {
+        let i32t = self.context.i32_type();
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        // Default: the last arm's new index (used when no earlier select fires).
+        let mut current = i32t.const_int(*mapping.last().unwrap() as u64, false);
+        // Build selects in reverse order so the chain evaluates correctly.
+        for (old_idx, &new_idx) in mapping[..mapping.len() - 1].iter().enumerate().rev() {
+            let is_this = self.builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    old_tag,
+                    i32t.const_int(old_idx as u64, false),
+                    "tu_tag_eq",
+                )
+                .map_err(err)?;
+            current = self.builder
+                .build_select(
+                    is_this,
+                    i32t.const_int(new_idx as u64, false),
+                    current,
+                    "tu_tag_sel",
+                )
+                .map_err(err)?
+                .into_int_value();
+        }
+        Ok(current)
     }
 
     /// If the function's declared return kind is `Kind::TaggedUnion(arms)` and

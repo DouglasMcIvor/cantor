@@ -311,16 +311,9 @@ main(x) = if f(x) in (Nat * Nat) then 1 else 0
 }
 
 #[test]
-#[ignore]
-// compile_if's `needs_tagged_union` path only handles the two-arm case where
-// neither branch is already a TaggedUnion.  Here the outer if has
-//   then : TaggedUnion([Tuple([Int,Int]), Int])  (from the inner if)
-//   else : Bool
-// which hits the `else` fallthrough instead of merging into a 3-arm
-// TaggedUnion([Tuple, Int, Bool]).  Fix: detect when one branch is a
-// TaggedUnion and the other is a different kind; flatten the arms and wrap
-// both values into the combined TaggedUnion before the phi merge.
 fn cross_kind_three_arm_union_if_else() {
+    // Outer if: then = TaggedUnion([Tuple, Int]) from inner if, else = Bool.
+    // compile_if must extend the 2-arm TaggedUnion to 3-arm TaggedUnion([Tuple, Int, Bool]).
     let src = "
 f : Nat -> (Nat * Nat) | Nat | Bool
 f(x) = if x > 2 then (if x > 5 then (x, x) else x) else false
@@ -334,6 +327,52 @@ main(x) = if f(x) in (Nat * Nat) then 1 else 0
 }
 
 #[test]
+fn cross_kind_three_arm_union_else_is_tagged_union() {
+    // Outer if: then = Bool, else = TaggedUnion([Tuple, Int]) from inner if.
+    // compile_if must extend the 2-arm TaggedUnion to 3-arm TaggedUnion([Tuple, Int, Bool]).
+    let src = "
+f : Nat -> (Nat * Nat) | Nat | Bool
+f(x) = if x <= 2 then false else (if x > 5 then (x, x) else x)
+
+main : Nat -> Int
+main(x) = if f(x) in (Nat * Nat) then 1 else 0
+";
+    assert_eq!(jit_src_one_arg(src, 7), 1); // x > 5  → tuple arm
+    assert_eq!(jit_src_one_arg(src, 4), 0); // 2 < x ≤ 5 → Nat arm
+    assert_eq!(jit_src_one_arg(src, 1), 0); // x ≤ 2  → Bool arm
+}
+
+#[test]
+fn cross_kind_three_arm_union_nat_arm_check() {
+    // Verify tag 1 (Nat arm) is correctly identified in a 3-arm TaggedUnion.
+    let src = "
+f : Nat -> (Nat * Nat) | Nat | Bool
+f(x) = if x > 2 then (if x > 5 then (x, x) else x) else false
+
+main : Nat -> Int
+main(x) = if f(x) in Nat then 1 else 0
+";
+    assert_eq!(jit_src_one_arg(src, 7), 0); // tuple arm → not in Nat
+    assert_eq!(jit_src_one_arg(src, 4), 1); // Nat arm   → in Nat
+    assert_eq!(jit_src_one_arg(src, 1), 0); // Bool arm  → not in Nat
+}
+
+#[test]
+fn cross_kind_three_arm_union_bool_arm_check() {
+    // Verify tag 2 (Bool arm) is correctly identified in a 3-arm TaggedUnion.
+    let src = "
+f : Nat -> (Nat * Nat) | Nat | Bool
+f(x) = if x > 2 then (if x > 5 then (x, x) else x) else false
+
+main : Nat -> Int
+main(x) = if f(x) in Bool then 1 else 0
+";
+    assert_eq!(jit_src_one_arg(src, 7), 0); // tuple arm → not in Bool
+    assert_eq!(jit_src_one_arg(src, 4), 0); // Nat arm   → not in Bool
+    assert_eq!(jit_src_one_arg(src, 1), 1); // Bool arm  → in Bool
+}
+
+#[test]
 fn cross_kind_tuple_arm_domain_membership_check() {
     // Check which arm of a (Nat * Nat) | Nat value was passed by inspecting the tag.
     // A scalar passed as jit_src_one_arg occupies the Nat arm (tag = 1), so the
@@ -343,4 +382,60 @@ main : (Nat * Nat) | Nat -> Int
 main(x) = if x in (Nat * Nat) then 1 else 0
 ";
     assert_eq!(jit_src_one_arg(src, 5), 0);
+}
+
+// ── Cross-kind: dual TaggedUnion merge ───────────────────────────────────────
+
+// These tests exercise compile_if's dual-TaggedUnion path: both branches of the
+// outer if already hold a TaggedUnion (produced by inner ifs), with different
+// arm sets.  The merge deduplicates arms (then_arms first, then unique else_arms)
+// and emits runtime `select` chains to remap the else branch's tag indices.
+//
+// f: outer if → then = TaggedUnion([Tuple, Int]), else = TaggedUnion([Bool, Tuple])
+// merged = TaggedUnion([Tuple, Int, Bool])   (Tuple=0, Int=1, Bool=2)
+// else tag remap: 0(Bool)→2, 1(Tuple)→0
+
+#[test]
+fn cross_kind_dual_tagged_union_merge_tuple_arm() {
+    let src = "
+f : Nat -> (Nat * Nat) | Nat | Bool
+f(x) = if x > 3 then (if x > 5 then (x, x) else x) else (if x > 1 then false else (x, x + 1))
+
+main : Nat -> Int
+main(x) = if f(x) in (Nat * Nat) then 1 else 0
+";
+    assert_eq!(jit_src_one_arg(src, 7), 1); // x>5  → then-path Tuple  (tag 0)
+    assert_eq!(jit_src_one_arg(src, 4), 0); // x≤5  → then-path Int    (tag 1)
+    assert_eq!(jit_src_one_arg(src, 2), 0); // x>1  → else-path Bool   (tag 2, remapped from 0)
+    assert_eq!(jit_src_one_arg(src, 0), 1); // x≤1  → else-path Tuple  (tag 0, remapped from 1)
+}
+
+#[test]
+fn cross_kind_dual_tagged_union_merge_nat_arm() {
+    let src = "
+f : Nat -> (Nat * Nat) | Nat | Bool
+f(x) = if x > 3 then (if x > 5 then (x, x) else x) else (if x > 1 then false else (x, x + 1))
+
+main : Nat -> Int
+main(x) = if f(x) in Nat then 1 else 0
+";
+    assert_eq!(jit_src_one_arg(src, 7), 0); // Tuple arm
+    assert_eq!(jit_src_one_arg(src, 4), 1); // Int arm (tag 1)
+    assert_eq!(jit_src_one_arg(src, 2), 0); // Bool arm
+    assert_eq!(jit_src_one_arg(src, 0), 0); // Tuple arm (from else path)
+}
+
+#[test]
+fn cross_kind_dual_tagged_union_merge_bool_arm() {
+    let src = "
+f : Nat -> (Nat * Nat) | Nat | Bool
+f(x) = if x > 3 then (if x > 5 then (x, x) else x) else (if x > 1 then false else (x, x + 1))
+
+main : Nat -> Int
+main(x) = if f(x) in Bool then 1 else 0
+";
+    assert_eq!(jit_src_one_arg(src, 7), 0); // Tuple arm
+    assert_eq!(jit_src_one_arg(src, 4), 0); // Int arm
+    assert_eq!(jit_src_one_arg(src, 2), 1); // Bool arm (tag 2, remapped from 0)
+    assert_eq!(jit_src_one_arg(src, 0), 0); // Tuple arm (from else path)
 }

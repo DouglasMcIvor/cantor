@@ -146,12 +146,19 @@ impl<'ctx> Compiler<'ctx> {
 
         // Detect cross-kind branches that need a tagged-union wrapper.
         // Handles `then : Kind::Tuple` vs `else : Kind::Int` (and vice versa).
-        // TODO: merging a TaggedUnion branch with a non-matching kind (3+ arm unions).
         let needs_tagged_union = !needs_coerce
             && then_ty != else_ty
             && (matches!(&then_ty, Kind::Tuple(_)) || matches!(&else_ty, Kind::Tuple(_)))
             && !matches!(&then_ty, Kind::TaggedUnion(_))
             && !matches!(&else_ty, Kind::TaggedUnion(_));
+
+        // Detect the case where one or both branches are already a TaggedUnion and
+        // the kinds differ.  Covers both the simple append (one branch is a plain kind)
+        // and the full merge (both branches are different TaggedUnions).
+        let needs_extend_tagged_union = !needs_coerce
+            && !needs_tagged_union
+            && then_ty != else_ty
+            && (matches!(&then_ty, Kind::TaggedUnion(_)) || matches!(&else_ty, Kind::TaggedUnion(_)));
 
         let (then_val, else_val, result_ty) = if needs_coerce {
             self.builder.position_at_end(then_bb_cur);
@@ -166,6 +173,60 @@ impl<'ctx> Compiler<'ctx> {
             self.builder.position_at_end(else_bb_cur);
             let ev = self.build_tagged_union_value(1, else_val_raw, &else_ty, &arms)?;
             (tv, ev, Kind::TaggedUnion(arms))
+        } else if needs_extend_tagged_union {
+            match (&then_ty, &else_ty) {
+                (Kind::TaggedUnion(then_inner), Kind::TaggedUnion(else_inner)) => {
+                    // Both branches are different TaggedUnions.
+                    // Merge: start with then_inner, append unique arms from else_inner.
+                    let mut merged_arms = then_inner.clone();
+                    for arm in else_inner {
+                        if !merged_arms.contains(arm) {
+                            merged_arms.push(arm.clone());
+                        }
+                    }
+                    // Mapping: else_arm_idx → merged_arm_idx (for runtime re-tagging).
+                    let else_to_merged: Vec<usize> = else_inner.iter()
+                        .map(|arm| merged_arms.iter().position(|m| m == arm).unwrap())
+                        .collect();
+
+                    self.builder.position_at_end(then_bb_cur);
+                    let tv = self.rewrap_tagged_union_value(then_val_raw, then_inner, &merged_arms)?;
+
+                    self.builder.position_at_end(else_bb_cur);
+                    let old_struct = AggregateValueEnum::StructValue(else_val_raw.into_struct_value());
+                    let old_tag = self.builder
+                        .build_extract_value(old_struct, 0, "tu_merge_tag")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?
+                        .into_int_value();
+                    let new_tag = self.remap_tagged_union_tag(old_tag, &else_to_merged)?;
+                    let ev = self.rewrap_tagged_union_with_tag(else_val_raw, else_inner, &merged_arms, new_tag)?;
+
+                    (tv, ev, Kind::TaggedUnion(merged_arms))
+                }
+                (Kind::TaggedUnion(inner_arms), _) => {
+                    // then = TaggedUnion, else = plain kind: append else as new arm.
+                    let n = inner_arms.len();
+                    let mut new_arms = inner_arms.clone();
+                    new_arms.push(else_ty.clone());
+                    self.builder.position_at_end(then_bb_cur);
+                    let tv = self.rewrap_tagged_union_value(then_val_raw, inner_arms, &new_arms)?;
+                    self.builder.position_at_end(else_bb_cur);
+                    let ev = self.build_tagged_union_value(n, else_val_raw, &else_ty, &new_arms)?;
+                    (tv, ev, Kind::TaggedUnion(new_arms))
+                }
+                (_, Kind::TaggedUnion(inner_arms)) => {
+                    // then = plain kind, else = TaggedUnion: append then as new arm.
+                    let n = inner_arms.len();
+                    let mut new_arms = inner_arms.clone();
+                    new_arms.push(then_ty.clone());
+                    self.builder.position_at_end(then_bb_cur);
+                    let tv = self.build_tagged_union_value(n, then_val_raw, &then_ty, &new_arms)?;
+                    self.builder.position_at_end(else_bb_cur);
+                    let ev = self.rewrap_tagged_union_value(else_val_raw, inner_arms, &new_arms)?;
+                    (tv, ev, Kind::TaggedUnion(new_arms))
+                }
+                _ => unreachable!("needs_extend_tagged_union guarantees at least one TaggedUnion branch"),
+            }
         } else {
             (then_val_raw, else_val_raw, then_ty)
         };
