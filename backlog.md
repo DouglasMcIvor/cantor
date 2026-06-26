@@ -55,6 +55,11 @@ Algorithm:
 2. Repeat until no new sets become generating.
 3. Reject any recursive SCC (strongly connected component) that never becomes generating.
 - should we use apache arrow for runtime storage of containers so that we serialisation for free? gives us struct of arrays naturally too
+  * vector → balanced tree of chunks
+  * set → hash table of chunks
+  * map → hash table of key/value chunks
+  * string → rope of UTF-8 chunks
+  But the leaf representation is always the same immutable Arrow arrays.
 - natural `for i, x in foo` syntax to combine destructuring should fall out from the above without additional work
 - destructuring assignment should work when we "don't provide enough binders" so that
   ```
