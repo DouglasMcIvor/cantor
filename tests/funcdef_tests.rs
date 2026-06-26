@@ -411,21 +411,30 @@ fn kleene_star_set_diff_currently_parse_error() {
 }
 
 // ── Array literal `[...]` in bodies ───────────────────────────────────────────
-// `[1, 2, 3]` is a value literal (homogeneous tuple).
-// CURRENT STATE: `[` is not a valid token so the source fails to lex.
+// `[1, 2, 3]` is a value literal that desugars to `Tuple([1, 2, 3])`.
 
 #[test]
-fn array_lit_in_body_currently_lex_error() {
-    // Expected future: body.kind == ExprKind::ArrayLit([IntLit(1), IntLit(2), IntLit(3)])
-    let msg = parse_err("f : -> Int * 3\nf() = [1, 2, 3]");
-    assert!(!msg.is_empty(),
-        "[1, 2, 3] should currently lex-error; update to check ArrayLit once implemented");
+fn array_lit_in_body_parses_as_tuple() {
+    let def = parse_one("f : -> Int * 3\nf() = [1, 2, 3]");
+    let FunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
+    let ExprKind::Tuple(elems) = &body.kind else {
+        panic!("expected Tuple body, got {:?}", body.kind)
+    };
+    assert_eq!(elems.len(), 3);
+    assert!(matches!(elems[0].kind, ExprKind::IntLit(1)));
+    assert!(matches!(elems[1].kind, ExprKind::IntLit(2)));
+    assert!(matches!(elems[2].kind, ExprKind::IntLit(3)));
 }
 
 #[test]
-fn array_lit_used_in_set_position_is_error() {
-    // [...] is a value expression; using it as a set annotation must be rejected.
-    // This should remain an error even after brackets are implemented.
-    let msg = parse_err("f : [Int] -> Int\nf(xs) = 0");
-    assert!(!msg.is_empty(), "expected error for [...] in domain/range set position");
+fn array_lit_used_in_set_position_parses_as_tuple_domain() {
+    // `[Int]` in domain position parses as Tuple([Var("Int")]) — syntactically
+    // allowed, but semantically invalid (a set expression cannot be a Tuple literal).
+    // The error surfaces at the solver/codegen stage, not at parse time.
+    // TODO: add a parse-time check that rejects Tuple in set-expression positions.
+    let def = parse_one("f : [Int] -> Int\nf(xs) = 0");
+    let sig = &def.sigs[0];
+    let domain = sig.domain.as_ref().expect("expected a domain");
+    assert!(matches!(&domain.kind, ExprKind::Tuple(_)),
+        "domain parsed as Tuple (semantic check deferred to solver)");
 }

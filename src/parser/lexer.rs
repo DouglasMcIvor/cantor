@@ -71,6 +71,8 @@ pub enum Token {
     RParen,   // )
     LBrace,   // {
     RBrace,   // }
+    LBracket, // [
+    RBracket, // ]
     Comma,    // ,
     Question, // ?  (postfix propagate-failure operator)
     Dot,      // .  (tuple projection `t.0`)
@@ -127,6 +129,8 @@ impl fmt::Display for Token {
             Token::RParen   => f.write_str(")"),
             Token::LBrace   => f.write_str("{"),
             Token::RBrace   => f.write_str("}"),
+            Token::LBracket => f.write_str("["),
+            Token::RBracket => f.write_str("]"),
             Token::Comma    => f.write_str(","),
             Token::Question => f.write_str("?"),
             Token::Dot      => f.write_str("."),
@@ -246,6 +250,8 @@ impl<'src> Lexer<'src> {
                 '&' => Token::Amp,
                 '(' => { self.paren_depth += 1; Token::LParen }
                 ')' => { self.paren_depth = self.paren_depth.saturating_sub(1); Token::RParen }
+                '[' => { self.paren_depth += 1; Token::LBracket }
+                ']' => { self.paren_depth = self.paren_depth.saturating_sub(1); Token::RBracket }
                 '{' => Token::LBrace,
                 '}' => Token::RBrace,
                 ',' => Token::Comma,

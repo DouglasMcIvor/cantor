@@ -1,6 +1,6 @@
 use cantor::{
     ast::{BinOp, DefKind, ExprKind, Item, UnOp},
-    parser::{parse_expr, parse_file},
+    parser::{parse_expr, parse_file, parse_set_expr},
     span::offset_to_line_col,
 };
 use cantor::span::Symbol;
@@ -258,50 +258,98 @@ fn span_covers_binop() {
 }
 
 // ── Homogeneous tuple literals `[...]` ────────────────────────────────────────
-// Once `[`/`]` are added to the lexer these tests should be updated to assert
-// `ExprKind::ArrayLit(elems)` AST nodes.  For now they document the current
-// lex-error state so that the transition is clearly visible in test diffs.
+// `[a, b, c]` desugars to `Tuple([a, b, c])` at parse time.
+// TODO: once range inference is available, enforce that all elements belong to
+// the same set X (homogeneity constraint).
 
 #[test]
-fn parse_array_lit_currently_lex_error() {
-    // Expected future: parses as ExprKind::ArrayLit with 3 Int elements.
-    assert!(parse_expr("[1, 2, 3]").is_err(), "expected lex error until `[` is added");
+fn parse_array_lit_three_ints() {
+    let kind = parse("[1, 2, 3]");
+    let ExprKind::Tuple(elems) = kind else { panic!("expected Tuple, got {kind:?}") };
+    assert_eq!(elems.len(), 3);
+    assert!(matches!(elems[0].kind, ExprKind::IntLit(1)));
+    assert!(matches!(elems[1].kind, ExprKind::IntLit(2)));
+    assert!(matches!(elems[2].kind, ExprKind::IntLit(3)));
 }
 
 #[test]
-fn parse_array_lit_bool_elements_currently_lex_error() {
-    // Expected future: ExprKind::ArrayLit([BoolLit(true), BoolLit(false)]).
-    assert!(parse_expr("[true, false]").is_err(), "expected lex error until `[` is added");
+fn parse_array_lit_bool_elements() {
+    let kind = parse("[true, false]");
+    let ExprKind::Tuple(elems) = kind else { panic!("expected Tuple, got {kind:?}") };
+    assert_eq!(elems.len(), 2);
+    assert!(matches!(elems[0].kind, ExprKind::BoolLit(true)));
+    assert!(matches!(elems[1].kind, ExprKind::BoolLit(false)));
 }
 
 #[test]
-fn parse_empty_array_lit_currently_lex_error() {
-    // Expected future: ExprKind::ArrayLit([]).
-    assert!(parse_expr("[]").is_err(), "expected lex error until `[` is added");
+fn parse_empty_array_lit() {
+    let kind = parse("[]");
+    assert!(matches!(kind, ExprKind::Tuple(elems) if elems.is_empty()));
+}
+
+// ── Bracket index `x[N]` — alias for `x.N` ───────────────────────────────────
+
+#[test]
+fn parse_bracket_index_is_proj() {
+    // x[0]  →  Proj { base: Var("x"), index: 0 }
+    let ExprKind::Proj { base, index } = parse("x[0]") else {
+        panic!("expected Proj")
+    };
+    assert!(matches!(base.kind, ExprKind::Var(ref s) if s.0 == "x"));
+    assert_eq!(index, 0);
+}
+
+#[test]
+fn parse_bracket_index_two() {
+    let ExprKind::Proj { index, .. } = parse("t[2]") else { panic!() };
+    assert_eq!(index, 2);
+}
+
+#[test]
+fn parse_bracket_index_on_array_lit() {
+    // [1, 2, 3][1]  →  Proj { base: Tuple([1,2,3]), index: 1 }
+    let ExprKind::Proj { base, index } = parse("[1, 2, 3][1]") else {
+        panic!("expected Proj")
+    };
+    assert!(matches!(base.kind, ExprKind::Tuple(_)));
+    assert_eq!(index, 1);
+}
+
+#[test]
+fn parse_dot_and_bracket_are_equivalent() {
+    // x.1  and  x[1]  should produce identical AST nodes (both Proj with index 1).
+    let dot = parse("x.1");
+    let bracket = parse("x[1]");
+    // Both should be Proj with index 1; compare index rather than full AST.
+    let ExprKind::Proj { index: di, .. } = dot else { panic!() };
+    let ExprKind::Proj { index: bi, .. } = bracket else { panic!() };
+    assert_eq!(di, bi);
 }
 
 // ── Repeated products `X * N` ─────────────────────────────────────────────────
-// `Int * 3` should desugar at parse time into `(Int * Int) * Int` (left-assoc).
-// Currently `* 3` is parsed as arithmetic Mul(Int, 3) — wrong.  These tests
-// assert the INTENDED desugaring and will fail until the parser is updated.
+// `Int * 3` desugars at parse time into `(Int * Int) * Int` (left-assoc).
+// Desugaring happens in parse_set_expr (set positions only — in value position
+// `x * 3` remains arithmetic multiplication).
+
+fn parse_set(src: &str) -> ExprKind {
+    parse_set_expr(src).unwrap_or_else(|e| panic!("parse error for {src:?}: {e}")).kind
+}
 
 #[test]
-#[ignore = "X * N desugaring not yet implemented in parser"]
 fn parse_repeated_product_two() {
-    // X * 2  should desugar to  Mul(X, X) — two Var nodes, not Mul(X, IntLit(2)).
-    let ExprKind::BinOp { op, lhs, rhs } = parse("Int * 2") else { panic!() };
+    // X * 2  →  Mul(X, X) — two Var nodes, not Mul(X, IntLit(2)).
+    let ExprKind::BinOp { op, lhs, rhs } = parse_set("Int * 2") else { panic!() };
     assert_eq!(op, BinOp::Mul);
     assert!(matches!(lhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
-        "lhs should be Int, not something else");
+        "lhs should be Int");
     assert!(matches!(rhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
         "rhs should be Int (desugared copy), not IntLit(2)");
 }
 
 #[test]
-#[ignore = "X * N desugaring not yet implemented in parser"]
 fn parse_repeated_product_three() {
     // X * 3  →  Mul(Mul(X, X), X)  — left-associated tree of Var nodes.
-    let ExprKind::BinOp { op: outer_op, lhs: outer_lhs, rhs: outer_rhs } = parse("Int * 3")
+    let ExprKind::BinOp { op: outer_op, lhs: outer_lhs, rhs: outer_rhs } = parse_set("Int * 3")
         else { panic!() };
     assert_eq!(outer_op, BinOp::Mul);
     assert!(matches!(outer_rhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
@@ -314,10 +362,9 @@ fn parse_repeated_product_three() {
 }
 
 #[test]
-#[ignore = "X * N desugaring not yet implemented in parser"]
 fn parse_repeated_product_one_is_identity() {
-    // X * 1  should produce just the base set (no Mul wrapper).
-    let kind = parse("Nat * 1");
+    // X * 1  →  bare X (no Mul wrapper).
+    let kind = parse_set("Nat * 1");
     assert!(matches!(kind, ExprKind::Var(ref s) if s.0 == "Nat"),
         "Nat * 1 should desugar to bare Nat; got {kind:?}");
 }

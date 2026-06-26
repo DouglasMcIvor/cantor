@@ -1,0 +1,13 @@
+-- Repeated-product domain/range and array literals.
+
+sum3 : Int * 3 -> Int
+sum3(x, y, z) = x + y + z
+
+nat_triple : -> Nat * 3
+nat_triple() = [1, 2, 3]
+
+fst_pair : Int * 2 -> Int
+fst_pair(t) = t.0
+
+main : -> Int
+main() = sum3(1, 2, 3)

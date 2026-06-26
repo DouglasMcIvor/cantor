@@ -222,14 +222,15 @@ impl<'src> Parser<'src> {
 
     /// Parse a set expression in signature position.
     ///
-    /// For now this is just a regular expression — `*` means Cartesian product
-    /// here rather than multiplication, but we record the same AST node and let
-    /// the type checker disambiguate by position. Stops before `->`.
+    /// After parsing, `X * N` where N is a positive integer literal is desugared
+    /// to `X * X * … * X` (N copies, left-associative) so that downstream passes
+    /// (solver, codegen) never see an integer literal in the rhs of a product.
     fn parse_set_expr(&mut self) -> Result<Expr, CompileError> {
         // We parse a full expression but Arrow is not an infix operator so the
         // Pratt loop will naturally stop before `->`; the `-` in `->` is consumed
         // by the lexer as Arrow, not Minus, so there's no ambiguity.
-        self.parse_expr(0)
+        let expr = self.parse_expr(0)?;
+        Ok(desugar_repeated_product(expr))
     }
 
     // ── Parameters ────────────────────────────────────────────────────────────
@@ -498,6 +499,33 @@ impl<'src> Parser<'src> {
                 continue;
             }
 
+            // Postfix `[N]` — bracket index, alias for `.N` on fixed-size tuples.
+            // TODO: when Kleene-star vectors are added, `[expr]` with a non-literal
+            // index will become dynamic indexing; for now only integer literals are
+            // accepted so unimplemented paths fail loudly.
+            if self.peek() == &Token::LBracket {
+                let open_span = self.peek_span();
+                self.advance()?;
+                let idx_span = self.peek_span();
+                let index = match self.peek().clone() {
+                    Token::Int(n) if n >= 0 => n as usize,
+                    other => return Err(CompileError::UnexpectedToken {
+                        expected: "non-negative integer literal inside `[…]` index \
+                                   (variable indices require Kleene-star vectors, not yet implemented)"
+                                  .into(),
+                        found: other.to_string(),
+                        span: idx_span,
+                    }),
+                };
+                self.advance()?;
+                let close_span = self.peek_span();
+                self.expect(&Token::RBracket)?;
+                let span = Span::new(lhs.span.start, close_span.end);
+                lhs = Expr::new(ExprKind::Proj { base: Box::new(lhs), index }, span);
+                let _ = open_span; // span used only for error messages above
+                continue;
+            }
+
             // Two-token `not in` binary operator.
             if self.peek() == &Token::Not && self.peek2() == &Token::In {
                 let (left_bp, right_bp) = infix_bp_not_in();
@@ -636,6 +664,27 @@ impl<'src> Parser<'src> {
                     self.expect(&Token::RParen)?;
                     Ok(Expr::new(first.kind, Span::new(span.start, end_span.end)))
                 }
+            }
+            Token::LBracket => {
+                // `[a, b, c]` — homogeneous array literal, desugars to Tuple.
+                // TODO: enforce homogeneity (all elements in the same set X) once
+                // range inference is available; for now it is identical to `(a, b, c)`.
+                self.advance()?;
+                if self.peek() == &Token::RBracket {
+                    let end_span = self.peek_span();
+                    self.advance()?;
+                    return Ok(Expr::new(ExprKind::Tuple(vec![]), Span::new(span.start, end_span.end)));
+                }
+                let first = self.parse_expr(0)?;
+                let mut elems = vec![first];
+                while self.peek() == &Token::Comma {
+                    self.advance()?;
+                    if self.peek() == &Token::RBracket { break; }
+                    elems.push(self.parse_expr(0)?);
+                }
+                let end_span = self.peek_span();
+                self.expect(&Token::RBracket)?;
+                Ok(Expr::new(ExprKind::Tuple(elems), Span::new(span.start, end_span.end)))
             }
             Token::LBrace => {
                 self.advance()?;
@@ -810,11 +859,70 @@ fn make_binop(op: BinOp, lhs: Expr, rhs: Expr, _op_span: Span) -> Expr {
     Expr::new(ExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span)
 }
 
+// ── Repeated-product desugaring ───────────────────────────────────────────────
+
+/// Rewrite `lhs * N` (where N is a positive integer literal) to N copies of
+/// `lhs` in a left-associative product: `((lhs * lhs) * lhs) * …`.
+///
+/// Applied recursively so that `(Int * 3) | Bool` correctly expands the inner
+/// product.  Only called from `parse_set_expr` — in value position `x * 3`
+/// means arithmetic multiplication and must not be rewritten.
+fn desugar_repeated_product(expr: Expr) -> Expr {
+    let span = expr.span;
+    match expr.kind {
+        ExprKind::BinOp { op: BinOp::Mul, lhs, rhs } => {
+            let lhs = desugar_repeated_product(*lhs);
+            match rhs.kind {
+                ExprKind::IntLit(1) => lhs,
+                ExprKind::IntLit(n) if n >= 2 => {
+                    let mut result = lhs.clone();
+                    for _ in 1..n {
+                        result = Expr::new(
+                            ExprKind::BinOp {
+                                op: BinOp::Mul,
+                                lhs: Box::new(result),
+                                rhs: Box::new(lhs.clone()),
+                            },
+                            span,
+                        );
+                    }
+                    result
+                }
+                _ => {
+                    let rhs = desugar_repeated_product(*rhs);
+                    Expr::new(ExprKind::BinOp { op: BinOp::Mul, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span)
+                }
+            }
+        }
+        ExprKind::BinOp { op, lhs, rhs } => {
+            let lhs = desugar_repeated_product(*lhs);
+            let rhs = desugar_repeated_product(*rhs);
+            Expr::new(ExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span)
+        }
+        _ => expr,
+    }
+}
+
 // ── Free-function wrappers ────────────────────────────────────────────────────
 
 /// Parse `src` as a single expression followed by EOF.
 pub fn parse_expr(src: &str) -> Result<Expr, CompileError> {
     Parser::new(src)?.parse_expr_eof()
+}
+
+/// Parse `src` as a set expression (applying `X * N` repeated-product desugaring).
+pub fn parse_set_expr(src: &str) -> Result<Expr, CompileError> {
+    let mut p = Parser::new(src)?;
+    let expr = p.parse_set_expr()?;
+    p.skip_newlines()?;
+    if p.peek() != &Token::Eof {
+        return Err(CompileError::UnexpectedToken {
+            expected: "<eof>".into(),
+            found: p.peek().to_string(),
+            span: p.peek_span(),
+        });
+    }
+    Ok(expr)
 }
 
 /// Parse `src` as a complete source file.

@@ -69,7 +69,6 @@ fn repeated_product_two_params_diff() {
 
 // [1, 2, 3] as return value; project element 0.
 #[test]
-#[ignore = "array literal syntax not yet implemented"]
 fn array_lit_proj_zero() {
     assert_eq!(
         jit_src_zero_arg("main : -> Int\nmain() = [1, 2, 3].0"),
@@ -79,7 +78,6 @@ fn array_lit_proj_zero() {
 
 // Project element 1.
 #[test]
-#[ignore = "array literal syntax not yet implemented"]
 fn array_lit_proj_one() {
     assert_eq!(
         jit_src_zero_arg("main : -> Int\nmain() = [10, 20, 30].1"),
@@ -89,7 +87,6 @@ fn array_lit_proj_one() {
 
 // Project element 2.
 #[test]
-#[ignore = "array literal syntax not yet implemented"]
 fn array_lit_proj_two() {
     assert_eq!(
         jit_src_zero_arg("main : -> Int\nmain() = [10, 20, 30].2"),
@@ -99,7 +96,6 @@ fn array_lit_proj_two() {
 
 // [x, x + 1, x + 2] — elements derived from a parameter.
 #[test]
-#[ignore = "array literal syntax not yet implemented"]
 fn array_lit_computed_elements_proj() {
     assert_eq!(
         jit_src_one_arg("main : Int -> Int\nmain(x) = [x, x + 1, x + 2].1", 7),
@@ -109,7 +105,6 @@ fn array_lit_computed_elements_proj() {
 
 // [true, false, true] with Bool projection.
 #[test]
-#[ignore = "array literal syntax not yet implemented"]
 fn array_lit_bool_elements_proj() {
     assert_eq!(
         jit_src_zero_arg("main : -> Bool\nmain() = [true, false, true].0"),
@@ -123,11 +118,30 @@ fn array_lit_bool_elements_proj() {
 
 // [1, 2, 3] produces the same runtime value as (1, 2, 3).
 #[test]
-#[ignore = "array literal syntax not yet implemented"]
 fn array_lit_same_value_as_tuple_lit() {
     let array = jit_src_zero_arg("main : -> Int\nmain() = [7, 8, 9].2");
     let tuple = jit_src_zero_arg("main : -> Int\nmain() = (7, 8, 9).2");
     assert_eq!(array, tuple);
+}
+
+// ── Bracket index `x[N]` — alias for `x.N` ───────────────────────────────────
+
+// x[N] and x.N should produce identical results.
+#[test]
+fn bracket_index_same_as_dot_proj() {
+    let dot     = jit_src_zero_arg("main : -> Int\nmain() = [10, 20, 30].1");
+    let bracket = jit_src_zero_arg("main : -> Int\nmain() = [10, 20, 30][1]");
+    assert_eq!(dot, bracket);
+    assert_eq!(bracket, 20);
+}
+
+// Bracket index on a tuple parameter.
+#[test]
+fn bracket_index_on_param() {
+    assert_eq!(
+        jit_src_one_arg("main : Int * 3 -> Int\nmain(t) = t[0]", 7),
+        7,
+    );
 }
 
 // ── Kleene-star vectors (`X*`) — runtime behaviour ───────────────────────────

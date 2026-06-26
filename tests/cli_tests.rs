@@ -653,6 +653,28 @@ fn set_ops_bad_counterexample_mentions_not_disjoint() {
     );
 }
 
+// ── Vectors: repeated products and array literals ─────────────────────────────
+
+#[test]
+fn vectors_demo_all_proved() {
+    let out = run_file("vectors_demo.cantor");
+    assert_eq!(out.code, 0, "vectors_demo.cantor should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected all proved:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn vectors_demo_run_produces_correct_output() {
+    let out = run_subcommand("vectors_demo.cantor");
+    assert_eq!(out.code, 0, "vectors_demo.cantor run should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        out.stdout.contains("6"),
+        "expected output 6 from sum3(1,2,3):\n{}", out.stdout
+    );
+}
+
 // ── Bracket-depth newlines ────────────────────────────────────────────────────
 
 #[test]

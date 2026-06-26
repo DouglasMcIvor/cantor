@@ -10,7 +10,6 @@ use super::helpers::*;
 
 // Int * 3 → Int * Int * Int; summing three Ints stays in Int.
 #[test]
-#[ignore = "X * N repeated-product not yet implemented in solver"]
 fn repeated_product_int3_sum_proved() {
     proved("
 f : Int * 3 -> Int
@@ -20,7 +19,6 @@ f(x, y, z) = x + y + z
 
 // Nat * 3 → Nat * Nat * Nat; summing three Nats stays in Nat.
 #[test]
-#[ignore = "X * N repeated-product not yet implemented in solver"]
 fn repeated_product_nat3_sum_proved() {
     proved("
 f : Nat * 3 -> Nat
@@ -30,7 +28,6 @@ f(x, y, z) = x + y + z
 
 // Nat * 2; subtraction can go negative — Nat range fails.
 #[test]
-#[ignore = "X * N repeated-product not yet implemented in solver"]
 fn repeated_product_nat2_diff_counterexample() {
     counterexample("
 f : Nat * 2 -> Nat
@@ -40,7 +37,6 @@ f(x, y) = x - y
 
 // Int * 3 in range: returning a 3-tuple of Ints from an Int domain.
 #[test]
-#[ignore = "X * N repeated-product not yet implemented in solver"]
 fn repeated_product_range_tuple_proved() {
     proved("
 f : Int -> Int * 3
@@ -50,7 +46,6 @@ f(x) = [x, x + 1, x + 2]
 
 // Nat * 3 in range: the literal [1, 2, 3] is a valid element.
 #[test]
-#[ignore = "X * N repeated-product not yet implemented in solver"]
 fn repeated_product_range_literal_proved() {
     proved("
 f : -> Nat * 3
@@ -60,7 +55,6 @@ f() = [1, 2, 3]
 
 // Nat * 3 range with a negative element: counterexample.
 #[test]
-#[ignore = "X * N repeated-product not yet implemented in solver"]
 fn repeated_product_range_negative_element_counterexample() {
     counterexample("
 f : -> Nat * 3
@@ -70,7 +64,6 @@ f() = [1, -1, 3]
 
 // Int * 2 range: projection of a pair is proved.
 #[test]
-#[ignore = "X * N repeated-product not yet implemented in solver"]
 fn repeated_product_projection_proved() {
     proved("
 fst : Int * 2 -> Int
@@ -80,7 +73,6 @@ fst(t) = t.0
 
 // Nat * 2 range: projecting an element is still in Nat.
 #[test]
-#[ignore = "X * N repeated-product not yet implemented in solver"]
 fn repeated_product_nat_pair_proj_proved() {
     proved("
 fst : Nat * 2 -> Nat
@@ -92,7 +84,6 @@ fst(t) = t.0
 
 // [1, 2, 3] satisfies Int * 3 range.
 #[test]
-#[ignore = "array literal syntax not yet implemented in solver"]
 fn array_lit_nat_elements_proved() {
     proved("
 f : -> Nat * 3
@@ -102,7 +93,6 @@ f() = [1, 2, 3]
 
 // [1, 2, 3, 4, 5] satisfies Nat * 5 range.
 #[test]
-#[ignore = "array literal syntax not yet implemented in solver"]
 fn array_lit_five_elements_proved() {
     proved("
 f : -> Nat * 5
@@ -112,7 +102,6 @@ f() = [1, 2, 3, 4, 5]
 
 // Elements computed from a parameter; result is in Int * 3.
 #[test]
-#[ignore = "array literal syntax not yet implemented in solver"]
 fn array_lit_computed_elements_proved() {
     proved("
 f : Int -> Int * 3
@@ -122,7 +111,6 @@ f(x) = [x, x + 1, x - 1]
 
 // Nat * 3 range but one element is negative: counterexample.
 #[test]
-#[ignore = "array literal syntax not yet implemented in solver"]
 fn array_lit_out_of_range_element_counterexample() {
     counterexample("
 f : -> Nat * 3
@@ -132,11 +120,30 @@ f() = [1, 2, -1]
 
 // [true, false, true] is a valid Bool * 3 value.
 #[test]
-#[ignore = "array literal syntax not yet implemented in solver"]
 fn array_lit_bool_elements_proved() {
     proved("
 f : -> Bool * 3
 f() = [true, false, true]
+");
+}
+
+// ── Bracket index `x[N]` — alias for `x.N` ───────────────────────────────────
+
+// t[0] on a Nat * 2 param is still in Nat.
+#[test]
+fn bracket_index_proj_proved() {
+    proved("
+fst : Nat * 2 -> Nat
+fst(t) = t[0]
+");
+}
+
+// t[1] on a Nat * 2 param; second element also in Nat.
+#[test]
+fn bracket_index_snd_proj_proved() {
+    proved("
+snd : Nat * 2 -> Nat
+snd(t) = t[1]
 ");
 }
 

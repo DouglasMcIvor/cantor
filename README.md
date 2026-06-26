@@ -394,12 +394,54 @@ $ cantor overflow.cantor
 
 **Disambiguation rule**: `f : Int * Int -> Int` with `f(x, y)` means two separate scalar parameters (existing behaviour); `f : Int * Int -> Int * Int` with `f(t)` means a single tuple parameter. The number of declared parameters determines which reading applies — no extra syntax needed. In the future this same pattern will be supported in destructuring assignment.
 
+### Fixed-length arrays
+
+`X * N` in a signature is sugar for the N-fold Cartesian product `X * X * … * X`, making it easy to write functions over fixed-size collections without spelling out every component.
+
+```haskell
+sum3 : Nat * 3 -> Nat
+sum3(x, y, z) = x + y + z
+
+fst3 : Int * 3 -> Int
+fst3(t) = t[0]
+```
+
+```sh
+$ cantor arrays.cantor
+  proved          sum3 : Nat * 3 -> Nat
+  proved          fst3 : Int * 3 -> Int
+```
+
+The compiler proves that, for example, `sum3` maps any three natural numbers to a natural number, and that projecting element 0 of a `Int * 3` value is still an `Int`.
+
+**Array literals** `[1, 2, 3]` construct a fixed-length array and can appear anywhere a tuple literal `(1, 2, 3)` is valid. The two are identical at runtime — `[1, 2, 3]` is syntactic sugar for `(1, 2, 3)`.
+
+In most other languages square brackets communicate that the type of every value must be homogenous.
+But in Cantor `[1, true, 3]` can be seen as a homogenous tuple in the set `(Int | Bool) * 3` - which is homogenous, just a bit weird.
+
+So in Cantor most of the time square brackets don't communicate homogeneity, they just communicate "I like square brackets".
+
+The only exception to this case is where the compiler is automatically inferring a suitable range for a value: `(x, y, z)` can have any range of the form `X * Y * Z` but `[x, y,z]` will be inferred to have a range of the form `X * X * X`.
+
+**Bracket indexing** `t[N]` is an alias for `t.N`, keeping a consistent `t[i]` indexing syntax that will extend naturally to runtime-variable indices once Kleene-star vectors are implemented.
+
+```haskell
+nat_triple : -> Nat * 3
+nat_triple() = [1, 2, 3]
+
+mid : Int * 3 -> Int
+mid(t) = t[1]
+```
+
+The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` on an `Int * 3` input is an `Int`.
+
 ## Features (working today)
 
 - **Set-theoretic domains and ranges** — `Int`, `Nat`, `NatPos`, `NonZeroInt`, `Int8`–`Int64`, `Bool`, set literals `{0, 1, 2}`, set difference `A - B`, union `A | B`, intersection `A & B`, error-union `A !! B` (why? because when you get an error the code goes bang! bang! ... I'll let myself out ...)
 - **Bool as a first-class value kind** — `Bool` is disjoint from all integer sets; comparisons (`>`, `==`, …) produce `Bool`; `and`, `or`, `not` operate on `Bool`; no implicit coercion between `Bool` and integers
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` in domain/range/`in`/`for` positions; finite literal sources unrolled statically; infinite named sources encoded as SMT predicates
 - **Product Set values (aka tuples)** — `f : Int * Int -> Int * Int`; tuple literals `(e1, e2)`; positional projection `t.0`, `t.1`; tuples as parameters and return values; the compiler proves tuple domain and range claims end-to-end; `cantor run` prints tuple results as `(a, b)`. Disambiguation: `f(x, y)` with two params = two scalars; `f(t)` with one param = single tuple.
+- **Fixed-length arrays** — `X * N` in a signature desugars to the N-fold Cartesian product `X * X * … * X`; array literals `[e1, e2, e3]` are syntactic sugar for tuple literals `(e1, e2, e3)`; bracket indexing `t[N]` is an alias for `t.N`, providing a uniform `t[i]` syntax that will extend to runtime indices with Kleene-star vectors
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis
 - **Unified named definitions** — constants (`pi : Nat = 314`) and compile-time set definitions (`Colour = {1, 2, 3}`) share the same one-line syntax and the same AST node; both are auto-inlined at compile time; constants are checked against their range annotation
@@ -420,9 +462,7 @@ $ cantor overflow.cantor
 
 ## On the roadmap
 
-- **Clean up** - anonymous union values currently have no runtime representation, and are not correctly represented in return types in the solver
-
-- **Fixed length arrays and vectors** - extend product sets to include `X * 5` for arrays and `X*` (Kleene star) for vectors. Allow `[1, 2, 3]` syntax for homogenous tuples.
+- **Vectors** — `X*` (Kleene star) for variable-length sequences; `len(xs)` for cardinality; `xs[i]` with a runtime index; `for x in xs` iteration. The bracket-index syntax `t[N]` introduced for fixed-length arrays is designed to extend to this naturally.
 
 - **Namespaces and named structured data** — Named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`), and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
 
