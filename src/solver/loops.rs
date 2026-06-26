@@ -100,7 +100,7 @@ where
         body, &mut body_env, name_defs, fn_env, tm, &mut tmp,
         &mut cc, &mut obligs, &mut step_ssa, &mut tmp_facts,
         param_names, param_terms, &mut empty_cenv, &mut _dummy_runtime_assert,
-        &mut step_imm, distinct_preds,
+        &mut step_imm, distinct_preds, None,
     ) {
         Ok(_) => {}
         Err(e) => return Some(e),
@@ -188,7 +188,7 @@ pub(super) fn check_inductive_step<'tm>(
             let mut cc = 0usize;
             let mut obligs = Vec::new();
             match encode_expr(cond, ind_env, name_defs, fn_env, tm, tmp,
-                              &mut cc, &mut obligs, tm.mk_boolean(true), distinct_preds) {
+                              &mut cc, &mut obligs, tm.mk_boolean(true), distinct_preds, None) {
                 Ok(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); None }
                 Err(_) => Some(CheckResult::Unknown(
                     "cannot verify inductive step: loop condition uses syntax not yet \

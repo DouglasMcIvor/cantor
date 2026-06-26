@@ -5,8 +5,10 @@ use std::collections::HashMap;
 use cvc5::{Kind, Term, TermManager};
 
 use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp};
+use crate::kind::{set_kind as val_set_kind};
 use crate::span::Symbol;
 
+use super::encode::{arm_ctor_name, flatten_any_union, flatten_product};
 use super::NameDefs;
 
 /// Map from distinct set name to its uninterpreted predicate term (`is_D : Int -> Bool`).
@@ -52,6 +54,85 @@ fn to_integer_term<'tm>(tm: &'tm TermManager, t: Term<'tm>) -> Option<Term<'tm>>
     }
 }
 
+/// Membership predicate for a term whose CVC5 sort is an algebraic datatype.
+///
+/// This handles cross-kind union values: `t ∈ set_expr` where `t` was created
+/// from a `Kind::TaggedUnion` domain via `set_sort` (which returns a CVC5
+/// datatype sort).  The set expression is flattened into its union arms and for
+/// each arm we emit `is_ArmN(t) ∧ field_constraints`.
+///
+/// Selectors match the declaration order in `build_union_datatype_sort`:
+/// one `integer_sort` selector `f{j}` per i64 leaf of the arm's kind.
+fn membership_constraint_for_dt<'tm>(
+    tm: &'tm TermManager,
+    t: Term<'tm>,
+    set_expr: &Expr,
+    name_defs: &NameDefs<'_>,
+    distinct_preds: &DistinctPreds<'tm>,
+) -> Membership<'tm> {
+    let dt = t.sort().datatype();
+    let arm_exprs = flatten_any_union(set_expr);
+
+    let mut disjuncts: Vec<Term<'_>> = Vec::new();
+    for arm_expr in arm_exprs {
+        let arm_kind = val_set_kind(arm_expr);
+        let ctor_name = arm_ctor_name(&arm_kind);
+
+        // Find the constructor by name — if not present, this arm can't match.
+        let ctor = (0..dt.num_constructors())
+            .map(|i| dt.constructor(i))
+            .find(|c| c.name() == ctor_name);
+        let Some(ctor) = ctor else { continue; };
+
+        let tester = tm.mk_term(Kind::ApplyTester, &[ctor.tester_term(), t.clone()]);
+        let mut conjuncts: Vec<Term<'_>> = vec![tester];
+
+        // Field constraints: check each leaf selector against the arm's set.
+        match &arm_expr.kind {
+            ExprKind::BinOp { op: BinOp::Mul, .. } => {
+                // Tuple arm: one selector per product component.
+                let parts = flatten_product(arm_expr);
+                for (j, part) in parts.iter().enumerate() {
+                    let sel = ctor.selector(j);
+                    let field = tm.mk_term(Kind::ApplySelector, &[sel.term(), t.clone()]);
+                    match membership_constraint(tm, field, part, name_defs, distinct_preds) {
+                        Membership::Constrained(c) => conjuncts.push(c),
+                        Membership::Unconstrained => {}
+                        Membership::Unsupported => return Membership::Unsupported,
+                    }
+                }
+            }
+            _ => {
+                // Scalar arm: single selector.
+                let sel = ctor.selector(0);
+                let field = tm.mk_term(Kind::ApplySelector, &[sel.term(), t.clone()]);
+                match membership_constraint(tm, field, arm_expr, name_defs, distinct_preds) {
+                    Membership::Constrained(c) => conjuncts.push(c),
+                    Membership::Unconstrained => {}
+                    Membership::Unsupported => return Membership::Unsupported,
+                }
+            }
+        }
+
+        let conj = if conjuncts.len() == 1 {
+            conjuncts.remove(0)
+        } else {
+            tm.mk_term(Kind::And, &conjuncts)
+        };
+        disjuncts.push(conj);
+    }
+
+    if disjuncts.is_empty() {
+        return Membership::Constrained(tm.mk_boolean(false));
+    }
+    let term = if disjuncts.len() == 1 {
+        disjuncts.remove(0)
+    } else {
+        tm.mk_term(Kind::Or, &disjuncts)
+    };
+    Membership::Constrained(term)
+}
+
 /// Recursively build a membership predicate for structured set expressions.
 ///
 /// Handles named built-in sets, user-defined alias sets (expanded inline),
@@ -65,6 +146,13 @@ pub(crate) fn membership_constraint<'tm>(
     name_defs: &NameDefs<'_>,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
+    // Fast path: datatype-sorted terms (cross-kind union values) use
+    // ApplyTester / ApplySelector rather than arithmetic comparisons.
+    // Tuple sorts in CVC5 are a special case of datatypes but are handled
+    // by the existing `BinOp::Mul` arm below via `child()` extraction.
+    if t.sort().is_dt() && !t.sort().is_tuple() {
+        return membership_constraint_for_dt(tm, t, set_expr, name_defs, distinct_preds);
+    }
     match &set_expr.kind {
         ExprKind::Var(sym) => match sym.0.as_str() {
             "Int"        => Membership::Unconstrained,

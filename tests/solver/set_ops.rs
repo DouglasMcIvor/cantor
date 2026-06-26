@@ -577,12 +577,10 @@ f(x) = litre(x)
 // ── Cross-kind: tuple | scalar in domain (needs tagged-union CVC5 sort) ───────
 // Creating a parameter variable from a domain like `(Nat * Nat) | Nat` requires a
 // single CVC5 sort that can represent both a tuple and an integer — which does not
-// exist without an algebraic datatype encoding (see set_sort TODO for Option A).
-// These tests document the intended semantics; un-ignore once Option A is implemented.
+// These now use the CVC5 algebraic datatype encoding added in Step 6.
 
 // Constant body: should be proved regardless of the cross-kind domain.
 #[test]
-#[ignore = "(Nat * Nat) | Nat domain needs algebraic datatype sort; see set_sort TODO Option A"]
 fn cross_kind_tuple_or_nat_const_proved() {
     proved("
 f : (Nat * Nat) | Nat -> Nat
@@ -592,7 +590,6 @@ f(x) = 1
 
 // Identity into Nat should be a counterexample: if x is a tuple, x ∉ Nat.
 #[test]
-#[ignore = "(Nat * Nat) | Nat domain needs algebraic datatype sort; see set_sort TODO Option A"]
 fn cross_kind_tuple_or_nat_domain_identity_counterexample() {
     counterexample("
 f : (Nat * Nat) | Nat -> Nat
@@ -602,7 +599,6 @@ f(x) = x
 
 // Arms reversed: Nat | (Nat * Nat) with constant body.
 #[test]
-#[ignore = "Nat | (Nat * Nat) domain needs algebraic datatype sort; see set_sort TODO Option A"]
 fn cross_kind_nat_or_tuple_domain_const_proved() {
     proved("
 f : Nat | (Nat * Nat) -> Nat
@@ -612,7 +608,6 @@ f(x) = 1
 
 // Bool | tuple cross-kind domain.
 #[test]
-#[ignore = "Bool | (Nat * Nat) domain needs algebraic datatype sort; see set_sort TODO Option A"]
 fn cross_kind_bool_or_tuple_domain_const_proved() {
     proved("
 f : Bool | (Nat * Nat) -> Nat

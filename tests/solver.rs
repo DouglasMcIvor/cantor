@@ -22,3 +22,5 @@ mod destructuring;
 mod set_ops;
 #[path = "solver/vectors.rs"]
 mod vectors;
+#[path = "solver/cross_kind_unions.rs"]
+mod cross_kind_unions;

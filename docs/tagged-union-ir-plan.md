@@ -1,8 +1,7 @@
 # Tagged-Union IR: Implementation Plan
 
-**Status:** Steps 1–5 complete (as of 2026-06-25); Step 6 (solver) is the remaining work  
-**Blocked tests:** none — all codegen tagged-union tests are active  
-**Companion solver work:** `src/solver/encode.rs:522` (CVC5 algebraic datatype TODO)
+**Status:** All 6 steps complete (as of 2026-06-26)  
+**Blocked tests:** none — all codegen and solver tagged-union tests are active
 
 ---
 
@@ -221,20 +220,33 @@ Extend the coercion logic in `compile_if`: when the result type should be
 
 ---
 
-### Step 6 — solver support (CVC5 algebraic datatype)
+### Step 6 — solver support (CVC5 algebraic datatype) ✓ DONE
 
-**Files:** `src/solver/encode.rs`
+**Files:** `src/solver/encode.rs`, `src/solver/membership.rs`, `src/solver/mod.rs`
 
-There is already a detailed TODO block at line 522 describing Option A (CVC5
-algebraic datatype sort).  The high-level steps from that comment:
+1. `set_sort` now detects cross-kind unions (where at least one arm has a tuple
+   or datatype sort) and builds a CVC5 algebraic datatype with one constructor per
+   arm (named via `arm_ctor_name`).  Returns `Some(datatype_sort)` instead of
+   the old `None`.
 
-1. In `set_sort`, detect cross-kind unions and build a CVC5 datatype sort with
-   one constructor per arm.
-2. Teach `membership_constraint` to emit `ApplyTester`/`ApplySelector` terms
-   when the term's sort `.is_datatype()`.
-3. Update counterexample extraction to decode and display the arm.
+2. `membership_constraint` dispatches to `membership_constraint_for_dt` when the
+   term's sort satisfies `is_dt() && !is_tuple()` (CVC5 tuple sorts also return
+   `is_dt() == true`, so we exclude them explicitly).  The DT function emits
+   `ApplyTester ∧ field_constraints` for each union arm.
 
-This step is independent of codegen steps 1–5 and can proceed in parallel.
+3. Counterexample extraction has a placeholder `TaggedUnion => 0` branch (with a
+   TODO comment) to avoid falling into `integer_value` on a datatype-sorted term.
+
+4. `set_sort_for_range` for the non-Fail union case now simply delegates to
+   `set_sort`, which handles both scalar and cross-kind unions uniformly.
+
+**Known limitation:** if/else bodies that produce different arm kinds
+(e.g. `if c then (x, x) else x`) are still reported as `Unknown` because
+CVC5 requires both Ite branches to have the same sort.  This is caught by a
+new sort-mismatch check in `encode_expr`.  Fixing it would require encoding the
+body's if/else as separate Ite per datatype field — a future step.
+
+**Tests added:** `tests/solver/cross_kind_unions.rs`
 
 ---
 
@@ -264,9 +276,11 @@ write zero-arg tests that hard-code the argument.
 | `src/codegen/mod.rs` | `kind_to_llvm_type`, `declare_function`, `compile_function_body`, `compile_block_body`, `wrap_return_value`; new `build_tagged_union_value`, `extract_tagged_union_arm`, `extract_tag` |
 | `src/codegen/expr.rs` | `compile_binop` (BinOp::In dispatch), `compile_if` (cross-arm phi) |
 | `src/codegen/membership.rs` | New `compile_tagged_union_membership` |
-| `src/solver/encode.rs` | `set_sort` + `membership_constraint` for datatype sort (step 6) |
+| `src/solver/encode.rs` | `set_sort` (datatype sort for cross-kind unions); `set_sort_for_range` simplification; Ite sort-mismatch guard; Proj datatype guard; new `arm_ctor_name`, `flatten_any_union`, `build_union_datatype_sort` |
+| `src/solver/membership.rs` | New `membership_constraint_for_dt`; dispatch in `membership_constraint` |
+| `src/solver/mod.rs` | `TaggedUnion` branch in counterexample extraction |
 | `tests/codegen/set_ops.rs` | Remove `#[ignore]` from 3 tests; add new range/if tests |
-| `tests/solver/…` | New solver tests for cross-kind union domains (step 6) |
+| `tests/solver/cross_kind_unions.rs` | New — cross-kind union domain and range solver tests |
 
 ---
 

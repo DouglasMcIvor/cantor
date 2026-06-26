@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cvc5::{Kind, Solver, Term, TermManager};
+use cvc5::{Kind, Solver, Sort, Term, TermManager};
 
 use crate::{
     ast::{Expr, ExprKind, FunctionDef, Stmt, collect_loop_modified},
@@ -75,6 +75,9 @@ pub(crate) fn encode_block<'tm>(
     has_runtime_assert: &mut bool,
     immutable_names: &mut HashSet<Symbol>,
     distinct_preds: &DistinctPreds<'tm>,
+    // Expected sort for the block's result expression.  Passed to `encode_expr`
+    // for `Stmt::Expr` so cross-kind union if/else bodies can be coerced.
+    result_sort: Option<Sort<'tm>>,
 ) -> Result<Option<Term<'tm>>, CheckResult> {
     let top_guard = tm.mk_boolean(true);
     let mut last_expr: Option<Term<'tm>> = None;
@@ -96,7 +99,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Let { name, constraint, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -139,7 +142,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::MutLet { name, constraint, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -172,7 +175,7 @@ pub(crate) fn encode_block<'tm>(
 
                 let rhs_term = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
                 ).map_err(CheckResult::Unknown)?;
 
                 // Optional tuple-level constraint (e.g. `x, y : Int * Nat = ...`).
@@ -244,7 +247,7 @@ pub(crate) fn encode_block<'tm>(
 
                 let rhs_term = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
                 ).map_err(CheckResult::Unknown)?;
 
                 for (i, name) in dest_names.iter().enumerate() {
@@ -297,7 +300,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Assign { name, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -337,7 +340,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Assume { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 solver.assert_formula(pred.clone());
@@ -347,7 +350,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Require { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
 
@@ -363,7 +366,7 @@ pub(crate) fn encode_block<'tm>(
             Stmt::Assert { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
 
@@ -414,6 +417,7 @@ pub(crate) fn encode_block<'tm>(
                 let t = encode_expr(
                     e, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    result_sort.clone(),
                 )
                 .map_err(CheckResult::Unknown)?;
                 last_expr = Some(t);
@@ -425,6 +429,7 @@ pub(crate) fn encode_block<'tm>(
                     call_counter, builtin_obligs, ssa_counter,
                     accumulated_facts, param_names, param_terms,
                     constraint_env, has_runtime_assert, immutable_names, distinct_preds,
+                    result_sort.clone(),
                 )?;
             }
 
@@ -461,7 +466,7 @@ pub(crate) fn encode_block<'tm>(
                 }
 
                 match encode_expr(cond, env, name_defs, fn_env, tm, solver,
-                                  call_counter, builtin_obligs, top_guard.clone(), distinct_preds) {
+                                  call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None) {
                     Ok(cond_term) => {
                         let not_cond = tm.mk_term(Kind::Not, &[cond_term]);
                         solver.assert_formula(not_cond.clone());

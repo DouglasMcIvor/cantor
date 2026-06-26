@@ -34,7 +34,7 @@ use crate::{
 
 use crate::kind::{Kind as ValKind, param_set_exprs, set_kind};
 
-use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, set_sort, mk_decomposed_tuple};
+use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, set_sort, set_sort_for_range, mk_decomposed_tuple};
 use self::blocks::{encode_block, body_has_unconstrained_loop_var};
 use self::membership::{DistinctPreds, Membership, membership_constraint};
 
@@ -164,7 +164,7 @@ fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs:
 
     let value_term = match encode_expr(
         &def.value, &env, name_defs, fn_env, &tm, &mut solver,
-        &mut call_counter, &mut builtin_obligs, top_guard, &distinct_preds,
+        &mut call_counter, &mut builtin_obligs, top_guard, &distinct_preds, None,
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
@@ -317,8 +317,7 @@ fn check_block_sig(
             let sort = match set_sort(&tm, part) {
                 Some(s) => s,
                 None => return CheckResult::Unknown(format!(
-                    "parameter `{}` has a cross-kind union domain with no single CVC5 sort \
-                     — see set_sort TODO for Option A (datatype encoding)",
+                    "parameter `{}` has an unsupported domain sort (internal error)",
                     n.0
                 )),
             };
@@ -352,6 +351,7 @@ fn check_block_sig(
     let mut has_runtime_assert = false;
     let mut immutable_names: HashSet<Symbol> = HashSet::new();
 
+    let result_sort = set_sort_for_range(&tm, &sig.range);
     let body_term = match encode_block(
         stmts,
         &mut env,
@@ -369,6 +369,7 @@ fn check_block_sig(
         &mut has_runtime_assert,
         &mut immutable_names,
         &distinct_preds,
+        result_sort,
     ) {
         Ok(Some(t)) => t,
         Ok(None) => {
@@ -444,6 +445,8 @@ fn check_block_sig(
                 boolean_value(&val) as i64
             } else if matches!(k, ValKind::Tuple(_)) {
                 0 // TODO: render tuple model value in counterexample display
+            } else if matches!(k, ValKind::TaggedUnion(_)) {
+                0 // TODO: decode datatype arm for cross-kind union counterexample display
             } else {
                 integer_value(&val)
             };
@@ -518,8 +521,7 @@ fn check_sig(
             let sort = match set_sort(&tm, part) {
                 Some(s) => s,
                 None => return CheckResult::Unknown(format!(
-                    "parameter `{}` has a cross-kind union domain with no single CVC5 sort \
-                     — see set_sort TODO for Option A (datatype encoding)",
+                    "parameter `{}` has an unsupported domain sort (internal error)",
                     n.0
                 )),
             };
@@ -548,7 +550,7 @@ fn check_sig(
     let top_guard = tm.mk_boolean(true);
     let body_term = match encode_expr(
         body, &env, name_defs, fn_env, &tm, &mut solver, &mut call_counter,
-        &mut builtin_obligs, top_guard, &distinct_preds,
+        &mut builtin_obligs, top_guard, &distinct_preds, set_sort_for_range(&tm, &sig.range),
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
@@ -605,6 +607,8 @@ fn check_sig(
                 boolean_value(&val) as i64
             } else if matches!(k, ValKind::Tuple(_)) {
                 0 // TODO: render tuple model value in counterexample display
+            } else if matches!(k, ValKind::TaggedUnion(_)) {
+                0 // TODO: decode datatype arm for cross-kind union counterexample display
             } else {
                 integer_value(&val)
             };
