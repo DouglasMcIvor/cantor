@@ -435,7 +435,7 @@ than `TupleProject` for the same reason. Logic must be `"ALL"` (replaces
 `cantor_main_into(*mut i64)` which stores each leaf into a caller buffer, avoiding
 fragile struct-return FFI.
 
-### Kleene-star sets and vectors (`X*`) (PARTIAL — parser and solver for concrete bodies)
+### Kleene-star sets and vectors (`X*`) (solver complete; codegen pending)
 
 `X*` is a postfix set operator that denotes the set of all finite sequences of elements
 drawn from `X`.  It is the standard Kleene closure: `{} | X | X×X | X×X×X | …`.
@@ -452,6 +452,10 @@ f() = [1, 2, 3]   -- Tuple [1,2,3]; solver checks each element against Nat
 -- Domain and range
 g : (Int - {0})* -> Int*
 g(xs) = xs
+
+-- Length of a vector is a Nat (built-in `len`)
+h : Nat* -> Nat
+h(xs) = len(xs)
 ```
 
 **AST**: `ExprKind::KleeneStar(Box<Expr>)`.  The inner expression is the element set.
@@ -460,12 +464,46 @@ g(xs) = xs
 Codegen for `Vector` is **not yet implemented**; any use of a Kleene-star value in a
 compiled function will panic at compile time with a clear TODO message.
 
-**Solver support** (PARTIAL):
-- Concrete tuple bodies: the solver element-checks each position against the inner set.
-  `f : -> Nat*; f() = [-1]` correctly produces a counterexample (`-1 ∉ Nat`).
-- Kleene-star *parameters* (e.g. `f : Nat* -> Nat*`) require CVC5 sequence theory
-  and are not yet implemented; the solver returns `Unknown` for those signatures.
-  Those test cases are marked `#[ignore]` with a clear reason.
+**Solver support** (COMPLETE):
+
+*CVC5 sort*: `X*` is encoded as the CVC5 sequence sort `(Seq elem)` where `elem` is
+`set_sort(X)`.  This uses the cvc5 theory of sequences (logic `ALL`).
+
+*Membership encoding* (`t ∈ X*`): Two cases depending on the sort of `t`:
+- **Sequence-sorted term** (variable-length `X*` parameter):
+  ```
+  ∀ i. 0 ≤ i < len(t)  →  nth(t, i) ∈ X
+  ```
+  This is a universally-quantified formula.  cvc5 is configured with
+  `mbqi=true` (model-based quantifier instantiation) so it can also produce
+  counterexamples for the negated-universal direction (finding a witness element
+  outside `X`).  If cvc5 returns `unknown` for a quantified goal it surfaces
+  honestly as `Unknown`; a silent pass is never produced.
+- **Tuple-sorted term** (fixed-length concrete body like `[1, 2, 3]`):
+  Each element is checked against `X` individually by child projection — no
+  quantifier needed.
+
+*`len` built-in*: `len(xs)` encodes to `seq.len(xs)` (cvc5 `SeqLength`).  The
+sequence theory guarantees `len ≥ 0` intrinsically; no explicit assertion is needed
+to prove `len(xs) ∈ Nat`.  `len` is only valid on Kleene-star (sequence) values;
+applying it to any other value is a compile-time error.
+
+*Combinations*:
+- **Products containing `X*`** (e.g. `Nat* * Int`): `set_sort` recursively builds a
+  `mk_tuple_sort([Seq Int, Int])`.  Membership projects with `ApplySelector`
+  (not `child()`) so it works for both `mk_tuple` APPLY_CONSTRUCTOR terms and
+  `SeqNth` results.
+- **Kleene star of a product** (e.g. `(Nat * Nat)*`): element sort is a tuple sort;
+  element membership uses the product recursion.
+- **`X*` as a cross-kind union arm** (e.g. `Nat* | Int`): triggers the cross-kind
+  union algebraic datatype (see below).  Same-sort sequences (`Nat* | Int*`, both
+  `Seq Int`) do not build a DT — membership is a plain `OR` of quantified formulas.
+
+*Cross-kind union datatype* (forward-compatible since this commit): the datatype
+encoding was generalized from integer-leaf selectors to **one selector per arm of
+the arm's natural CVC5 sort**.  This makes `Nat* | Int`, `(Nat * Nat) | Bool*`, and
+future `Float32 | Int` all representable without touching the core DT builder.  See
+`src/solver/sort.rs` for the forward-compatibility checklist for adding new sorts.
 
 **Desugaring**: `X * N *` (Kleene star of a repeated product) correctly desugars the
 inner `X * N` → `X * … * X` before wrapping in `KleeneStar`.

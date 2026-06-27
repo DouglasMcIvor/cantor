@@ -1,0 +1,20 @@
+-- Kleene-star vector demos: variable-length sequences (X*) in solver checks.
+-- All of these should be proved by the SMT solver.
+-- NOTE: the `run` subcommand is NOT used for these — codegen for Vector is
+-- not yet implemented (panics by design); only the `check` path applies.
+
+-- Identity: a Nat* parameter returned as Nat* is proved element-wise.
+identity : Nat* -> Nat*
+identity(xs) = xs
+
+-- Subtype: NatPos* (all-positive) elements satisfy Nat* (all-non-negative).
+natpos_into_nat : NatPos* -> Nat*
+natpos_into_nat(xs) = xs
+
+-- Length of any Nat* is a Nat (non-negative by the sequence theory).
+vec_len_is_nat : Nat* -> Nat
+vec_len_is_nat(xs) = len(xs)
+
+-- Non-zero integers: (Int - {0})* identity into Int*.
+nonzero_into_int : (Int - {0})* -> Int*
+nonzero_into_int(xs) = xs

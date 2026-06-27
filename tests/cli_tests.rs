@@ -772,6 +772,20 @@ fn set_ops_bad_counterexample_mentions_not_disjoint() {
     );
 }
 
+// ── Kleene-star vectors (X* via sequence theory) ─────────────────────────────
+
+#[test]
+fn vectors_kleene_demo_all_proved() {
+    // Only tests the `check` path — codegen for Vector (Kind::Vector) panics by
+    // design until runtime representation is decided; there is no `run` test.
+    let out = run_file("vectors_kleene_demo.cantor");
+    assert_eq!(out.code, 0, "vectors_kleene_demo.cantor should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected all proved:\n{}", out.stdout
+    );
+}
+
 // ── Vectors: repeated products and array literals ─────────────────────────────
 
 #[test]
