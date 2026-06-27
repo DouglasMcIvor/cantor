@@ -155,7 +155,24 @@ pub(crate) fn membership_constraint<'tm>(
     }
     match &set_expr.kind {
         ExprKind::Var(sym) => match sym.0.as_str() {
-            "Int"        => Membership::Unconstrained,
+            // `Int` is the base integer set; a term belongs to it iff it is NOT a
+            // member of any distinct set (Litre, Celsius, …).  When no distinct
+            // sets are in scope the constraint is vacuously satisfied.
+            // Only integer-sort terms are checked — boolean-sort terms (e.g. from a
+            // `Bool` domain) use their own sort-based path and are left unconstrained
+            // here so that this arm never produces an ill-sorted ApplyUf term.
+            "Int"        => {
+                if !t.sort().is_integer() || distinct_preds.is_empty() {
+                    return Membership::Unconstrained;
+                }
+                let mut terms = distinct_preds.values().map(|pred| {
+                    let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), t.clone()]);
+                    tm.mk_term(Kind::Not, &[is_d])
+                });
+                let first = terms.next().unwrap(); // safe: distinct_preds is non-empty
+                let combined = terms.fold(first, |acc, c| tm.mk_term(Kind::And, &[acc, c]));
+                Membership::Constrained(combined)
+            }
             // Fail is the failure singleton.  In the solver's integer model it is
             // encoded as i64::MIN so that `Nat | Fail` correctly accepts the
             // fail sentinel while rejecting all integers below zero.

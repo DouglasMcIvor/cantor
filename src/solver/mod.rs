@@ -19,6 +19,7 @@
 //! - Only integer-sorted parameters and return values.
 
 mod blocks;
+mod builtins;
 mod encode;
 mod loops;
 mod membership;

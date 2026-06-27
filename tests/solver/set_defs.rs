@@ -108,3 +108,15 @@ bad : Int -> Litre
 bad(x) = litre(x)
 ");
 }
+
+// ── Gap: built-in operator domain checks ─────────────────────────────────────
+
+#[test]
+fn distinct_set_arithmetic_operand_domain() {
+    // + requires plain Int operands; Litre is distinct so Litre ∈/ Int.
+    counterexample("
+Litre = distinct Int
+add_volumes : Litre * Litre -> Int
+add_volumes(x, y) = x + y
+");
+}

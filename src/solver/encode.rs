@@ -7,9 +7,11 @@ use cvc5::{DatatypeConstructorDecl, Kind, Solver, Sort, Term, TermManager};
 use crate::{
     ast::{BinOp, Expr, ExprKind, FunctionDef, FunctionSig, UnOp},
     kind::{Kind as ValKind, leaf_count, set_kind as val_set_kind},
-    span::{Span, Symbol},
+    span::Symbol,
 };
 
+pub(crate) use super::builtins::BuiltinObligation;
+use super::builtins::{binary_builtin_domain, unary_builtin_domain};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 use super::NameDefs;
 
@@ -17,44 +19,6 @@ use super::NameDefs;
 
 /// Map from variable name to its current SSA cvc5 term.
 pub(crate) type Env<'tm> = HashMap<Symbol, Term<'tm>>;
-
-// ── Built-in operator domain table ───────────────────────────────────────────
-
-/// A proof obligation produced when encoding a built-in operator argument.
-///
-/// The caller asserts `path_cond → obligation` and, on a SAT result,
-/// inspects the model to report `violated_reason` in the counterexample.
-pub(crate) struct BuiltinObligation<'tm> {
-    pub(crate) path_cond: Term<'tm>,
-    pub(crate) obligation: Term<'tm>,
-    pub(crate) violated_reason: String,
-}
-
-/// Domain constraint for argument `arg_idx` (0-based) of a binary built-in.
-///
-/// `None` means the argument is unconstrained (accepts any `Int`).
-/// This is the authoritative table of every binary operator's argument types.
-pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Option<(Expr, &'static str)> {
-    match (op, arg_idx) {
-        (BinOp::Div, 1) => Some((named_set("NonZeroInt"), "division by zero")),
-        _ => None,
-    }
-}
-
-/// Domain constraint for the operand of a unary built-in.
-///
-/// `None` means unconstrained.
-pub(crate) fn unary_builtin_domain(op: &UnOp) -> Option<(Expr, &'static str)> {
-    match op {
-        UnOp::Neg => None, // Int -> Int
-        UnOp::Not => None, // Bool -> Bool (Bool not yet a solver-visible type)
-    }
-}
-
-/// Build a `Var` expression that refers to a named built-in set.
-pub(crate) fn named_set(name: &'static str) -> Expr {
-    Expr::new(ExprKind::Var(Symbol::new(name)), Span::dummy())
-}
 
 // ── Expression encoder ────────────────────────────────────────────────────────
 
@@ -93,7 +57,15 @@ pub(crate) fn encode_expr<'tm>(
     }
 
     let term = match &expr.kind {
-        ExprKind::IntLit(n) => Ok(tm.mk_integer(*n)),
+        ExprKind::IntLit(n) => {
+            let t = tm.mk_integer(*n);
+            // An integer literal is never a member of any distinct set.
+            for pred in distinct_preds.values() {
+                let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), t.clone()]);
+                solver.assert_formula(tm.mk_term(Kind::Not, &[is_d]));
+            }
+            Ok(t)
+        }
         ExprKind::BoolLit(b) => Ok(tm.mk_boolean(*b)),
 
         ExprKind::Var(sym) => {
@@ -111,7 +83,7 @@ pub(crate) fn encode_expr<'tm>(
 
         ExprKind::UnOp { op, expr: inner } => {
             let t = enc!(inner)?;
-            if let Some((domain, reason)) = unary_builtin_domain(op) {
+            for (domain, reason) in unary_builtin_domain(op) {
                 if let Membership::Constrained(c) = membership_constraint(tm, t.clone(), &domain, name_defs, distinct_preds) {
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: path_cond.clone(),
@@ -120,10 +92,18 @@ pub(crate) fn encode_expr<'tm>(
                     });
                 }
             }
-            match op {
-                UnOp::Neg => Ok(tm.mk_term(Kind::Neg, &[t])),
-                UnOp::Not => Ok(tm.mk_term(Kind::Not, &[t])),
+            let result = match op {
+                UnOp::Neg => tm.mk_term(Kind::Neg, &[t]),
+                UnOp::Not => tm.mk_term(Kind::Not, &[t]),
+            };
+            // The result of a unary arithmetic op is a plain integer, never in a distinct set.
+            if result.sort().is_integer() {
+                for pred in distinct_preds.values() {
+                    let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), result.clone()]);
+                    solver.assert_formula(tm.mk_term(Kind::Not, &[is_d]));
+                }
             }
+            Ok(result)
         }
 
         ExprKind::BinOp { op, lhs, rhs } => {
@@ -171,7 +151,7 @@ pub(crate) fn encode_expr<'tm>(
             let r = enc!(rhs)?;
 
             for (arg_idx, arg_term) in [&l, &r].iter().enumerate() {
-                if let Some((domain, reason)) = binary_builtin_domain(op, arg_idx) {
+                for (domain, reason) in binary_builtin_domain(op, arg_idx) {
                     if let Membership::Constrained(c) = membership_constraint(tm, (*arg_term).clone(), &domain, name_defs, distinct_preds) {
                         builtin_obligs.push(BuiltinObligation {
                             path_cond: path_cond.clone(),
@@ -200,7 +180,20 @@ pub(crate) fn encode_expr<'tm>(
                     return Err(format!("set operation `{op:?}` not yet encodable"))
                 }
             };
-            Ok(tm.mk_term(kind, &[l, r]))
+            let result = tm.mk_term(kind, &[l, r]);
+            // Arithmetic results are plain integers, never members of a distinct set.
+            // This fact lets the solver prove `result ∈ Int` without a spurious SAT.
+            // TODO: extend to user-defined function calls whose range is a plain set
+            //       (currently their results have no ¬is_D assertion, so a range of
+            //       `Int` on such a call may give a false counterexample if distinct
+            //       sets are in scope).
+            if result.sort().is_integer() {
+                for pred in distinct_preds.values() {
+                    let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), result.clone()]);
+                    solver.assert_formula(tm.mk_term(Kind::Not, &[is_d]));
+                }
+            }
+            Ok(result)
         }
 
         ExprKind::If { cond, then_expr, else_expr } => {
@@ -252,16 +245,23 @@ pub(crate) fn encode_expr<'tm>(
                 let result = tm.mk_const(tm.integer_sort(), &fresh);
                 let non_neg = tm.mk_term(Kind::Geq, &[result.clone(), tm.mk_integer(0)]);
                 solver.assert_formula(non_neg);
+                // A size result is a plain integer, never a member of a distinct set.
+                for pred in distinct_preds.values() {
+                    let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), result.clone()]);
+                    solver.assert_formula(tm.mk_term(Kind::Not, &[is_d]));
+                }
                 return Ok(result);
             }
 
             // `from(x)` built-in: destructor for any `distinct` set.
             // For each distinct set D with basis B: is_D(arg) → result ∈ B.
+            // The result is the unwrapped basis value — it is NOT in any distinct set.
             if callee.0 == "from" && args.len() == 1 {
                 let arg_term = enc!(&args[0])?;
                 let fresh = format!("_from_{}", *call_counter);
                 *call_counter += 1;
                 let result_var = tm.mk_const(tm.integer_sort(), &fresh);
+                // Assert basis membership implications.
                 for (sym, pred) in distinct_preds {
                     if let Some(def) = name_defs.get(sym) {
                         let is_arg = tm.mk_term(Kind::ApplyUf, &[pred.clone(), arg_term.clone()]);
@@ -273,6 +273,11 @@ pub(crate) fn encode_expr<'tm>(
                             Membership::Unsupported => {}
                         }
                     }
+                }
+                // The unwrapped result is a plain basis value — not in any distinct set.
+                for pred in distinct_preds.values() {
+                    let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), result_var.clone()]);
+                    solver.assert_formula(tm.mk_term(Kind::Not, &[is_d]));
                 }
                 return Ok(result_var);
             }
