@@ -130,3 +130,24 @@ f : Bool -> Nat
 f(b) = if b then (1, 2) else 0
 ");
 }
+
+// ── Projection from an if/else result ────────────────────────────────────────
+// When both branches are tuples the Ite result has tuple_sort, and
+// projecting from it should extract the correct field — not the then-branch.
+
+#[test]
+fn if_else_tuple_proj_proved() {
+    proved("
+f : Bool -> Nat
+f(b) = (if b then (1, 2) else (3, 4)).0
+");
+}
+
+#[test]
+fn if_else_tuple_proj_counterexample() {
+    // When b is true the tuple is (0, 2); .0 = 0 which is not in NatPos.
+    counterexample("
+f : Bool -> NatPos
+f(b) = (if b then (0, 2) else (3, 4)).0
+");
+}

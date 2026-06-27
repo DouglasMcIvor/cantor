@@ -540,7 +540,7 @@ pub(crate) fn encode_expr<'tm>(
                     Ok(tm.mk_integer(0))
                 };
             }
-            Ok(base_term.child(*index + 1))
+            proj_from_tuple(tm, base_term, *index)
         }
     }?;
 
@@ -630,6 +630,26 @@ pub(crate) fn integer_value(term: &Term<'_>) -> i64 {
 /// Extract a bool from a cvc5 boolean model term.
 pub(crate) fn boolean_value(term: &Term<'_>) -> bool {
     term.to_string().trim() == "true"
+}
+
+/// Project field `index` from a tuple-sorted CVC5 term.
+///
+/// `child(index + 1)` works only on `APPLY_CONSTRUCTOR` terms (the constructor
+/// is child 0, fields are children 1+).  For `Ite` results produced by if/else
+/// expressions that return tuples the `child` approach gives the wrong sub-term
+/// (the Ite branch, not the field).  We push the projection inside the Ite
+/// recursively so each leaf is an `APPLY_CONSTRUCTOR` term where `child` is correct.
+fn proj_from_tuple<'tm>(tm: &'tm TermManager, base: Term<'tm>, index: usize) -> Result<Term<'tm>, String> {
+    if base.kind() == Kind::Ite {
+        let cond   = base.child(0);
+        let then_b = base.child(1);
+        let else_b = base.child(2);
+        let proj_t = proj_from_tuple(tm, then_b, index)?;
+        let proj_e = proj_from_tuple(tm, else_b, index)?;
+        Ok(tm.mk_term(Kind::Ite, &[cond, proj_t, proj_e]))
+    } else {
+        Ok(base.child(index + 1))
+    }
 }
 
 /// Create a decomposed representation of a tuple-typed term.
