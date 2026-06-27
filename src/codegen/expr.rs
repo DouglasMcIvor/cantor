@@ -60,6 +60,9 @@ impl<'ctx> Compiler<'ctx> {
             }
             ExprKind::Tuple(elems) => self.compile_tuple(elems, env),
             ExprKind::Proj { base, index } => self.compile_proj(base, *index, env),
+            ExprKind::KleeneStar(_) => panic!(
+                "TODO: Kleene-star (X*) codegen not yet implemented"
+            ),
         }
     }
 
@@ -514,6 +517,7 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Fail | Kind::Tuple(_) | Kind::Union(_) | Kind::TaggedUnion(_) => return Err(CompileError::Internal(
                 "sets of fail/tuples/unions not yet supported".into(),
             )),
+            Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),
         };
 
         // Allocate an empty set.

@@ -132,6 +132,7 @@ impl<'ctx> Compiler<'ctx> {
                 fields.extend(std::iter::repeat(i64t).take(n));
                 self.context.struct_type(&fields, false).into()
             }
+            Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),
         }
     }
 
@@ -184,6 +185,7 @@ impl<'ctx> Compiler<'ctx> {
                     "insert_kind_leaves: nested TaggedUnion not yet supported".into(),
                 ));
             }
+            Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),
         }
         Ok(())
     }
@@ -972,6 +974,7 @@ impl<'ctx> Compiler<'ctx> {
                     "trampoline_store_leaves: TaggedUnion output not yet supported".into(),
                 ));
             }
+            Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),
         }
         Ok(())
     }

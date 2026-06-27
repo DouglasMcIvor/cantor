@@ -117,6 +117,9 @@ pub enum ExprKind {
     Tuple(Vec<Expr>),
     /// `expr.N` — positional projection of element N from a tuple.
     Proj { base: Box<Expr>, index: usize },
+    /// `X*` — Kleene star in set position: the set of all finite sequences of elements of X.
+    /// Parsed as a postfix `*` when no expression follows, e.g. `Nat*` or `(Int - {0})*`.
+    KleeneStar(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,6 +407,11 @@ impl fmt::Display for ExprKind {
                 write!(f, ")")
             }
             Self::Proj { base, index } => write!(f, "{base}.{index}"),
+            Self::KleeneStar(inner) => match &inner.kind {
+                // Simple set names don't need parens: Nat* not (Nat)*.
+                ExprKind::Var(_) => write!(f, "{inner}*"),
+                _ => write!(f, "({inner})*"),
+            },
         }
     }
 }

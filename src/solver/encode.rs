@@ -344,7 +344,7 @@ pub(crate) fn encode_expr<'tm>(
             Ok(result_var)
         }
 
-        ExprKind::SetLit(_) | ExprKind::Comprehension { .. } => {
+        ExprKind::SetLit(_) | ExprKind::Comprehension { .. } | ExprKind::KleeneStar(_) => {
             Err("set expressions cannot appear in value position (only in domain/range/`in`/`for` positions)".into())
         }
 
@@ -589,6 +589,8 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
             let s = arms.iter().map(arm_ctor_name).collect::<Vec<_>>().join("_");
             format!("ck_TU_{s}")
         }
+        // TODO: Kleene-star Vector kind cannot be an arm of a cross-kind union yet.
+        ValKind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in arm_ctor_name"),
     }
 }
 
@@ -762,6 +764,12 @@ pub(crate) fn set_sort<'tm>(tm: &'tm TermManager, set_expr: &Expr) -> Option<Sor
             "set_sort: value-position BinOp in set-expression context: {:?}",
             set_expr.kind
         ),
+        // `X*` — Kleene star: variable-length sequence of X.
+        // No fixed CVC5 sort can represent a sequence of unknown length; return None
+        // so callers fall back to Unknown rather than creating an incorrect sort.
+        // When a concrete tuple body is being range-checked against X*, the term's
+        // tuple sort is used directly in membership_constraint without calling set_sort.
+        ExprKind::KleeneStar(_) => return None,
         // Value-position ExprKind variants must never appear as set expressions.
         // Listed explicitly so adding a new ExprKind causes a compile error here.
         ExprKind::IntLit(_) | ExprKind::BoolLit(_) | ExprKind::UnOp { .. }

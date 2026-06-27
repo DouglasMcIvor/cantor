@@ -8,6 +8,16 @@ use crate::{
     span::{Span, Symbol},
 };
 
+/// True when `tok` can legally begin an expression (used for Kleene-star disambiguation).
+fn token_starts_expr(tok: &Token) -> bool {
+    matches!(
+        tok,
+        Token::Int(_) | Token::True | Token::False | Token::Ident(_)
+            | Token::Minus | Token::Not | Token::If | Token::LParen
+            | Token::LBrace | Token::LBracket | Token::Fail | Token::From | Token::Size
+    )
+}
+
 /// Recursive-descent / Pratt parser for Cantor.
 ///
 /// Two tokens of lookahead so that `not in` (two-token infix operator) and
@@ -553,6 +563,18 @@ impl<'src> Parser<'src> {
                 continue;
             }
 
+            // Postfix `*` — Kleene star.
+            // Disambiguation: `X * Y` (product/multiply) has an expression following `*`;
+            // `X*` (Kleene star) has a non-expression token following `*` (e.g. `->`, `)`, newline).
+            // We only produce KleeneStar when the token after `*` cannot start an expression.
+            if self.peek() == &Token::Star && !token_starts_expr(self.peek2()) {
+                let star_span = self.peek_span();
+                self.advance()?;
+                let span = Span::new(lhs.span.start, star_span.end);
+                lhs = Expr::new(ExprKind::KleeneStar(Box::new(lhs)), span);
+                continue;
+            }
+
             let Some((left_bp, right_bp, op)) = self.peek_infix_op() else {
                 break;
             };
@@ -898,6 +920,12 @@ fn desugar_repeated_product(expr: Expr) -> Expr {
             let lhs = desugar_repeated_product(*lhs);
             let rhs = desugar_repeated_product(*rhs);
             Expr::new(ExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span)
+        }
+        // Recurse into the element-set of a Kleene star so `Int * 3 *` desugars
+        // the inner `Int * 3` → `Int * Int * Int` before wrapping in KleeneStar.
+        ExprKind::KleeneStar(inner) => {
+            let inner = desugar_repeated_product(*inner);
+            Expr::new(ExprKind::KleeneStar(Box::new(inner)), span)
         }
         _ => expr,
     }

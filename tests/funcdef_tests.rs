@@ -381,33 +381,35 @@ fn repeated_product_one_is_scalar_currently() {
 }
 
 // ── Kleene-star set expressions in signatures (`X*`) ─────────────────────────
-// `Nat*` is a postfix operator in set positions.
-// CURRENT STATE: `Nat*` is parsed as Mul(Nat, <missing>) → parse error.
-// These tests assert the failure and document the intended AST.
 
 #[test]
-fn kleene_star_in_range_currently_parse_error() {
-    // Expected future: sig.range.kind == ExprKind::KleeneStar(Var("Nat"))
-    let msg = parse_err("f : -> Nat*\nf() = []");
-    assert!(!msg.is_empty(),
-        "Nat* should currently produce a parse error; \
-         update to check ExprKind::KleeneStar once implemented");
+fn kleene_star_in_range() {
+    let def = parse_one("f : -> Nat*\nf() = []");
+    let range = &def.sigs[0].range;
+    assert!(
+        matches!(&range.kind, ExprKind::KleeneStar(inner) if matches!(inner.kind, ExprKind::Var(ref s) if s.0 == "Nat")),
+        "range should be KleeneStar(Nat); got {:?}", range.kind
+    );
 }
 
 #[test]
-fn kleene_star_in_domain_currently_parse_error() {
-    // Expected future: domain.kind == ExprKind::KleeneStar(Var("Nat"))
-    let msg = parse_err("f : Nat* -> Nat\nf(xs) = 0");
-    assert!(!msg.is_empty(),
-        "Nat* domain should currently produce a parse error; update once implemented");
+fn kleene_star_in_domain() {
+    let def = parse_one("f : Nat* -> Nat\nf(xs) = 0");
+    let domain = def.sigs[0].domain.as_ref().unwrap();
+    assert!(
+        matches!(&domain.kind, ExprKind::KleeneStar(inner) if matches!(inner.kind, ExprKind::Var(ref s) if s.0 == "Nat")),
+        "domain should be KleeneStar(Nat); got {:?}", domain.kind
+    );
 }
 
 #[test]
-fn kleene_star_set_diff_currently_parse_error() {
-    // Expected future: ExprKind::KleeneStar(BinOp(Sub, Int, SetLit([0])))
-    let msg = parse_err("f : (Int - {0})* -> Int\nf(xs) = 0");
-    assert!(!msg.is_empty(),
-        "(Int - {{0}})* should currently produce a parse error; update once implemented");
+fn kleene_star_set_diff_in_domain() {
+    let def = parse_one("f : (Int - {0})* -> Int\nf(xs) = 0");
+    let domain = def.sigs[0].domain.as_ref().unwrap();
+    assert!(
+        matches!(&domain.kind, ExprKind::KleeneStar(inner) if matches!(inner.kind, ExprKind::BinOp { op: BinOp::Sub, .. })),
+        "domain should be KleeneStar(Sub(Int, {{0}})); got {:?}", domain.kind
+    );
 }
 
 // ── Array literal `[...]` in bodies ───────────────────────────────────────────

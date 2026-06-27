@@ -46,11 +46,16 @@ pub enum Kind {
     /// slots to hold the widest arm (see `tagged_union_leaf_count`).  Bool fields
     /// are zero-extended to i64; tuple fields are serialised leaf-by-leaf.
     TaggedUnion(Vec<Kind>),
+    /// Variable-length sequence of `elem` values — the runtime representation of `X*`.
+    /// TODO: codegen not yet implemented; compile-time paths that call `leaf_count` or
+    /// `arm_ctor_name` on a Vector will panic until the representation is decided.
+    Vector(Box<Kind>),
 }
 
 /// The runtime Kind of a value drawn from `set_expr`.
 pub fn set_kind(set_expr: &Expr) -> Kind {
     match &set_expr.kind {
+        ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner))),
         ExprKind::Var(sym) if sym.0 == "Bool" => Kind::Bool,
         // `Set(Int)` / `Set(Bool)` — the power set of the given element set.
         ExprKind::Call { callee, args } if callee.0 == "Set" && args.len() == 1 => {
@@ -95,6 +100,8 @@ pub fn leaf_count(kind: &Kind) -> usize {
         Kind::Bool | Kind::Int | Kind::Set(_) | Kind::Fail | Kind::Union(_) => 1,
         Kind::Tuple(elems) => elems.iter().map(leaf_count).sum(),
         Kind::TaggedUnion(arms) => 1 + tagged_union_leaf_count(arms),
+        // TODO: Vector codegen representation is not yet decided; panic loudly.
+        Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in leaf_count"),
     }
 }
 

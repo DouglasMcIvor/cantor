@@ -370,23 +370,48 @@ fn parse_repeated_product_one_is_identity() {
 }
 
 // ── Kleene-star set expressions `X*` ─────────────────────────────────────────
-// `Nat*` is a postfix unary operator in set-expression positions that should
-// produce ExprKind::KleeneStar(Box<Expr>).  Currently the `*` is consumed as
-// binary Mul and fails; these tests document the intended parse.
 
 #[test]
-fn parse_kleene_star_currently_parse_error() {
-    // Expected future: ExprKind::KleeneStar(Box<Var("Nat")>).
-    // Currently either parses as `Mul(Nat, <missing>)` or fails outright.
-    assert!(parse_expr("Nat*").is_err(),
-        "Nat* should currently fail; update to assert KleeneStar once implemented");
+fn parse_kleene_star_simple() {
+    let kind = parse_set_expr("Nat*").unwrap().kind;
+    assert!(
+        matches!(kind, ExprKind::KleeneStar(ref inner) if matches!(inner.kind, ExprKind::Var(ref s) if s.0 == "Nat")),
+        "Nat* should parse as KleeneStar(Var(Nat)); got {kind:?}"
+    );
 }
 
 #[test]
-fn parse_kleene_star_parenthesised_set_currently_error() {
-    // Expected future: ExprKind::KleeneStar(BinOp(Sub, Nat, SetLit([0]))).
-    assert!(parse_expr("(Nat - {0})*").is_err(),
-        "(Nat - {{0}})* should currently fail; update once KleeneStar is implemented");
+fn parse_kleene_star_parenthesised_set() {
+    let kind = parse_set_expr("(Nat - {0})*").unwrap().kind;
+    assert!(
+        matches!(kind, ExprKind::KleeneStar(ref inner) if matches!(inner.kind, ExprKind::BinOp { op: BinOp::Sub, .. })),
+        "(Nat - {{0}})* should parse as KleeneStar(BinOp(Sub, …)); got {kind:?}"
+    );
+}
+
+#[test]
+fn parse_kleene_star_in_function_sig() {
+    let items = parse_file("f : Nat* -> Int*\nf(xs) = 0").unwrap();
+    let Item::FunctionDef(ref def) = items[0] else { panic!("expected FunctionDef") };
+    let sig = &def.sigs[0];
+    assert!(
+        matches!(sig.domain.as_ref().map(|d| &d.kind), Some(ExprKind::KleeneStar(_))),
+        "domain should be KleeneStar; got {:?}", sig.domain
+    );
+    assert!(
+        matches!(&sig.range.kind, ExprKind::KleeneStar(_)),
+        "range should be KleeneStar; got {:?}", sig.range.kind
+    );
+}
+
+#[test]
+fn parse_kleene_star_does_not_consume_mul_rhs() {
+    // `Nat * Int` is multiplication (Int starts an expression), not Kleene star.
+    let kind = parse_set_expr("Nat * Int").unwrap().kind;
+    assert!(
+        matches!(kind, ExprKind::BinOp { op: BinOp::Mul, .. }),
+        "Nat * Int should parse as Mul, not KleeneStar; got {kind:?}"
+    );
 }
 
 // ── Error cases ───────────────────────────────────────────────────────────────

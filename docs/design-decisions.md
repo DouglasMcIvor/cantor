@@ -435,6 +435,41 @@ than `TupleProject` for the same reason. Logic must be `"ALL"` (replaces
 `cantor_main_into(*mut i64)` which stores each leaf into a caller buffer, avoiding
 fragile struct-return FFI.
 
+### Kleene-star sets and vectors (`X*`) (PARTIAL — parser and solver for concrete bodies)
+
+`X*` is a postfix set operator that denotes the set of all finite sequences of elements
+drawn from `X`.  It is the standard Kleene closure: `{} | X | X×X | X×X×X | …`.
+
+**Syntax**: postfix `*` in any set-expression position.  The `*` is disambiguated from
+infix Cartesian-product `*` by looking at the following token: if no expression follows
+(e.g. `->`, `)`, newline), the `*` is a Kleene star.
+
+```
+-- Range: the function returns a variable-length sequence of Nat values
+f : -> Nat*
+f() = [1, 2, 3]   -- Tuple [1,2,3]; solver checks each element against Nat
+
+-- Domain and range
+g : (Int - {0})* -> Int*
+g(xs) = xs
+```
+
+**AST**: `ExprKind::KleeneStar(Box<Expr>)`.  The inner expression is the element set.
+
+**Runtime kind**: `Kind::Vector(Box<Kind>)` — variable-length sequence.
+Codegen for `Vector` is **not yet implemented**; any use of a Kleene-star value in a
+compiled function will panic at compile time with a clear TODO message.
+
+**Solver support** (PARTIAL):
+- Concrete tuple bodies: the solver element-checks each position against the inner set.
+  `f : -> Nat*; f() = [-1]` correctly produces a counterexample (`-1 ∉ Nat`).
+- Kleene-star *parameters* (e.g. `f : Nat* -> Nat*`) require CVC5 sequence theory
+  and are not yet implemented; the solver returns `Unknown` for those signatures.
+  Those test cases are marked `#[ignore]` with a clear reason.
+
+**Desugaring**: `X * N *` (Kleene star of a repeated product) correctly desugars the
+inner `X * N` → `X * … * X` before wrapping in `KleeneStar`.
+
 ### Destructuring assignment (DECIDED)
 
 Tuple values can be destructured into multiple bindings in one statement.

@@ -396,6 +396,36 @@ pub(crate) fn membership_constraint<'tm>(
             comprehension_membership(tm, t, output, var, source, filter.as_deref(), name_defs, distinct_preds)
         }
 
+        // `t ∈ X*`  ↔  every element of `t` is in `X`.
+        //
+        // For concrete tuple-sorted terms (fixed-length bodies like `[1, 2, 3]`):
+        // read the element count from the tuple sort and check each child against `X`.
+        // An empty tuple `[]` trivially satisfies any `X*` (vacuously true).
+        //
+        // For variable-length parameters (non-tuple-sorted terms): fall back to
+        // Unsupported (Unknown) — sequence theory encoding is not yet implemented.
+        ExprKind::KleeneStar(inner) => {
+            if !t.sort().is_tuple() {
+                return Membership::Unsupported;
+            }
+            let dt = t.sort().datatype();
+            let n_elems = dt.constructor(0).num_selectors();
+            let mut constraints: Vec<Term<'_>> = Vec::new();
+            for i in 0..n_elems {
+                let elem = t.child(i + 1);
+                match membership_constraint(tm, elem, inner, name_defs, distinct_preds) {
+                    Membership::Constrained(c) => constraints.push(c),
+                    Membership::Unconstrained => {}
+                    Membership::Unsupported => return Membership::Unsupported,
+                }
+            }
+            match constraints.len() {
+                0 => Membership::Unconstrained,
+                1 => Membership::Constrained(constraints.remove(0)),
+                _ => Membership::Constrained(tm.mk_term(Kind::And, &constraints)),
+            }
+        }
+
         // `t ∈ A * B`  ↔  `proj0(t) ∈ A ∧ proj1(t) ∈ B`
         // `t` is always a mk_tuple(…) term; use child(i+1) to extract
         // element i (child 0 is the APPLY_CONSTRUCTOR constructor).

@@ -245,6 +245,7 @@ fn count_kind_leaves(kind: &Kind) -> usize {
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
         // TODO: tagged-union IR — count tag field + widest arm
         Kind::TaggedUnion(_) => 1,
+        Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in CLI output"),
     }
 }
 
@@ -259,5 +260,6 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
         }
         // TODO: tagged-union IR — decode tag and display the active arm
         Kind::TaggedUnion(_) => { let v = buf[*offset]; *offset += 1; format!("<tagged-union {v}>") }
+        Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in CLI output"),
     }
 }
