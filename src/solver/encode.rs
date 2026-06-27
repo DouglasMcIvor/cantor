@@ -274,21 +274,67 @@ pub(crate) fn encode_expr<'tm>(
 
             // Else-branch: path_cond ∧ ¬cond
             let not_c = tm.mk_term(Kind::Not, &[c_bool.clone()]);
-            let else_guard = tm.mk_term(Kind::And, &[path_cond, not_c]);
+            let else_guard = tm.mk_term(Kind::And, &[path_cond.clone(), not_c]);
             let e = encode_expr(
                 else_expr, env, name_defs, fn_env, tm, solver, call_counter, builtin_obligs, else_guard, distinct_preds, coerce_to.clone(),
             )?;
 
             // CVC5 requires both branches to have the same sort.
-            // Cross-kind union bodies (e.g. `if cond then (x,x) else x`) mix sorts;
-            // catch this early so we get Unknown rather than a CVC5 crash.
-            if t.sort() != e.sort() {
-                return Err(
-                    "if/else branches have incompatible SMT sorts; \
-                     cross-kind union body encoding not yet supported in the solver"
-                        .to_string(),
-                );
-            }
+            // Unify sorts before calling mk_term(Ite, …).
+            let (t, e) = if t.sort() == e.sort() {
+                (t, e)
+            } else if (t.sort().is_boolean() && e.sort().is_integer())
+                || (t.sort().is_integer() && e.sort().is_boolean())
+            {
+                // Bool ↔ Int unification: false = 0, true = 1 in Cantor's value model.
+                // One branch is boolean-sort (a literal or Bool param), the other is
+                // integer-sort.  Coerce the boolean to 0/1 so Ite gets matching sorts.
+                let bool_to_int = |b: Term<'tm>| {
+                    if b.sort().is_boolean() {
+                        tm.mk_term(Kind::Ite, &[b, tm.mk_integer(1), tm.mk_integer(0)])
+                    } else {
+                        b
+                    }
+                };
+                (bool_to_int(t), bool_to_int(e))
+            } else {
+                // Distinct-sort branch vs. integer/boolean/DT branch.
+                // A distinct-sort value can never satisfy an integer-sort (or different DT)
+                // range.  Replace the distinct-sort branch with a dummy integer and emit a
+                // path-conditioned `false` obligation so the solver finds a counterexample
+                // whenever the condition steers execution into the offending branch.
+                let is_distinct = |s: &Sort<'_>| distinct_preds.values().any(|i| &i.sort == s);
+                let mut to_int_or_dummy = |b: Term<'tm>, path: Term<'tm>| -> Result<Term<'tm>, String> {
+                    if is_distinct(&b.sort()) {
+                        // Distinct-sort value can never satisfy an integer-sort range.
+                        // Push a false obligation for this path so the solver produces a
+                        // counterexample when the condition steers here; return a dummy
+                        // integer so the Ite stays well-sorted.
+                        builtin_obligs.push(BuiltinObligation {
+                            path_cond: path,
+                            obligation: tm.mk_boolean(false),
+                            violated_reason: "branch returns a distinct-set value that cannot \
+                                              satisfy the range"
+                                .to_string(),
+                        });
+                        Ok(tm.mk_integer(0))
+                    } else if b.sort().is_boolean() {
+                        Ok(tm.mk_term(Kind::Ite, &[b, tm.mk_integer(1), tm.mk_integer(0)]))
+                    } else if b.sort().is_integer() {
+                        Ok(b)
+                    } else {
+                        Err("if/else branches have incompatible SMT sorts; \
+                             cross-kind union body encoding not yet supported in the solver"
+                            .to_string())
+                    }
+                };
+                let not_c = tm.mk_term(Kind::Not, &[c_bool.clone()]);
+                let then_path = tm.mk_term(Kind::And, &[path_cond.clone(), c_bool.clone()]);
+                let else_path = tm.mk_term(Kind::And, &[path_cond.clone(), not_c]);
+                let t2 = to_int_or_dummy(t, then_path)?;
+                let e2 = to_int_or_dummy(e, else_path)?;
+                (t2, e2)
+            };
 
             Ok(tm.mk_term(Kind::Ite, &[c_bool, t, e]))
         }
@@ -345,7 +391,8 @@ pub(crate) fn encode_expr<'tm>(
                             Membership::Unconstrained => {}
                             Membership::Unsupported => {}
                         }
-                        return Ok(tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term]));
+                        let result = tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term]);
+                        return maybe_coerce(tm, result, &coerce_to, distinct_preds);
                     }
                 }
             }
@@ -473,18 +520,8 @@ pub(crate) fn encode_expr<'tm>(
     }?;
 
     // Apply coercion for cross-kind union contexts (e.g. if/else branches).
-    // Only coerce integer, boolean, or tuple-sorted terms to the target DT sort.
-    // Early-return paths inside the match arms (membership predicates, built-in
-    // call stubs) are intentionally excluded — they `return` before reaching here.
-    if let Some(ref dt_sort) = coerce_to {
-        if term.sort() != *dt_sort
-            && dt_sort.is_dt() && !dt_sort.is_tuple()
-            && (term.sort().is_integer() || term.sort().is_tuple() || term.sort().is_boolean())
-        {
-            return coerce_to_union_dt(tm, term, dt_sort);
-        }
-    }
-    Ok(term)
+    // Constructor early-returns in ExprKind::Call also call maybe_coerce directly.
+    maybe_coerce(tm, term, &coerce_to, distinct_preds)
 }
 
 // ── Call contract assertion ───────────────────────────────────────────────────
@@ -786,6 +823,42 @@ fn coerce_to_union_dt<'tm>(
     let mut args: Vec<Term<'_>> = vec![ctor.term()];
     args.extend(fields);
     Ok(tm.mk_term(Kind::ApplyConstructor, &args))
+}
+
+/// Coerce `term` to `coerce_to` sort if the target is a cross-kind union DT.
+///
+/// Handles three cases:
+/// - Integer/Boolean/Tuple-sorted terms → existing `coerce_to_union_dt` path.
+/// - Distinct-sorted terms → wrapped in the `"ck_D_{Name}"` constructor.
+/// - Same sort or no coerce target → returned unchanged.
+///
+/// Used both at the end of `encode_expr` (general case) and at early-return
+/// sites inside `ExprKind::Call` that bypass the end-of-function coerce block.
+pub(crate) fn maybe_coerce<'tm>(
+    tm: &'tm TermManager,
+    term: Term<'tm>,
+    coerce_to: &Option<Sort<'tm>>,
+    distinct_preds: &DistinctPreds<'tm>,
+) -> Result<Term<'tm>, String> {
+    let Some(dt_sort) = coerce_to.as_ref() else { return Ok(term); };
+    if term.sort() == *dt_sort || !dt_sort.is_dt() || dt_sort.is_tuple() {
+        return Ok(term);
+    }
+    if term.sort().is_integer() || term.sort().is_tuple() || term.sort().is_boolean() {
+        return coerce_to_union_dt(tm, term, dt_sort);
+    }
+    // Distinct-sort term: find the "ck_D_{Name}" constructor in the target DT.
+    if let Some((sym, _)) = distinct_preds.iter().find(|(_, i)| i.sort == term.sort()) {
+        let ctor_name = format!("ck_D_{}", sym.0);
+        let dt = dt_sort.datatype();
+        if let Some(ctor) = (0..dt.num_constructors())
+            .map(|i| dt.constructor(i))
+            .find(|c| c.name() == ctor_name)
+        {
+            return Ok(tm.mk_term(Kind::ApplyConstructor, &[ctor.term(), term]));
+        }
+    }
+    Ok(term) // sort mismatch but not coercible — caller handles the incompatibility
 }
 
 /// SMT sort for a set expression.
