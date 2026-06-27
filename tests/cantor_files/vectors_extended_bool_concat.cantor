@@ -1,0 +1,12 @@
+-- Bool* concatenation: main returns len([true,false] ++ [false,true,true]) = 5.
+
+bool_concat_len : -> Nat
+bool_concat_len() {
+    bs : Bool* = [true, false]
+    cs : Bool* = [false, true, true]
+    ds : Bool* = bs ++ cs
+    return len(ds)
+}
+
+main : -> Nat
+main() = bool_concat_len()

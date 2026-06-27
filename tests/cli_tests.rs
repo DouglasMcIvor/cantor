@@ -807,6 +807,43 @@ fn vectors_runtime_run_returns_len_of_composed_vector() {
     );
 }
 
+// ── Vectors: block-body coercion, xs[i] indexing, ++ concatenation ───────────
+
+#[test]
+fn vectors_extended_no_counterexamples() {
+    // Block-body functions with early `return` are correctly Unknown (solver limitation),
+    // but there must be no counterexamples.
+    let out = run_file("vectors_extended.cantor");
+    assert!(
+        !out.stdout.contains("  counterexample  "),
+        "expected no counterexamples:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn vectors_extended_concat_coerce_block_len() {
+    // vectors_extended_concat.cantor: main() = concat_lit() = len([1,2] ++ [3,4]) = 4
+    let out = run_subcommand("vectors_extended_concat.cantor");
+    assert_eq!(out.code, 0, "run should exit 0\nstdout: {}", out.stdout);
+    assert!(out.stdout.contains("4"), "expected 4:\n{}", out.stdout);
+}
+
+#[test]
+fn vectors_extended_index_elem() {
+    // vectors_extended_index.cantor: main() = second element of [10,20,30] = 20
+    let out = run_subcommand("vectors_extended_index.cantor");
+    assert_eq!(out.code, 0, "run should exit 0\nstdout: {}", out.stdout);
+    assert!(out.stdout.contains("20"), "expected 20:\n{}", out.stdout);
+}
+
+#[test]
+fn vectors_extended_bool_concat_len() {
+    // vectors_extended_bool_concat.cantor: main() = len([true,false] ++ [false,true,true]) = 5
+    let out = run_subcommand("vectors_extended_bool_concat.cantor");
+    assert_eq!(out.code, 0, "run should exit 0\nstdout: {}", out.stdout);
+    assert!(out.stdout.contains("5"), "expected 5:\n{}", out.stdout);
+}
+
 // ── Vectors: repeated products and array literals ─────────────────────────────
 
 #[test]

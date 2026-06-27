@@ -285,7 +285,7 @@ pub(crate) fn set_sort<'tm>(
         ExprKind::BinOp {
             op: BinOp::Div | BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le
                 | BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or
-                | BinOp::In | BinOp::NotIn,
+                | BinOp::In | BinOp::NotIn | BinOp::Concat,
             ..
         } => unreachable!(
             "set_sort: value-position BinOp in set-expression context: {:?}",
@@ -303,6 +303,7 @@ pub(crate) fn set_sort<'tm>(
         // Listed explicitly so adding a new ExprKind causes a compile error here.
         ExprKind::IntLit(_) | ExprKind::BoolLit(_) | ExprKind::UnOp { .. }
         | ExprKind::If { .. } | ExprKind::Tuple(_) | ExprKind::Proj { .. }
+        | ExprKind::Index { .. }
         | ExprKind::Try(_) | ExprKind::FailLit | ExprKind::FailWith(_) => unreachable!(
             "set_sort: value-position expression in set-expression context: {:?}",
             set_expr.kind

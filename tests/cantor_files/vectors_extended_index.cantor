@@ -1,0 +1,13 @@
+-- xs[i] runtime indexing: main returns [10,20,30][1] = 20.
+
+get_elem : Nat* -> Nat
+get_elem(xs) {
+    i : Nat = 1
+    return xs[i]
+}
+
+make_vec : -> Nat*
+make_vec() = [10, 20, 30]
+
+main : -> Nat
+main() = get_elem(make_vec())

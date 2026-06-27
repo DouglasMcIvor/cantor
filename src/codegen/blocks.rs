@@ -5,7 +5,7 @@ use inkwell::values::{AggregateValueEnum, BasicValueEnum, IntValue, PointerValue
 use crate::{
     ast::{AssertElse, Expr, Stmt},
     error::CompileError,
-    kind::Kind,
+    kind::{set_kind, Kind},
     span::Symbol,
 };
 
@@ -28,15 +28,38 @@ impl<'ctx> Compiler<'ctx> {
         for stmt in stmts {
             last = None;
             match stmt {
-                Stmt::Let { name, value, .. } => {
-                    // Immutable: just compile the value and bind the name.
+                Stmt::Let { name, constraint, value, .. } => {
+                    // Immutable: compile the value, optionally coerce to a vector, and bind.
                     // No alloca needed — this name cannot appear in alloca_map
                     // because collect_loop_modified skips Let bindings.
                     let result = self.compile_expr(value, env)?;
+                    let result = coerce_to_vector_if_needed(self, result, constraint)?;
                     env.insert(name.clone(), result);
                 }
 
-                Stmt::MutLet { name, value, .. } | Stmt::Assign { name, value, .. } => {
+                Stmt::MutLet { name, constraint, value, .. } => {
+                    let result = self.compile_expr(value, env)?;
+                    let result = coerce_to_vector_if_needed(self, result, constraint)?;
+                    // If this variable is backed by an alloca (i.e. we're in a loop
+                    // body and this variable persists across iterations), write
+                    // through so the loop header sees the updated value.
+                    if let Some(&ptr) = alloca_map.get(name) {
+                        let i64_type = self.context.i64_type();
+                        let val_i64: IntValue<'ctx> = if result.1 == Kind::Bool {
+                            self.builder
+                                .build_int_z_extend(result.0.into_int_value(), i64_type, "bool_ext")
+                                .map_err(|e| CompileError::Internal(e.to_string()))?
+                        } else {
+                            result.0.into_int_value()
+                        };
+                        self.builder
+                            .build_store(ptr, val_i64)
+                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    }
+                    env.insert(name.clone(), result);
+                }
+
+                Stmt::Assign { name, value, .. } => {
                     let result = self.compile_expr(value, env)?;
                     // If this variable is backed by an alloca (i.e. we're in a loop
                     // body and this variable persists across iterations), write
@@ -379,5 +402,28 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.position_at_end(dead);
 
         Ok(())
+    }
+}
+
+/// If the constraint expression is a Kleene-star set (`X*`) and the compiled
+/// value is a tuple (array literal), coerce the tuple to a vector.
+/// Otherwise return the value unchanged.
+fn coerce_to_vector_if_needed<'ctx>(
+    compiler: &Compiler<'ctx>,
+    (val, kind): (inkwell::values::BasicValueEnum<'ctx>, Kind),
+    constraint: &Expr,
+) -> Result<(inkwell::values::BasicValueEnum<'ctx>, Kind), CompileError> {
+    let expected_kind = set_kind(constraint);
+    let elem_kind = match &expected_kind {
+        Kind::Vector(ek) => ek.as_ref().clone(),
+        _ => return Ok((val, kind)),
+    };
+    match &kind {
+        Kind::Tuple(elems) => {
+            let elems = elems.clone();
+            compiler.compile_tuple_as_vector(val, &elems, &elem_kind)
+        }
+        Kind::Vector(_) => Ok((val, kind)), // already a vector, no coercion needed
+        _ => Ok((val, kind)),               // not a coercible kind; solver will catch mismatches
     }
 }

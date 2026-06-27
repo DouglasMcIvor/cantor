@@ -619,7 +619,7 @@ fn encode_comp_expr<'tm>(
                 BinOp::And => Kind::And,
                 BinOp::Or  => Kind::Or,
                 BinOp::In | BinOp::NotIn => unreachable!("handled above"),
-                BinOp::Union | BinOp::Intersect | BinOp::SymDiff => return None,
+                BinOp::Union | BinOp::Intersect | BinOp::SymDiff | BinOp::Concat => return None,
             };
             Some(tm.mk_term(kind, &[l, r]))
         }

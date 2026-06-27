@@ -509,30 +509,32 @@ impl<'src> Parser<'src> {
                 continue;
             }
 
-            // Postfix `[N]` — bracket index, alias for `.N` on fixed-size tuples.
-            // TODO: when Kleene-star vectors are added, `[expr]` with a non-literal
-            // index will become dynamic indexing; for now only integer literals are
-            // accepted so unimplemented paths fail loudly.
+            // Postfix `[expr]` — index operator.
+            //   • Non-negative integer literal index → `Proj` (compile-time, for tuples)
+            //   • Any other expression          → `Index` (runtime, for vectors X*)
             if self.peek() == &Token::LBracket {
-                let open_span = self.peek_span();
                 self.advance()?;
-                let idx_span = self.peek_span();
-                let index = match self.peek().clone() {
-                    Token::Int(n) if n >= 0 => n as usize,
-                    other => return Err(CompileError::UnexpectedToken {
-                        expected: "non-negative integer literal inside `[…]` index \
-                                   (variable indices require Kleene-star vectors, not yet implemented)"
-                                  .into(),
-                        found: other.to_string(),
-                        span: idx_span,
-                    }),
-                };
-                self.advance()?;
+                // Peek: is the index a non-negative integer literal?
+                if let Token::Int(n) = self.peek().clone() {
+                    if n >= 0 {
+                        let idx = n as usize;
+                        self.advance()?;
+                        let close_span = self.peek_span();
+                        self.expect(&Token::RBracket)?;
+                        let span = Span::new(lhs.span.start, close_span.end);
+                        lhs = Expr::new(ExprKind::Proj { base: Box::new(lhs), index: idx }, span);
+                        continue;
+                    }
+                }
+                // General expression index → runtime Index node (vectors only).
+                let index_expr = self.parse_expr(0)?;
                 let close_span = self.peek_span();
                 self.expect(&Token::RBracket)?;
                 let span = Span::new(lhs.span.start, close_span.end);
-                lhs = Expr::new(ExprKind::Proj { base: Box::new(lhs), index }, span);
-                let _ = open_span; // span used only for error messages above
+                lhs = Expr::new(ExprKind::Index {
+                    base: Box::new(lhs),
+                    index: Box::new(index_expr),
+                }, span);
                 continue;
             }
 
@@ -808,6 +810,7 @@ impl<'src> Parser<'src> {
             Token::Amp      => (11, 12, BinOp::Intersect),
             Token::Plus     => (13, 14, BinOp::Add),
             Token::Minus    => (13, 14, BinOp::Sub),
+            Token::PlusPlus => (13, 14, BinOp::Concat),
             Token::Star     => (15, 16, BinOp::Mul),
             Token::Slash    => (15, 16, BinOp::Div),
             _ => return None,

@@ -41,8 +41,9 @@ pub enum Token {
     Ident(String),
 
     // Arithmetic / set-difference
-    Plus,   // +
-    Minus,  // -  (also set difference; disambiguation is semantic)
+    Plus,     // +
+    PlusPlus, // ++ (vector concatenation)
+    Minus,    // -  (also set difference; disambiguation is semantic)
     Star,   // *  (also Cartesian product in signature position)
     Slash,  // /
 
@@ -108,6 +109,7 @@ impl fmt::Display for Token {
             Token::From     => f.write_str("from"),
             Token::Size     => f.write_str("size"),
             Token::Plus     => f.write_str("+"),
+            Token::PlusPlus => f.write_str("++"),
             Token::Minus    => f.write_str("-"),
             Token::Star     => f.write_str("*"),
             Token::Slash    => f.write_str("/"),
@@ -242,7 +244,14 @@ impl<'src> Lexer<'src> {
                 c if c.is_alphabetic() || c == '_' => {
                     return Ok(self.scan_ident_or_keyword(start));
                 }
-                '+' => Token::Plus,
+                '+' => {
+                    if self.peek_char() == Some('+') {
+                        self.advance_char();
+                        Token::PlusPlus
+                    } else {
+                        Token::Plus
+                    }
+                }
                 '*' => Token::Star,
                 '/' => Token::Slash,
                 '|' => Token::Pipe,

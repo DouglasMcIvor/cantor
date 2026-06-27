@@ -71,6 +71,7 @@ impl<'ctx> Compiler<'ctx> {
             }
             ExprKind::Tuple(elems) => self.compile_tuple(elems, env),
             ExprKind::Proj { base, index } => self.compile_proj(base, *index, env),
+            ExprKind::Index { base, index } => self.compile_index(base, index, env),
             ExprKind::KleeneStar(_) => Err(CompileError::Internal(
                 "X* is a set expression and cannot appear in value position".into(),
             )),
@@ -380,7 +381,102 @@ impl<'ctx> Compiler<'ctx> {
             BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
                 Err(CompileError::Internal("set operations not yet implemented".into()))
             }
+            BinOp::Concat => self.compile_vec_concat(lhs, rhs, env, _span),
         }
+    }
+
+    fn compile_vec_concat(
+        &self,
+        lhs: &Expr,
+        rhs: &Expr,
+        env: &Env<'ctx>,
+        _span: Span,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let (lv, lk) = self.compile_expr(lhs, env)?;
+        let (rv, rk) = self.compile_expr(rhs, env)?;
+
+        // Coerce a literal tuple to a vector if the other side is a vector.
+        let (lv, lk) = match (&lk, &rk) {
+            (Kind::Tuple(elems), Kind::Vector(ek)) => {
+                let elems = elems.clone();
+                let ek = ek.as_ref().clone();
+                self.compile_tuple_as_vector(lv, &elems, &ek)?
+            }
+            _ => (lv, lk),
+        };
+        let (rv, rk) = match (&rk, &lk) {
+            (Kind::Tuple(elems), Kind::Vector(ek)) => {
+                let elems = elems.clone();
+                let ek = ek.as_ref().clone();
+                self.compile_tuple_as_vector(rv, &elems, &ek)?
+            }
+            _ => (rv, rk),
+        };
+
+        let elem_kind = match (&lk, &rk) {
+            (Kind::Vector(ek), Kind::Vector(_)) => ek.as_ref().clone(),
+            _ => return Err(CompileError::Internal(format!(
+                "`++` requires vector (X*) operands, got {lk:?} ++ {rk:?} at {_span:?}"
+            ))),
+        };
+
+        let concat_fn = match &elem_kind {
+            Kind::Int  => "cantor_vec_concat_i64",
+            Kind::Bool => "cantor_vec_concat_bool",
+            other => return Err(CompileError::Internal(format!(
+                "TODO: `++` not yet implemented for element kind {other:?}"
+            ))),
+        };
+
+        let fn_val = self.module.get_function(concat_fn).ok_or_else(|| {
+            CompileError::Internal(format!("runtime function `{concat_fn}` not declared"))
+        })?;
+        let lv_i64 = lv.into_int_value();
+        let rv_i64 = rv.into_int_value();
+        let result = self.builder.build_call(fn_val, &[lv_i64.into(), rv_i64.into()], "concat")
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        let result_i64 = result.try_as_basic_value().left().ok_or_else(|| {
+            CompileError::Internal(format!("`{concat_fn}` returned void unexpectedly"))
+        })?;
+        Ok((result_i64, Kind::Vector(Box::new(elem_kind))))
+    }
+
+    fn compile_index(
+        &self,
+        base: &Expr,
+        index: &Expr,
+        env: &Env<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let (base_val, base_kind) = self.compile_expr(base, env)?;
+        let (idx_val, _idx_kind) = self.compile_expr(index, env)?;
+
+        let (get_fn, elem_kind) = match &base_kind {
+            Kind::Vector(ek) => {
+                let fn_name = match ek.as_ref() {
+                    Kind::Int  => "cantor_vec_get_i64",
+                    Kind::Bool => "cantor_vec_get_bool",
+                    other => return Err(CompileError::Internal(format!(
+                        "TODO: `xs[i]` not yet implemented for element kind {other:?}"
+                    ))),
+                };
+                (fn_name, ek.as_ref().clone())
+            }
+            other => return Err(CompileError::Internal(format!(
+                "`xs[i]` requires a vector (X*) base, got {other:?}"
+            ))),
+        };
+
+        let fn_val = self.module.get_function(get_fn).ok_or_else(|| {
+            CompileError::Internal(format!("runtime function `{get_fn}` not declared"))
+        })?;
+        let base_i64 = base_val.into_int_value();
+        let idx_i64  = idx_val.into_int_value();
+        let result = self.builder.build_call(fn_val, &[base_i64.into(), idx_i64.into()], "vec_get")
+            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        let result_val = result.try_as_basic_value().left().ok_or_else(|| {
+            CompileError::Internal(format!("`{get_fn}` returned void unexpectedly"))
+        })?;
+        Ok((result_val, elem_kind))
     }
 
     fn compile_call(

@@ -96,6 +96,21 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
+            Stmt::Let { name, constraint, value: _, .. }
+                if matches!(set_kind(constraint), ValKind::Vector(_)) =>
+            {
+                // Immutable runtime vector (X*): opaque integer (Arrow array pointer).
+                // Vector literals can't be represented in the QF sequence theory
+                // without knowing the exact element values, so we skip value encoding
+                // and return Unknown for the function's body check — the JIT handles
+                // correctness at runtime.
+                let fresh_name = format!("{}_{}", name.0, ssa_counter);
+                *ssa_counter += 1;
+                let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
+                immutable_names.insert(name.clone());
+                env.insert(name.clone(), fresh);
+            }
+
             Stmt::Let { name, constraint, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
@@ -132,6 +147,17 @@ pub(crate) fn encode_block<'tm>(
                 // Runtime set values (Set(Int), Set(Bool)) can't be encoded in
                 // QF_NIA. Represent the binding as an opaque integer (the heap
                 // pointer) and skip the value encoding and membership assertion.
+                let fresh_name = format!("{}_{}", name.0, ssa_counter);
+                *ssa_counter += 1;
+                let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
+                constraint_env.insert(name.clone(), constraint.clone());
+                env.insert(name.clone(), fresh);
+            }
+
+            Stmt::MutLet { name, constraint, value: _, .. }
+                if matches!(set_kind(constraint), ValKind::Vector(_)) =>
+            {
+                // Mutable runtime vector (X*): opaque integer (Arrow array pointer).
                 let fresh_name = format!("{}_{}", name.0, ssa_counter);
                 *ssa_counter += 1;
                 let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);

@@ -42,6 +42,9 @@ impl<'ctx> Compiler<'ctx> {
                 ("cantor_vec_len_bool",            runtime::cantor_vec_len_bool            as *const () as usize),
                 ("cantor_vec_get_bool",            runtime::cantor_vec_get_bool            as *const () as usize),
                 ("cantor_vec_push_bool",           runtime::cantor_vec_push_bool           as *const () as usize),
+                // Concatenation
+                ("cantor_vec_concat_i64",          runtime::cantor_vec_concat_i64          as *const () as usize),
+                ("cantor_vec_concat_bool",         runtime::cantor_vec_concat_bool         as *const () as usize),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))

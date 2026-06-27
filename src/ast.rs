@@ -115,8 +115,12 @@ pub enum ExprKind {
     },
     /// `(e0, e1, …)` — anonymous product value (tuple).
     Tuple(Vec<Expr>),
-    /// `expr.N` — positional projection of element N from a tuple.
+    /// `expr.N` — positional projection of element N from a tuple (N is a compile-time literal).
     Proj { base: Box<Expr>, index: usize },
+    /// `expr[index]` — runtime indexing into a vector (X* value).
+    /// Only valid when `base` has kind `Kind::Vector`; compile-time-literal indices are
+    /// always desugared to `Proj` at parse time so `index` is always a runtime value here.
+    Index { base: Box<Expr>, index: Box<Expr> },
     /// `X*` — Kleene star in set position: the set of all finite sequences of elements of X.
     /// Parsed as a postfix `*` when no expression follows, e.g. `Nat*` or `(Int - {0})*`.
     KleeneStar(Box<Expr>),
@@ -143,6 +147,8 @@ pub enum BinOp {
     Union,      // |  — `X !! Y` desugars to `X | (Fail * Y)` at parse time
     Intersect,  // &
     SymDiff,    // ^
+    // Vector operations
+    Concat,     // ++ — concatenate two vectors (X* ++ X* -> X*)
     // Logical (expect Bool operands)
     And,
     Or,
@@ -407,6 +413,7 @@ impl fmt::Display for ExprKind {
                 write!(f, ")")
             }
             Self::Proj { base, index } => write!(f, "{base}.{index}"),
+            Self::Index { base, index } => write!(f, "{base}[{index}]"),
             Self::KleeneStar(inner) => match &inner.kind {
                 // Simple set names don't need parens: Nat* not (Nat)*.
                 ExprKind::Var(_) => write!(f, "{inner}*"),
@@ -441,7 +448,7 @@ fn binop_prec(op: &BinOp) -> u8 {
         BinOp::Union                            => 4,
         BinOp::SymDiff                          => 5,
         BinOp::Intersect                        => 6,
-        BinOp::Add | BinOp::Sub                 => 7,
+        BinOp::Add | BinOp::Sub | BinOp::Concat => 7,
         BinOp::Mul | BinOp::Div                 => 8,
     }
 }
@@ -464,8 +471,9 @@ impl fmt::Display for BinOp {
             Self::Union      => "|",
             Self::Intersect  => "&",
             Self::SymDiff    => "^",
-            Self::And       => "and",
-            Self::Or        => "or",
+            Self::And        => "and",
+            Self::Or         => "or",
+            Self::Concat     => "++",
         })
     }
 }

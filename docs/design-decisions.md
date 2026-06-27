@@ -456,9 +456,34 @@ g(xs) = xs
 -- Length of a vector is a Nat (built-in `len`)
 h : Nat* -> Nat
 h(xs) = len(xs)
+
+-- Block-body binding: coerces the literal to a vector at the binding site
+block_coerce : -> Nat
+block_coerce() {
+    xs : Nat* = [10, 20, 30]
+    return len(xs)
+}
+
+-- Runtime indexing: xs[i] where i is a runtime value (Nat)
+get_second : Nat* -> Nat
+get_second(xs) {
+    i : Nat = 1
+    return xs[i]
+}
+
+-- Concatenation: xs ++ ys produces a new vector (O(n+m), purely functional)
+concat_len : -> Nat
+concat_len() {
+    xs : Nat* = [1, 2]
+    ys : Nat* = [3, 4]
+    zs : Nat* = xs ++ ys
+    return len(zs)        -- 4
+}
 ```
 
 **AST**: `ExprKind::KleeneStar(Box<Expr>)`.  The inner expression is the element set.
+Runtime indexing uses `ExprKind::Index { base, index }`.  Concatenation uses
+`BinOp::Concat` (parsed from `++`, same precedence as `+`).
 
 **Runtime kind**: `Kind::Vector(Box<Kind>)` — variable-length sequence.  Wire type: `i64`
 (pointer-as-i64) to a heap-allocated Apache Arrow array.
@@ -471,8 +496,12 @@ via `Box::into_raw` and carried across function calls as `i64` pointer values, m
 the compiler's uniform calling convention.
 
 *Construction — array literals*: An array literal `[1, 2, 3]` parses to
-`ExprKind::Tuple` and compiles to an LLVM struct for fixed-size tuple contexts (`Nat * 3`).
-When the function's declared range is `X*`, a coercion runs at the return boundary:
+`ExprKind::Tuple`.  Coercion to a vector happens at two sites:
+- **Function-return boundary**: when the declared range is `X*`, `coerce_vector_return`
+  calls `compile_tuple_as_vector` before the LLVM `ret`.
+- **Block-body binding site**: `xs : Nat* = [1, 2, 3]` in a block body is handled by
+  `coerce_to_vector_if_needed` in `compile_stmts`, which checks the constraint and
+  coerces the tuple to a vector before binding the name.
 
 ```
 -- Emitted LLVM (schematic) for make_vec() = [1, 2, 3] with range Nat*
@@ -492,15 +521,28 @@ register move with no copies.
 *`len(xs)` built-in*: dispatches to `cantor_vec_len_i64` or `cantor_vec_len_bool`
 depending on the element kind.
 
+*`xs[i]` runtime indexing*: `ExprKind::Index { base, index }` dispatches to
+`cantor_vec_get_i64` or `cantor_vec_get_bool`.  No bounds check is emitted (the SMT
+solver proves the index is in range where possible; otherwise the check is deferred
+to runtime via `assert`/`assume`).  Compile-time literal indices (non-negative integer
+literals) still desugar to `ExprKind::Proj` for tuple access.
+
+*`xs ++ ys` concatenation*: `BinOp::Concat` dispatches to `cantor_vec_concat_i64` or
+`cantor_vec_concat_bool`, both of which copy all elements into a new Arrow array (O(n+m)).
+The old arrays are unmodified (purely functional).  If one or both operands are array
+literals (parsed as `ExprKind::Tuple`), they are coerced to vectors first.
+
 *Functional push*: `cantor_vec_push_i64(vec, val) -> new_vec` creates a new Arrow array
 with the element appended (old array is preserved).  This is O(n) per call — acceptable
-for Cantor's functional style.  Cantor source code cannot yet call push directly; it
-will be exposed when append syntax is designed.
+for Cantor's functional style.  Cantor source code cannot yet call push directly; it is
+an internal runtime primitive used by the builder path.
 
-*TODO — deferred to next stage*:
-- Block-body `let xs : Nat* = [1, 2, 3]` (coercion at binding site, not just at return)
-- Runtime element access `xs[i]` with a non-literal index
-- Append / concatenation syntax (`++` or similar)
+*Block body and early `return`*: Functions with explicit `return` statements compile
+correctly.  The solver currently reports such functions as Unknown (the SMT block encoder
+does not yet support early `return` — it is aware of the limitation and will not produce
+false proofs).
+
+*TODO — deferred*:
 - Vectors of tuples `(Nat * Nat)*` and nested vectors
 
 **Solver support** (COMPLETE):

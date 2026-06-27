@@ -1,0 +1,38 @@
+-- Runtime tests for Kind::Vector (X*) — Apache Arrow Int64Array / BooleanArray.
+-- All of these use the `run` subcommand; the solver path is covered by vectors_kleene_demo.cantor.
+
+-- Build an Int* from an array literal.
+make_int_vec : -> Int*
+make_int_vec() = [1, 2, 3]
+
+-- Build a Nat* (subset of Int*) from a literal.
+make_nat_vec : -> Nat*
+make_nat_vec() = [10, 20, 30]
+
+-- Identity on Int*: pass-through a vector parameter.
+identity_int : Int* -> Int*
+identity_int(xs) = xs
+
+-- Identity on Nat*: used in the main() composition chain.
+identity_nat : Nat* -> Nat*
+identity_nat(xs) = xs
+
+-- len on a Nat* parameter.
+get_len : Nat* -> Nat
+get_len(xs) = len(xs)
+
+-- Build a Bool* from a literal.
+make_bool_vec : -> Bool*
+make_bool_vec() = [true, false, true]
+
+-- Identity on Bool*.
+identity_bool : Bool* -> Bool*
+identity_bool(bs) = bs
+
+-- len on a Bool*.
+bool_vec_len : Bool* -> Nat
+bool_vec_len(bs) = len(bs)
+
+-- Compose: Nat* identity then len — all steps stay within Nat*.
+main : -> Nat
+main() = get_len(identity_nat(make_nat_vec()))

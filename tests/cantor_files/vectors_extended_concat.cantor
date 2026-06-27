@@ -1,0 +1,12 @@
+-- Block-body coercion + ++ concatenation: main returns len([1,2] ++ [3,4]) = 4.
+
+concat_lit : -> Nat
+concat_lit() {
+    xs : Nat* = [1, 2]
+    ys : Nat* = [3, 4]
+    zs : Nat* = xs ++ ys
+    return len(zs)
+}
+
+main : -> Nat
+main() = concat_lit()

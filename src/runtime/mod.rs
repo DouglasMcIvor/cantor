@@ -254,3 +254,27 @@ pub extern "C" fn cantor_vec_push_bool(vec: i64, val: i64) -> i64 {
     builder.append_value(val != 0);
     Box::into_raw(Box::new(CantorVecBool { array: builder.finish() })) as i64
 }
+
+// ── Vector concatenation ──────────────────────────────────────────────────────
+
+/// Concatenate two Int* vectors into a new one.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_vec_concat_i64(a: i64, b: i64) -> i64 {
+    let va = unsafe { &*(a as *const CantorVecI64) };
+    let vb = unsafe { &*(b as *const CantorVecI64) };
+    let mut builder = Int64Builder::with_capacity(va.array.len() + vb.array.len());
+    for i in 0..va.array.len() { builder.append_value(va.array.value(i)); }
+    for i in 0..vb.array.len() { builder.append_value(vb.array.value(i)); }
+    Box::into_raw(Box::new(CantorVecI64 { array: builder.finish() })) as i64
+}
+
+/// Concatenate two Bool* vectors into a new one.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_vec_concat_bool(a: i64, b: i64) -> i64 {
+    let va = unsafe { &*(a as *const CantorVecBool) };
+    let vb = unsafe { &*(b as *const CantorVecBool) };
+    let mut builder = BooleanBuilder::with_capacity(va.array.len() + vb.array.len());
+    for i in 0..va.array.len() { builder.append_value(va.array.value(i)); }
+    for i in 0..vb.array.len() { builder.append_value(vb.array.value(i)); }
+    Box::into_raw(Box::new(CantorVecBool { array: builder.finish() })) as i64
+}

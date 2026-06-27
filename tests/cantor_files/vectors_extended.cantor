@@ -1,0 +1,38 @@
+-- Extended vector tests: block-body coercion, xs[i] indexing, and ++ concatenation.
+-- All functions use the check subcommand; run-time behaviour is in the *_concat,
+-- *_index, and *_bool_concat companion fixtures.
+
+-- Block-body coercion: `xs : Nat* = [1, 2, 3]` in a block body.
+block_coerce_len : -> Nat
+block_coerce_len() {
+    xs : Nat* = [10, 20, 30]
+    return len(xs)
+}
+
+-- xs[i] runtime indexing with a runtime index.
+get_second : Nat* -> Nat
+get_second(xs) {
+    i : Nat = 1
+    return xs[i]
+}
+
+-- ++ concatenation of two block-body vectors.
+concat_lit : -> Nat
+concat_lit() {
+    xs : Nat* = [1, 2]
+    ys : Nat* = [3, 4]
+    zs : Nat* = xs ++ ys
+    return len(zs)
+}
+
+-- ++ concatenation of Bool* vectors.
+bool_concat_len : -> Nat
+bool_concat_len() {
+    bs : Bool* = [true, false]
+    cs : Bool* = [false, true, true]
+    ds : Bool* = bs ++ cs
+    return len(ds)
+}
+
+main : -> Nat
+main() = concat_lit()

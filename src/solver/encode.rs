@@ -61,6 +61,9 @@ pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(Expr, &'
         (BinOp::And | BinOp::Or, _) => vec![(named_set("Bool"), "operand of logical operator must be Bool")],
         // ── Set operations ────────────────────────────────────────────────────
         (BinOp::Union | BinOp::Intersect | BinOp::SymDiff, _) => vec![],
+        // ── Vector operations ─────────────────────────────────────────────────
+        // `++` operands must be vectors; their element sorts are checked by CVC5.
+        (BinOp::Concat, _) => vec![],
         // ── Must never reach here ─────────────────────────────────────────────
         (BinOp::In | BinOp::NotIn, _) => {
             panic!("binary_builtin_domain called with In/NotIn — handled before the domain-check loop")
@@ -230,6 +233,15 @@ pub(crate) fn encode_expr<'tm>(
             encode_proj(base, *index, env, name_defs, fn_env, tm, solver,
                         call_counter, builtin_obligs, path_cond.clone(), distinct_preds),
 
+        ExprKind::Index { base, index } => {
+            let base_term = enc!(base)?;
+            let idx_term  = enc!(index)?;
+            if !base_term.sort().is_sequence() {
+                return Err("runtime index `xs[i]` is only valid on vector (X*) values".into());
+            }
+            Ok(tm.mk_term(Kind::SeqNth, &[base_term, idx_term]))
+        }
+
         ExprKind::SetLit(_) | ExprKind::Comprehension { .. } | ExprKind::KleeneStar(_) =>
             Err("set expressions cannot appear in value position \
                  (only in domain/range/`in`/`for` positions)".into()),
@@ -280,6 +292,46 @@ fn encode_unop<'tm>(
             Ok(tm.mk_term(Kind::Not, &[t]))
         }
     }
+}
+
+/// Coerce a cvc5 term to sequence sort for use with `SeqConcat`.
+///
+/// If `term` is already sequence-sorted, return it unchanged.
+/// If `term` is tuple-sorted (from an array literal like `[1, 2, 3]`),
+/// convert it by wrapping each element in `SeqUnit` and concatenating.
+/// Otherwise return an error: `++` only works on vector (X*) values.
+fn coerce_to_sequence<'tm>(
+    tm: &'tm TermManager,
+    term: Term<'tm>,
+    original_expr: &Expr,
+) -> Result<Term<'tm>, String> {
+    if term.sort().is_sequence() {
+        return Ok(term);
+    }
+    if term.sort().is_tuple() {
+        let dt = term.sort().datatype();
+        let n_elems = dt.constructor(0).num_selectors();
+        if n_elems == 0 {
+            // Empty tuple [] → empty sequence.  Element sort must be inferred from
+            // context; we use integer as the fallback since `[]` only makes sense
+            // for a known element-sort vector — the solver will constrain further.
+            return Ok(tm.mk_empty_sequence(tm.integer_sort()));
+        }
+        // Non-empty: fold SeqUnit(elem_i) with SeqConcat.
+        let ctor = dt.constructor(0);
+        let first_sel = ctor.selector(0);
+        let first_elem = tm.mk_term(Kind::ApplySelector, &[first_sel.term(), term.clone()]);
+        let mut seq = tm.mk_term(Kind::SeqUnit, &[first_elem]);
+        for i in 1..n_elems {
+            let sel = ctor.selector(i);
+            let elem = tm.mk_term(Kind::ApplySelector, &[sel.term(), term.clone()]);
+            let unit = tm.mk_term(Kind::SeqUnit, &[elem]);
+            seq = tm.mk_term(Kind::SeqConcat, &[seq, unit]);
+        }
+        return Ok(seq);
+    }
+    let _ = original_expr;
+    Err("`++` requires vector (X*) operands; operand is not a sequence or array literal".into())
 }
 
 fn encode_binop<'tm>(
@@ -360,6 +412,14 @@ fn encode_binop<'tm>(
         }
     }
 
+    // `xs ++ ys` — vector concatenation.  Both operands must be sequence-sorted.
+    // If either is a tuple (from an array literal), coerce it to a sequence first.
+    if *op == BinOp::Concat {
+        let l_seq = coerce_to_sequence(tm, l.clone(), lhs)?;
+        let r_seq = coerce_to_sequence(tm, r.clone(), rhs)?;
+        return Ok(tm.mk_term(Kind::SeqConcat, &[l_seq, r_seq]));
+    }
+
     let kind = match op {
         BinOp::Add => Kind::Add,
         BinOp::Sub => Kind::Sub,
@@ -374,6 +434,7 @@ fn encode_binop<'tm>(
         BinOp::And => Kind::And,
         BinOp::Or  => Kind::Or,
         BinOp::In | BinOp::NotIn => unreachable!("handled above"),
+        BinOp::Concat => unreachable!("handled above"),
         BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
             return Err(format!("set operation `{op:?}` not yet encodable"))
         }

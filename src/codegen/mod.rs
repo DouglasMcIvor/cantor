@@ -589,22 +589,24 @@ impl<'ctx> Compiler<'ctx> {
 
         let return_val = self.compile_stmts(stmts, &mut env, &HashMap::new())?;
 
-        let ret_val = match return_val {
+        match return_val {
             Some((val, kind)) => {
                 let (val, kind) = self.coerce_vector_return(val, kind, function)?;
                 let (val, kind) = self.coerce_tagged_union_return(val, kind, function)?;
-                self.wrap_return_value(val, &kind)?
+                let ret_val = self.wrap_return_value(val, &kind)?;
+                self.builder
+                    .build_return(Some(&ret_val))
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
             }
             None => {
-                return Err(CompileError::Internal(
-                    "block body has no return expression".into(),
-                ))
+                // An explicit `return` statement already emitted the LLVM ret and
+                // positioned the builder on a dead block.  LLVM requires every basic
+                // block to have a terminator, so emit `unreachable`.
+                self.builder
+                    .build_unreachable()
+                    .map_err(|e| CompileError::Internal(e.to_string()))?;
             }
-        };
-
-        self.builder
-            .build_return(Some(&ret_val))
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+        }
 
         Ok(function)
     }
@@ -670,6 +672,10 @@ impl<'ctx> Compiler<'ctx> {
         self.module.add_function("cantor_vec_len_bool",            i64t.fn_type(i,    false), None);
         self.module.add_function("cantor_vec_get_bool",            i64t.fn_type(ii,   false), None);
         self.module.add_function("cantor_vec_push_bool",           i64t.fn_type(ii,   false), None);
+
+        // Concatenation — both take two i64 pointers and return a new i64 pointer.
+        self.module.add_function("cantor_vec_concat_i64",          i64t.fn_type(ii,   false), None);
+        self.module.add_function("cantor_vec_concat_bool",         i64t.fn_type(ii,   false), None);
     }
 
     pub fn print_ir(&self) {
