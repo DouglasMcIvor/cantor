@@ -109,10 +109,7 @@ Algorithm:
       x: Meter
     * y: Meter
   )
-  mut p : Point = (
-      x = 3m
-    * y = 4m
-  )
+  mut p : Point = (x = 3m, y = 4m)
   ```
   Tentative syntax for unions:
   ```
@@ -139,13 +136,7 @@ Algorithm:
   >
   > You don't need to mention category theory anywhere in the language documentation, of course, but it's a reassuring sign. When the syntax naturally lines up with deep mathematical structures, it usually means you've found something that will remain coherent as the language grows. In Cantor, . naturally denotes projection (p.x), and Constructor(...) naturally denotes injection (Result.Ok(3m)). That symmetry feels remarkably elegant.
 - mutable range inference
-- pattern matching with `match x { a => ... , b => ...}` or maybe
-  ```
-  speak :
-    Dog   -> String
-  | Cat   -> String
-  | Table -> Error
-  ```
+- pattern matching with `match x { a => ... , b => ...}`?
 - higher order functions: X -> Y is already the set of functions from X -> Y and we can use Haskell precedence rules for X -> Y -> Z.
 - partial application via `_` as a placeholder `add(_, 1)` or `sub(1, _)` or `f(x, _, y, _)`
 - infix operators as named functions `(+)(1, 2)`, combines nicely `_` with as a placeholder 
@@ -156,6 +147,22 @@ Algorithm:
   we can also allow `X * Y / X` to desugar to `X * Y / (t -> t.1)` etc as long as we can determine the projection structurally.
   "If the compiler can prove L = X * R for some X, then L / R is shorthand for quotienting by the canonical projection onto X."
 - struct member functions?
+  ```
+  Point = distinct Nat * Nat
+
+  Point.length : Point -> Float32
+  Point.length(x, y) = sqrt(x*x + y*y)
+
+  p : Point
+  p.length() -- same as Point.length(p), namespace lookup driven by known or inferred range of p
+  ```
+  errors would be reported like
+  ```
+  v is not in the domain of ?.length
+  domain Point | Road for ?.length constructed from:
+    Point.length : Point -> Float32
+    Road.length : Road -> Float32
+  ```
 - lambdas and closures
   - lambda syntax is just `x -> x + 1` with automatic domain and range inference
   - domain constraints are just `(x : Int) -> x + 1`
