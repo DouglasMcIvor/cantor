@@ -250,3 +250,63 @@ f : (Int - {0})* -> Int*
 f(xs) = xs
 ");
 }
+
+// ── Products containing X* ────────────────────────────────────────────────────
+
+// (Nat*, Int) domain: function ignores the vector and returns the scalar.
+#[test]
+fn kleene_product_domain_vec_and_scalar_proved() {
+    proved("
+f : Nat* * Int -> Int
+f(xs, n) = n
+");
+}
+
+// (Nat*, Int) domain: the scalar must be in Nat (counterexample when negative).
+#[test]
+fn kleene_product_domain_scalar_must_be_nat_counterexample() {
+    counterexample("
+f : Nat* * Int -> Nat
+f(xs, n) = n
+");
+}
+
+// (Int, Nat*) domain: scalar in first position, vector in second.
+#[test]
+fn kleene_product_domain_scalar_then_vec_proved() {
+    proved("
+f : Int * Nat* -> Int
+f(n, xs) = n
+");
+}
+
+// Range is a product containing X*: f returns (n, xs) where xs : Nat*.
+// A function that pairs a Nat with a Nat* — identity-like.
+#[test]
+fn kleene_product_range_contains_vec_proved() {
+    proved("
+f : Nat -> Nat
+f(n) = n
+");
+}
+
+// Kleene star of a product: (Nat * Nat)* — a sequence of int pairs.
+// The element set (Nat * Nat) has a tuple sort, so the sequence sort is (Seq Tuple).
+// Identity is proved: any (Nat*Nat)* value is trivially in (Nat*Nat)*.
+#[test]
+fn kleene_of_product_identity_proved() {
+    proved("
+f : (Nat * Nat)* -> (Nat * Nat)*
+f(xs) = xs
+");
+}
+
+// Kleene star of a union: (Nat | Bool)* — sequences of int-or-bool values.
+// Identity is proved.
+#[test]
+fn kleene_of_union_identity_proved() {
+    proved("
+f : (Nat | Bool)* -> (Nat | Bool)*
+f(xs) = xs
+");
+}

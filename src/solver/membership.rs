@@ -477,8 +477,9 @@ pub(crate) fn membership_constraint<'tm>(
         }
 
         // `t ∈ A * B`  ↔  `proj0(t) ∈ A ∧ proj1(t) ∈ B`
-        // `t` is always a mk_tuple(…) term; use child(i+1) to extract
-        // element i (child 0 is the APPLY_CONSTRUCTOR constructor).
+        // Use ApplySelector rather than child(i+1) so this works for any
+        // tuple-sorted term — including SeqNth results (which are NOT
+        // APPLY_CONSTRUCTOR terms; child() would give the wrong children).
         // A non-tuple term (integer, boolean) can never be a product-set member.
         ExprKind::BinOp { op: BinOp::Mul, .. } => {
             if !t.sort().is_tuple() {
@@ -486,9 +487,12 @@ pub(crate) fn membership_constraint<'tm>(
             }
             use super::sort::flatten_product;
             let parts = flatten_product(set_expr);
+            let dt = t.sort().datatype();
+            let ctor = dt.constructor(0); // tuples have exactly one constructor
             let mut constraints: Vec<Term<'_>> = Vec::new();
-            for (i, part) in parts.iter().enumerate() {
-                let proj = t.child(i + 1);
+            for (j, part) in parts.iter().enumerate() {
+                let sel = ctor.selector(j);
+                let proj = tm.mk_term(Kind::ApplySelector, &[sel.term(), t.clone()]);
                 match membership_constraint(tm, proj, part, name_defs, distinct_preds) {
                     Membership::Unsupported => return Membership::Unsupported,
                     Membership::Unconstrained => {}
