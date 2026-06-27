@@ -637,25 +637,64 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
     }
 }
 
+/// Constructor name for a union arm, with distinct-set awareness.
+///
+/// Distinct-set arms get `"ck_D_{Name}"` so they never collide with `"ck_Int"` from
+/// scalar arms — even though both would produce `ValKind::Int` via `val_set_kind`.
+/// All other arms delegate to `arm_ctor_name`.
+///
+/// This must be used wherever `arm_ctor_name` was previously used for individual arms
+/// in the union-datatype pipeline (creation in `build_union_datatype_sort` and lookup
+/// in `membership_constraint_for_dt`) so the names always match.
+pub(crate) fn arm_ctor_name_for_arm<'tm>(
+    arm_expr: &Expr,
+    distinct_preds: &DistinctPreds<'tm>,
+) -> String {
+    if let ExprKind::Var(sym) = &arm_expr.kind {
+        if distinct_preds.contains_key(sym) {
+            return format!("ck_D_{}", sym.0);
+        }
+    }
+    arm_ctor_name(&val_set_kind(arm_expr))
+}
+
 /// Build a CVC5 algebraic datatype sort for a cross-kind union.
 ///
-/// Each arm gets one constructor (named via `arm_ctor_name`) with one `integer_sort`
-/// selector per i64 leaf.  Bool arms are stored as 0/1 integers, matching the LLVM
-/// codegen.  Arms are listed in the order determined by `flatten_any_union`.
-fn build_union_datatype_sort<'tm>(tm: &'tm TermManager, arms: &[&Expr]) -> Sort<'tm> {
+/// Each arm gets one constructor:
+/// - Distinct-set arms: named `"ck_D_{Name}"` with one selector of the set's
+///   uninterpreted sort.
+/// - All other arms: named via `arm_ctor_name` with one `integer_sort` selector
+///   per i64 leaf of the arm's `Kind`.
+///
+/// Arms are listed in the order determined by `flatten_any_union`.
+fn build_union_datatype_sort<'tm>(
+    tm: &'tm TermManager,
+    arms: &[&Expr],
+    distinct_preds: &DistinctPreds<'tm>,
+) -> Sort<'tm> {
     let int_sort = tm.integer_sort();
-    let arm_kinds: Vec<ValKind> = arms.iter().map(|e| val_set_kind(e)).collect();
+    // Collect (ctor_name, field_sorts) per arm.
+    let arm_infos: Vec<(String, Vec<Sort<'_>>)> = arms.iter().map(|arm_expr| {
+        if let ExprKind::Var(sym) = &arm_expr.kind {
+            if let Some(info) = distinct_preds.get(sym) {
+                return (format!("ck_D_{}", sym.0), vec![info.sort.clone()]);
+            }
+        }
+        let kind = val_set_kind(arm_expr);
+        let ctor_name = arm_ctor_name(&kind);
+        let fields = (0..leaf_count(&kind)).map(|_| int_sort.clone()).collect();
+        (ctor_name, fields)
+    }).collect();
+
     let dt_name = format!(
         "CKU_{}",
-        arm_kinds.iter().map(arm_ctor_name).collect::<Vec<_>>().join("_")
+        arm_infos.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join("_")
     );
     let mut dt_decl = tm.mk_dt_decl(&dt_name, false);
-    for kind in &arm_kinds {
-        let n_leaves = leaf_count(kind);
-        let ctor_name = arm_ctor_name(kind);
-        let mut ctor: DatatypeConstructorDecl<'_> = tm.mk_dt_cons_decl(&ctor_name);
-        for j in 0..n_leaves {
-            ctor.add_selector(&format!("f{j}"), int_sort.clone());
+    for (ctor_name, field_sorts) in &arm_infos {
+        let mut ctor: DatatypeConstructorDecl<'_> = tm.mk_dt_cons_decl(ctor_name);
+        for (j, sort) in field_sorts.iter().enumerate() {
+            ctor.add_selector(&format!("f{j}"), sort.clone());
         }
         dt_decl.add_constructor(&ctor);
     }
@@ -801,20 +840,16 @@ pub(crate) fn set_sort<'tm>(
         ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
             let ls = set_sort(tm, lhs, distinct_preds)?;
             let rs = set_sort(tm, rhs, distinct_preds)?;
-            if ls.is_tuple() || rs.is_tuple() || ls.is_dt() || rs.is_dt() {
-                // Cross-kind (tuple or existing DT arm): build a datatype with one
-                // constructor per arm.
-                let arms = flatten_any_union(set_expr);
-                return Some(build_union_datatype_sort(tm, &arms));
-            }
-            // TODO: distinct-sort arms in unions need a CVC5 datatype whose selectors
-            // have the correct distinct/integer sort per arm — `build_union_datatype_sort`
-            // currently hardcodes `integer_sort` for all selectors, producing duplicate
-            // `ck_Int` constructors and wrong semantics.  Until that is fixed, return
-            // None so callers fall back to Unknown rather than a false proof.
             let is_distinct_sort = |s: &Sort<'_>| distinct_preds.values().any(|i| &i.sort == s);
-            if is_distinct_sort(&ls) || is_distinct_sort(&rs) {
-                return None;
+            if ls.is_tuple() || rs.is_tuple() || ls.is_dt() || rs.is_dt()
+                || is_distinct_sort(&ls) || is_distinct_sort(&rs)
+            {
+                // Cross-kind (tuple, existing DT, or distinct-sort arm): build a
+                // CVC5 algebraic datatype with one constructor per arm.
+                // Distinct-sort arms get a selector of their uninterpreted sort;
+                // all others get integer_sort selectors (one per i64 leaf).
+                let arms = flatten_any_union(set_expr);
+                return Some(build_union_datatype_sort(tm, &arms, distinct_preds));
             }
             // Both arms are plain scalar (Int-family); integer sort covers both.
             tm.integer_sort()

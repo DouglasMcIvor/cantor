@@ -5,10 +5,9 @@ use std::collections::HashMap;
 use cvc5::{Kind, Sort, Term, TermManager};
 
 use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp};
-use crate::kind::{set_kind as val_set_kind};
 use crate::span::Symbol;
 
-use super::encode::{arm_ctor_name, flatten_any_union, flatten_product};
+use super::encode::{arm_ctor_name_for_arm, flatten_any_union, flatten_product};
 use super::NameDefs;
 
 /// Per-distinct-set CVC5 artefacts created when `D = distinct B` is declared.
@@ -90,8 +89,7 @@ fn membership_constraint_for_dt<'tm>(
 
     let mut disjuncts: Vec<Term<'_>> = Vec::new();
     for arm_expr in arm_exprs {
-        let arm_kind = val_set_kind(arm_expr);
-        let ctor_name = arm_ctor_name(&arm_kind);
+        let ctor_name = arm_ctor_name_for_arm(arm_expr, distinct_preds);
 
         // Find the constructor by name — if not present, this arm can't match.
         let ctor = (0..dt.num_constructors())
