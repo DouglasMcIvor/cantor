@@ -1,3 +1,5 @@
+mod repl;
+
 use std::process;
 
 use inkwell::context::Context;
@@ -17,10 +19,15 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     let (do_run, path) = match args.len() {
+        1 => {
+            repl::run();
+            return;
+        }
         2 if args[1] != "run" => (false, args[1].as_str()),
         3 if args[1] == "run" => (true, args[2].as_str()),
         _ => {
-            eprintln!("usage: cantor <file.cantor>");
+            eprintln!("usage: cantor");
+            eprintln!("       cantor <file.cantor>");
             eprintln!("       cantor run <file.cantor>");
             process::exit(2);
         }

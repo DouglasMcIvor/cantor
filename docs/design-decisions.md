@@ -1082,7 +1082,35 @@ domain checker rejects this as a domain violation — there is no implicit
 Future diagnostic (not v0): detect the chained-comparison pattern and
 suggest the `and` form explicitly.
 
-## 14. Prototype approach
+## 14. REPL (DECIDED)
+
+Running `cantor` with no arguments starts an interactive REPL.
+
+- **Prompt**: `ℵ> ` (primary), `   ` (continuation for multi-line input)
+- **Multi-line**: the REPL detects incomplete input (EOF parse error) and
+  continues reading. A signature line (`foo : Int -> Int`) followed by the
+  implementation (`foo(x) = x + 1`) is entered naturally over two lines.
+- **Definitions**: any valid top-level item (function with signatures, name
+  constant, set alias) is added to the session environment and verified
+  immediately. The verification result (proved / counterexample / unknown)
+  is shown for every annotated signature. Set aliases with no constraints
+  are confirmed with `defined`.
+- **Redefinition**: re-entering a name silently replaces the previous
+  definition (GHCi style). The verification report covers only the new item.
+- **Expression evaluation**: bare expressions are evaluated and the result
+  printed. Only Int-returning expressions are supported for now; Bool
+  results are shown as 0/1, and tuple-returning expressions will produce
+  an error from LLVM verification.
+  TODO: infer result kind from the expression for correct Bool/Tuple display.
+- **Commands**: `:help`/`:h`, `:defs`, `:reset`, `:quit`/`:q`. Ctrl-D exits.
+- **State**: the REPL re-runs SMT checking over all accumulated items each
+  time a new definition is added. Simple and correct; optimise later if needed.
+- **LLVM**: a fresh LLVM Context and JIT engine are created for each
+  expression evaluation. Module IR is validated before JIT compilation so
+  that broken codegen paths produce a clean error rather than undefined
+  behaviour.
+
+## 15. Prototype approach
 
 - Build via a **unit-test suite for the compiler** rather than a polished
   first syntax — syntax is expected to be reworked multiple times before

@@ -34,6 +34,10 @@ impl<'ctx> Compiler<'ctx> {
                 .collect()
         }; // borrow of self.module ends here
 
+        self.module
+            .verify()
+            .map_err(|e| e.to_string())?;
+
         let ee = self.module
             .create_jit_execution_engine(OptimizationLevel::None)
             .map_err(|e| e.to_string())?;

@@ -349,10 +349,6 @@ impl<'ctx> Compiler<'ctx> {
             .build_return(Some(&else_val))
             .map_err(|e| CompileError::Internal(e.to_string()))?;
 
-        // Position on a dead block so inkwell doesn't need a terminator after the return.
-        let dead = self.context.append_basic_block(function, "assert_else_dead");
-        self.builder.position_at_end(dead);
-
         // ── pass branch: normal continuation ──────────────────────────────────
         self.builder.position_at_end(pass_bb);
         Ok(())
