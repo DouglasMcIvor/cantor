@@ -7,7 +7,7 @@ use cvc5::{Kind, Sort, Term, TermManager};
 use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp};
 use crate::span::Symbol;
 
-use super::encode::{arm_ctor_name_for_arm, flatten_any_union, flatten_product};
+use super::sort::{arm_ctor_name_for_arm, flatten_any_union, flatten_product};
 use super::NameDefs;
 
 /// Per-distinct-set CVC5 artefacts created when `D = distinct B` is declared.
@@ -458,7 +458,7 @@ pub(crate) fn membership_constraint<'tm>(
             if !t.sort().is_tuple() {
                 return Membership::Constrained(tm.mk_boolean(false));
             }
-            use super::encode::flatten_product;
+            use super::sort::flatten_product;
             let parts = flatten_product(set_expr);
             let mut constraints: Vec<Term<'_>> = Vec::new();
             for (i, part) in parts.iter().enumerate() {

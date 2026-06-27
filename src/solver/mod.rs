@@ -22,6 +22,7 @@ mod blocks;
 mod encode;
 mod loops;
 mod membership;
+mod sort;
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,7 +35,8 @@ use crate::{
 
 use crate::kind::{Kind as ValKind, param_set_exprs, set_kind};
 
-use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, set_sort, set_sort_for_range, mk_decomposed_tuple};
+use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, mk_decomposed_tuple};
+use self::sort::{set_sort, set_sort_for_range};
 use self::blocks::{encode_block, body_has_unconstrained_loop_var};
 use self::membership::{DistinctInfo, DistinctPreds, Membership, membership_constraint};
 
