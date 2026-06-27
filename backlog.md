@@ -15,7 +15,7 @@ You probably don't want to read this unless you're me.
   - float (Float32 and Float64 as distinct sets, FiniteFloat32 and explicit inf zero and NaN values)
   - char (unicode)
   - byte
-- more operators: modulo (see below for quot and rem support under Rational - maybe we want true wrapping quotient sets like Z/5Z), bitwise ops on bytes
+- more operators: modulo (see below for quot and rem support under Rational), bitwise ops on bytes
 - Rational support, including making / for Int return Rational and adding quot and rem to keep Int inside Int
 - operator overloading for things like List(Byte)?
   - custom operator overloading syntax like with haskell? I don't care for inventing new ops but supporting existing ones might be important
@@ -90,8 +90,14 @@ Algorithm:
 - write-only side effects via `emit`
 - compiled binaries
 - linker integration
-- enums. like distinct these create new distinct values. Sugar for distinct Nat with named
-values?
+- enums. like distinct these create new distinct values. Sugar for distinct Nat with named values?
+  ```
+  enum {a, b, c} -- no value provided, auto derive from Nat
+  enum {a, b, c = 5}
+  enum Nat {a, b, c} -- explicit auto derive from Nat
+  enum String {red, green, blue, bloo = "I am bad at spelling"} -- auto derive "red" from string
+  Foo = distinct {one = 1, two = 2, three = 3} -- named constants Foo.one etc for set literals
+  ```
 - literal suffix support for e.g. 3m for 3 meters
 - structs/"named product sets" and same for unions. product sets are either fully not named or fully named.
   Tentative syntax for products:
@@ -101,11 +107,11 @@ values?
 
   Point = distinct (
       x: Meter
-      y: Meter
+    * y: Meter
   )
   mut p : Point = (
       x = 3m
-      y = 4m
+    * y = 4m
   )
   ```
   Tentative syntax for unions:
@@ -115,11 +121,11 @@ values?
   mut m2 : Measurement = 4l
 
   Measurement = distinct (
-      Length: Meter
-    | Volume: Liter
+      length: Meter
+    | volume: Liter
   )
-  mut m1 : Measurement = Measurement.Length(3m) -- requires namespaces to exist first
-  mut m2 = Measurement.Volume(4l) -- requires mutable range inference to exist first
+  mut m1 : Measurement = Measurement.length(3m) -- requires namespaces to exist first
+  mut m2 = Measurement.volume(4l) -- requires mutable range inference to exist first
   ```
   ChatGPT likes it:
   > For named products, field names feel like named projection functions. p.x is shorthand for applying the projection corresponding to the x component.
@@ -146,7 +152,9 @@ values?
 - once we have higher order functions we can add 'Litre = distinct Float32 deriving Ordered + Arithmetic + Printable' 
   by letting the compiler apply the litre isomorphism to any relevant slot in the domain and its inverse if Float32 is in the range
 - then we could add quotient sets! IntMod5 = Int / (x, y -> (x - y) rem 5 == 0) deriving Arithmetic gives us a ring!
-- actually needs to be Int / (x -> x rem 5) so the compiler knows how to produce a canonical representation 
+  but needs to be Int / (x -> x rem 5) so the compiler knows how to produce a canonical representation
+  we can also allow `X * Y / X` to desugar to `X * Y / (t -> t.1)` etc as long as we can determine the projection structurally.
+  "If the compiler can prove L = X * R for some X, then L / R is shorthand for quotienting by the canonical projection onto X."
 - struct member functions?
 - lambdas and closures
   - lambda syntax is just `x -> x + 1` with automatic domain and range inference
