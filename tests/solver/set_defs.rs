@@ -109,7 +109,7 @@ bad(x) = litre(x)
 ");
 }
 
-// ── Gap: built-in operator domain checks ─────────────────────────────────────
+// ── Built-in operator domain checks ──────────────────────────────────────────
 
 #[test]
 fn distinct_set_arithmetic_operand_domain() {

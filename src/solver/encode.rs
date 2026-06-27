@@ -7,11 +7,9 @@ use cvc5::{DatatypeConstructorDecl, Kind, Solver, Sort, Term, TermManager};
 use crate::{
     ast::{BinOp, Expr, ExprKind, FunctionDef, FunctionSig, UnOp},
     kind::{Kind as ValKind, leaf_count, set_kind as val_set_kind},
-    span::Symbol,
+    span::{Span, Symbol},
 };
 
-pub(crate) use super::builtins::BuiltinObligation;
-use super::builtins::{binary_builtin_domain, unary_builtin_domain};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 use super::NameDefs;
 
@@ -19,6 +17,70 @@ use super::NameDefs;
 
 /// Map from variable name to its current SSA cvc5 term.
 pub(crate) type Env<'tm> = HashMap<Symbol, Term<'tm>>;
+
+// ── Built-in operator domain table ───────────────────────────────────────────
+
+/// A proof obligation produced when encoding a built-in operator argument.
+///
+/// The caller asserts `path_cond → obligation` and, on a SAT result,
+/// inspects the model to report `violated_reason` in the counterexample.
+pub(crate) struct BuiltinObligation<'tm> {
+    pub(crate) path_cond: Term<'tm>,
+    pub(crate) obligation: Term<'tm>,
+    pub(crate) violated_reason: String,
+}
+
+/// Domain constraints for argument `arg_idx` (0-based) of a binary built-in.
+///
+/// Returns a list of `(set, reason)` pairs; each pair generates a proof obligation
+/// that the argument belongs to `set`.  An empty list means unconstrained.
+/// Multiple constraints are checked independently (e.g. the `/` divisor needs
+/// both `Int` and `NonZeroInt`).
+///
+/// `In`/`NotIn` are handled by early-return paths before this is called —
+/// passing either here is a programming error and will panic.
+pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(Expr, &'static str)> {
+    match (op, arg_idx) {
+        // ── Arithmetic ────────────────────────────────────────────────────────
+        // Div arg 1: divisor must be a plain Int AND non-zero.
+        (BinOp::Div, 1) => vec![
+            (named_set("Int"),        "divisor must be Int, not a member of a distinct set"),
+            (named_set("NonZeroInt"), "division by zero"),
+        ],
+        // All arithmetic args must be plain Int (not Bool, not a distinct set).
+        (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, _) => vec![
+            (named_set("Int"), "operand must be Int, not a member of a distinct set"),
+        ],
+        // ── Comparisons ───────────────────────────────────────────────────────
+        (BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, _) => vec![],
+        // ── Logical ───────────────────────────────────────────────────────────
+        // TODO: constrain both args to Bool once Bool domain checks are wired up.
+        (BinOp::And | BinOp::Or, _) => vec![],
+        // ── Set operations ────────────────────────────────────────────────────
+        (BinOp::Union | BinOp::Intersect | BinOp::SymDiff, _) => vec![],
+        // ── Must never reach here ─────────────────────────────────────────────
+        (BinOp::In | BinOp::NotIn, _) => {
+            panic!("binary_builtin_domain called with In/NotIn — handled before the domain-check loop")
+        }
+    }
+}
+
+/// Domain constraints for the operand of a unary built-in.
+///
+/// Returns a list of `(set, reason)` pairs; empty means unconstrained.
+pub(crate) fn unary_builtin_domain(op: &UnOp) -> Vec<(Expr, &'static str)> {
+    match op {
+        // Negation is defined on Int only — distinct sets cannot be negated.
+        UnOp::Neg => vec![(named_set("Int"), "operand of negation must be Int, not a member of a distinct set")],
+        // TODO: constrain to Bool once Bool domain checks are wired up.
+        UnOp::Not => vec![],
+    }
+}
+
+/// Build a `Var` expression that refers to a named built-in set.
+pub(crate) fn named_set(name: &'static str) -> Expr {
+    Expr::new(ExprKind::Var(Symbol::new(name)), Span::dummy())
+}
 
 // ── Expression encoder ────────────────────────────────────────────────────────
 
@@ -57,15 +119,7 @@ pub(crate) fn encode_expr<'tm>(
     }
 
     let term = match &expr.kind {
-        ExprKind::IntLit(n) => {
-            let t = tm.mk_integer(*n);
-            // An integer literal is never a member of any distinct set.
-            for pred in distinct_preds.values() {
-                let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), t.clone()]);
-                solver.assert_formula(tm.mk_term(Kind::Not, &[is_d]));
-            }
-            Ok(t)
-        }
+        ExprKind::IntLit(n) => Ok(tm.mk_integer(*n)),
         ExprKind::BoolLit(b) => Ok(tm.mk_boolean(*b)),
 
         ExprKind::Var(sym) => {
@@ -92,18 +146,15 @@ pub(crate) fn encode_expr<'tm>(
                     });
                 }
             }
-            let result = match op {
-                UnOp::Neg => tm.mk_term(Kind::Neg, &[t]),
-                UnOp::Not => tm.mk_term(Kind::Not, &[t]),
-            };
-            // The result of a unary arithmetic op is a plain integer, never in a distinct set.
-            if result.sort().is_integer() {
-                for pred in distinct_preds.values() {
-                    let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), result.clone()]);
-                    solver.assert_formula(tm.mk_term(Kind::Not, &[is_d]));
+            match op {
+                UnOp::Neg => {
+                    // Guard: wrong-sort operand (e.g. distinct-sort) — domain check
+                    // pushed Constrained(false); return dummy to avoid CVC5 sort panic.
+                    if !t.sort().is_integer() { return Ok(tm.mk_integer(0)); }
+                    Ok(tm.mk_term(Kind::Neg, &[t]))
                 }
+                UnOp::Not => Ok(tm.mk_term(Kind::Not, &[t])),
             }
-            Ok(result)
         }
 
         ExprKind::BinOp { op, lhs, rhs } => {
@@ -180,20 +231,17 @@ pub(crate) fn encode_expr<'tm>(
                     return Err(format!("set operation `{op:?}` not yet encodable"))
                 }
             };
-            let result = tm.mk_term(kind, &[l, r]);
-            // Arithmetic results are plain integers, never members of a distinct set.
-            // This fact lets the solver prove `result ∈ Int` without a spurious SAT.
-            // TODO: extend to user-defined function calls whose range is a plain set
-            //       (currently their results have no ¬is_D assertion, so a range of
-            //       `Int` on such a call may give a false counterexample if distinct
-            //       sets are in scope).
-            if result.sort().is_integer() {
-                for pred in distinct_preds.values() {
-                    let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), result.clone()]);
-                    solver.assert_formula(tm.mk_term(Kind::Not, &[is_d]));
-                }
+            // Guard: for operators requiring integer-sort operands, bail out with a
+            // dummy if either operand has a wrong sort (e.g. a distinct-sort value).
+            // The domain checks above will have pushed Constrained(false) obligations,
+            // causing a counterexample.  The dummy avoids a CVC5 sort panic.
+            if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div
+                              | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+                && (!l.sort().is_integer() || !r.sort().is_integer())
+            {
+                return Ok(tm.mk_integer(0));
             }
-            Ok(result)
+            Ok(tm.mk_term(kind, &[l, r]))
         }
 
         ExprKind::If { cond, then_expr, else_expr } => {
@@ -245,61 +293,50 @@ pub(crate) fn encode_expr<'tm>(
                 let result = tm.mk_const(tm.integer_sort(), &fresh);
                 let non_neg = tm.mk_term(Kind::Geq, &[result.clone(), tm.mk_integer(0)]);
                 solver.assert_formula(non_neg);
-                // A size result is a plain integer, never a member of a distinct set.
-                for pred in distinct_preds.values() {
-                    let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), result.clone()]);
-                    solver.assert_formula(tm.mk_term(Kind::Not, &[is_d]));
-                }
                 return Ok(result);
             }
 
             // `from(x)` built-in: destructor for any `distinct` set.
-            // For each distinct set D with basis B: is_D(arg) → result ∈ B.
-            // The result is the unwrapped basis value — it is NOT in any distinct set.
+            // Identify the distinct set by sort-matching, apply the `from` UF,
+            // and assert the basis membership constraint on the result on-demand.
             if callee.0 == "from" && args.len() == 1 {
                 let arg_term = enc!(&args[0])?;
-                let fresh = format!("_from_{}", *call_counter);
-                *call_counter += 1;
-                let result_var = tm.mk_const(tm.integer_sort(), &fresh);
-                // Assert basis membership implications.
-                for (sym, pred) in distinct_preds {
-                    if let Some(def) = name_defs.get(sym) {
-                        let is_arg = tm.mk_term(Kind::ApplyUf, &[pred.clone(), arg_term.clone()]);
-                        match membership_constraint(tm, result_var.clone(), &def.value, name_defs, distinct_preds) {
-                            Membership::Unconstrained => {}
-                            Membership::Constrained(basis_c) => {
-                                solver.assert_formula(tm.mk_term(Kind::Implies, &[is_arg, basis_c]));
+                for (sym, info) in distinct_preds {
+                    if arg_term.sort() == info.sort {
+                        let result = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), arg_term]);
+                        if let Some(def) = name_defs.get(sym) {
+                            match membership_constraint(tm, result.clone(), &def.value, name_defs, distinct_preds) {
+                                Membership::Constrained(c) => solver.assert_formula(c),
+                                _ => {}
                             }
-                            Membership::Unsupported => {}
                         }
+                        return Ok(result);
                     }
                 }
-                // The unwrapped result is a plain basis value — not in any distinct set.
-                for pred in distinct_preds.values() {
-                    let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), result_var.clone()]);
-                    solver.assert_formula(tm.mk_term(Kind::Not, &[is_d]));
-                }
-                return Ok(result_var);
+                return Err("from() applied to a value that is not a member of any distinct set".into());
             }
 
             // Auto-generated constructor: `litre(n)` for `Litre = distinct Nat`.
             // Detected by capitalising the first letter of callee and checking name_defs.
+            // Apply the `mk` UF — result has sort D_sort (distinct sort).
+            // Emit a basis obligation so `litre(x)` with x : Int is rejected when x ∉ Nat.
             if args.len() == 1 {
                 if let Some(distinct_def) = distinct_def_for_constructor(callee, name_defs) {
-                    if let Some(pred) = distinct_preds.get(&distinct_def.name) {
+                    if let Some(info) = distinct_preds.get(&distinct_def.name) {
                         let arg_term = enc!(&args[0])?;
-                        let fresh = format!("_call_{}", *call_counter);
-                        *call_counter += 1;
-                        let result_var = tm.mk_const(tm.integer_sort(), &fresh);
-                        let is_result = tm.mk_term(Kind::ApplyUf, &[pred.clone(), result_var.clone()]);
-                        match membership_constraint(tm, arg_term, &distinct_def.value, name_defs, distinct_preds) {
-                            Membership::Unconstrained => solver.assert_formula(is_result),
-                            Membership::Constrained(basis_c) => {
-                                solver.assert_formula(tm.mk_term(Kind::Implies, &[basis_c, is_result]));
-                            }
+                        match membership_constraint(tm, arg_term.clone(), &distinct_def.value, name_defs, distinct_preds) {
+                            Membership::Constrained(c) => builtin_obligs.push(BuiltinObligation {
+                                path_cond: path_cond.clone(),
+                                obligation: c,
+                                violated_reason: format!(
+                                    "argument to {}() must satisfy the basis constraint",
+                                    callee.0
+                                ),
+                            }),
+                            Membership::Unconstrained => {}
                             Membership::Unsupported => {}
                         }
-                        return Ok(result_var);
+                        return Ok(tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term]));
                     }
                 }
             }
@@ -321,7 +358,7 @@ pub(crate) fn encode_expr<'tm>(
             // a symbolic tuple constant can't be used with child() extraction.
             let result_var = if let Some(first_sig) = callee_def.sigs.first() {
                 if is_product_range(&first_sig.range) {
-                    let (assembled, leaves) = mk_decomposed_tuple(tm, &fresh, &first_sig.range);
+                    let (assembled, leaves) = mk_decomposed_tuple(tm, &fresh, &first_sig.range, distinct_preds);
                     for (leaf, leaf_set) in leaves {
                         match membership_constraint(tm, leaf, leaf_set, name_defs, distinct_preds) {
                             Membership::Constrained(c) => solver.assert_formula(c),
@@ -330,7 +367,7 @@ pub(crate) fn encode_expr<'tm>(
                     }
                     assembled
                 } else {
-                    match set_sort_for_range(tm, &first_sig.range) {
+                    match set_sort_for_range(tm, &first_sig.range, distinct_preds) {
                         Some(sort) => tm.mk_const(sort, &fresh),
                         None => return Err(format!(
                             "call to `{}` has an unsupported range sort (internal error)",
@@ -537,11 +574,12 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
     tm: &'tm TermManager,
     name: &str,
     set_expr: &'e Expr,
+    distinct_preds: &DistinctPreds<'tm>,
 ) -> (Term<'tm>, Vec<(Term<'tm>, &'e Expr)>) {
     let parts = flatten_product(set_expr);
     if parts.len() <= 1 {
         // Only called for product set expressions whose leaves always have a defined sort.
-        let sort = set_sort(tm, set_expr)
+        let sort = set_sort(tm, set_expr, distinct_preds)
             .expect("mk_decomposed_tuple: leaf set expression has no representable CVC5 sort");
         let leaf = tm.mk_const(sort, name);
         return (leaf.clone(), vec![(leaf, set_expr)]);
@@ -550,7 +588,7 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
     let mut child_terms = Vec::new();
     for (i, part) in parts.iter().enumerate() {
         let child_name = format!("{name}__{i}");
-        let (child_term, child_leaves) = mk_decomposed_tuple(tm, &child_name, part);
+        let (child_term, child_leaves) = mk_decomposed_tuple(tm, &child_name, part, distinct_preds);
         leaves.extend(child_leaves);
         child_terms.push(child_term);
     }
@@ -721,15 +759,26 @@ fn coerce_to_union_dt<'tm>(
 /// explicitly.  Adding a new `ExprKind` to the AST will cause a compile error here,
 /// forcing a conscious decision about its CVC5 sort rather than silently falling
 /// through to integer sort.
-pub(crate) fn set_sort<'tm>(tm: &'tm TermManager, set_expr: &Expr) -> Option<Sort<'tm>> {
+pub(crate) fn set_sort<'tm>(
+    tm: &'tm TermManager,
+    set_expr: &Expr,
+    distinct_preds: &DistinctPreds<'tm>,
+) -> Option<Sort<'tm>> {
     Some(match &set_expr.kind {
-        // Bool is the only named set with CVC5's distinct boolean sort.
+        // Bool has its own CVC5 boolean sort.
         ExprKind::Var(sym) if sym.0 == "Bool" => tm.boolean_sort(),
-        // All other named sets (Nat, NatPos, Int, Int8…Int64, NonZeroInt, …) → integer.
-        ExprKind::Var(_) => tm.integer_sort(),
-        // Set literals {0}, {1, 2, 3} — elements are always integers.
+        // Distinct sets each have their own CVC5 uninterpreted sort.
+        ExprKind::Var(sym) => {
+            if let Some(info) = distinct_preds.get(sym) {
+                info.sort.clone()
+            } else {
+                // All other named sets (Nat, NatPos, Int, Int8…Int64, NonZeroInt, …) → integer.
+                tm.integer_sort()
+            }
+        }
+        // Set literals {0}, {1, 2, 3} — elements are integers.
         ExprKind::SetLit(_) => tm.integer_sort(),
-        // Comprehensions {x for x in S} — elements are always integers.
+        // Comprehensions {x for x in S} — elements are integers.
         ExprKind::Comprehension { .. } => tm.integer_sort(),
         // Built-in set constructors Set(Int), Set(Bool) — variable holds an i64 pointer.
         ExprKind::Call { .. } => tm.integer_sort(),
@@ -737,7 +786,7 @@ pub(crate) fn set_sort<'tm>(tm: &'tm TermManager, set_expr: &Expr) -> Option<Sor
         ExprKind::BinOp { op: BinOp::Mul, .. } => {
             let parts = flatten_product(set_expr);
             let sorts: Vec<Sort<'_>> = parts.iter()
-                .map(|p| set_sort(tm, p))
+                .map(|p| set_sort(tm, p, distinct_preds))
                 .collect::<Option<Vec<_>>>()?;
             tm.mk_tuple_sort(&sorts)
         }
@@ -745,18 +794,29 @@ pub(crate) fn set_sort<'tm>(tm: &'tm TermManager, set_expr: &Expr) -> Option<Sor
         ExprKind::BinOp { op: BinOp::Sub | BinOp::SymDiff | BinOp::Intersect, .. } => {
             tm.integer_sort()
         }
-        // Union (`|`) and disjoint union (`+`): scalar unions → integer sort.
-        // Bool | <integer-set> works because Bool ⊆ ℤ in Cantor; integer covers both arms.
-        // Cross-kind (tuple arm ∪ scalar arm) → CVC5 algebraic datatype (Step 6).
+        // Union (`|`) and disjoint union (`+`).
+        // Cross-kind (tuple arm ∪ scalar, or distinct-sort ∪ anything different)
+        // → CVC5 algebraic datatype.
+        // Same-kind scalar unions (Bool | Nat, Int | NatPos) → integer sort.
         ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
-            let ls = set_sort(tm, lhs)?;
-            let rs = set_sort(tm, rhs)?;
+            let ls = set_sort(tm, lhs, distinct_preds)?;
+            let rs = set_sort(tm, rhs, distinct_preds)?;
             if ls.is_tuple() || rs.is_tuple() || ls.is_dt() || rs.is_dt() {
-                // Cross-kind: build a datatype with one constructor per arm.
+                // Cross-kind (tuple or existing DT arm): build a datatype with one
+                // constructor per arm.
                 let arms = flatten_any_union(set_expr);
                 return Some(build_union_datatype_sort(tm, &arms));
             }
-            // Both arms are scalar; Bool ⊆ ℤ so integer sort covers both.
+            // TODO: distinct-sort arms in unions need a CVC5 datatype whose selectors
+            // have the correct distinct/integer sort per arm — `build_union_datatype_sort`
+            // currently hardcodes `integer_sort` for all selectors, producing duplicate
+            // `ck_Int` constructors and wrong semantics.  Until that is fixed, return
+            // None so callers fall back to Unknown rather than a false proof.
+            let is_distinct_sort = |s: &Sort<'_>| distinct_preds.values().any(|i| &i.sort == s);
+            if is_distinct_sort(&ls) || is_distinct_sort(&rs) {
+                return None;
+            }
+            // Both arms are plain scalar (Int-family); integer sort covers both.
             tm.integer_sort()
         }
         // Value-position BinOp operators must not appear in set-expression context.
@@ -818,7 +878,11 @@ fn success_arm_of_range(range: &Expr) -> Option<&Expr> {
 ///
 /// Strips `Fail` and `Fail * Y` union wrappers to find the success sort,
 /// then delegates to `set_sort` (which handles cross-kind unions via datatypes).
-pub(crate) fn set_sort_for_range<'tm>(tm: &'tm TermManager, range: &Expr) -> Option<Sort<'tm>> {
+pub(crate) fn set_sort_for_range<'tm>(
+    tm: &'tm TermManager,
+    range: &Expr,
+    distinct_preds: &DistinctPreds<'tm>,
+) -> Option<Sort<'tm>> {
     match &range.kind {
         ExprKind::Var(sym) if sym.0 == "Fail" => Some(tm.integer_sort()),
         ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
@@ -828,12 +892,12 @@ pub(crate) fn set_sort_for_range<'tm>(tm: &'tm TermManager, range: &Expr) -> Opt
                 ExprKind::BinOp { op: BinOp::Mul, lhs, .. }
                     if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
             );
-            if is_fail_product(rhs) { return set_sort_for_range(tm, lhs); }
-            if is_fail_product(lhs) { return set_sort_for_range(tm, rhs); }
+            if is_fail_product(rhs) { return set_sort_for_range(tm, lhs, distinct_preds); }
+            if is_fail_product(lhs) { return set_sort_for_range(tm, rhs, distinct_preds); }
             // Non-fail union: delegate to set_sort which handles cross-kind via datatypes.
-            set_sort(tm, range)
+            set_sort(tm, range, distinct_preds)
         }
-        _ => set_sort(tm, range),
+        _ => set_sort(tm, range, distinct_preds),
     }
 }
 

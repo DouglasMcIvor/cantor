@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use cvc5::{Kind, Term, TermManager};
+use cvc5::{Kind, Sort, Term, TermManager};
 
 use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp};
 use crate::kind::{set_kind as val_set_kind};
@@ -11,8 +11,23 @@ use crate::span::Symbol;
 use super::encode::{arm_ctor_name, flatten_any_union, flatten_product};
 use super::NameDefs;
 
-/// Map from distinct set name to its uninterpreted predicate term (`is_D : Int -> Bool`).
-pub(crate) type DistinctPreds<'tm> = HashMap<Symbol, Term<'tm>>;
+/// Per-distinct-set CVC5 artefacts created when `D = distinct B` is declared.
+///
+/// Each distinct set gets its own opaque CVC5 uninterpreted sort so the solver
+/// cannot confuse values of different distinct sets or of their basis.
+pub(crate) struct DistinctInfo<'tm> {
+    /// Opaque CVC5 sort — every D-value has this sort.
+    pub(crate) sort: Sort<'tm>,
+    /// Constructor UF: `mk_D : Int → D_sort`.
+    /// Applying `mk_D(n)` wraps the integer `n` as a D-value.
+    pub(crate) mk:   Term<'tm>,
+    /// Destructor UF: `from_D : D_sort → Int`.
+    /// Applying `from_D(x)` extracts the underlying integer from a D-value.
+    pub(crate) from: Term<'tm>,
+}
+
+/// Map from distinct set name to its CVC5 encoding artefacts.
+pub(crate) type DistinctPreds<'tm> = HashMap<Symbol, DistinctInfo<'tm>>;
 
 /// The result of asking "what does `t ∈ set_expr` look like as a cvc5 term?"
 pub(crate) enum Membership<'tm> {
@@ -155,23 +170,15 @@ pub(crate) fn membership_constraint<'tm>(
     }
     match &set_expr.kind {
         ExprKind::Var(sym) => match sym.0.as_str() {
-            // `Int` is the base integer set; a term belongs to it iff it is NOT a
-            // member of any distinct set (Litre, Celsius, …).  When no distinct
-            // sets are in scope the constraint is vacuously satisfied.
-            // Only integer-sort terms are checked — boolean-sort terms (e.g. from a
-            // `Bool` domain) use their own sort-based path and are left unconstrained
-            // here so that this arm never produces an ill-sorted ApplyUf term.
+            // Integer sort is the only sort in Int.  A term of distinct sort,
+            // boolean sort, or tuple sort is NOT in Int.
             "Int"        => {
-                if !t.sort().is_integer() || distinct_preds.is_empty() {
-                    return Membership::Unconstrained;
+                if t.sort().is_integer() {
+                    Membership::Unconstrained
+                } else {
+                    // Bool-sort, distinct-sort, tuple-sort — not in Int.
+                    Membership::Constrained(tm.mk_boolean(false))
                 }
-                let mut terms = distinct_preds.values().map(|pred| {
-                    let is_d = tm.mk_term(Kind::ApplyUf, &[pred.clone(), t.clone()]);
-                    tm.mk_term(Kind::Not, &[is_d])
-                });
-                let first = terms.next().unwrap(); // safe: distinct_preds is non-empty
-                let combined = terms.fold(first, |acc, c| tm.mk_term(Kind::And, &[acc, c]));
-                Membership::Constrained(combined)
             }
             // Fail is the failure singleton.  In the solver's integer model it is
             // encoded as i64::MIN so that `Nat | Fail` correctly accepts the
@@ -235,15 +242,17 @@ pub(crate) fn membership_constraint<'tm>(
                     match def.kind {
                         // Alias: transparent — expand to the RHS set expression.
                         DefKind::Alias => membership_constraint(tm, t, &def.value, name_defs, distinct_preds),
-                        // Distinct: apply the uninterpreted predicate `is_D(t)`.
+                        // Distinct: compare the term's CVC5 sort against the set's
+                        // uninterpreted sort.  A value of the right sort is trivially
+                        // a member; any other sort (integer, bool, another distinct
+                        // sort, …) is definitely not a member.
                         DefKind::Distinct => {
-                            if let Some(pred) = distinct_preds.get(sym) {
-                                let Some(t_int) = to_integer_term(tm, t) else {
-                                    return Membership::Constrained(tm.mk_boolean(false));
-                                };
-                                Membership::Constrained(
-                                    tm.mk_term(Kind::ApplyUf, &[pred.clone(), t_int])
-                                )
+                            if let Some(info) = distinct_preds.get(sym) {
+                                if t.sort() == info.sort {
+                                    Membership::Unconstrained // right sort → trivially in the set
+                                } else {
+                                    Membership::Constrained(tm.mk_boolean(false)) // wrong sort → never in the set
+                                }
                             } else {
                                 Membership::Unsupported
                             }

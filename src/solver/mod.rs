@@ -19,7 +19,6 @@
 //! - Only integer-sorted parameters and return values.
 
 mod blocks;
-mod builtins;
 mod encode;
 mod loops;
 mod membership;
@@ -37,7 +36,7 @@ use crate::kind::{Kind as ValKind, param_set_exprs, set_kind};
 
 use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, set_sort, set_sort_for_range, mk_decomposed_tuple};
 use self::blocks::{encode_block, body_has_unconstrained_loop_var};
-use self::membership::{DistinctPreds, Membership, membership_constraint};
+use self::membership::{DistinctInfo, DistinctPreds, Membership, membership_constraint};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -59,20 +58,30 @@ pub(crate) type NameDefs<'a> = HashMap<Symbol, &'a NameDef>;
 
 // ── Distinct predicate builder ────────────────────────────────────────────────
 
-/// For each `D = distinct B` in `name_defs`, create an uninterpreted predicate
-/// `is_D : Int -> Bool` as a cvc5 constant of function sort.
-/// These are threaded through the encoder so membership in D can be represented.
+/// For each `D = distinct B` in `name_defs`, create a CVC5 uninterpreted sort plus
+/// constructor/destructor uninterpreted functions:
+///   - `sort  = mk_uninterpreted_sort("D")`
+///   - `mk_D  : Int → D_sort`  (wraps an integer as a D-value)
+///   - `from_D: D_sort → Int`  (extracts the underlying integer)
+///
+/// No global axioms are needed; basis constraints are emitted on-demand when
+/// `litre(n)` or `from(x)` is encoded.
 fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs<'_>) -> DistinctPreds<'tm> {
-    let mut preds = DistinctPreds::new();
-    for (sym, def) in name_defs {
-        if def.kind == DefKind::Distinct {
-            let fn_sort = tm.mk_fun_sort(&[tm.integer_sort()], tm.boolean_sort());
-            let pred_name = format!("is_{}", sym.0);
-            let pred = tm.mk_const(fn_sort, &pred_name);
-            preds.insert(sym.clone(), pred);
-        }
-    }
-    preds
+    name_defs.iter()
+        .filter(|(_, def)| def.kind == DefKind::Distinct)
+        .map(|(sym, _)| {
+            let sort = tm.mk_uninterpreted_sort(&sym.0);
+            let mk = tm.mk_const(
+                tm.mk_fun_sort(&[tm.integer_sort()], sort.clone()),
+                &format!("mk_{}", sym.0),
+            );
+            let from = tm.mk_const(
+                tm.mk_fun_sort(&[sort.clone()], tm.integer_sort()),
+                &format!("from_{}", sym.0),
+            );
+            (sym.clone(), DistinctInfo { sort, mk, from })
+        })
+        .collect()
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -300,7 +309,7 @@ fn check_block_sig(
     for (n, part) in param_names.iter().zip(domain_parts.iter()) {
         let k = set_kind(part);
         if matches!(k, ValKind::Tuple(_)) {
-            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part);
+            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part, &distinct_preds);
             for (leaf, leaf_set) in leaves {
                 match membership_constraint(&tm, leaf.clone(), leaf_set, name_defs, &distinct_preds) {
                     Membership::Unconstrained => {}
@@ -315,7 +324,7 @@ fn check_block_sig(
             }
             param_terms.push(assembled);
         } else {
-            let sort = match set_sort(&tm, part) {
+            let sort = match set_sort(&tm, part, &distinct_preds) {
                 Some(s) => s,
                 None => return CheckResult::Unknown(format!(
                     "parameter `{}` has an unsupported domain sort (internal error)",
@@ -352,7 +361,7 @@ fn check_block_sig(
     let mut has_runtime_assert = false;
     let mut immutable_names: HashSet<Symbol> = HashSet::new();
 
-    let result_sort = set_sort_for_range(&tm, &sig.range);
+    let result_sort = set_sort_for_range(&tm, &sig.range, &distinct_preds);
     let body_term = match encode_block(
         stmts,
         &mut env,
@@ -448,6 +457,11 @@ fn check_block_sig(
                 0 // TODO: render tuple model value in counterexample display
             } else if matches!(k, ValKind::TaggedUnion(_)) {
                 0 // TODO: decode datatype arm for cross-kind union counterexample display
+            } else if let Some(info) = distinct_preds.values().find(|i| i.sort == term.sort()) {
+                // Parameter has a distinct (uninterpreted) sort — apply `from_D` to
+                // recover the underlying integer for the counterexample display.
+                let from_app = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), term.clone()]);
+                integer_value(&solver.get_value(from_app))
             } else {
                 integer_value(&val)
             };
@@ -507,7 +521,7 @@ fn check_sig(
     for (n, part) in param_names.iter().zip(domain_parts.iter()) {
         let k = set_kind(part);
         if matches!(k, ValKind::Tuple(_)) {
-            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part);
+            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part, &distinct_preds);
             for (leaf, leaf_set) in leaves {
                 match membership_constraint(&tm, leaf, leaf_set, name_defs, &distinct_preds) {
                     Membership::Unconstrained => {}
@@ -519,7 +533,7 @@ fn check_sig(
             }
             param_terms.push(assembled);
         } else {
-            let sort = match set_sort(&tm, part) {
+            let sort = match set_sort(&tm, part, &distinct_preds) {
                 Some(s) => s,
                 None => return CheckResult::Unknown(format!(
                     "parameter `{}` has an unsupported domain sort (internal error)",
@@ -551,7 +565,7 @@ fn check_sig(
     let top_guard = tm.mk_boolean(true);
     let body_term = match encode_expr(
         body, &env, name_defs, fn_env, &tm, &mut solver, &mut call_counter,
-        &mut builtin_obligs, top_guard, &distinct_preds, set_sort_for_range(&tm, &sig.range),
+        &mut builtin_obligs, top_guard, &distinct_preds, set_sort_for_range(&tm, &sig.range, &distinct_preds),
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
