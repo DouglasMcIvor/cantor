@@ -84,6 +84,31 @@ f(x) = if x > 0 then (x, x) else x
 ");
 }
 
+// ── Projection from a cross-kind union parameter ─────────────────────────────
+// When a parameter has a cross-kind union domain its term has DT sort.
+// Projecting a field should:
+//   • push a tester obligation (the value must be in the tuple arm) so the
+//     solver finds a counterexample if the scalar arm is reachable, and
+//   • use an ApplySelector on the DT to extract the field.
+
+// If x is always the tuple (Nat * Nat) arm, x.0 is always in Nat — proved.
+#[test]
+fn cross_kind_domain_proj_proved() {
+    proved("
+f : (Nat * Nat) -> Nat
+f(x) = x.0
+");
+}
+
+// x is from (Nat * Nat) | Nat.  The scalar arm has no .0; should counterexample.
+#[test]
+fn cross_kind_domain_proj_scalar_arm_counterexample() {
+    counterexample("
+f : (Nat * Nat) | Nat -> Nat
+f(x) = x.0
+");
+}
+
 // Block body with a let-binding before the if/else.
 #[test]
 fn cross_kind_range_block_if_else_proved() {

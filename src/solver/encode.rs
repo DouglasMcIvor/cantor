@@ -498,14 +498,47 @@ pub(crate) fn encode_expr<'tm>(
         // supported without first discriminating the arm; return Unknown.
         ExprKind::Proj { base, index } => {
             let base_term = enc!(base)?;
-            // CVC5 tuple sorts also satisfy is_dt() == true; we only want to reject
-            // non-tuple algebraic datatypes (i.e., cross-kind union values from Step 6).
+            // CVC5 tuple sorts also satisfy is_dt() == true; we only want the
+            // special-case path for cross-kind union DTs (non-tuple algebraic
+            // datatypes built by build_union_datatype_sort).
             if base_term.sort().is_dt() && !base_term.sort().is_tuple() {
-                return Err(
-                    "projection on a cross-kind union value is not yet supported \
-                     in the solver — discriminate the arm with `in` first"
-                        .to_string(),
-                );
+                // Find a tuple arm (constructor names start with "ck_T_") that has
+                // enough fields for this projection index.
+                let dt = base_term.sort().datatype();
+                let tuple_ctor = (0..dt.num_constructors())
+                    .map(|i| dt.constructor(i))
+                    .find(|c| c.name().starts_with("ck_T_") && c.num_selectors() > *index);
+
+                return if let Some(ctor) = tuple_ctor {
+                    // Push a tester obligation: the value must be in the tuple arm.
+                    // If the solver finds a valuation where it is in the scalar arm,
+                    // it reports a counterexample.
+                    let tester = tm.mk_term(Kind::ApplyTester, &[ctor.tester_term(), base_term.clone()]);
+                    builtin_obligs.push(BuiltinObligation {
+                        path_cond: path_cond.clone(),
+                        obligation: tester,
+                        violated_reason: format!(
+                            "projection `.{}` requires the value to be in the tuple arm; \
+                             the scalar arm of the union would make this invalid",
+                            index
+                        ),
+                    });
+                    // ApplySelector is arithmetic-safe (unlike TupleProject) and
+                    // works on symbolic DT terms, including Ite results.
+                    let sel = ctor.selector(*index);
+                    Ok(tm.mk_term(Kind::ApplySelector, &[sel.term(), base_term]))
+                } else {
+                    // No tuple arm with enough fields: projection is always invalid.
+                    builtin_obligs.push(BuiltinObligation {
+                        path_cond: path_cond.clone(),
+                        obligation: tm.mk_boolean(false),
+                        violated_reason: format!(
+                            "projection `.{}` on a cross-kind union with no matching tuple arm",
+                            index
+                        ),
+                    });
+                    Ok(tm.mk_integer(0))
+                };
             }
             Ok(base_term.child(*index + 1))
         }
