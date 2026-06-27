@@ -28,6 +28,20 @@ impl<'ctx> Compiler<'ctx> {
                 ("cantor_set_contains_bool", runtime::cantor_set_contains_bool as *const () as usize),
                 ("cantor_set_size_bool",     runtime::cantor_set_size_bool     as *const () as usize),
                 ("cantor_set_get_bool",      runtime::cantor_set_get_bool      as *const () as usize),
+                // Vector(Int) — Apache Arrow Int64Array
+                ("cantor_vec_builder_new_i64",    runtime::cantor_vec_builder_new_i64    as *const () as usize),
+                ("cantor_vec_builder_push_i64",   runtime::cantor_vec_builder_push_i64   as *const () as usize),
+                ("cantor_vec_builder_finish_i64", runtime::cantor_vec_builder_finish_i64 as *const () as usize),
+                ("cantor_vec_len_i64",            runtime::cantor_vec_len_i64            as *const () as usize),
+                ("cantor_vec_get_i64",            runtime::cantor_vec_get_i64            as *const () as usize),
+                ("cantor_vec_push_i64",           runtime::cantor_vec_push_i64           as *const () as usize),
+                // Vector(Bool) — Apache Arrow BooleanArray
+                ("cantor_vec_builder_new_bool",    runtime::cantor_vec_builder_new_bool    as *const () as usize),
+                ("cantor_vec_builder_push_bool",   runtime::cantor_vec_builder_push_bool   as *const () as usize),
+                ("cantor_vec_builder_finish_bool", runtime::cantor_vec_builder_finish_bool as *const () as usize),
+                ("cantor_vec_len_bool",            runtime::cantor_vec_len_bool            as *const () as usize),
+                ("cantor_vec_get_bool",            runtime::cantor_vec_get_bool            as *const () as usize),
+                ("cantor_vec_push_bool",           runtime::cantor_vec_push_bool           as *const () as usize),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))

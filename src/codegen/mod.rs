@@ -132,7 +132,8 @@ impl<'ctx> Compiler<'ctx> {
                 fields.extend(std::iter::repeat(i64t).take(n));
                 self.context.struct_type(&fields, false).into()
             }
-            Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),
+            // Vector is an i64 pointer-as-i64 (same wire type as Set).
+            Kind::Vector(_) => self.context.i64_type().into(),
         }
     }
 
@@ -185,7 +186,13 @@ impl<'ctx> Compiler<'ctx> {
                     "insert_kind_leaves: nested TaggedUnion not yet supported".into(),
                 ));
             }
-            Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),
+            // Vector is an i64 pointer — insert it like Int/Set.
+            Kind::Vector(_) => {
+                *agg = self.builder
+                    .build_insert_value(*agg, val.into_int_value(), *field_idx, "tu_l")
+                    .map_err(err)?;
+                *field_idx += 1;
+            }
         }
         Ok(())
     }
@@ -293,6 +300,33 @@ impl<'ctx> Compiler<'ctx> {
                 .into_int_value();
         }
         Ok(current)
+    }
+
+    /// If the function's declared return kind is `Kind::Vector(elem)` but the compiled
+    /// value is `Kind::Tuple(elems)` (from an array literal like `[1, 2, 3]`), coerce
+    /// by building an Arrow vector from the tuple's elements at runtime.
+    ///
+    /// Returns `(val, kind)` unchanged when no coercion is needed.
+    pub(crate) fn coerce_vector_return(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_kind: Kind,
+        function: FunctionValue<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let fn_name = function.get_name().to_str().unwrap_or("");
+        let expected = self.fn_return_kinds.get(fn_name).cloned().unwrap_or_else(|| val_kind.clone());
+        let elem_kind = match &expected {
+            Kind::Vector(ek) => ek.as_ref().clone(),
+            _ => return Ok((val, val_kind)),
+        };
+        let tuple_elems = match &val_kind {
+            Kind::Tuple(elems) => elems.clone(),
+            Kind::Vector(_) => return Ok((val, val_kind)), // already a vector
+            other => return Err(CompileError::Internal(format!(
+                "coerce_vector_return: cannot convert {other:?} to Vector"
+            ))),
+        };
+        self.compile_tuple_as_vector(val, &tuple_elems, &elem_kind)
     }
 
     /// If the function's declared return kind is `Kind::TaggedUnion(arms)` and
@@ -474,6 +508,8 @@ impl<'ctx> Compiler<'ctx> {
                 (i1_val.into(), Kind::Bool)
             } else if matches!(kind, Kind::Tuple(_) | Kind::TaggedUnion(_)) {
                 (llvm_param, kind.clone())
+            } else if matches!(kind, Kind::Vector(_) | Kind::Set(_)) {
+                (llvm_param, kind.clone())
             } else {
                 (llvm_param, Kind::Int)
             };
@@ -481,6 +517,7 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let (val, ty) = self.compile_expr(body, &env)?;
+        let (val, ty) = self.coerce_vector_return(val, ty, function)?;
         let (val, ty) = self.coerce_tagged_union_return(val, ty, function)?;
         let ret_val = self.wrap_return_value(val, &ty)?;
 
@@ -542,6 +579,8 @@ impl<'ctx> Compiler<'ctx> {
                 (i1_val.into(), Kind::Bool)
             } else if matches!(kind, Kind::Tuple(_) | Kind::TaggedUnion(_)) {
                 (llvm_param, kind.clone())
+            } else if matches!(kind, Kind::Vector(_) | Kind::Set(_)) {
+                (llvm_param, kind.clone())
             } else {
                 (llvm_param, Kind::Int)
             };
@@ -552,6 +591,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let ret_val = match return_val {
             Some((val, kind)) => {
+                let (val, kind) = self.coerce_vector_return(val, kind, function)?;
                 let (val, kind) = self.coerce_tagged_union_return(val, kind, function)?;
                 self.wrap_return_value(val, &kind)?
             }
@@ -613,6 +653,23 @@ impl<'ctx> Compiler<'ctx> {
         self.module.add_function("cantor_set_contains_bool", i64t.fn_type(ii,   false), None);
         self.module.add_function("cantor_set_size_bool",     i64t.fn_type(i,    false), None);
         self.module.add_function("cantor_set_get_bool",      i64t.fn_type(ii,   false), None);
+
+        // Vector(Int) ABI — Apache Arrow Int64Array, pointer-as-i64.
+        self.module.add_function("cantor_vec_builder_new_i64",    i64t.fn_type(&[], false), None);
+        self.module.add_function("cantor_vec_builder_push_i64",   void.fn_type(ii,   false), None);
+        self.module.add_function("cantor_vec_builder_finish_i64", i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_vec_len_i64",            i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_vec_get_i64",            i64t.fn_type(ii,   false), None);
+        self.module.add_function("cantor_vec_push_i64",           i64t.fn_type(ii,   false), None);
+
+        // Vector(Bool) ABI — Apache Arrow BooleanArray, pointer-as-i64.
+        // Booleans passed as i64 (0/1) matching the uniform ABI.
+        self.module.add_function("cantor_vec_builder_new_bool",    i64t.fn_type(&[], false), None);
+        self.module.add_function("cantor_vec_builder_push_bool",   void.fn_type(ii,   false), None);
+        self.module.add_function("cantor_vec_builder_finish_bool", i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_vec_len_bool",            i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_vec_get_bool",            i64t.fn_type(ii,   false), None);
+        self.module.add_function("cantor_vec_push_bool",           i64t.fn_type(ii,   false), None);
     }
 
     pub fn print_ir(&self) {
@@ -974,7 +1031,17 @@ impl<'ctx> Compiler<'ctx> {
                     "trampoline_store_leaves: TaggedUnion output not yet supported".into(),
                 ));
             }
-            Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),
+            // Vector is an i64 pointer — store it like any other i64 leaf.
+            Kind::Vector(_) => {
+                let ptr = if *leaf_idx == 0 {
+                    out_ptr
+                } else {
+                    let idx = i64t.const_int(*leaf_idx as u64, false);
+                    unsafe { builder.build_gep(i64t, out_ptr, &[idx], "gp").map_err(err)? }
+                };
+                builder.build_store(ptr, val.into_int_value()).map_err(err)?;
+                *leaf_idx += 1;
+            }
         }
         Ok(())
     }

@@ -190,7 +190,7 @@ fn add_definitions(state: &mut ReplState, new_items: Vec<Item>, src: &str) {
     }
     state.items.extend(new_items.clone());
 
-    match check_file(&state.items) {
+    match check_file(&state.items, crate::DEFAULT_TIMEOUT_MS) {
         Ok(results) => {
             let mut any_result = false;
             for new_item in &new_items {

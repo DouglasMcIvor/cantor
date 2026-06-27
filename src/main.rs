@@ -15,20 +15,56 @@ use cantor::{
     solver::{CheckResult, check_file},
 };
 
+const DEFAULT_TIMEOUT_SECS: u64 = 60;
+pub(crate) const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_SECS * 1000;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    let (do_run, path) = match args.len() {
-        1 => {
+    // Strip out --timeout <n> / --timeout=<n> before positional parsing.
+    let mut timeout_secs: u64 = DEFAULT_TIMEOUT_SECS;
+    let mut positional: Vec<&str> = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--timeout" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("error: --timeout requires a value in seconds");
+                process::exit(2);
+            }
+            timeout_secs = match args[i].parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    eprintln!("error: --timeout value must be a non-negative integer (seconds)");
+                    process::exit(2);
+                }
+            };
+        } else if let Some(val) = args[i].strip_prefix("--timeout=") {
+            timeout_secs = match val.parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    eprintln!("error: --timeout value must be a non-negative integer (seconds)");
+                    process::exit(2);
+                }
+            };
+        } else {
+            positional.push(args[i].as_str());
+        }
+        i += 1;
+    }
+    let timeout_ms = timeout_secs * 1000;
+
+    let (do_run, path) = match positional.len() {
+        0 => {
             repl::run();
             return;
         }
-        2 if args[1] != "run" => (false, args[1].as_str()),
-        3 if args[1] == "run" => (true, args[2].as_str()),
+        1 if positional[0] != "run" => (false, positional[0]),
+        2 if positional[0] == "run" => (true, positional[1]),
         _ => {
-            eprintln!("usage: cantor");
-            eprintln!("       cantor <file.cantor>");
-            eprintln!("       cantor run <file.cantor>");
+            eprintln!("usage: cantor [--timeout <secs>]");
+            eprintln!("       cantor [--timeout <secs>] <file.cantor>");
+            eprintln!("       cantor [--timeout <secs>] run <file.cantor>");
             process::exit(2);
         }
     };
@@ -68,7 +104,7 @@ fn main() {
         process::exit(1);
     }
 
-    let all_results = match check_file(&items) {
+    let all_results = match check_file(&items, timeout_ms) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("internal error: {e}");

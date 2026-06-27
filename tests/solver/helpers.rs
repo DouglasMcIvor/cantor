@@ -9,7 +9,7 @@ pub use cantor::solver::CheckResult;
 /// for every function in the file.
 pub fn check_all(src: &str) -> Vec<(String, Vec<(String, CheckResult)>)> {
     let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
-    check_file(&items).unwrap_or_else(|e| panic!("check error: {e}"))
+    check_file(&items, 60_000).unwrap_or_else(|e| panic!("check error: {e}"))
 }
 
 /// Parse a single-function source, check it, and return its signature results.

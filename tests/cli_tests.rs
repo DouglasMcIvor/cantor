@@ -776,13 +776,34 @@ fn set_ops_bad_counterexample_mentions_not_disjoint() {
 
 #[test]
 fn vectors_kleene_demo_all_proved() {
-    // Only tests the `check` path — codegen for Vector (Kind::Vector) panics by
-    // design until runtime representation is decided; there is no `run` test.
     let out = run_file("vectors_kleene_demo.cantor");
     assert_eq!(out.code, 0, "vectors_kleene_demo.cantor should exit 0\nstdout: {}", out.stdout);
     assert!(
         !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
         "expected all proved:\n{}", out.stdout
+    );
+}
+
+// ── Kleene-star vectors: Arrow runtime (Int* and Bool*) ──────────────────────
+
+#[test]
+fn vectors_runtime_all_proved() {
+    let out = run_file("vectors_runtime.cantor");
+    assert_eq!(out.code, 0, "vectors_runtime.cantor check should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected all proved:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn vectors_runtime_run_returns_len_of_composed_vector() {
+    // main() = get_len(identity_int(make_int_vec())) = len([1,2,3]) = 3
+    let out = run_subcommand("vectors_runtime.cantor");
+    assert_eq!(out.code, 0, "vectors_runtime.cantor run should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        out.stdout.contains("3"),
+        "expected output 3 (len of [1,2,3]):\n{}", out.stdout
     );
 }
 
@@ -831,4 +852,41 @@ fn newline_paren_run_produces_correct_output() {
         out.stdout.contains("4"),
         "expected output 4 from newline_paren.cantor main:\n{}", out.stdout
     );
+}
+
+// ── --timeout flag ────────────────────────────────────────────────────────────
+
+#[test]
+fn timeout_flag_space_form_is_accepted() {
+    let out = run(&["--timeout", "30", fixture("good.cantor").to_str().unwrap()]);
+    assert_eq!(out.code, 0, "--timeout 30 should succeed\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(out.stdout.contains("proved"), "expected proved output:\n{}", out.stdout);
+}
+
+#[test]
+fn timeout_flag_equals_form_is_accepted() {
+    let out = run(&["--timeout=10", fixture("good.cantor").to_str().unwrap()]);
+    assert_eq!(out.code, 0, "--timeout=10 should succeed\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(out.stdout.contains("proved"), "expected proved output:\n{}", out.stdout);
+}
+
+#[test]
+fn timeout_flag_zero_disables_limit() {
+    let out = run(&["--timeout=0", fixture("good.cantor").to_str().unwrap()]);
+    assert_eq!(out.code, 0, "--timeout=0 should succeed\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(out.stdout.contains("proved"), "expected proved output:\n{}", out.stdout);
+}
+
+#[test]
+fn timeout_flag_missing_value_errors() {
+    let out = run(&["--timeout"]);
+    assert_ne!(out.code, 0, "missing --timeout value should fail");
+    assert!(out.stderr.contains("--timeout requires a value"), "expected error message:\n{}", out.stderr);
+}
+
+#[test]
+fn timeout_flag_non_integer_errors() {
+    let out = run(&["--timeout", "abc", fixture("good.cantor").to_str().unwrap()]);
+    assert_ne!(out.code, 0, "non-integer --timeout should fail");
+    assert!(out.stderr.contains("non-negative integer"), "expected error message:\n{}", out.stderr);
 }

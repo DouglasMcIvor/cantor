@@ -47,8 +47,7 @@ pub enum Kind {
     /// are zero-extended to i64; tuple fields are serialised leaf-by-leaf.
     TaggedUnion(Vec<Kind>),
     /// Variable-length sequence of `elem` values — the runtime representation of `X*`.
-    /// TODO: codegen not yet implemented; compile-time paths that call `leaf_count` or
-    /// `arm_ctor_name` on a Vector will panic until the representation is decided.
+    /// Wire type: i64 (pointer-as-i64) to a heap-allocated Apache Arrow array.
     Vector(Box<Kind>),
 }
 
@@ -100,8 +99,8 @@ pub fn leaf_count(kind: &Kind) -> usize {
         Kind::Bool | Kind::Int | Kind::Set(_) | Kind::Fail | Kind::Union(_) => 1,
         Kind::Tuple(elems) => elems.iter().map(leaf_count).sum(),
         Kind::TaggedUnion(arms) => 1 + tagged_union_leaf_count(arms),
-        // TODO: Vector codegen representation is not yet decided; panic loudly.
-        Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in leaf_count"),
+        // Vector is an i64 pointer (like Set) — one leaf.
+        Kind::Vector(_) => 1,
     }
 }
 

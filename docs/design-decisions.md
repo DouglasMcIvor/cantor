@@ -435,7 +435,7 @@ than `TupleProject` for the same reason. Logic must be `"ALL"` (replaces
 `cantor_main_into(*mut i64)` which stores each leaf into a caller buffer, avoiding
 fragile struct-return FFI.
 
-### Kleene-star sets and vectors (`X*`) (solver complete; codegen pending)
+### Kleene-star sets and vectors (`X*`) (solver complete; codegen complete for Int*/Bool*)
 
 `X*` is a postfix set operator that denotes the set of all finite sequences of elements
 drawn from `X`.  It is the standard Kleene closure: `{} | X | X×X | X×X×X | …`.
@@ -447,9 +447,9 @@ infix Cartesian-product `*` by looking at the following token: if no expression 
 ```
 -- Range: the function returns a variable-length sequence of Nat values
 f : -> Nat*
-f() = [1, 2, 3]   -- Tuple [1,2,3]; solver checks each element against Nat
+f() = [1, 2, 3]   -- array literal coerced to Arrow Int64Array at function return
 
--- Domain and range
+-- Domain and range (identity pass-through)
 g : (Int - {0})* -> Int*
 g(xs) = xs
 
@@ -460,9 +460,48 @@ h(xs) = len(xs)
 
 **AST**: `ExprKind::KleeneStar(Box<Expr>)`.  The inner expression is the element set.
 
-**Runtime kind**: `Kind::Vector(Box<Kind>)` — variable-length sequence.
-Codegen for `Vector` is **not yet implemented**; any use of a Kleene-star value in a
-compiled function will panic at compile time with a clear TODO message.
+**Runtime kind**: `Kind::Vector(Box<Kind>)` — variable-length sequence.  Wire type: `i64`
+(pointer-as-i64) to a heap-allocated Apache Arrow array.
+
+**Codegen support** (COMPLETE for `Int*` and `Bool*`):
+
+*Representation*: `Kind::Vector(Kind::Int)` uses Apache Arrow `Int64Array`;
+`Kind::Vector(Kind::Bool)` uses Apache Arrow `BooleanArray`.  Both are heap-allocated
+via `Box::into_raw` and carried across function calls as `i64` pointer values, matching
+the compiler's uniform calling convention.
+
+*Construction — array literals*: An array literal `[1, 2, 3]` parses to
+`ExprKind::Tuple` and compiles to an LLVM struct for fixed-size tuple contexts (`Nat * 3`).
+When the function's declared range is `X*`, a coercion runs at the return boundary:
+
+```
+-- Emitted LLVM (schematic) for make_vec() = [1, 2, 3] with range Nat*
+builder = cantor_vec_builder_new_i64()
+cantor_vec_builder_push_i64(builder, 1)
+cantor_vec_builder_push_i64(builder, 2)
+cantor_vec_builder_push_i64(builder, 3)
+return cantor_vec_builder_finish_i64(builder)
+```
+
+The builder produces an Arrow array in O(n) time.
+
+*Pass-through*: Vector parameters arrive as `i64` pointers and are carried in the local
+environment with `Kind::Vector(K)`, so `identity_nat(xs) = xs` compiles to a single
+register move with no copies.
+
+*`len(xs)` built-in*: dispatches to `cantor_vec_len_i64` or `cantor_vec_len_bool`
+depending on the element kind.
+
+*Functional push*: `cantor_vec_push_i64(vec, val) -> new_vec` creates a new Arrow array
+with the element appended (old array is preserved).  This is O(n) per call — acceptable
+for Cantor's functional style.  Cantor source code cannot yet call push directly; it
+will be exposed when append syntax is designed.
+
+*TODO — deferred to next stage*:
+- Block-body `let xs : Nat* = [1, 2, 3]` (coercion at binding site, not just at return)
+- Runtime element access `xs[i]` with a non-literal index
+- Append / concatenation syntax (`++` or similar)
+- Vectors of tuples `(Nat * Nat)*` and nested vectors
 
 **Solver support** (COMPLETE):
 
@@ -916,8 +955,11 @@ Other open items (lower priority, not blocking):
 - **Built-in containers** — pull in a library (`im`, `rpds`) or roll our
   own? Preference: start with flat arrays for temporaries; use `im`/`rpds`
   for persistent structures; roll our own later.
-- **cvc5 proof effort / timeout** — should developers be able to configure
-  an effort level per proof? Does cvc5 expose a built-in timeout?
+- **cvc5 proof effort / timeout** — decided: `cantor` exposes `--timeout <secs>`
+  (default 60, `0` = unlimited) which maps to cvc5's `tlimit` option (ms) on
+  every fresh solver instance.  A timed-out check returns `Unknown`.  Per-check
+  resource limits (`rlimit`) are available in cvc5 but not yet exposed — they
+  are deterministic (unaffected by system load) but harder to reason about.
 - **`emits` and multithreading** — if concurrent IO threads share `emits`
   channels, synchronisation is needed. Defer until threading model is decided.
 

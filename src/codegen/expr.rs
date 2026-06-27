@@ -10,6 +10,17 @@ use crate::{
     span::{Span, Symbol},
 };
 
+// Names of the builder/finish functions keyed by vector element kind.
+fn vec_builder_fns(ek: &Kind) -> Result<(&'static str, &'static str, &'static str, &'static str), String> {
+    match ek {
+        Kind::Int  => Ok(("cantor_vec_builder_new_i64",  "cantor_vec_builder_push_i64",
+                          "cantor_vec_builder_finish_i64", "cantor_vec_len_i64")),
+        Kind::Bool => Ok(("cantor_vec_builder_new_bool", "cantor_vec_builder_push_bool",
+                          "cantor_vec_builder_finish_bool", "cantor_vec_len_bool")),
+        other => Err(format!("vec_builder_fns: unsupported element kind {other:?}")),
+    }
+}
+
 use super::{Compiler, Env};
 
 
@@ -60,9 +71,9 @@ impl<'ctx> Compiler<'ctx> {
             }
             ExprKind::Tuple(elems) => self.compile_tuple(elems, env),
             ExprKind::Proj { base, index } => self.compile_proj(base, *index, env),
-            ExprKind::KleeneStar(_) => panic!(
-                "TODO: Kleene-star (X*) codegen not yet implemented"
-            ),
+            ExprKind::KleeneStar(_) => Err(CompileError::Internal(
+                "X* is a set expression and cannot appear in value position".into(),
+            )),
         }
     }
 
@@ -418,6 +429,32 @@ impl<'ctx> Compiler<'ctx> {
             return Ok((result, Kind::Int));
         }
 
+        // `len(xs)` — built-in length function for vectors (Kind::Vector).
+        if callee.0 == "len" && args.len() == 1 {
+            let (ptr, kind) = self.compile_expr(&args[0], env)?;
+            let len_fn = match &kind {
+                Kind::Vector(ek) => match ek.as_ref() {
+                    Kind::Int  => "cantor_vec_len_i64",
+                    Kind::Bool => "cantor_vec_len_bool",
+                    other => return Err(CompileError::Internal(format!(
+                        "len() on Vector({other:?}) not yet supported"
+                    ))),
+                },
+                _ => return Err(CompileError::Internal(
+                    "len() requires a vector (X*) argument".into(),
+                )),
+            };
+            let fn_val = self.module.get_function(len_fn)
+                .ok_or_else(|| CompileError::Internal(format!("{len_fn} not declared")))?;
+            let result = self.builder
+                .build_call(fn_val, &[ptr.into()], "len")
+                .map_err(|e| CompileError::Internal(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .ok_or_else(|| CompileError::Internal("len fn returned void".into()))?;
+            return Ok((result, Kind::Int));
+        }
+
         let function = self.module.get_function(&callee.0).ok_or_else(|| {
             CompileError::UndefinedVariable { name: callee.0.clone(), span }
         })?;
@@ -468,6 +505,8 @@ impl<'ctx> Compiler<'ctx> {
             // Tuples and TaggedUnions are returned as struct values directly.
             // Union is i64 at this stage but we preserve the Kind for future stages.
             Kind::Tuple(_) | Kind::Union(_) | Kind::TaggedUnion(_) => Ok((result_i64, return_kind)),
+            // Vector is an i64 pointer — pass through and preserve the Kind.
+            Kind::Vector(_) | Kind::Set(_) => Ok((result_i64, return_kind)),
             _ => Ok((result_i64, Kind::Int)),
         }
     }
@@ -577,6 +616,68 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         Ok((agg.into_struct_value().into(), Kind::Tuple(elem_kinds)))
+    }
+
+    /// Build an Arrow vector from a Tuple value at a function return boundary.
+    ///
+    /// Called when the function's declared range is `Kind::Vector(elem_kind)` but
+    /// the body compiled to `Kind::Tuple(elems)` — the typical case for an array
+    /// literal `[1, 2, 3]` in an `X*` range.  Emits:
+    ///   builder = cantor_vec_builder_new_<ek>()
+    ///   cantor_vec_builder_push_<ek>(builder, elem_0)
+    ///   ...
+    ///   vec_ptr = cantor_vec_builder_finish_<ek>(builder)
+    pub(crate) fn compile_tuple_as_vector(
+        &self,
+        tuple_val: inkwell::values::BasicValueEnum<'ctx>,
+        tuple_elems: &[Kind],
+        elem_kind: &Kind,
+    ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, Kind), CompileError> {
+        let (new_fn, push_fn, finish_fn, _) = vec_builder_fns(elem_kind)
+            .map_err(CompileError::Internal)?;
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+
+        let new_fn_val = self.module.get_function(new_fn)
+            .ok_or_else(|| CompileError::Internal(format!("{new_fn} not declared")))?;
+        let push_fn_val = self.module.get_function(push_fn)
+            .ok_or_else(|| CompileError::Internal(format!("{push_fn} not declared")))?;
+        let finish_fn_val = self.module.get_function(finish_fn)
+            .ok_or_else(|| CompileError::Internal(format!("{finish_fn} not declared")))?;
+
+        let builder_ptr = self.builder
+            .build_call(new_fn_val, &[], "vec_builder")
+            .map_err(err)?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::Internal("vec builder new returned void".into()))?;
+
+        let sv = inkwell::values::AggregateValueEnum::StructValue(tuple_val.into_struct_value());
+        let i64t = self.context.i64_type();
+        for (i, ek) in tuple_elems.iter().enumerate() {
+            let elem = self.builder
+                .build_extract_value(sv, i as u32, "vec_elem")
+                .map_err(err)?;
+            let elem_i64 = if *ek == Kind::Bool {
+                self.builder
+                    .build_int_z_extend(elem.into_int_value(), i64t, "vec_elem_ext")
+                    .map_err(err)?
+                    .into()
+            } else {
+                elem
+            };
+            self.builder
+                .build_call(push_fn_val, &[builder_ptr.into(), elem_i64.into()], "vec_push")
+                .map_err(err)?;
+        }
+
+        let vec_ptr = self.builder
+            .build_call(finish_fn_val, &[builder_ptr.into()], "vec_ptr")
+            .map_err(err)?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::Internal("vec builder finish returned void".into()))?;
+
+        Ok((vec_ptr, Kind::Vector(Box::new(elem_kind.clone()))))
     }
 
     /// Compile `base.N` — extract element N from a tuple.

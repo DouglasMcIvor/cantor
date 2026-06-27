@@ -92,7 +92,10 @@ fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs<'_>) -> 
 /// a contract available to all other functions in the file.
 ///
 /// Returns one entry per function, each containing one result per signature.
-pub fn check_file(items: &[Item]) -> Result<Vec<(String, Vec<(String, CheckResult)>)>, crate::error::CompileError> {
+///
+/// `timeout_ms` is applied as the `tlimit` option on every fresh solver
+/// instance.  Pass `0` to disable the limit entirely.
+pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<Vec<(String, Vec<(String, CheckResult)>)>, crate::error::CompileError> {
     let fn_env: FunctionEnv<'_> = items
         .iter()
         .filter_map(|item| match item {
@@ -113,13 +116,13 @@ pub fn check_file(items: &[Item]) -> Result<Vec<(String, Vec<(String, CheckResul
         .iter()
         .filter_map(|item| match item {
             Item::FunctionDef(def) => {
-                let results = check_function(def, &fn_env, &name_defs);
+                let results = check_function(def, &fn_env, &name_defs, timeout_ms);
                 Some(results.map(|r| (def.name.0.clone(), r)))
             }
             Item::NameDef(def) => {
                 // Only annotated defs (`name : Set = value`) produce a check result.
                 let ty = def.ty.as_ref()?;
-                let result = check_name_def(def, ty, &fn_env, &name_defs);
+                let result = check_name_def(def, ty, &fn_env, &name_defs, timeout_ms);
                 let label = format!("{} : {} = {}", def.name, ty, def.value);
                 Some(Ok((def.name.0.clone(), vec![(label, result)])))
             }
@@ -135,6 +138,7 @@ pub fn check_function(
     def: &FunctionDef,
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs<'_>,
+    timeout_ms: u64,
 ) -> Result<Vec<(String, CheckResult)>, crate::error::CompileError> {
     let param_names: Vec<Symbol> = def.params.iter().map(|p| p.name.clone()).collect();
 
@@ -145,8 +149,8 @@ pub fn check_function(
         .map(|(i, sig)| {
             let label = sig_label(&def.name.0, i, def.sigs.len());
             let result = match &def.body {
-                FunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env, name_defs),
-                FunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env, name_defs),
+                FunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env, name_defs, timeout_ms),
+                FunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env, name_defs, timeout_ms),
             };
             (label, result)
         })
@@ -161,8 +165,8 @@ fn sig_label(name: &str, idx: usize, total: usize) -> String {
     }
 }
 
-fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs: &NameDefs<'_>) -> CheckResult {
-    if let Some(result) = validate_disjoint_unions(ty, name_defs) { return result; }
+fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs: &NameDefs<'_>, timeout_ms: u64) -> CheckResult {
+    if let Some(result) = validate_disjoint_unions(ty, name_defs, timeout_ms) { return result; }
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
     solver.set_logic("ALL");
@@ -171,6 +175,7 @@ fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs:
     // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
     // for existential goals arising from negated universals (counterexample direction).
     solver.set_option("mbqi", "true");
+    if timeout_ms > 0 { solver.set_option("tlimit", &timeout_ms.to_string()); }
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
     let env = Env::new();
@@ -227,15 +232,16 @@ fn range_contains_fail(range: &Expr) -> bool {
 /// Uses a fresh SMT solver per `+` node to avoid polluting the main check's solver state.
 ///
 /// TODO: also validate `+` that appears inside function bodies (e.g. in `in` expressions).
-fn validate_disjoint_unions(set_expr: &Expr, name_defs: &NameDefs<'_>) -> Option<CheckResult> {
+fn validate_disjoint_unions(set_expr: &Expr, name_defs: &NameDefs<'_>, timeout_ms: u64) -> Option<CheckResult> {
     match &set_expr.kind {
         ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
-            if let Some(err) = validate_disjoint_unions(lhs, name_defs) { return Some(err); }
-            if let Some(err) = validate_disjoint_unions(rhs, name_defs) { return Some(err); }
+            if let Some(err) = validate_disjoint_unions(lhs, name_defs, timeout_ms) { return Some(err); }
+            if let Some(err) = validate_disjoint_unions(rhs, name_defs, timeout_ms) { return Some(err); }
 
             let tm = TermManager::new();
             let mut solver = Solver::new(&tm);
             solver.set_logic("ALL");
+            if timeout_ms > 0 { solver.set_option("tlimit", &timeout_ms.to_string()); }
             let distinct_preds = build_distinct_preds(&tm, name_defs);
             let t = tm.mk_const(tm.integer_sort(), "__disjoint_check");
             let in_a = membership_constraint(&tm, t.clone(), lhs, name_defs, &distinct_preds);
@@ -269,12 +275,12 @@ fn validate_disjoint_unions(set_expr: &Expr, name_defs: &NameDefs<'_>) -> Option
             }
         }
         ExprKind::BinOp { lhs, rhs, .. } => {
-            if let Some(err) = validate_disjoint_unions(lhs, name_defs) { return Some(err); }
-            validate_disjoint_unions(rhs, name_defs)
+            if let Some(err) = validate_disjoint_unions(lhs, name_defs, timeout_ms) { return Some(err); }
+            validate_disjoint_unions(rhs, name_defs, timeout_ms)
         }
         ExprKind::Call { args, .. } => {
             for arg in args {
-                if let Some(err) = validate_disjoint_unions(arg, name_defs) { return Some(err); }
+                if let Some(err) = validate_disjoint_unions(arg, name_defs, timeout_ms) { return Some(err); }
             }
             None
         }
@@ -290,11 +296,12 @@ fn check_block_sig(
     stmts: &[crate::ast::Stmt],
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs<'_>,
+    timeout_ms: u64,
 ) -> CheckResult {
     if let Some(dom) = &sig.domain {
-        if let Some(result) = validate_disjoint_unions(dom, name_defs) { return result; }
+        if let Some(result) = validate_disjoint_unions(dom, name_defs, timeout_ms) { return result; }
     }
-    if let Some(result) = validate_disjoint_unions(&sig.range, name_defs) { return result; }
+    if let Some(result) = validate_disjoint_unions(&sig.range, name_defs, timeout_ms) { return result; }
 
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
@@ -304,6 +311,7 @@ fn check_block_sig(
     // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
     // for existential goals arising from negated universals (counterexample direction).
     solver.set_option("mbqi", "true");
+    if timeout_ms > 0 { solver.set_option("tlimit", &timeout_ms.to_string()); }
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
@@ -506,11 +514,12 @@ fn check_sig(
     body: &Expr,
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs<'_>,
+    timeout_ms: u64,
 ) -> CheckResult {
     if let Some(dom) = &sig.domain {
-        if let Some(result) = validate_disjoint_unions(dom, name_defs) { return result; }
+        if let Some(result) = validate_disjoint_unions(dom, name_defs, timeout_ms) { return result; }
     }
-    if let Some(result) = validate_disjoint_unions(&sig.range, name_defs) { return result; }
+    if let Some(result) = validate_disjoint_unions(&sig.range, name_defs, timeout_ms) { return result; }
 
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
@@ -523,6 +532,7 @@ fn check_sig(
     // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
     // for existential goals arising from negated universals (counterexample direction).
     solver.set_option("mbqi", "true");
+    if timeout_ms > 0 { solver.set_option("tlimit", &timeout_ms.to_string()); }
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
