@@ -12,7 +12,7 @@ use cvc5::{DatatypeConstructorDecl, Kind, Sort, Term, TermManager};
 
 use crate::{
     ast::{BinOp, Expr, ExprKind},
-    kind::{Kind as ValKind, leaf_count, set_kind as val_set_kind},
+    kind::{Kind as ValKind, set_kind as val_set_kind},
 };
 
 use super::membership::DistinctPreds;
@@ -69,8 +69,7 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
             let s = arms.iter().map(arm_ctor_name).collect::<Vec<_>>().join("_");
             format!("ck_TU_{s}")
         }
-        // TODO: Kleene-star Vector kind cannot be an arm of a cross-kind union yet.
-        ValKind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in arm_ctor_name"),
+        ValKind::Vector(elem) => format!("ck_V_{}", arm_ctor_name(elem)),
     }
 }
 
@@ -97,14 +96,25 @@ pub(crate) fn arm_ctor_name_for_arm<'tm>(
 }
 
 // ── Cross-kind union datatype construction ───────────────────────────────────
+//
+// To add a new CVC5 sort (e.g. Float32, Float64) as a union arm in the future:
+//   1. kind.rs::set_kind      — add the new ExprKind → Kind::Float variant
+//   2. set_sort (below)       — add the new ExprKind → tm.mk_float_sort() arm
+//   3. arm_ctor_name (below)  — add ValKind::Float → "ck_F32"/"ck_F64" name
+//   4. membership_constraint  — add a Var("Float32")/… arm in membership.rs
+//   5. mod.rs cex extraction  — add ValKind::Float placeholder (0 for now)
+// No changes needed in build_union_datatype_sort, coerce_to_union_dt, or
+// maybe_coerce — they are now sort-agnostic.
 
 /// Build a CVC5 algebraic datatype sort for a cross-kind union.
 ///
-/// Each arm gets one constructor:
-/// - Distinct-set arms: named `"ck_D_{Name}"` with one selector of the set's
-///   uninterpreted sort.
-/// - All other arms: named via `arm_ctor_name` with one `integer_sort`
-///   selector per i64 leaf of the arm's `ValKind`.
+/// Each arm gets **one** constructor with **one** selector whose sort is the
+/// arm's natural CVC5 sort (from `set_sort`).  This is sort-agnostic: it works
+/// for integer, boolean, tuple, sequence, distinct-sort, or any future sort
+/// without modification.
+///
+/// - Distinct-set arms: selector sort is the set's uninterpreted sort.
+/// - All other arms: selector sort is `set_sort(arm_expr)`.
 ///
 /// Arms are listed in the order determined by `flatten_any_union`.
 fn build_union_datatype_sort<'tm>(
@@ -112,17 +122,16 @@ fn build_union_datatype_sort<'tm>(
     arms: &[&Expr],
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Sort<'tm> {
-    let int_sort = tm.integer_sort();
-    let arm_infos: Vec<(String, Vec<Sort<'_>>)> = arms.iter().map(|arm_expr| {
+    let arm_infos: Vec<(String, Sort<'_>)> = arms.iter().map(|arm_expr| {
         if let ExprKind::Var(sym) = &arm_expr.kind {
             if let Some(info) = distinct_preds.get(sym) {
-                return (format!("ck_D_{}", sym.0), vec![info.sort.clone()]);
+                return (format!("ck_D_{}", sym.0), info.sort.clone());
             }
         }
-        let kind = val_set_kind(arm_expr);
-        let ctor_name = arm_ctor_name(&kind);
-        let fields = (0..leaf_count(&kind)).map(|_| int_sort.clone()).collect();
-        (ctor_name, fields)
+        let ctor_name = arm_ctor_name(&val_set_kind(arm_expr));
+        let sort = set_sort(tm, arm_expr, distinct_preds)
+            .expect("build_union_datatype_sort: arm has no representable CVC5 sort");
+        (ctor_name, sort)
     }).collect();
 
     let dt_name = format!(
@@ -130,11 +139,9 @@ fn build_union_datatype_sort<'tm>(
         arm_infos.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join("_")
     );
     let mut dt_decl = tm.mk_dt_decl(&dt_name, false);
-    for (ctor_name, field_sorts) in &arm_infos {
+    for (ctor_name, sel_sort) in &arm_infos {
         let mut ctor: DatatypeConstructorDecl<'_> = tm.mk_dt_cons_decl(ctor_name);
-        for (j, sort) in field_sorts.iter().enumerate() {
-            ctor.add_selector(&format!("f{j}"), sort.clone());
-        }
+        ctor.add_selector("f0", sel_sort.clone());
         dt_decl.add_constructor(&ctor);
     }
     tm.mk_dt_sort(&dt_decl)
@@ -142,88 +149,39 @@ fn build_union_datatype_sort<'tm>(
 
 // ── Sort coercion helpers ─────────────────────────────────────────────────────
 
-/// Map a CVC5 sort back to the `ValKind` we used to create it, so we can
-/// derive the canonical constructor name for coercion.
+/// Wrap `val` into the matching constructor of `dt_sort` (a cross-kind union
+/// algebraic datatype built by `build_union_datatype_sort`).
 ///
-/// Only handles the sorts produced by `set_sort`: integer, boolean, and
-/// tuple sorts over integer/boolean leaves.
-fn cvc5_sort_to_valkind(sort: &Sort<'_>) -> ValKind {
-    if sort.is_boolean() {
-        ValKind::Bool
-    } else if sort.is_integer() {
-        ValKind::Int
-    } else if sort.is_tuple() {
-        let dt = sort.datatype();
-        let ctor = dt.constructor(0); // tuple has exactly one constructor
-        let inner: Vec<ValKind> = (0..ctor.num_selectors())
-            .map(|j| cvc5_sort_to_valkind(&ctor.selector(j).codomain_sort()))
-            .collect();
-        ValKind::Tuple(inner)
-    } else {
-        panic!("cvc5_sort_to_valkind: unhandled sort; this is a bug")
-    }
-}
-
-/// Flatten a CVC5 term into integer-sorted leaf terms matching the tagged-union
-/// datatype field layout (all selectors are `integer_sort`).
+/// Finds the constructor whose single selector has a codomain sort equal to
+/// `val.sort()`, then wraps `val` directly: `ApplyConstructor(ctor, [val])`.
+/// This is sort-agnostic — no flattening or sort-to-kind mapping needed.
 ///
-/// Boolean-sorted terms are converted to 0/1 integers.
-/// Tuple-sorted terms are flattened depth-first using `child(i+1)`.
-fn leaves_from_cvc5_term<'tm>(
-    tm: &'tm TermManager,
-    val: Term<'tm>,
-    kind: &ValKind,
-) -> Vec<Term<'tm>> {
-    match kind {
-        ValKind::Bool => {
-            let one  = tm.mk_integer(1);
-            let zero = tm.mk_integer(0);
-            vec![tm.mk_term(Kind::Ite, &[val, one, zero])]
-        }
-        ValKind::Int => vec![val],
-        ValKind::Tuple(inner) => inner
-            .iter()
-            .enumerate()
-            .flat_map(|(i, k)| leaves_from_cvc5_term(tm, val.child(i + 1), k))
-            .collect(),
-        _ => panic!("leaves_from_cvc5_term: unhandled kind {:?}; this is a bug", kind),
-    }
-}
-
-/// Wrap `val` (integer-, boolean-, or tuple-sorted) into the matching
-/// constructor of `dt_sort` (a cross-kind union algebraic datatype built by
-/// `build_union_datatype_sort`).
-///
-/// Returns `Err` if `dt_sort` has no constructor matching `val`'s sort —
-/// meaning the value's sort is not an arm of the target union.
+/// Returns `Err` if no constructor's selector sort matches `val.sort()`.
 fn coerce_to_union_dt<'tm>(
     tm: &'tm TermManager,
     val: Term<'tm>,
     dt_sort: &Sort<'tm>,
 ) -> Result<Term<'tm>, String> {
-    let val_kind  = cvc5_sort_to_valkind(&val.sort());
-    let ctor_name = arm_ctor_name(&val_kind);
+    let val_sort = val.sort();
     let dt = dt_sort.datatype();
     let ctor = (0..dt.num_constructors())
         .map(|i| dt.constructor(i))
-        .find(|c| c.name() == ctor_name)
+        .find(|c| c.num_selectors() == 1 && c.selector(0).codomain_sort() == val_sort)
         .ok_or_else(|| format!(
-            "coerce_to_union_dt: no constructor '{ctor_name}' in target datatype; \
-             the expression's sort is not an arm of the declared union"
+            "coerce_to_union_dt: no constructor with selector sort matching {:?} \
+             in target datatype — the value's sort is not an arm of the declared union",
+            val_sort
         ))?;
-
-    let fields = leaves_from_cvc5_term(tm, val, &val_kind);
-    let mut args: Vec<Term<'_>> = vec![ctor.term()];
-    args.extend(fields);
-    Ok(tm.mk_term(Kind::ApplyConstructor, &args))
+    Ok(tm.mk_term(Kind::ApplyConstructor, &[ctor.term(), val]))
 }
 
 /// Coerce `term` to `coerce_to` sort if the target is a cross-kind union DT.
 ///
-/// Handles three cases:
-/// - Integer/Boolean/Tuple-sorted terms → `coerce_to_union_dt` path.
-/// - Distinct-sorted terms → wrapped in the `"ck_D_{Name}"` constructor.
-/// - Same sort, no target, or non-DT target → returned unchanged.
+/// Tries to match `term.sort()` against a constructor selector sort in the
+/// target DT.  Passes through unchanged if:
+/// - no `coerce_to` target,
+/// - already the right sort,
+/// - target is not a cross-kind DT (non-DT or plain tuple).
 ///
 /// Used at the end of `encode_expr` (general case) and at early-return sites
 /// inside `encode_call` (constructor calls that bypass the end-of-function
@@ -232,27 +190,15 @@ pub(crate) fn maybe_coerce<'tm>(
     tm: &'tm TermManager,
     term: Term<'tm>,
     coerce_to: &Option<Sort<'tm>>,
-    distinct_preds: &DistinctPreds<'tm>,
 ) -> Result<Term<'tm>, String> {
     let Some(dt_sort) = coerce_to.as_ref() else { return Ok(term); };
     if term.sort() == *dt_sort || !dt_sort.is_dt() || dt_sort.is_tuple() {
         return Ok(term);
     }
-    if term.sort().is_integer() || term.sort().is_tuple() || term.sort().is_boolean() {
-        return coerce_to_union_dt(tm, term, dt_sort);
-    }
-    // Distinct-sort term: find the "ck_D_{Name}" constructor in the target DT.
-    if let Some((sym, _)) = distinct_preds.iter().find(|(_, i)| i.sort == term.sort()) {
-        let ctor_name = format!("ck_D_{}", sym.0);
-        let dt = dt_sort.datatype();
-        if let Some(ctor) = (0..dt.num_constructors())
-            .map(|i| dt.constructor(i))
-            .find(|c| c.name() == ctor_name)
-        {
-            return Ok(tm.mk_term(Kind::ApplyConstructor, &[ctor.term(), term]));
-        }
-    }
-    Ok(term) // sort mismatch but not coercible — caller handles the incompatibility
+    // Attempt to wrap the term in the constructor of the cross-kind union DT
+    // whose selector sort matches term.sort().  Returns the term unchanged on
+    // failure (sort mismatch — caller is responsible for detecting incompatibility).
+    Ok(coerce_to_union_dt(tm, term.clone(), dt_sort).unwrap_or(term))
 }
 
 // ── Set-expression → CVC5 sort ────────────────────────────────────────────────
@@ -312,22 +258,28 @@ pub(crate) fn set_sort<'tm>(
             tm.integer_sort()
         }
         // Union (`|`) and disjoint union (`+`).
-        // Cross-kind (tuple arm ∪ scalar, or distinct-sort ∪ anything different)
-        // → CVC5 algebraic datatype.
-        // Same-kind scalar unions (Bool | Nat, Int | NatPos) → integer sort.
+        // Cross-kind (tuple arm ∪ scalar, sequence arm ∪ non-same-sequence, or
+        // distinct-sort ∪ anything different) → CVC5 algebraic datatype.
+        // Same-kind scalar unions (Bool | Nat, Int | NatPos, Nat* | Int*) → no DT.
         ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
             let ls = set_sort(tm, lhs, distinct_preds)?;
             let rs = set_sort(tm, rhs, distinct_preds)?;
             let is_distinct_sort = |s: &Sort<'_>| distinct_preds.values().any(|i| &i.sort == s);
+            // Sequence arms with the same sort are "same-kind" (e.g. Nat* | Int* both
+            // give Seq<Int>); sequences with different element sorts, or one sequence and
+            // one non-sequence, are cross-kind and need a DT.
+            let seq_is_cross_kind = (ls.is_sequence() || rs.is_sequence()) && ls != rs;
             if ls.is_tuple() || rs.is_tuple() || ls.is_dt() || rs.is_dt()
                 || is_distinct_sort(&ls) || is_distinct_sort(&rs)
+                || seq_is_cross_kind
             {
                 // Cross-kind: build a CVC5 algebraic datatype with one constructor per arm.
                 let arms = flatten_any_union(set_expr);
                 return Some(build_union_datatype_sort(tm, &arms, distinct_preds));
             }
-            // Both arms are plain scalar (Int-family); integer sort covers both.
-            tm.integer_sort()
+            // Both arms are plain scalar (Int-family) or same-sort sequences;
+            // integer sort covers the scalar case, and the sequence case uses OR of constraints.
+            if ls.is_sequence() { ls } else { tm.integer_sort() }
         }
         // Value-position BinOp operators must not appear in set-expression context.
         ExprKind::BinOp {

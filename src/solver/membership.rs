@@ -7,7 +7,7 @@ use cvc5::{Kind, Sort, Term, TermManager};
 use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp};
 use crate::span::Symbol;
 
-use super::sort::{arm_ctor_name_for_arm, flatten_any_union, flatten_product};
+use super::sort::{arm_ctor_name_for_arm, flatten_any_union};
 use super::NameDefs;
 
 /// Per-distinct-set CVC5 artefacts created when `D = distinct B` is declared.
@@ -70,13 +70,12 @@ fn to_integer_term<'tm>(tm: &'tm TermManager, t: Term<'tm>) -> Option<Term<'tm>>
 
 /// Membership predicate for a term whose CVC5 sort is an algebraic datatype.
 ///
-/// This handles cross-kind union values: `t ∈ set_expr` where `t` was created
-/// from a `Kind::TaggedUnion` domain via `set_sort` (which returns a CVC5
-/// datatype sort).  The set expression is flattened into its union arms and for
-/// each arm we emit `is_ArmN(t) ∧ field_constraints`.
-///
-/// Selectors match the declaration order in `build_union_datatype_sort`:
-/// one `integer_sort` selector `f{j}` per i64 leaf of the arm's kind.
+/// Handles cross-kind union values: `t ∈ set_expr` where `t` has a DT sort
+/// built by `build_union_datatype_sort` (each arm has ONE selector whose sort
+/// is the arm's natural CVC5 sort).  For each arm we emit:
+///   `is_Arm(t)  ∧  membership_constraint(selector(0)(t), arm_expr)`
+/// This is fully recursive and sort-agnostic: tuple, sequence, scalar, and
+/// distinct-sort arms are all handled uniformly.
 fn membership_constraint_for_dt<'tm>(
     tm: &'tm TermManager,
     t: Term<'tm>,
@@ -100,31 +99,14 @@ fn membership_constraint_for_dt<'tm>(
         let tester = tm.mk_term(Kind::ApplyTester, &[ctor.tester_term(), t.clone()]);
         let mut conjuncts: Vec<Term<'_>> = vec![tester];
 
-        // Field constraints: check each leaf selector against the arm's set.
-        match &arm_expr.kind {
-            ExprKind::BinOp { op: BinOp::Mul, .. } => {
-                // Tuple arm: one selector per product component.
-                let parts = flatten_product(arm_expr);
-                for (j, part) in parts.iter().enumerate() {
-                    let sel = ctor.selector(j);
-                    let field = tm.mk_term(Kind::ApplySelector, &[sel.term(), t.clone()]);
-                    match membership_constraint(tm, field, part, name_defs, distinct_preds) {
-                        Membership::Constrained(c) => conjuncts.push(c),
-                        Membership::Unconstrained => {}
-                        Membership::Unsupported => return Membership::Unsupported,
-                    }
-                }
-            }
-            _ => {
-                // Scalar arm: single selector.
-                let sel = ctor.selector(0);
-                let field = tm.mk_term(Kind::ApplySelector, &[sel.term(), t.clone()]);
-                match membership_constraint(tm, field, arm_expr, name_defs, distinct_preds) {
-                    Membership::Constrained(c) => conjuncts.push(c),
-                    Membership::Unconstrained => {}
-                    Membership::Unsupported => return Membership::Unsupported,
-                }
-            }
+        // Each constructor has exactly one selector `f0` holding the arm's
+        // natural-sort value.  Recursively check membership in the arm's set.
+        let sel = ctor.selector(0);
+        let field = tm.mk_term(Kind::ApplySelector, &[sel.term(), t.clone()]);
+        match membership_constraint(tm, field, arm_expr, name_defs, distinct_preds) {
+            Membership::Constrained(c) => conjuncts.push(c),
+            Membership::Unconstrained => {}
+            Membership::Unsupported => return Membership::Unsupported,
         }
 
         let conj = if conjuncts.len() == 1 {

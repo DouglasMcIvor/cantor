@@ -235,7 +235,7 @@ pub(crate) fn encode_expr<'tm>(
                  (only in domain/range/`in`/`for` positions)".into()),
     }?;
 
-    maybe_coerce(tm, term, &coerce_to, distinct_preds)
+    maybe_coerce(tm, term, &coerce_to)
 }
 
 // ── Arm helpers ───────────────────────────────────────────────────────────────
@@ -528,7 +528,7 @@ fn encode_call<'tm>(
                 }
                 let result = tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term]);
                 // maybe_coerce handles distinct→DT coercion; router's final call is a no-op.
-                return maybe_coerce(tm, result, &coerce_to, distinct_preds);
+                return maybe_coerce(tm, result, &coerce_to);
             }
         }
     }

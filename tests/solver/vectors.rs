@@ -310,3 +310,34 @@ f : (Nat | Bool)* -> (Nat | Bool)*
 f(xs) = xs
 ");
 }
+
+// ── X* as a cross-kind union arm ─────────────────────────────────────────────
+
+// Nat* | Int domain: the function takes either a vector of nats or a single int.
+// A constant body `0` must be in Int (the Int arm of the range).
+#[test]
+fn kleene_vec_or_int_range_int_arm_proved() {
+    proved("
+f : -> Nat* | Int
+f() = 0
+");
+}
+
+// Nat* | Fail range: returning [] (empty vector) is in the Nat* arm.
+#[test]
+fn kleene_vec_or_fail_range_proved() {
+    proved("
+f : -> Nat* | Fail
+f() = []
+");
+}
+
+// Nat* | Int range: a negative constant is in Int but outside Nat*.
+// This is just `proved` since -1 ∈ Int which is an arm of the range.
+#[test]
+fn kleene_vec_or_int_range_negative_proved() {
+    proved("
+f : -> Nat* | Int
+f() = -1
+");
+}
