@@ -298,42 +298,34 @@ pub(crate) fn encode_expr<'tm>(
                 };
                 (bool_to_int(t), bool_to_int(e))
             } else {
-                // Distinct-sort branch vs. integer/boolean/DT branch.
-                // A distinct-sort value can never satisfy an integer-sort (or different DT)
-                // range.  Replace the distinct-sort branch with a dummy integer and emit a
-                // path-conditioned `false` obligation so the solver finds a counterexample
-                // whenever the condition steers execution into the offending branch.
-                let is_distinct = |s: &Sort<'_>| distinct_preds.values().any(|i| &i.sort == s);
-                let mut to_int_or_dummy = |b: Term<'tm>, path: Term<'tm>| -> Result<Term<'tm>, String> {
-                    if is_distinct(&b.sort()) {
-                        // Distinct-sort value can never satisfy an integer-sort range.
-                        // Push a false obligation for this path so the solver produces a
-                        // counterexample when the condition steers here; return a dummy
-                        // integer so the Ite stays well-sorted.
+                // One or both branches have a sort that doesn't match the target and
+                // can't be trivially unified.  For each such branch:
+                // - integer-sort → pass through
+                // - boolean-sort → coerce to 0/1
+                // - anything else (distinct sort, tuple, future Float32, …) → the value
+                //   can never satisfy an integer-sort range; push a path-conditioned
+                //   `false` obligation so the solver finds a counterexample when execution
+                //   steers into that branch, and use a dummy integer so the Ite stays
+                //   well-sorted.
+                let mut to_int_or_dummy = |b: Term<'tm>, path: Term<'tm>| {
+                    if b.sort().is_integer() {
+                        b
+                    } else if b.sort().is_boolean() {
+                        tm.mk_term(Kind::Ite, &[b, tm.mk_integer(1), tm.mk_integer(0)])
+                    } else {
                         builtin_obligs.push(BuiltinObligation {
                             path_cond: path,
                             obligation: tm.mk_boolean(false),
-                            violated_reason: "branch returns a distinct-set value that cannot \
-                                              satisfy the range"
+                            violated_reason: "branch value's set cannot satisfy the range"
                                 .to_string(),
                         });
-                        Ok(tm.mk_integer(0))
-                    } else if b.sort().is_boolean() {
-                        Ok(tm.mk_term(Kind::Ite, &[b, tm.mk_integer(1), tm.mk_integer(0)]))
-                    } else if b.sort().is_integer() {
-                        Ok(b)
-                    } else {
-                        Err("if/else branches have incompatible SMT sorts; \
-                             cross-kind union body encoding not yet supported in the solver"
-                            .to_string())
+                        tm.mk_integer(0)
                     }
                 };
                 let not_c = tm.mk_term(Kind::Not, &[c_bool.clone()]);
                 let then_path = tm.mk_term(Kind::And, &[path_cond.clone(), c_bool.clone()]);
                 let else_path = tm.mk_term(Kind::And, &[path_cond.clone(), not_c]);
-                let t2 = to_int_or_dummy(t, then_path)?;
-                let e2 = to_int_or_dummy(e, else_path)?;
-                (t2, e2)
+                (to_int_or_dummy(t, then_path), to_int_or_dummy(e, else_path))
             };
 
             Ok(tm.mk_term(Kind::Ite, &[c_bool, t, e]))

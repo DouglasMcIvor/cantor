@@ -105,3 +105,28 @@ f : Bool -> Nat
 f(b) = if b then litre(0) else 0
 ");
 }
+
+// ── Tuple branch + fail branch ────────────────────────────────────────────────
+// When the range is a cross-kind DT both branches are coerced into the DT
+// before the Ite is built; the sort-mismatch fallback is never reached.
+
+#[test]
+fn if_tuple_fail_proved() {
+    proved("
+f : Bool -> (Nat * Nat) | Fail
+f(b) = if b then (1, 2) else fail
+");
+}
+
+// ── Tuple branch in a scalar range — should counterexample ───────────────────
+// When the range is a plain scalar set, a tuple branch can never satisfy it.
+// The solver should emit a counterexample via the path-conditioned false
+// obligation rather than an opaque Unknown.
+
+#[test]
+fn if_tuple_branch_in_scalar_range_counterexample() {
+    counterexample("
+f : Bool -> Nat
+f(b) = if b then (1, 2) else 0
+");
+}
