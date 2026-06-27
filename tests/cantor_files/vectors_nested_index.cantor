@@ -1,0 +1,29 @@
+-- Verify scalar retrieval from a nested vector: xss[1][2] on [[10,20],[30,40,50]] = 50.
+
+make_data : -> Nat**
+make_data() = [[10, 20], [30, 40, 50]]
+
+get_deep : -> Nat
+get_deep() {
+    xss : Nat** = [[10, 20], [30, 40, 50]]
+    i : Nat = 1
+    j : Nat = 2
+    return xss[i][j]
+}
+
+block_len : -> Nat
+block_len() {
+    xss : Nat** = [[10, 20], [30, 40, 50]]
+    return len(xss)
+}
+
+concat_len : -> Nat
+concat_len() {
+    xs : Nat** = [[1, 2], [3]]
+    ys : Nat** = [[4, 5, 6]]
+    zs : Nat** = xs ++ ys
+    return len(zs)
+}
+
+main : -> Nat
+main() = get_deep()

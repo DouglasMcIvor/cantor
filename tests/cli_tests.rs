@@ -807,6 +807,37 @@ fn vectors_runtime_run_returns_len_of_composed_vector() {
     );
 }
 
+// ── Nested vectors (X**) ─────────────────────────────────────────────────────
+
+#[test]
+fn vectors_nested_pure_fns_proved() {
+    // Pure-expression-body functions on Nat** must be fully proved by the solver.
+    let out = run_file("vectors_nested.cantor");
+    assert!(
+        !out.stdout.contains("  counterexample  "),
+        "unexpected counterexample:\n{}", out.stdout
+    );
+    // make_nested, identity_nested, outer_len, main must all be proved.
+    assert!(out.stdout.contains("proved          make_nested"), "make_nested not proved:\n{}", out.stdout);
+    assert!(out.stdout.contains("proved          outer_len"),   "outer_len not proved:\n{}",  out.stdout);
+}
+
+#[test]
+fn vectors_nested_run_outer_len() {
+    // main() = outer_len([[1,2,3],[4,5]]) = 2
+    let out = run_subcommand("vectors_nested.cantor");
+    assert_eq!(out.code, 0, "run should exit 0\nstdout: {}", out.stdout);
+    assert!(out.stdout.contains("main() = 2"), "expected 'main() = 2':\n{}", out.stdout);
+}
+
+#[test]
+fn vectors_nested_deep_index_and_concat() {
+    // get_deep = xss[1][2] on [[10,20],[30,40,50]] = 50; concat_len = 3
+    let out = run_subcommand("vectors_nested_index.cantor");
+    assert_eq!(out.code, 0, "run should exit 0\nstdout: {}", out.stdout);
+    assert!(out.stdout.contains("main() = 50"), "expected 'main() = 50':\n{}", out.stdout);
+}
+
 // ── Vectors: block-body coercion, xs[i] indexing, ++ concatenation ───────────
 
 #[test]

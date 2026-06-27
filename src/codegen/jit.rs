@@ -45,6 +45,19 @@ impl<'ctx> Compiler<'ctx> {
                 // Concatenation
                 ("cantor_vec_concat_i64",          runtime::cantor_vec_concat_i64          as *const () as usize),
                 ("cantor_vec_concat_bool",         runtime::cantor_vec_concat_bool         as *const () as usize),
+                // Nested vectors (X**)
+                ("cantor_list_vec_builder_new_i64",    runtime::cantor_list_vec_builder_new_i64    as *const () as usize),
+                ("cantor_list_vec_builder_push_i64",   runtime::cantor_list_vec_builder_push_i64   as *const () as usize),
+                ("cantor_list_vec_builder_finish_i64", runtime::cantor_list_vec_builder_finish_i64 as *const () as usize),
+                ("cantor_list_vec_len_i64",            runtime::cantor_list_vec_len_i64            as *const () as usize),
+                ("cantor_list_vec_get_i64",            runtime::cantor_list_vec_get_i64            as *const () as usize),
+                ("cantor_list_vec_concat_i64",         runtime::cantor_list_vec_concat_i64         as *const () as usize),
+                ("cantor_list_vec_builder_new_bool",    runtime::cantor_list_vec_builder_new_bool    as *const () as usize),
+                ("cantor_list_vec_builder_push_bool",   runtime::cantor_list_vec_builder_push_bool   as *const () as usize),
+                ("cantor_list_vec_builder_finish_bool", runtime::cantor_list_vec_builder_finish_bool as *const () as usize),
+                ("cantor_list_vec_len_bool",            runtime::cantor_list_vec_len_bool            as *const () as usize),
+                ("cantor_list_vec_get_bool",            runtime::cantor_list_vec_get_bool            as *const () as usize),
+                ("cantor_list_vec_concat_bool",         runtime::cantor_list_vec_concat_bool         as *const () as usize),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))

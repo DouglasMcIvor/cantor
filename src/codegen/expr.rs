@@ -10,13 +10,26 @@ use crate::{
     span::{Span, Symbol},
 };
 
-// Names of the builder/finish functions keyed by vector element kind.
+/// Builder/get function names keyed by the *element* kind of a vector.
+///
+/// Returns `(new, push, finish, len)` for `Kind::Vector(elem_kind)`.
+/// For scalar elements the push arg is the element value (i64).
+/// For vector elements the push arg is a pointer to an inner vector (i64).
 fn vec_builder_fns(ek: &Kind) -> Result<(&'static str, &'static str, &'static str, &'static str), String> {
     match ek {
+        // Flat vectors: element is a scalar.
         Kind::Int  => Ok(("cantor_vec_builder_new_i64",  "cantor_vec_builder_push_i64",
                           "cantor_vec_builder_finish_i64", "cantor_vec_len_i64")),
         Kind::Bool => Ok(("cantor_vec_builder_new_bool", "cantor_vec_builder_push_bool",
                           "cantor_vec_builder_finish_bool", "cantor_vec_len_bool")),
+        // Nested vectors: element is itself a vector; push takes an inner-vector pointer.
+        Kind::Vector(inner_ek) => match inner_ek.as_ref() {
+            Kind::Int  => Ok(("cantor_list_vec_builder_new_i64",  "cantor_list_vec_builder_push_i64",
+                              "cantor_list_vec_builder_finish_i64", "cantor_list_vec_len_i64")),
+            Kind::Bool => Ok(("cantor_list_vec_builder_new_bool", "cantor_list_vec_builder_push_bool",
+                              "cantor_list_vec_builder_finish_bool", "cantor_list_vec_len_bool")),
+            other => Err(format!("vec_builder_fns: unsupported nested element kind {other:?}")),
+        },
         other => Err(format!("vec_builder_fns: unsupported element kind {other:?}")),
     }
 }
@@ -423,6 +436,13 @@ impl<'ctx> Compiler<'ctx> {
         let concat_fn = match &elem_kind {
             Kind::Int  => "cantor_vec_concat_i64",
             Kind::Bool => "cantor_vec_concat_bool",
+            Kind::Vector(inner_ek) => match inner_ek.as_ref() {
+                Kind::Int  => "cantor_list_vec_concat_i64",
+                Kind::Bool => "cantor_list_vec_concat_bool",
+                other => return Err(CompileError::Internal(format!(
+                    "TODO: `++` not yet implemented for nested element kind {other:?}"
+                ))),
+            },
             other => return Err(CompileError::Internal(format!(
                 "TODO: `++` not yet implemented for element kind {other:?}"
             ))),
@@ -455,6 +475,14 @@ impl<'ctx> Compiler<'ctx> {
                 let fn_name = match ek.as_ref() {
                     Kind::Int  => "cantor_vec_get_i64",
                     Kind::Bool => "cantor_vec_get_bool",
+                    // Nested vector (X**): inner element is itself a vector pointer (i64).
+                    Kind::Vector(inner_ek) => match inner_ek.as_ref() {
+                        Kind::Int  => "cantor_list_vec_get_i64",
+                        Kind::Bool => "cantor_list_vec_get_bool",
+                        other => return Err(CompileError::Internal(format!(
+                            "TODO: `xs[i]` not yet implemented for nested element kind {other:?}"
+                        ))),
+                    },
                     other => return Err(CompileError::Internal(format!(
                         "TODO: `xs[i]` not yet implemented for element kind {other:?}"
                     ))),
@@ -532,6 +560,13 @@ impl<'ctx> Compiler<'ctx> {
                 Kind::Vector(ek) => match ek.as_ref() {
                     Kind::Int  => "cantor_vec_len_i64",
                     Kind::Bool => "cantor_vec_len_bool",
+                    Kind::Vector(inner_ek) => match inner_ek.as_ref() {
+                        Kind::Int  => "cantor_list_vec_len_i64",
+                        Kind::Bool => "cantor_list_vec_len_bool",
+                        other => return Err(CompileError::Internal(format!(
+                            "len() on Vector(Vector({other:?})) not yet supported"
+                        ))),
+                    },
                     other => return Err(CompileError::Internal(format!(
                         "len() on Vector({other:?}) not yet supported"
                     ))),
@@ -749,20 +784,37 @@ impl<'ctx> Compiler<'ctx> {
 
         let sv = inkwell::values::AggregateValueEnum::StructValue(tuple_val.into_struct_value());
         let i64t = self.context.i64_type();
-        for (i, ek) in tuple_elems.iter().enumerate() {
+        for (i, outer_ek) in tuple_elems.iter().enumerate() {
             let elem = self.builder
                 .build_extract_value(sv, i as u32, "vec_elem")
                 .map_err(err)?;
-            let elem_i64 = if *ek == Kind::Bool {
-                self.builder
-                    .build_int_z_extend(elem.into_int_value(), i64t, "vec_elem_ext")
-                    .map_err(err)?
-                    .into()
-            } else {
-                elem
+
+            // Convert the extracted element to the i64 value expected by push_fn.
+            //   • scalar Bool → zero-extend to i64
+            //   • scalar Int  → already i64
+            //   • inner Tuple that should be an inner Vector → coerce recursively
+            //   • inner Vector already → already an i64 pointer
+            let push_val: inkwell::values::BasicValueEnum<'ctx> = match (elem_kind, outer_ek) {
+                (Kind::Vector(inner_ek), Kind::Tuple(inner_elems)) => {
+                    // Outer element is a tuple literal; coerce it to an inner vector.
+                    let (inner_ptr, _) = self.compile_tuple_as_vector(
+                        elem, inner_elems, inner_ek)?;
+                    inner_ptr
+                }
+                (Kind::Vector(_), Kind::Vector(_)) => {
+                    // Already an inner vector pointer (i64).
+                    elem
+                }
+                (_, Kind::Bool) => {
+                    self.builder
+                        .build_int_z_extend(elem.into_int_value(), i64t, "vec_elem_ext")
+                        .map_err(err)?
+                        .into()
+                }
+                _ => elem,
             };
             self.builder
-                .build_call(push_fn_val, &[builder_ptr.into(), elem_i64.into()], "vec_push")
+                .build_call(push_fn_val, &[builder_ptr.into(), push_val.into()], "vec_push")
                 .map_err(err)?;
         }
 

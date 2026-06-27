@@ -542,8 +542,31 @@ correctly.  The solver currently reports such functions as Unknown (the SMT bloc
 does not yet support early `return` — it is aware of the limitation and will not produce
 false proofs).
 
+*Nested vectors (`Nat**` = `(Nat*)*`)* (COMPLETE):
+
+`Nat**` is backed by Apache Arrow `ListArray` where the child type is `Int64`.
+The outer vector is a `CantorListVecI64` (wrapping a `ListArray`); each inner
+element is a `CantorVecI64` (wrapping an `Int64Array` slice of the child buffer).
+
+```
+-- Build, index, and concat at two levels
+make : -> Nat**;   make() = [[1, 2, 3], [4, 5]]
+f    : Nat** -> Nat;  f(xss) = len(xss)         -- 2
+g    : Nat** -> Nat;  g(xss) { i:Nat=1; j:Nat=2; return xss[i][j] }  -- 5
+```
+
+- `xs[i]` where `xs : Nat**` calls `cantor_list_vec_get_i64(xs, i)`, which
+  returns a new `CantorVecI64` wrapping an O(1) Arc-sliced view into the child buffer.
+- `++` calls `cantor_list_vec_concat_i64(a, b)` — O(total child elements).
+- `len(xss)` calls `cantor_list_vec_len_i64(xss)` — the outer list length.
+- Block-body coercion (`xss : Nat** = [[1,2],[3,4]]`) works by recursively
+  coercing each inner tuple literal to a `CantorVecI64`, then pushing those
+  pointers into a `ListBuilder<Int64Builder>`.
+- `Bool**` is symmetric, backed by `ListArray` with `Boolean` child.
+
 *TODO — deferred*:
-- Vectors of tuples `(Nat * Nat)*` and nested vectors
+- Vectors of tuples `(Nat * Nat)*` — StructArray
+- Vectors of unions `(Nat | Bool)*` — DenseUnionArray (pending runtime union value design)
 
 **Solver support** (COMPLETE):
 

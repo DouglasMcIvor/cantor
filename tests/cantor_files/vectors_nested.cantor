@@ -1,0 +1,47 @@
+-- Nested vector tests: X** (Int** / Bool**) backed by Apache Arrow ListArray.
+
+-- Build a Nat** from a literal (array of array literals).
+make_nested : -> Nat**
+make_nested() = [[1, 2, 3], [4, 5]]
+
+-- Identity pass-through on Nat**.
+identity_nested : Nat** -> Nat**
+identity_nested(xss) = xss
+
+-- Length of the outer vector.
+outer_len : Nat** -> Nat
+outer_len(xss) = len(xss)
+
+-- Retrieve the inner vector at runtime index i, then take its length.
+inner_len : Nat** -> Nat
+inner_len(xss) {
+    i : Nat = 0
+    return len(xss[i])
+}
+
+-- Retrieve a scalar from a nested vector.
+get_elem : Nat** -> Nat
+get_elem(xss) {
+    i : Nat = 1
+    j : Nat = 2
+    return xss[i][j]
+}
+
+-- Block-body coercion for Nat** bindings.
+block_nested : -> Nat
+block_nested() {
+    xss : Nat** = [[10, 20], [30, 40, 50]]
+    return len(xss)
+}
+
+-- Concatenate two Nat** values.
+concat_nested : -> Nat
+concat_nested() {
+    xs : Nat** = [[1, 2], [3]]
+    ys : Nat** = [[4, 5, 6]]
+    zs : Nat** = xs ++ ys
+    return len(zs)
+}
+
+main : -> Nat
+main() = outer_len(make_nested())

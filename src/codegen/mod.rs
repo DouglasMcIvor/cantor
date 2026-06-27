@@ -676,6 +676,23 @@ impl<'ctx> Compiler<'ctx> {
         // Concatenation — both take two i64 pointers and return a new i64 pointer.
         self.module.add_function("cantor_vec_concat_i64",          i64t.fn_type(ii,   false), None);
         self.module.add_function("cantor_vec_concat_bool",         i64t.fn_type(ii,   false), None);
+
+        // Nested vector (X**) — ListArray backed; inner element pointers are i64.
+        // _i64 suffix = inner vectors are CantorVecI64 (Int*/Nat* etc.)
+        // _bool suffix = inner vectors are CantorVecBool (Bool*)
+        self.module.add_function("cantor_list_vec_builder_new_i64",    i64t.fn_type(&[], false), None);
+        self.module.add_function("cantor_list_vec_builder_push_i64",   void.fn_type(ii,   false), None);
+        self.module.add_function("cantor_list_vec_builder_finish_i64", i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_list_vec_len_i64",            i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_list_vec_get_i64",            i64t.fn_type(ii,   false), None);
+        self.module.add_function("cantor_list_vec_concat_i64",         i64t.fn_type(ii,   false), None);
+
+        self.module.add_function("cantor_list_vec_builder_new_bool",    i64t.fn_type(&[], false), None);
+        self.module.add_function("cantor_list_vec_builder_push_bool",   void.fn_type(ii,   false), None);
+        self.module.add_function("cantor_list_vec_builder_finish_bool", i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_list_vec_len_bool",            i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_list_vec_get_bool",            i64t.fn_type(ii,   false), None);
+        self.module.add_function("cantor_list_vec_concat_bool",         i64t.fn_type(ii,   false), None);
     }
 
     pub fn print_ir(&self) {
