@@ -24,3 +24,5 @@ mod set_ops;
 mod vectors;
 #[path = "solver/cross_kind_unions.rs"]
 mod cross_kind_unions;
+#[path = "solver/bool_ops.rs"]
+mod bool_ops;

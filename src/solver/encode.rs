@@ -54,8 +54,8 @@ pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(Expr, &'
         // ── Comparisons ───────────────────────────────────────────────────────
         (BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, _) => vec![],
         // ── Logical ───────────────────────────────────────────────────────────
-        // TODO: constrain both args to Bool once Bool domain checks are wired up.
-        (BinOp::And | BinOp::Or, _) => vec![],
+        // Both args of `and`/`or` must be in Bool.
+        (BinOp::And | BinOp::Or, _) => vec![(named_set("Bool"), "operand of logical operator must be Bool")],
         // ── Set operations ────────────────────────────────────────────────────
         (BinOp::Union | BinOp::Intersect | BinOp::SymDiff, _) => vec![],
         // ── Must never reach here ─────────────────────────────────────────────
@@ -72,8 +72,8 @@ pub(crate) fn unary_builtin_domain(op: &UnOp) -> Vec<(Expr, &'static str)> {
     match op {
         // Negation is defined on Int only — distinct sets cannot be negated.
         UnOp::Neg => vec![(named_set("Int"), "operand of negation must be Int, not a member of a distinct set")],
-        // TODO: constrain to Bool once Bool domain checks are wired up.
-        UnOp::Not => vec![],
+        // Operand of `not` must be in Bool.
+        UnOp::Not => vec![(named_set("Bool"), "operand of `not` must be Bool")],
     }
 }
 
@@ -153,7 +153,12 @@ pub(crate) fn encode_expr<'tm>(
                     if !t.sort().is_integer() { return Ok(tm.mk_integer(0)); }
                     Ok(tm.mk_term(Kind::Neg, &[t]))
                 }
-                UnOp::Not => Ok(tm.mk_term(Kind::Not, &[t])),
+                UnOp::Not => {
+                    // Guard: wrong-sort operand — domain check pushed Constrained(false);
+                    // return dummy to avoid CVC5 sort panic.
+                    if !t.sort().is_boolean() { return Ok(tm.mk_boolean(false)); }
+                    Ok(tm.mk_term(Kind::Not, &[t]))
+                }
             }
         }
 
@@ -231,15 +236,19 @@ pub(crate) fn encode_expr<'tm>(
                     return Err(format!("set operation `{op:?}` not yet encodable"))
                 }
             };
-            // Guard: for operators requiring integer-sort operands, bail out with a
-            // dummy if either operand has a wrong sort (e.g. a distinct-sort value).
-            // The domain checks above will have pushed Constrained(false) obligations,
-            // causing a counterexample.  The dummy avoids a CVC5 sort panic.
+            // Guard: bail out with a sort-safe dummy when operands have the wrong sort.
+            // The domain checks above push Constrained(false) obligations that cause
+            // a counterexample; the dummy prevents a CVC5 sort panic.
             if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div
                               | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
                 && (!l.sort().is_integer() || !r.sort().is_integer())
             {
                 return Ok(tm.mk_integer(0));
+            }
+            if matches!(op, BinOp::And | BinOp::Or)
+                && (!l.sort().is_boolean() || !r.sort().is_boolean())
+            {
+                return Ok(tm.mk_boolean(false));
             }
             Ok(tm.mk_term(kind, &[l, r]))
         }
