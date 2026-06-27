@@ -121,9 +121,22 @@ pub(crate) fn encode_expr<'tm>(
         };
     }
 
-    // `size()` and `from()` are built-in call builtins that bypass the final
-    // maybe_coerce (they return predicates / unwrapped scalars, not union values).
+    // `size()`, `from()`, and `len()` are built-in call builtins that bypass the
+    // final maybe_coerce (they return predicates / unwrapped scalars, not union values).
     if let ExprKind::Call { callee, args } = &expr.kind {
+        // `len(xs)` — the number of elements in a vector (X* value).
+        // Encoded as `seq.len(xs)` in the cvc5 sequence theory.
+        // TODO: if/when arrays get codegen, also support `len` on fixed-length tuples.
+        if callee.0 == "len" && args.len() == 1 {
+            let arg_term = enc!(&args[0])?;
+            if !arg_term.sort().is_sequence() {
+                return Err(
+                    "len() expects a vector (X*) argument; \
+                     use it only on Kleene-star values".into()
+                );
+            }
+            return Ok(tm.mk_term(Kind::SeqLength, &[arg_term]));
+        }
         if callee.0 == "size" && args.len() == 1 {
             let fresh = format!("_size_{}", *call_counter);
             *call_counter += 1;

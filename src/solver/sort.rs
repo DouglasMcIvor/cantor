@@ -340,9 +340,13 @@ pub(crate) fn set_sort<'tm>(
             set_expr.kind
         ),
         // `X*` — Kleene star: variable-length sequence of X.
-        // No fixed CVC5 sort can represent a sequence of unknown length; return None
-        // so callers fall back to Unknown rather than creating an incorrect sort.
-        ExprKind::KleeneStar(_) => return None,
+        // Encoded as the CVC5 sequence sort `(Seq elem)` via the theory of sequences.
+        // The element sort is derived recursively; if the element set has no
+        // representable CVC5 sort we propagate None so callers surface Unknown.
+        ExprKind::KleeneStar(inner) => {
+            let elem = set_sort(tm, inner, distinct_preds)?;
+            tm.mk_sequence_sort(elem)
+        }
         // Value-position ExprKind variants must never appear as set expressions.
         // Listed explicitly so adding a new ExprKind causes a compile error here.
         ExprKind::IntLit(_) | ExprKind::BoolLit(_) | ExprKind::UnOp { .. }

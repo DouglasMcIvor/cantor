@@ -205,9 +205,7 @@ f() = [-1, 0, 1]
 }
 
 // Identity on Nat*: taking a Nat* and returning it as Nat*.
-// Requires CVC5 sequence theory for Kleene-star parameters — not yet implemented.
 #[test]
-#[ignore = "Kleene-star parameter encoding requires sequence theory — not yet implemented"]
 fn kleene_identity_proved() {
     proved("
 f : Nat* -> Nat*
@@ -216,9 +214,7 @@ f(xs) = xs
 }
 
 // A NatPos* value satisfies Nat* (NatPos ⊆ Nat element-wise).
-// Requires CVC5 sequence theory for Kleene-star parameters — not yet implemented.
 #[test]
-#[ignore = "Kleene-star parameter encoding requires sequence theory — not yet implemented"]
 fn kleene_natpos_star_into_nat_star_proved() {
     proved("
 f : NatPos* -> Nat*
@@ -227,9 +223,7 @@ f(xs) = xs
 }
 
 // Nat* does not guarantee NatPos* (0 could be an element).
-// Requires CVC5 sequence theory for Kleene-star parameters — not yet implemented.
 #[test]
-#[ignore = "Kleene-star parameter encoding requires sequence theory — not yet implemented"]
 fn kleene_nat_star_not_natpos_star_counterexample() {
     counterexample("
 f : Nat* -> NatPos*
@@ -238,10 +232,8 @@ f(xs) = xs
 }
 
 // A function accepting X* and returning the length as a Nat.
-// (len is a built-in that returns the number of elements.)
-// Requires CVC5 sequence theory for Kleene-star parameters — not yet implemented.
+// (len is a built-in that returns the number of elements — encoded as SeqLength.)
 #[test]
-#[ignore = "Kleene-star parameter encoding requires sequence theory — not yet implemented"]
 fn kleene_len_is_nat_proved() {
     proved("
 f : Nat* -> Nat
@@ -250,10 +242,8 @@ f(xs) = len(xs)
 }
 
 // (Int - {0})* — Kleene star of a non-zero integer set.
-// Any element of the vector is non-zero.
-// Requires CVC5 sequence theory for Kleene-star parameters — not yet implemented.
+// Any element of the vector is non-zero; identity into Int* is proved.
 #[test]
-#[ignore = "Kleene-star parameter encoding requires sequence theory — not yet implemented"]
 fn kleene_set_difference_star_proved() {
     proved("
 f : (Int - {0})* -> Int*

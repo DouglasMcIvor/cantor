@@ -167,6 +167,10 @@ fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs:
     let mut solver = Solver::new(&tm);
     solver.set_logic("ALL");
     solver.set_option("produce-models", "true");
+    // Sequence membership uses universally-quantified constraints (∀i. guard → elem∈X).
+    // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
+    // for existential goals arising from negated universals (counterexample direction).
+    solver.set_option("mbqi", "true");
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
     let env = Env::new();
@@ -296,6 +300,10 @@ fn check_block_sig(
     let mut solver = Solver::new(&tm);
     solver.set_logic("ALL");
     solver.set_option("produce-models", "true");
+    // Sequence membership uses universally-quantified constraints (∀i. guard → elem∈X).
+    // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
+    // for existential goals arising from negated universals (counterexample direction).
+    solver.set_option("mbqi", "true");
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
@@ -459,6 +467,8 @@ fn check_block_sig(
                 0 // TODO: render tuple model value in counterexample display
             } else if matches!(k, ValKind::TaggedUnion(_)) {
                 0 // TODO: decode datatype arm for cross-kind union counterexample display
+            } else if matches!(k, ValKind::Vector(_)) {
+                0 // TODO: render vector model value in counterexample display
             } else if let Some(info) = distinct_preds.values().find(|i| i.sort == term.sort()) {
                 // Parameter has a distinct (uninterpreted) sort — apply `from_D` to
                 // recover the underlying integer for the counterexample display.
@@ -506,6 +516,13 @@ fn check_sig(
     let mut solver = Solver::new(&tm);
     solver.set_logic("ALL");
     solver.set_option("produce-models", "true");
+    // Sequence-theory goals use universally-quantified membership constraints.
+    // `full-saturate-quant` tells cvc5 to keep instantiating quantifiers until
+    // a model is found — needed to produce counterexamples for ¬(∀i. …) goals.
+    // Sequence membership uses universally-quantified constraints (∀i. guard → elem∈X).
+    // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
+    // for existential goals arising from negated universals (counterexample direction).
+    solver.set_option("mbqi", "true");
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
@@ -626,6 +643,8 @@ fn check_sig(
                 0 // TODO: render tuple model value in counterexample display
             } else if matches!(k, ValKind::TaggedUnion(_)) {
                 0 // TODO: decode datatype arm for cross-kind union counterexample display
+            } else if matches!(k, ValKind::Vector(_)) {
+                0 // TODO: render vector model value in counterexample display
             } else {
                 integer_value(&val)
             };

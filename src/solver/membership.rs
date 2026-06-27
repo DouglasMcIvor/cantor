@@ -422,16 +422,42 @@ pub(crate) fn membership_constraint<'tm>(
 
         // `t ∈ X*`  ↔  every element of `t` is in `X`.
         //
-        // For concrete tuple-sorted terms (fixed-length bodies like `[1, 2, 3]`):
-        // read the element count from the tuple sort and check each child against `X`.
-        // An empty tuple `[]` trivially satisfies any `X*` (vacuously true).
+        // Two representations of `t`:
         //
-        // For variable-length parameters (non-tuple-sorted terms): fall back to
-        // Unsupported (Unknown) — sequence theory encoding is not yet implemented.
+        // (a) Sequence-sorted term (variable-length parameter encoded as `(Seq elem)`):
+        //     Encode as a universally-quantified constraint:
+        //       ∀ i. 0 ≤ i < len(t)  →  nth(t, i) ∈ X
+        //     If the element membership is Unconstrained (e.g. X = Int), the entire
+        //     sequence is trivially unconstrained.  If element membership is Unsupported,
+        //     propagate Unsupported (→ Unknown at the call site).
+        //
+        // (b) Tuple-sorted term (fixed-length concrete bodies like `[1, 2, 3]`):
+        //     Read the element count from the tuple sort and check each child against X.
+        //     An empty tuple `[]` satisfies any `X*` vacuously.
         ExprKind::KleeneStar(inner) => {
+            if t.sort().is_sequence() {
+                // Build a bound variable `i` for the universal quantifier.
+                let i = tm.mk_var(tm.integer_sort(), "i");
+                // nth(t, i) — the i-th element of the sequence.
+                let nth = tm.mk_term(Kind::SeqNth, &[t.clone(), i.clone()]);
+                return match membership_constraint(tm, nth, inner, name_defs, distinct_preds) {
+                    Membership::Unconstrained => Membership::Unconstrained,
+                    Membership::Unsupported   => Membership::Unsupported,
+                    Membership::Constrained(elem_c) => {
+                        let len   = tm.mk_term(Kind::SeqLength, &[t]);
+                        let lo    = tm.mk_term(Kind::Leq, &[tm.mk_integer(0), i.clone()]);
+                        let hi    = tm.mk_term(Kind::Lt,  &[i.clone(), len]);
+                        let guard = tm.mk_term(Kind::And, &[lo, hi]);
+                        let body  = tm.mk_term(Kind::Implies, &[guard, elem_c]);
+                        let vars  = tm.mk_term(Kind::VariableList, &[i]);
+                        Membership::Constrained(tm.mk_term(Kind::Forall, &[vars, body]))
+                    }
+                };
+            }
             if !t.sort().is_tuple() {
                 return Membership::Unsupported;
             }
+            // Tuple branch: fixed-length concrete body.
             let dt = t.sort().datatype();
             let n_elems = dt.constructor(0).num_selectors();
             let mut constraints: Vec<Term<'_>> = Vec::new();
