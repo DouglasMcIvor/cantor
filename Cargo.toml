@@ -11,6 +11,7 @@ llvm-sys = { version = "180", features = ["prefer-dynamic"] }
 # cvc5 SMT solver — domain/range constraint checking.
 # Requires system packages: libcvc5-1 libcvc5-dev (apt).
 cvc5 = "0.4"
+arrow-array = "59"
 
 [dev-dependencies]
 # (nothing yet)

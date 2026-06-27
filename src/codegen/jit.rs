@@ -18,16 +18,16 @@ impl<'ctx> Compiler<'ctx> {
         // module, so these remain valid after the module is consumed below.
         let mappings: Vec<(FunctionValue<'ctx>, usize)> = {
             let rt: &[(&str, usize)] = &[
-                ("cantor_set_new_i64",       runtime::cantor_set_new_i64      as usize),
-                ("cantor_set_insert_i64",    runtime::cantor_set_insert_i64   as usize),
-                ("cantor_set_contains_i64",  runtime::cantor_set_contains_i64 as usize),
-                ("cantor_set_size_i64",      runtime::cantor_set_size_i64     as usize),
-                ("cantor_set_get_i64",       runtime::cantor_set_get_i64      as usize),
-                ("cantor_set_new_bool",      runtime::cantor_set_new_bool     as usize),
-                ("cantor_set_insert_bool",   runtime::cantor_set_insert_bool  as usize),
-                ("cantor_set_contains_bool", runtime::cantor_set_contains_bool as usize),
-                ("cantor_set_size_bool",     runtime::cantor_set_size_bool    as usize),
-                ("cantor_set_get_bool",      runtime::cantor_set_get_bool     as usize),
+                ("cantor_set_new_i64",       runtime::cantor_set_new_i64       as *const () as usize),
+                ("cantor_set_insert_i64",    runtime::cantor_set_insert_i64    as *const () as usize),
+                ("cantor_set_contains_i64",  runtime::cantor_set_contains_i64  as *const () as usize),
+                ("cantor_set_size_i64",      runtime::cantor_set_size_i64      as *const () as usize),
+                ("cantor_set_get_i64",       runtime::cantor_set_get_i64       as *const () as usize),
+                ("cantor_set_new_bool",      runtime::cantor_set_new_bool      as *const () as usize),
+                ("cantor_set_insert_bool",   runtime::cantor_set_insert_bool   as *const () as usize),
+                ("cantor_set_contains_bool", runtime::cantor_set_contains_bool as *const () as usize),
+                ("cantor_set_size_bool",     runtime::cantor_set_size_bool     as *const () as usize),
+                ("cantor_set_get_bool",      runtime::cantor_set_get_bool      as *const () as usize),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))
@@ -39,7 +39,7 @@ impl<'ctx> Compiler<'ctx> {
             .map_err(|e| e.to_string())?;
 
         for (fn_val, addr) in mappings {
-            unsafe { ee.add_global_mapping(&fn_val, addr); }
+            ee.add_global_mapping(&fn_val, addr);
         }
 
         Ok(ee)

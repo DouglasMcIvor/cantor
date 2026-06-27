@@ -5,12 +5,12 @@ use std::collections::{HashMap, HashSet};
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    ast::{Expr, ExprKind, FunctionDef, Stmt, collect_loop_modified},
+    ast::{Expr, ExprKind, FunctionDef, Stmt},
     span::Symbol,
 };
 
 use super::{CheckResult, NameDefs};
-use super::blocks::{encode_block, check_require};
+use super::blocks::{encode_block};
 use super::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 

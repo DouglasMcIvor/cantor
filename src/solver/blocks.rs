@@ -12,7 +12,7 @@ use crate::{
 
 use super::{CheckResult, NameDefs};
 use super::loops::{check_inductive_step, check_for_inductive_step};
-use super::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value};
+use super::encode::{Env, BuiltinObligation, encode_expr, integer_value};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 
 // ── Loop predicate ────────────────────────────────────────────────────────────
