@@ -13,8 +13,9 @@ You probably don't want to read this unless you're me.
 - immutable set constants like `s = {1, 2, 3}`, need to be baked in as statics
 - more basic values:
   - float (Float32 and Float64 as distinct sets, FiniteFloat32 and explicit inf zero and NaN values)
-  - char (unicode)
-  - byte
+  - Signed32 Unsigned32 etc for wrapping arithmetic distinct from Int and Nat
+  - Char (unicode)
+  - Byte, Word (platform dependent), Bits32, Bits(435) generic etc
 - more operators: modulo (see below for quot and rem support under Rational), bitwise ops on bytes
 - Rational support, including making / for Int return Rational and adding quot and rem to keep Int inside Int
 - operator overloading for things like List(Byte)?
