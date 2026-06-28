@@ -3,26 +3,48 @@ You probably don't want to read this unless you're me.
 
 # To do
 
-- should len be replaced with just size? any other built in functions I need?
+- should `len` be replaced with just `size`? any other built in functions I need?
 - `none` value and `None` set, currently missing
-- function overloads, or as ChatGPT suggests "the language should officially define an overloaded function as *the union of compatible partial functions*". In my own words "all functions are partial until linking is complete"
+- function overloads, or as ChatGPT suggests "the language should officially define an overloaded
+  function as *the union of compatible partial functions*". In my own words "all functions are partial
+  until linking is complete"
+- see if we can switch to proper ListArrays for nested vecs instead of using pointers? Or perhaps the current approach 
+  is better for mutability etc?
 - CLI to output IR
 - more set comprehensions features
   - math syntax `{x*2 | x ∈ Nat, x > 0}` as sugar for the python form (deferred)
   - multi-binder `{x+y for x in A for y in B}` desugaring to Cartesian product (deferred)
 - immutable set constants like `s = {1, 2, 3}`, need to be baked in as statics
+- value literals desugaring in compile time set positions and support for sequences of literal values.
+  E.g.
+  - `Nat* - {}` (prefer over the empty set interpretation as that's _useless_)
+  - `Nat* - {[]}`
+  - more ambitiously `Nat* - {4}`/`Nat* - {[4]}`/`Nat* - {(4)}` as all equivalent!
+    "My vector can be anything except a length 1 list containing a 4".
+    I don't expect the solver to work very well in the last case, but we should at least
+    let the user try and write it.
 - more basic values:
-  - Int32, Int(32) and their Nat cousins as LLVM iN values, right now all are i64. Rely on the optimizer to pack or not etc.
-  - float (Float32 and Float64 as distinct sets, FiniteFloat32 and explicit inf zero and NaN values)
-  - Signed32 Unsigned32 etc for wrapping arithmetic distinct from Int and Nat
-  - Char (unicode)
-  - Byte, Word (platform dependent), Bits32, Bits(435) generic etc
-- more operators: modulo (see below for quot and rem support under Rational), bitwise ops on bytes
-- Rational support, including making / for Int return Rational and adding quot and rem to keep Int inside Int
-- operator overloading for things like List(Byte)?
+  - `Int32`, `Int(32)` and their Nat cousins as LLVM iN values, right now all are i64. Rely on the optimizer to pack or not etc.
+  - `Float32` and `Float64` as distinct sets, `FiniteFloat32` and explicit `posZero`, `negZero`, `nan` values
+  - `Signed32`, `Unsigned32` etc for wrapping arithmetic distinct from `Int` and `Nat`
+  - `Char` (unicode), our string type is `Char*` which is just too perfect to be true.
+  - `Byte`, `Bits32`, `Bits(435)` generic etc
+  - `Size`, `Word` (platform dependent)
+- more containers:
+  - maps
+  - ordered sets
+  - deques and stuff like that?
+- more operators:
+  - quot and rem (instead of modulo)
+  - bitwise ops on bytes
+  - comparison operators (they are in the lexer but I don't think they are implemented)
+- `Rational` support, including making `/` for `Int` return `Rational`
+  - adding `quot` and `rem` to keep `Int` inside `Int`
+- operator overloading for things like `List(Byte)`?
   - custom operator overloading syntax like with haskell? I don't care for inventing new ops but supporting existing ones might be important
-  - automatic operator overloading for disinct sets, like allowing arithmetic on Litre, maybe via generics mechanism below?
-- BigInt runtime support for our unsized Int and Nat sets, should come after function overloading so that
+  - automatic operator overloading for disinct sets, like allowing arithmetic on Litre. See `deriving` below.
+- Use `iN` in the LLVM IR for `Int(N)` and cousins, i.e. whenever the size is known at compile time.
+- BigInt runtime support for our unsized `Int` and `Nat` sets, should come after function overloading so that
   ```
   foo : Int -> Int
   ```
@@ -38,14 +60,10 @@ You probably don't want to read this unless you're me.
 - constants JIT'd instead of at rust level to get consistency 
 - spin up some code review agents to assess quality of rust implementation, factoring and maintainability before it gets too large
 - human intros (familiar with types, newbie with the word type taboo'd) and LLM intro. The human intros would be good to include a bunch of Venn diagrams and ye olde curved arrows between ovals representing functions to visualise the concepts along the way.
-- review and improve error messages
-- suggested constraints in error messages
-- more containers! gotta have me some vectors and maps, not just sets! ordered sets too
-- ~vectors be something like `Vector(X) = Union(n : Nat) (X * n)`~ 
-  NOPE! Vectors are the Kleene star!!! `X*` - we get it being both the
-union of all products over n in Nat _and_ the free monoid over `X`!
-  Then maybe we use `x[i]` as the syntax for runtime indexing. The dot operator is compile time only, `[]` allows both.
-  I have also just realised that makes our string type `Char*` which is just too perfect to be true.
+- error messages
+  - review and improve error messages
+  - suggested constraints in error messages
+  - counterexample printing TODOs
 - recursive set definitions:
   ```
   Tree = Int | Tree * Tree
