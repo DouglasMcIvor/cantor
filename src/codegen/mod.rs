@@ -686,31 +686,14 @@ impl<'ctx> Compiler<'ctx> {
         self.module.add_function("cantor_vec_concat_i64",          i64t.fn_type(ii,   false), None);
         self.module.add_function("cantor_vec_concat_bool",         i64t.fn_type(ii,   false), None);
 
-        // Nested vector (X**) — ListArray backed; CantorListVec is the unified outer type.
-        // Builders are typed by their child element kind; len/get/concat are per child kind.
-        // _i64       = child is Int64Array   (Nat**)
-        // _bool      = child is BooleanArray (Bool**)
-        // _list_i64  = child is ListArray<Int64Array> (Nat***)
-        self.module.add_function("cantor_list_vec_builder_new_i64",       i64t.fn_type(&[], false), None);
-        self.module.add_function("cantor_list_vec_builder_push_i64",      void.fn_type(ii,   false), None);
-        self.module.add_function("cantor_list_vec_builder_finish_i64",    i64t.fn_type(i,    false), None);
-        self.module.add_function("cantor_list_vec_get_i64",               i64t.fn_type(ii,   false), None);
-        self.module.add_function("cantor_list_vec_concat_i64",            i64t.fn_type(ii,   false), None);
-
-        self.module.add_function("cantor_list_vec_builder_new_bool",      i64t.fn_type(&[], false), None);
-        self.module.add_function("cantor_list_vec_builder_push_bool",     void.fn_type(ii,   false), None);
-        self.module.add_function("cantor_list_vec_builder_finish_bool",   i64t.fn_type(i,    false), None);
-        self.module.add_function("cantor_list_vec_get_bool",              i64t.fn_type(ii,   false), None);
-        self.module.add_function("cantor_list_vec_concat_bool",           i64t.fn_type(ii,   false), None);
-
-        self.module.add_function("cantor_list_vec_builder_new_list_i64",  i64t.fn_type(&[], false), None);
-        self.module.add_function("cantor_list_vec_builder_push_list_i64", void.fn_type(ii,   false), None);
-        self.module.add_function("cantor_list_vec_builder_finish_list_i64", i64t.fn_type(i,  false), None);
-        self.module.add_function("cantor_list_vec_get_list_i64",          i64t.fn_type(ii,   false), None);
-        self.module.add_function("cantor_list_vec_concat_list_i64",       i64t.fn_type(ii,   false), None);
-
-        // Shared len — works on any CantorListVec regardless of child kind.
-        self.module.add_function("cantor_list_vec_len",                   i64t.fn_type(i,    false), None);
+        // Nested vector (X** at any depth) — generic CantorListVec (Int64Array of opaque i64 ptrs).
+        // All functions are suffix-free: the codegen never needs to know the Arrow child type.
+        self.module.add_function("cantor_list_vec_builder_new",    i64t.fn_type(&[], false), None);
+        self.module.add_function("cantor_list_vec_builder_push",   void.fn_type(ii,   false), None);
+        self.module.add_function("cantor_list_vec_builder_finish", i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_list_vec_len",            i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_list_vec_get",            i64t.fn_type(ii,   false), None);
+        self.module.add_function("cantor_list_vec_concat",         i64t.fn_type(ii,   false), None);
 
         // Struct vectors ((A * B)*) — backed by Arrow StructArray; all field values stored as i64.
         // push_field / get_field take (ptr, field_idx, value) — three i64 args.

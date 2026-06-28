@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, Int64Array, ListArray, StructArray,
-    builder::{BooleanBuilder, Int64Builder, ListBuilder},
+    Array, ArrayRef, BooleanArray, Int64Array, StructArray,
+    builder::{BooleanBuilder, Int64Builder},
 };
 use arrow_schema::{DataType, Field, Fields};
 
@@ -381,237 +381,75 @@ pub extern "C" fn cantor_struct_vec_concat(a: i64, b: i64) -> i64 {
     Box::into_raw(Box::new(CantorStructVec { array })) as i64
 }
 
-// ── Nested vectors (X**) ──────────────────────────────────────────────────────
+// ── Nested vectors (X** at any depth) ────────────────────────────────────────
 //
-// Kind::Vector(Kind::Vector(K)) is backed by Apache Arrow ListArray.
+// Kind::Vector(Kind::Vector(K)) — and deeper nestings — are backed by
+// `CantorListVec`, an Apache Arrow `Int64Array` of opaque i64 element values.
 //
-// The unified `CantorListVec` holds a ListArray whose child ArrayRef varies
-// by depth:
-//   Nat** (K=Int):  child is Int64Array
-//   Bool** (K=Bool): child is BooleanArray
-//   Nat*** (K=Vector(Int)): child is ListArray (itself a Nat** ListArray)
+// For a flat X*, elements are scalars (e.g. actual i64 integers or 0/1 bools).
+// For X**, each element is an i64 *pointer* to an inner Cantor vector object
+// (CantorVecI64, CantorVecBool, CantorListVec, CantorStructVec, …).
+// This is the same convention that CantorStructVec uses for its field columns:
+// all values are stored as i64, with the semantic meaning known only to the
+// codegen from the Kind type system.
 //
-// Builders are separate concrete types per child kind (typed Arrow builders).
-// The result is always CantorListVec regardless of depth.
+// The ABI is fully generic — no type suffix, no Arrow type leaking into codegen:
+//   cantor_list_vec_builder_new  / push / finish
+//   cantor_list_vec_len / get / concat
 //
-// Arrow ListArray layout: offsets buffer + contiguous child array.
-// Element i spans child_array[offsets[i]..offsets[i+1]] — zero-copy slice
-// for scalar children; copied into a new CantorListVec for list children.
+// The six functions work identically for Nat**, Nat***, Bool**, (A*B)**, etc.
 
-/// Unified outer vector for X** at any nesting depth.
+/// Outer vector for X** at any nesting depth.
+/// Elements are i64 values — scalars for X* (handled elsewhere), or opaque
+/// pointers to inner Cantor vector objects for X** and deeper.
 pub struct CantorListVec {
-    array: ListArray,
+    elems: Int64Array,
 }
 
-// ── Nat** — List<Int64> ───────────────────────────────────────────────────────
-
-pub struct CantorListVecBuilderI64 {
-    builder: ListBuilder<Int64Builder>,
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_builder_new_i64() -> i64 {
-    Box::into_raw(Box::new(CantorListVecBuilderI64 {
-        builder: ListBuilder::new(Int64Builder::new()),
-    })) as i64
-}
-
-/// Append the contents of `inner_vec` (a `CantorVecI64` pointer) as the next element.
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_builder_push_i64(builder: i64, inner_vec: i64) {
-    let b = unsafe { &mut *(builder as *mut CantorListVecBuilderI64) };
-    let inner = unsafe { &*(inner_vec as *const CantorVecI64) };
-    for i in 0..inner.array.len() {
-        b.builder.values().append_value(inner.array.value(i));
-    }
-    b.builder.append(true);
+pub struct CantorListVecBuilder {
+    builder: Int64Builder,
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_builder_finish_i64(builder: i64) -> i64 {
-    let mut b = unsafe { Box::from_raw(builder as *mut CantorListVecBuilderI64) };
-    let array = b.builder.finish();
-    Box::into_raw(Box::new(CantorListVec { array })) as i64
+pub extern "C" fn cantor_list_vec_builder_new() -> i64 {
+    Box::into_raw(Box::new(CantorListVecBuilder { builder: Int64Builder::new() })) as i64
 }
 
-// ── Bool** — List<Boolean> ────────────────────────────────────────────────────
-
-pub struct CantorListVecBuilderBool {
-    builder: ListBuilder<BooleanBuilder>,
+/// Append one element (an i64 pointer to an inner vector, or any i64) to the builder.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_list_vec_builder_push(builder: i64, elem: i64) {
+    unsafe { &mut *(builder as *mut CantorListVecBuilder) }
+        .builder
+        .append_value(elem);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_builder_new_bool() -> i64 {
-    Box::into_raw(Box::new(CantorListVecBuilderBool {
-        builder: ListBuilder::new(BooleanBuilder::new()),
-    })) as i64
+pub extern "C" fn cantor_list_vec_builder_finish(builder: i64) -> i64 {
+    let mut b = unsafe { Box::from_raw(builder as *mut CantorListVecBuilder) };
+    let elems = b.builder.finish();
+    Box::into_raw(Box::new(CantorListVec { elems })) as i64
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_builder_push_bool(builder: i64, inner_vec: i64) {
-    let b = unsafe { &mut *(builder as *mut CantorListVecBuilderBool) };
-    let inner = unsafe { &*(inner_vec as *const CantorVecBool) };
-    for i in 0..inner.array.len() {
-        b.builder.values().append_value(inner.array.value(i));
-    }
-    b.builder.append(true);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_builder_finish_bool(builder: i64) -> i64 {
-    let mut b = unsafe { Box::from_raw(builder as *mut CantorListVecBuilderBool) };
-    let array = b.builder.finish();
-    Box::into_raw(Box::new(CantorListVec { array })) as i64
-}
-
-// ── Nat*** — List<List<Int64>> ────────────────────────────────────────────────
-
-pub struct CantorListVecBuilderListI64 {
-    builder: ListBuilder<ListBuilder<Int64Builder>>,
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_builder_new_list_i64() -> i64 {
-    Box::into_raw(Box::new(CantorListVecBuilderListI64 {
-        builder: ListBuilder::new(ListBuilder::new(Int64Builder::new())),
-    })) as i64
-}
-
-/// Append the contents of `inner_list` (a `CantorListVec` pointer over Int64) as the next element.
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_builder_push_list_i64(outer_builder: i64, inner_list: i64) {
-    let b = unsafe { &mut *(outer_builder as *mut CantorListVecBuilderListI64) };
-    let inner = unsafe { &*(inner_list as *const CantorListVec) };
-    let inner_la = &inner.array;
-    let inner_vals = inner_la
-        .values()
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .expect("push_list_i64: inner CantorListVec must have Int64Array child");
-    for i in 0..inner_la.len() {
-        let start = inner_la.value_offsets()[i] as usize;
-        let end   = inner_la.value_offsets()[i + 1] as usize;
-        for j in start..end {
-            b.builder.values().values().append_value(inner_vals.value(j));
-        }
-        b.builder.values().append(true);
-    }
-    b.builder.append(true);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_builder_finish_list_i64(builder: i64) -> i64 {
-    let mut b = unsafe { Box::from_raw(builder as *mut CantorListVecBuilderListI64) };
-    let array = b.builder.finish();
-    Box::into_raw(Box::new(CantorListVec { array })) as i64
-}
-
-// ── Shared read operations on CantorListVec ───────────────────────────────────
-
-/// Length of the outer vector — same for all child kinds.
+/// Length of the outer list — valid for any depth.
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_list_vec_len(vec: i64) -> i64 {
-    unsafe { &*(vec as *const CantorListVec) }.array.len() as i64
+    unsafe { &*(vec as *const CantorListVec) }.elems.len() as i64
 }
 
-/// Return element `idx` as a new `CantorVecI64` pointer (for Nat**).
+/// Return the i64 element at `idx` (an opaque pointer for nested vectors,
+/// or a scalar for flat X* built via this path).
 #[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_get_i64(vec: i64, idx: i64) -> i64 {
-    let list = unsafe { &*(vec as *const CantorListVec) };
-    let slice = list.array.value(idx as usize);
-    let inner = slice
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .expect("cantor_list_vec_get_i64: child must be Int64Array")
-        .clone();
-    Box::into_raw(Box::new(CantorVecI64 { array: inner })) as i64
+pub extern "C" fn cantor_list_vec_get(vec: i64, idx: i64) -> i64 {
+    unsafe { &*(vec as *const CantorListVec) }.elems.value(idx as usize)
 }
 
-/// Return element `idx` as a new `CantorVecBool` pointer (for Bool**).
+/// Concatenate two CantorListVec values (purely functional, O(n)).
 #[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_get_bool(vec: i64, idx: i64) -> i64 {
-    let list = unsafe { &*(vec as *const CantorListVec) };
-    let slice = list.array.value(idx as usize);
-    let inner = slice
-        .as_any()
-        .downcast_ref::<BooleanArray>()
-        .expect("cantor_list_vec_get_bool: child must be BooleanArray")
-        .clone();
-    Box::into_raw(Box::new(CantorVecBool { array: inner })) as i64
-}
-
-/// Return element `idx` as a new `CantorListVec` pointer (for Nat***).
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_get_list_i64(vec: i64, idx: i64) -> i64 {
-    let list = unsafe { &*(vec as *const CantorListVec) };
-    let slice = list.array.value(idx as usize);
-    let inner = slice
-        .as_any()
-        .downcast_ref::<ListArray>()
-        .expect("cantor_list_vec_get_list_i64: child must be ListArray")
-        .clone();
-    Box::into_raw(Box::new(CantorListVec { array: inner })) as i64
-}
-
-// ── Concatenation for CantorListVec ──────────────────────────────────────────
-
-/// Concatenate two Nat** vectors (child = Int64Array).
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_concat_i64(va: i64, vb: i64) -> i64 {
+pub extern "C" fn cantor_list_vec_concat(va: i64, vb: i64) -> i64 {
     let a = unsafe { &*(va as *const CantorListVec) };
     let b = unsafe { &*(vb as *const CantorListVec) };
-    let mut builder = ListBuilder::new(Int64Builder::new());
-    for list in [&a.array, &b.array] {
-        for i in 0..list.len() {
-            let slice = list.value(i);
-            let inner = slice.as_any().downcast_ref::<Int64Array>().unwrap();
-            for j in 0..inner.len() { builder.values().append_value(inner.value(j)); }
-            builder.append(true);
-        }
-    }
-    Box::into_raw(Box::new(CantorListVec { array: builder.finish() })) as i64
-}
-
-/// Concatenate two Bool** vectors (child = BooleanArray).
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_concat_bool(va: i64, vb: i64) -> i64 {
-    let a = unsafe { &*(va as *const CantorListVec) };
-    let b = unsafe { &*(vb as *const CantorListVec) };
-    let mut builder = ListBuilder::new(BooleanBuilder::new());
-    for list in [&a.array, &b.array] {
-        for i in 0..list.len() {
-            let slice = list.value(i);
-            let inner = slice.as_any().downcast_ref::<BooleanArray>().unwrap();
-            for j in 0..inner.len() { builder.values().append_value(inner.value(j)); }
-            builder.append(true);
-        }
-    }
-    Box::into_raw(Box::new(CantorListVec { array: builder.finish() })) as i64
-}
-
-/// Concatenate two Nat*** vectors (child = ListArray<Int64>).
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_list_vec_concat_list_i64(va: i64, vb: i64) -> i64 {
-    let a = unsafe { &*(va as *const CantorListVec) };
-    let b = unsafe { &*(vb as *const CantorListVec) };
-    let mut builder = ListBuilder::new(ListBuilder::new(Int64Builder::new()));
-    for list in [&a.array, &b.array] {
-        for i in 0..list.len() {
-            let outer_slice = list.value(i);
-            let inner_la = outer_slice.as_any().downcast_ref::<ListArray>()
-                .expect("cantor_list_vec_concat_list_i64: inner must be ListArray");
-            let inner_vals = inner_la.values().as_any().downcast_ref::<Int64Array>()
-                .expect("cantor_list_vec_concat_list_i64: inner values must be Int64Array");
-            for j in 0..inner_la.len() {
-                let start = inner_la.value_offsets()[j] as usize;
-                let end   = inner_la.value_offsets()[j + 1] as usize;
-                for k in start..end {
-                    builder.values().values().append_value(inner_vals.value(k));
-                }
-                builder.values().append(true);
-            }
-            builder.append(true);
-        }
-    }
-    Box::into_raw(Box::new(CantorListVec { array: builder.finish() })) as i64
+    let mut builder = Int64Builder::with_capacity(a.elems.len() + b.elems.len());
+    for i in 0..a.elems.len() { builder.append_value(a.elems.value(i)); }
+    for i in 0..b.elems.len() { builder.append_value(b.elems.value(i)); }
+    Box::into_raw(Box::new(CantorListVec { elems: builder.finish() })) as i64
 }

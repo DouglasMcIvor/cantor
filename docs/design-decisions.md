@@ -543,16 +543,13 @@ correctly.  The solver currently reports such functions as Unknown (the SMT bloc
 does not yet support early `return` — it is aware of the limitation and will not produce
 false proofs).
 
-*Nested vectors (`Nat**`, `Nat***`, …)* (COMPLETE):
+*Nested vectors (`Nat**`, `Nat***`, `Bool**`, …)* (COMPLETE):
 
-Nested vectors at any depth share a single unified runtime type `CantorListVec`
-wrapping an Apache Arrow `ListArray` whose child `ArrayRef` varies by depth:
-
-| Cantor kind | Child array |
-|---|---|
-| `Nat**`  | `Int64Array` (values of inner `Nat*` elements) |
-| `Bool**` | `BooleanArray` (values of inner `Bool*` elements) |
-| `Nat***` | `ListArray<Int64Array>` (the inner `Nat**` arrays, recursively) |
+Nested vectors at any depth share a single unified runtime type `CantorListVec`,
+backed by an Apache Arrow `Int64Array` of opaque `i64` element values.  Each element
+is a pointer to the inner Cantor vector object (`CantorVecI64`, `CantorVecBool`,
+`CantorStructVec`, or a deeper `CantorListVec`).  This mirrors the design of
+`CantorStructVec`, which stores all field values as `i64` regardless of field kind.
 
 ```
 -- Two-level nesting
@@ -560,19 +557,26 @@ make : -> Nat**;   make() = [[1, 2, 3], [4, 5]]
 f    : Nat** -> Nat;  f(xss) = len(xss)                          -- 2
 g    : Nat** -> Nat;  g(xss) { i:Nat=1; j:Nat=2; return xss[i][j] }  -- 5
 
--- Three-level nesting
+-- Three-level nesting (and deeper) works with identical ABI
 deep : -> Nat***;  deep() = [[[1, 2], [3]], [[4, 5, 6]]]
 h    : -> Nat;     h() { xsss:Nat***=deep(); return xsss[1][0][2] }  -- 6
 ```
 
-- Builders are typed per child kind: `CantorListVecBuilderI64` (`Nat**`),
-  `CantorListVecBuilderBool` (`Bool**`), `CantorListVecBuilderListI64` (`Nat***`).
-  All produce the unified `CantorListVec` result.
-- `len` is unified: `cantor_list_vec_len(xs)` works for any depth.
-- `xs[i]` dispatches on child kind: `cantor_list_vec_get_i64` (→ `CantorVecI64`),
-  `cantor_list_vec_get_bool` (→ `CantorVecBool`), or
-  `cantor_list_vec_get_list_i64` (→ `CantorListVec`) for `Nat***`.
-- `++` dispatches similarly: `cantor_list_vec_concat_{i64,bool,list_i64}`.
+**Runtime / codegen ABI** — 6 suffix-free functions, the same for any depth and any
+inner kind (`Nat**`, `Nat***`, `Bool**`, `(A*B)**`, …):
+
+| Function | Signature |
+|---|---|
+| `cantor_list_vec_builder_new`    | `() -> i64`           |
+| `cantor_list_vec_builder_push`   | `(builder, elem) -> void` |
+| `cantor_list_vec_builder_finish` | `(builder) -> i64`    |
+| `cantor_list_vec_len`            | `(vec) -> i64`        |
+| `cantor_list_vec_get`            | `(vec, idx) -> i64`   |
+| `cantor_list_vec_concat`         | `(va, vb) -> i64`     |
+
+The codegen dispatches on the element `Kind` it knows from the Cantor kind system
+to interpret the `i64` returned by `cantor_list_vec_get` — no Arrow type is ever
+mentioned in the codegen layer.
 
 *Struct vectors (`(Nat * Nat)*` = vector of tuples)* (COMPLETE):
 

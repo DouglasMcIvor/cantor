@@ -14,7 +14,8 @@ use crate::{
 ///
 /// Returns `(new, push, finish, len)` for `Kind::Vector(elem_kind)`.
 /// For scalar elements the push arg is the element value (i64).
-/// For vector elements the push arg is a pointer to an inner vector (i64).
+/// For vector elements the push arg is an i64 pointer to the inner vector —
+/// the generic `cantor_list_vec_*` functions are used regardless of depth.
 fn vec_builder_fns(ek: &Kind) -> Result<(&'static str, &'static str, &'static str, &'static str), String> {
     match ek {
         // Flat vectors: element is a scalar.
@@ -22,16 +23,11 @@ fn vec_builder_fns(ek: &Kind) -> Result<(&'static str, &'static str, &'static st
                           "cantor_vec_builder_finish_i64", "cantor_vec_len_i64")),
         Kind::Bool => Ok(("cantor_vec_builder_new_bool", "cantor_vec_builder_push_bool",
                           "cantor_vec_builder_finish_bool", "cantor_vec_len_bool")),
-        // Nested vectors: element is itself a vector; push takes an inner-vector pointer.
-        Kind::Vector(inner_ek) => match inner_ek.as_ref() {
-            Kind::Int  => Ok(("cantor_list_vec_builder_new_i64",      "cantor_list_vec_builder_push_i64",
-                              "cantor_list_vec_builder_finish_i64",    "cantor_list_vec_len")),
-            Kind::Bool => Ok(("cantor_list_vec_builder_new_bool",     "cantor_list_vec_builder_push_bool",
-                              "cantor_list_vec_builder_finish_bool",   "cantor_list_vec_len")),
-            Kind::Vector(_) => Ok(("cantor_list_vec_builder_new_list_i64",  "cantor_list_vec_builder_push_list_i64",
-                                   "cantor_list_vec_builder_finish_list_i64", "cantor_list_vec_len")),
-            other => Err(format!("vec_builder_fns: unsupported nested element kind {other:?}")),
-        },
+        // Nested vectors: element is itself a vector or tuple; push takes an inner-vector
+        // pointer as i64.  The same 3 functions work for any depth — Nat**, Nat***,
+        // Bool**, (A*B)**, etc. — because the runtime stores opaque i64 pointers.
+        Kind::Vector(_) => Ok(("cantor_list_vec_builder_new",    "cantor_list_vec_builder_push",
+                               "cantor_list_vec_builder_finish", "cantor_list_vec_len")),
         other => Err(format!("vec_builder_fns: unsupported element kind {other:?}")),
     }
 }
@@ -436,17 +432,10 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         let concat_fn = match &elem_kind {
-            Kind::Int  => "cantor_vec_concat_i64",
-            Kind::Bool => "cantor_vec_concat_bool",
-            Kind::Vector(inner_ek) => match inner_ek.as_ref() {
-                Kind::Int     => "cantor_list_vec_concat_i64",
-                Kind::Bool    => "cantor_list_vec_concat_bool",
-                Kind::Vector(_) => "cantor_list_vec_concat_list_i64",
-                other => return Err(CompileError::Internal(format!(
-                    "TODO: `++` not yet implemented for nested element kind {other:?}"
-                ))),
-            },
-            Kind::Tuple(_) => "cantor_struct_vec_concat",
+            Kind::Int    => "cantor_vec_concat_i64",
+            Kind::Bool   => "cantor_vec_concat_bool",
+            Kind::Vector(_) => "cantor_list_vec_concat",
+            Kind::Tuple(_)  => "cantor_struct_vec_concat",
             other => return Err(CompileError::Internal(format!(
                 "TODO: `++` not yet implemented for element kind {other:?}"
             ))),
@@ -479,15 +468,9 @@ impl<'ctx> Compiler<'ctx> {
                 let fn_name = match ek.as_ref() {
                     Kind::Int  => "cantor_vec_get_i64",
                     Kind::Bool => "cantor_vec_get_bool",
-                    // Nested vector (X**): inner element is itself a vector pointer (i64).
-                    Kind::Vector(inner_ek) => match inner_ek.as_ref() {
-                        Kind::Int     => "cantor_list_vec_get_i64",
-                        Kind::Bool    => "cantor_list_vec_get_bool",
-                        Kind::Vector(_) => "cantor_list_vec_get_list_i64",
-                        other => return Err(CompileError::Internal(format!(
-                            "TODO: `xs[i]` not yet implemented for nested element kind {other:?}"
-                        ))),
-                    },
+                    // Nested vector (X**): inner element is an i64 pointer to the inner vector.
+                    // The same generic function works for any depth (Nat**, Nat***, Bool**, …).
+                    Kind::Vector(_) => "cantor_list_vec_get",
                     // Struct vector ((A * B)*): multi-field get, returns a tuple struct.
                     Kind::Tuple(field_kinds) => {
                         return self.compile_struct_vec_index(base_val, idx_val, field_kinds);
@@ -1058,14 +1041,7 @@ impl<'ctx> Compiler<'ctx> {
                     let (get_fn, elem_kind) = match ek.as_ref() {
                         Kind::Int  => ("cantor_vec_get_i64",  Kind::Int),
                         Kind::Bool => ("cantor_vec_get_bool", Kind::Bool),
-                        Kind::Vector(inner) => match inner.as_ref() {
-                            Kind::Int     => ("cantor_list_vec_get_i64",      Kind::Vector(Box::new(Kind::Int))),
-                            Kind::Bool    => ("cantor_list_vec_get_bool",     Kind::Vector(Box::new(Kind::Bool))),
-                            Kind::Vector(deeper) => ("cantor_list_vec_get_list_i64", Kind::Vector(deeper.clone())),
-                            other => return Err(CompileError::Internal(format!(
-                                "xs[N]: unsupported nested element kind {other:?}"
-                            ))),
-                        },
+                        Kind::Vector(inner) => ("cantor_list_vec_get", Kind::Vector(inner.clone())),
                         other => return Err(CompileError::Internal(format!(
                             "xs[N]: unsupported element kind {other:?}"
                         ))),
