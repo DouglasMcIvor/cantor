@@ -12,6 +12,7 @@ You probably don't want to read this unless you're me.
   - multi-binder `{x+y for x in A for y in B}` desugaring to Cartesian product (deferred)
 - immutable set constants like `s = {1, 2, 3}`, need to be baked in as statics
 - more basic values:
+  - Int32, Int(32) and their Nat cousins as LLVM iN values, right now all are i64. Rely on the optimizer to pack or not etc.
   - float (Float32 and Float64 as distinct sets, FiniteFloat32 and explicit inf zero and NaN values)
   - Signed32 Unsigned32 etc for wrapping arithmetic distinct from Int and Nat
   - Char (unicode)
@@ -291,6 +292,7 @@ Algorithm:
 - Claude will often remove its own comments when editing sections of code. I'm not sure why it does this.
 - I can viscerally feel the development process slowing down as the codebase grows. The changes are getting more complex, the amount of code that needs to change is growing, and unsurprisingly this means both Claude and I are beginning to make more mistakes and need more guidance and review.
 - All the different theories that cvc5 supports, including "bags" as a name for multisets in the theory of bags
+- LLVM supports arbitrary size integers out of the box, as long as their size is known at compile time
 
 # Things that surprised me
 
