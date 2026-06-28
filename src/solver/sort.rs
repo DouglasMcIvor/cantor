@@ -60,7 +60,6 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
         ValKind::Bool          => "ck_Bool".to_string(),
         ValKind::Fail          => "ck_Fail".to_string(),
         ValKind::Set(_)        => "ck_Set".to_string(),
-        ValKind::Union(_)      => "ck_Union".to_string(),
         ValKind::Tuple(inner)  => {
             let s = inner.iter().map(arm_ctor_name).collect::<Vec<_>>().join("_");
             format!("ck_T_{s}")

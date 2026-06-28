@@ -415,13 +415,6 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Vector(_) => "cantor_list_vec_concat",
             Kind::Tuple(_)  => "cantor_struct_vec_concat",
             Kind::TaggedUnion(_) => "cantor_union_vec_concat",
-            // TODO(Stage 3): Kind::Union vectors store elements as i64 so arm identity
-            // is lost at runtime. Use `|` (TaggedUnion) for vector elements that need
-            // runtime discrimination.
-            Kind::Union(_) => return Err(CompileError::Internal(
-                "TODO: `++` on (A+B)* Kind::Union vectors not yet supported \
-                 (Stage 3 — use `|` union for vector elements)".into()
-            )),
             other => return Err(CompileError::Internal(format!(
                 "TODO: `++` not yet implemented for element kind {other:?}"
             ))),
@@ -497,13 +490,6 @@ impl<'ctx> Compiler<'ctx> {
                         Kind::Vector(_) => "cantor_list_vec_len",
                         Kind::Tuple(_) => "cantor_struct_vec_len",
                         Kind::TaggedUnion(_) => "cantor_union_vec_len",
-                        // TODO(Stage 3): Kind::Union vectors store elements as i64 so
-                        // arm identity is lost at runtime. Use `|` (TaggedUnion) for
-                        // vector elements that need runtime discrimination.
-                        Kind::Union(_) => return Err(CompileError::Internal(
-                            "TODO: len() on (A+B)* Kind::Union vectors not yet supported \
-                             (Stage 3 — use `|` union for vector elements)".into()
-                        )),
                         other => return Err(CompileError::Internal(format!(
                             "len() on Vector({other:?}) not yet supported"
                         ))),
@@ -606,7 +592,7 @@ impl<'ctx> Compiler<'ctx> {
             }
             // Tuples and TaggedUnions are returned as struct values directly.
             // Union is i64 at this stage but we preserve the Kind for future stages.
-            Kind::Tuple(_) | Kind::Union(_) | Kind::TaggedUnion(_) => Ok((result_i64, return_kind)),
+            Kind::Tuple(_) | Kind::TaggedUnion(_) => Ok((result_i64, return_kind)),
             // Vector is an i64 pointer — pass through and preserve the Kind.
             Kind::Vector(_) | Kind::Set(_) => Ok((result_i64, return_kind)),
             _ => Ok((result_i64, Kind::Int)),
@@ -655,7 +641,7 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Set(_) => return Err(CompileError::Internal(
                 "sets of sets not yet supported".into(),
             )),
-            Kind::Fail | Kind::Tuple(_) | Kind::Union(_) | Kind::TaggedUnion(_) => return Err(CompileError::Internal(
+            Kind::Fail | Kind::Tuple(_) | Kind::TaggedUnion(_) => return Err(CompileError::Internal(
                 "sets of fail/tuples/unions not yet supported".into(),
             )),
             Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),

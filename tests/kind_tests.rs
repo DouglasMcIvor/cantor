@@ -28,7 +28,7 @@ fn range_kind_set_int_or_fail() {
     let set_int = Expr::call("Set", vec![Expr::var("Int")]);
     let fail    = Expr::var("Fail");
     let union   = Expr::binop(BinOp::Union, set_int, fail);
-    assert_eq!(range_kind(&union), Kind::Tuple(vec![Kind::Fail, Kind::Int]));
+    assert_eq!(range_kind(&union), Kind::Tuple(vec![Kind::Fail, Kind::Set(SetElemKind::Int)]));
 }
 
 // ── Homogeneous tuple literals `[...]` — kind checking ────────────────────────

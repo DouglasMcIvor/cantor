@@ -123,7 +123,7 @@ impl<'ctx> Compiler<'ctx> {
     pub(crate) fn kind_to_llvm_type(&self, kind: &Kind) -> BasicTypeEnum<'ctx> {
         use crate::kind::tagged_union_leaf_count;
         match kind {
-            Kind::Int | Kind::Set(_) | Kind::Union(_) => self.context.i64_type().into(),
+            Kind::Int | Kind::Set(_) => self.context.i64_type().into(),
             Kind::Bool | Kind::Fail => self.context.bool_type().into(),
             Kind::Tuple(elems) => {
                 let types: Vec<BasicTypeEnum<'ctx>> = elems.iter()
@@ -164,7 +164,7 @@ impl<'ctx> Compiler<'ctx> {
         let i64t = self.context.i64_type();
         let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
         match arm_kind {
-            Kind::Int | Kind::Set(_) | Kind::Union(_) => {
+            Kind::Int | Kind::Set(_) => {
                 *agg = self.builder
                     .build_insert_value(*agg, val.into_int_value(), *field_idx, "tu_l")
                     .map_err(err)?;
@@ -1056,7 +1056,7 @@ impl<'ctx> Compiler<'ctx> {
                 builder.build_store(ptr, wide).map_err(err)?;
                 *leaf_idx += 1;
             }
-            Kind::Int | Kind::Set(_) | Kind::Union(_) => {
+            Kind::Int | Kind::Set(_) => {
                 let ptr = if *leaf_idx == 0 {
                     out_ptr
                 } else {

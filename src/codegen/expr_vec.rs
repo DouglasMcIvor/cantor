@@ -67,14 +67,6 @@ impl<'ctx> Compiler<'ctx> {
                         let arms = arms.clone();
                         return self.compile_union_vec_index(base_val, idx_val, &arms);
                     }
-                    // TODO(Stage 3): Kind::Union vectors store elements as i64 (Stage 2)
-                    // so we cannot recover the arm index at runtime without upgrading the
-                    // wire representation. Use `|` union (TaggedUnion) instead of `+`
-                    // (disjoint Union) for vector elements that need runtime discrimination.
-                    Kind::Union(_) => return Err(CompileError::Internal(
-                        "TODO: `xs[i]` on (A+B)* Kind::Union vectors not yet supported \
-                         (Stage 3 — use `|` union for vector elements)".into()
-                    )),
                     other => return Err(CompileError::Internal(format!(
                         "TODO: `xs[i]` not yet implemented for element kind {other:?}"
                     ))),
@@ -123,10 +115,6 @@ impl<'ctx> Compiler<'ctx> {
                     let arms = arms.clone();
                     return self.compile_union_vec_index(base_val, idx_val, &arms);
                 }
-                Kind::Union(_) => return Err(CompileError::Internal(
-                    "TODO: xs[N] on (A+B)* Kind::Union vectors not yet supported \
-                     (Stage 3 — use `|` union for vector elements)".into()
-                )),
                 _ => {
                     let idx_val = self.context.i64_type().const_int(index as u64, false);
                     let (get_fn, elem_kind) = match ek.as_ref() {
@@ -206,14 +194,6 @@ impl<'ctx> Compiler<'ctx> {
         if let Kind::TaggedUnion(arms) = elem_kind {
             let arms = arms.clone();
             return self.compile_tuple_as_union_vec(tuple_val, tuple_elems, &arms);
-        }
-        // TODO(Stage 3): Kind::Union vectors need real arm tracking in the vector.
-        // Until then, building a (Nat+Bool)* literal is rejected.
-        if let Kind::Union(_) = elem_kind {
-            return Err(CompileError::Internal(
-                "TODO: building (A+B)* Kind::Union vectors not yet supported \
-                 (Stage 3 — use `|` union for vector elements)".into()
-            ));
         }
 
         let (new_fn, push_fn, finish_fn, _) = vec_builder_fns(elem_kind)
@@ -412,7 +392,7 @@ impl<'ctx> Compiler<'ctx> {
         let i64t = self.context.i64_type();
         let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
         match kind {
-            Kind::Int | Kind::Set(_) | Kind::Union(_) | Kind::Vector(_) => Ok(vec![val]),
+            Kind::Int | Kind::Set(_) | Kind::Vector(_) => Ok(vec![val]),
             Kind::Bool | Kind::Fail => {
                 let wide = self.builder
                     .build_int_z_extend(val.into_int_value(), i64t, "ul_b")

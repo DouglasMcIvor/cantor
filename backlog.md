@@ -3,6 +3,10 @@ You probably don't want to read this unless you're me.
 
 # To do
 
+- banish ValKind from the solver, it shouldn't depend on how LLVM represents the value,
+  we should either:
+  - first analyze the AST and produce an intermediate value that both the solver and LLVM can use
+  - figure out what logic the solver is using from `set_kind` and extract it out
 - should `len` be replaced with just `size`? any other built in functions I need?
 - `none` value and `None` set, currently missing
 - function overloads, or as ChatGPT suggests "the language should officially define an overloaded
@@ -273,8 +277,13 @@ Algorithm:
   not sure how we interpret that to be the Kleene star?
   That should cover all of list, option and error tuples etc.
 - automatic multithreading for semi-pure core?
-- multiple concurrent IO threads? ChatGPT convo suggests developing a _scheduler_ using optimisitic concurrency control, taking adaptive measurements on which events conflicts, both statically and dynamically determining state partitions for different event handlers, letting the developer declare that events are `ordered` or `unordered` or `mostly independent` so that we know the "shape" of events. Lots of fun stuff we could do!
-- small runtime sets optimized as bitmasks. Once we get to the homogeneous set level the runtime doesn't actually care what the values are. So a cardinality 64 set can be encoded as just a uint64. It may make sense to extend this to fairly large sets with vectors of uint64. It would be nice to benchmark when this breaks down (time space tradeoff right?)
+- multiple concurrent IO threads? ChatGPT convo suggests developing a _scheduler_ using optimisitic
+  concurrency control, taking adaptive measurements on which events conflicts, both statically and dynamically determining state partitions for different event handlers, letting the developer declare that events are `ordered` or `unordered` or `mostly independent` so that we know the "shape" of events. Lots of fun stuff we could do!
+- small runtime sets optimized as bitmasks. Once we get to the homogeneous set level the runtime 
+  doesn't actually care what the values are. So a cardinality 64 set can be encoded as just a uint64.
+  It may make sense to extend this to fairly large sets with vectors of uint64.
+  It would be nice to benchmark when this breaks down (time space tradeoff right?)
+- Allow the solver to provide facts to the codegen to allow optimizations or simplify its code.
 - Optimizations! From ChatGPT:
   ```
     The key lever: assumptions become optimisations
@@ -343,6 +352,9 @@ Algorithm:
 - SMT solvers are branch heavy so aren't very SIMD/multi-thread friendly. Implication, I guess, is that we can at least try and run multiple solvers in parallel while compiling to make use of multi-threading in a simple way. Shame we can't just throw the problem at some beefy GPUs.
 - How quickly the tree of language features to implement exploded! I seem to add about 5 new items into my to do list for every one I cross off!
 - As I've been working with the LLMs to come up with the language it has ended being a lot more consistent and succinct than I expected.
+- sonnet seems to get itself tripped up by making assumptions a lot more than opus,
+  and unfortunately they tend to compound: in future rounds it will read previous code and assume the prior assumptions
+  to be valid
 
 # Open questions
 

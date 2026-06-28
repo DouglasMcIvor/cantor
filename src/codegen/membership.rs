@@ -23,6 +23,7 @@ impl<'ctx> Compiler<'ctx> {
         let i64  = self.context.i64_type();
         let bool = self.context.bool_type();
 
+        //TODO: central location for symbols rather than string matching here - see kind.rs for the same issue
         match &set_expr.kind {
             ExprKind::Var(sym) => match sym.0.as_str() {
                 "Int"       => Ok(bool.const_int(1, false)),
