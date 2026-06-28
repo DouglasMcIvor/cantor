@@ -279,6 +279,83 @@ pub extern "C" fn cantor_vec_concat_bool(a: i64, b: i64) -> i64 {
     Box::into_raw(Box::new(CantorVecBool { array: builder.finish() })) as i64
 }
 
+// ── Struct vectors ((A * B)*) ────────────────────────────────────────────────
+//
+// Kind::Vector(Kind::Tuple(field_kinds)) is backed by a CantorStructVec:
+// one Apache Arrow Int64Array per field (Bool fields widened to 0/1 i64).
+// The layout mirrors Arrow StructArray's child-array-per-column design without
+// requiring a fixed schema at Rust compile time.
+//
+// ABI contract: codegen calls push_field for each field of each row in order
+// (field 0 first, then field 1, …), then finish. The field count (n_fields) is
+// supplied at builder_new time and stored in the struct.
+
+pub struct CantorStructVec {
+    n_fields: usize,
+    /// One Arrow Int64Array per field; all arrays have the same length.
+    columns: Vec<Int64Array>,
+}
+
+pub struct CantorStructVecBuilder {
+    n_fields: usize,
+    builders: Vec<Int64Builder>,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_struct_vec_builder_new(n_fields: i64) -> i64 {
+    let n = n_fields as usize;
+    Box::into_raw(Box::new(CantorStructVecBuilder {
+        n_fields: n,
+        builders: (0..n).map(|_| Int64Builder::new()).collect(),
+    })) as i64
+}
+
+/// Append `value` to column `field_idx` of the current row.
+/// Bool values are already widened to 0/1 i64 by the codegen.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_struct_vec_builder_push_field(builder: i64, field_idx: i64, value: i64) {
+    let b = unsafe { &mut *(builder as *mut CantorStructVecBuilder) };
+    b.builders[field_idx as usize].append_value(value);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_struct_vec_builder_finish(builder: i64) -> i64 {
+    let mut b = unsafe { Box::from_raw(builder as *mut CantorStructVecBuilder) };
+    let columns: Vec<Int64Array> = b.builders.iter_mut().map(|bld| bld.finish()).collect();
+    Box::into_raw(Box::new(CantorStructVec { n_fields: b.n_fields, columns })) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_struct_vec_len(vec: i64) -> i64 {
+    let v = unsafe { &*(vec as *const CantorStructVec) };
+    v.columns.first().map_or(0, |c| c.len()) as i64
+}
+
+/// Returns the i64 value stored in field `field_idx` of row `row_idx`.
+/// Bool fields are returned as 0 or 1; codegen truncates to i1.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_struct_vec_get_field(vec: i64, row_idx: i64, field_idx: i64) -> i64 {
+    let v = unsafe { &*(vec as *const CantorStructVec) };
+    v.columns[field_idx as usize].value(row_idx as usize)
+}
+
+/// Concatenate two struct vectors of the same shape.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_struct_vec_concat(a: i64, b: i64) -> i64 {
+    let va = unsafe { &*(a as *const CantorStructVec) };
+    let vb = unsafe { &*(b as *const CantorStructVec) };
+    assert_eq!(va.n_fields, vb.n_fields, "cantor_struct_vec_concat: field count mismatch");
+    let n = va.n_fields;
+    let mut builders: Vec<Int64Builder> = (0..n).map(|_| Int64Builder::new()).collect();
+    for cols in [&va.columns, &vb.columns] {
+        for (col_idx, col) in cols.iter().enumerate() {
+            for i in 0..col.len() { builders[col_idx].append_value(col.value(i)); }
+        }
+    }
+    let columns: Vec<Int64Array> = builders.iter_mut().map(|b| b.finish()).collect();
+    Box::into_raw(Box::new(CantorStructVec { n_fields: n, columns })) as i64
+}
+
 // ── Nested vectors (X**) ──────────────────────────────────────────────────────
 //
 // Kind::Vector(Kind::Vector(K)) is backed by Apache Arrow ListArray.

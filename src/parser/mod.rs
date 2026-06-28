@@ -510,7 +510,7 @@ impl<'src> Parser<'src> {
             }
 
             // Postfix `[expr]` — index operator.
-            //   • Non-negative integer literal index → `Proj` (compile-time, for tuples)
+            //   • Non-negative integer literal index → `Proj` (same as `x.N` dot notation)
             //   • Any other expression          → `Index` (runtime, for vectors X*)
             if self.peek() == &Token::LBracket {
                 self.advance()?;

@@ -564,8 +564,37 @@ g    : Nat** -> Nat;  g(xss) { i:Nat=1; j:Nat=2; return xss[i][j] }  -- 5
   pointers into a `ListBuilder<Int64Builder>`.
 - `Bool**` is symmetric, backed by `ListArray` with `Boolean` child.
 
+*Struct vectors (`(Nat * Nat)*` = vector of tuples)* (COMPLETE):
+
+`(A * B)*` is backed by a `CantorStructVec` holding one Apache Arrow `Int64Array`
+per field — the same columnar layout that Arrow `StructArray` uses internally.
+Bool fields are widened to `0/1 i64` at push time and truncated back to `i1` on
+get. The field count is passed to `cantor_struct_vec_builder_new(n_fields)` at
+runtime and stored in the struct, so the ABI is fully generic across any tuple shape.
+
+```
+-- Build, index, and project fields
+make : -> (Nat * Nat)*;  make() = [(1, 10), (2, 20), (3, 30)]
+f    : (Nat * Nat)* -> Nat;  f(ps) = len(ps)           -- 3
+g    : -> Nat;              g() = make()[0].0           -- 1
+h    : -> Nat;              h() = make()[2].1           -- 30
+```
+
+- `xs[n]` (literal n) and `xs.n` (dot notation) are syntactically equivalent —
+  both produce `ExprKind::Proj`. On a struct-vector base (`(A * B)*`) `compile_proj`
+  routes to `compile_struct_vec_index`, calling `cantor_struct_vec_get_field(xs, n, field)`
+  for each field and assembling an LLVM struct result.
+- `xs[i]` (non-literal i) produces `ExprKind::Index`, handled the same way.
+- `++` calls `cantor_struct_vec_concat(a, b)` — O(total rows × fields).
+- `len(ps)` calls `cantor_struct_vec_len(ps)` — length of any column.
+- Block-body coercion (`ps : (Nat * Nat)* = [(1,2),(3,4)]`) uses
+  `cantor_struct_vec_builder_push_field(builder, field_idx, value)` once per field
+  per row.
+- The solver currently returns Unknown for any function involving struct-vec
+  indexing (projection on a sequence-sorted term is not yet SMT-encoded).
+  TODO: add `SeqNth + ApplySelector` encoding for struct-vec index proofs.
+
 *TODO — deferred*:
-- Vectors of tuples `(Nat * Nat)*` — StructArray
 - Vectors of unions `(Nat | Bool)*` — DenseUnionArray (pending runtime union value design)
 
 **Solver support** (COMPLETE):

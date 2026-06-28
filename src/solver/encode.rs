@@ -239,6 +239,19 @@ pub(crate) fn encode_expr<'tm>(
             if !base_term.sort().is_sequence() {
                 return Err("runtime index `xs[i]` is only valid on vector (X*) values".into());
             }
+            // SeqNth returns the element sort of the sequence.
+            // For scalar elements (Int / Bool) this is fine: an out-of-bounds SeqNth
+            // returns 0 / false which stays within the element's range, so the solver
+            // can still prove membership goals.
+            // For tuple elements (struct vecs, (A * B)*), CVC5 may assign an arbitrary
+            // out-of-bounds default that has components outside the element range,
+            // producing false counterexamples.  Return Unknown in that case.
+            // TODO: add proper bounds obligations (0 ≤ i < len(xs)) to prevent this.
+            let elem_sort = base_term.sort().sequence_element_sort();
+            if elem_sort.is_tuple() || elem_sort.is_dt() {
+                return Err("xs[i] on a struct/tuple-element vector is not yet supported \
+                            in the SMT encoder (element sort is non-scalar)".into());
+            }
             Ok(tm.mk_term(Kind::SeqNth, &[base_term, idx_term]))
         }
 
@@ -652,6 +665,18 @@ fn encode_proj<'tm>(
 ) -> Result<Term<'tm>, String> {
     let base_term = encode_expr(base, env, name_defs, fn_env, tm, solver, call_counter,
                                 builtin_obligs, path_cond.clone(), distinct_preds, None)?;
+
+    // Struct vector indexing: `xs.N` / `xs[N]` where xs is a sequence-sorted term
+    // (e.g. `(Nat * Nat)*` encoded as `Seq(Tuple(Int, Int))`).
+    // The SMT encoder can't verify the result field — return Unknown.
+    // TODO: add proper SeqNth + field-projection encoding for struct vec index proofs.
+    if base_term.sort().is_sequence() {
+        return Err(format!(
+            "projection `.{}` on a sequence-sorted value (struct vector element access) \
+             is not yet supported in the SMT encoder",
+            index
+        ));
+    }
 
     // CVC5 tuple sorts also satisfy is_dt() == true; we only want the
     // special-case path for cross-kind union DTs (non-tuple algebraic

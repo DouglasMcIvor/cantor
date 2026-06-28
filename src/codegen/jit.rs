@@ -58,6 +58,13 @@ impl<'ctx> Compiler<'ctx> {
                 ("cantor_list_vec_len_bool",            runtime::cantor_list_vec_len_bool            as *const () as usize),
                 ("cantor_list_vec_get_bool",            runtime::cantor_list_vec_get_bool            as *const () as usize),
                 ("cantor_list_vec_concat_bool",         runtime::cantor_list_vec_concat_bool         as *const () as usize),
+                // Struct vectors ((A * B)*)
+                ("cantor_struct_vec_builder_new",        runtime::cantor_struct_vec_builder_new        as *const () as usize),
+                ("cantor_struct_vec_builder_push_field", runtime::cantor_struct_vec_builder_push_field as *const () as usize),
+                ("cantor_struct_vec_builder_finish",     runtime::cantor_struct_vec_builder_finish     as *const () as usize),
+                ("cantor_struct_vec_len",                runtime::cantor_struct_vec_len                as *const () as usize),
+                ("cantor_struct_vec_get_field",          runtime::cantor_struct_vec_get_field          as *const () as usize),
+                ("cantor_struct_vec_concat",             runtime::cantor_struct_vec_concat             as *const () as usize),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))

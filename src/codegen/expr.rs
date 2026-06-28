@@ -443,6 +443,7 @@ impl<'ctx> Compiler<'ctx> {
                     "TODO: `++` not yet implemented for nested element kind {other:?}"
                 ))),
             },
+            Kind::Tuple(_) => "cantor_struct_vec_concat",
             other => return Err(CompileError::Internal(format!(
                 "TODO: `++` not yet implemented for element kind {other:?}"
             ))),
@@ -483,6 +484,10 @@ impl<'ctx> Compiler<'ctx> {
                             "TODO: `xs[i]` not yet implemented for nested element kind {other:?}"
                         ))),
                     },
+                    // Struct vector ((A * B)*): multi-field get, returns a tuple struct.
+                    Kind::Tuple(field_kinds) => {
+                        return self.compile_struct_vec_index(base_val, idx_val, field_kinds);
+                    }
                     other => return Err(CompileError::Internal(format!(
                         "TODO: `xs[i]` not yet implemented for element kind {other:?}"
                     ))),
@@ -567,6 +572,7 @@ impl<'ctx> Compiler<'ctx> {
                             "len() on Vector(Vector({other:?})) not yet supported"
                         ))),
                     },
+                    Kind::Tuple(_) => "cantor_struct_vec_len",
                     other => return Err(CompileError::Internal(format!(
                         "len() on Vector({other:?}) not yet supported"
                     ))),
@@ -764,6 +770,11 @@ impl<'ctx> Compiler<'ctx> {
         tuple_elems: &[Kind],
         elem_kind: &Kind,
     ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, Kind), CompileError> {
+        // Struct vector path: element is a tuple — one Arrow Int64Array column per field.
+        if let Kind::Tuple(field_kinds) = elem_kind {
+            return self.compile_tuple_as_struct_vec(tuple_val, tuple_elems, field_kinds);
+        }
+
         let (new_fn, push_fn, finish_fn, _) = vec_builder_fns(elem_kind)
             .map_err(CompileError::Internal)?;
         let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
@@ -828,7 +839,114 @@ impl<'ctx> Compiler<'ctx> {
         Ok((vec_ptr, Kind::Vector(Box::new(elem_kind.clone()))))
     }
 
-    /// Compile `base.N` — extract element N from a tuple.
+    /// Build a struct-vector (element kind = `Kind::Tuple(field_kinds)`) from an
+    /// LLVM aggregate whose elements are themselves inner structs (one per row).
+    fn compile_tuple_as_struct_vec(
+        &self,
+        tuple_val: inkwell::values::BasicValueEnum<'ctx>,
+        tuple_elems: &[Kind],
+        field_kinds: &[Kind],
+    ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, Kind), CompileError> {
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let i64t = self.context.i64_type();
+
+        let new_fn = self.module.get_function("cantor_struct_vec_builder_new")
+            .ok_or_else(|| CompileError::Internal("cantor_struct_vec_builder_new not declared".into()))?;
+        let push_fn = self.module.get_function("cantor_struct_vec_builder_push_field")
+            .ok_or_else(|| CompileError::Internal("cantor_struct_vec_builder_push_field not declared".into()))?;
+        let finish_fn = self.module.get_function("cantor_struct_vec_builder_finish")
+            .ok_or_else(|| CompileError::Internal("cantor_struct_vec_builder_finish not declared".into()))?;
+
+        let n_fields_val = i64t.const_int(field_kinds.len() as u64, false);
+        let builder_ptr = self.builder
+            .build_call(new_fn, &[n_fields_val.into()], "sv_builder")
+            .map_err(err)?
+            .try_as_basic_value().left()
+            .ok_or_else(|| CompileError::Internal("cantor_struct_vec_builder_new returned void".into()))?;
+
+        let outer_sv = inkwell::values::AggregateValueEnum::StructValue(tuple_val.into_struct_value());
+        for i in 0..tuple_elems.len() {
+            let outer_elem = self.builder
+                .build_extract_value(outer_sv, i as u32, "sv_row")
+                .map_err(err)?;
+            let inner_sv = inkwell::values::AggregateValueEnum::StructValue(outer_elem.into_struct_value());
+            for (j, fk) in field_kinds.iter().enumerate() {
+                let field = self.builder
+                    .build_extract_value(inner_sv, j as u32, "sv_field")
+                    .map_err(err)?;
+                let field_i64 = if *fk == Kind::Bool {
+                    self.builder
+                        .build_int_z_extend(field.into_int_value(), i64t, "sv_field_ext")
+                        .map_err(err)?
+                        .into()
+                } else {
+                    field
+                };
+                let field_idx_val = i64t.const_int(j as u64, false);
+                self.builder
+                    .build_call(push_fn, &[builder_ptr.into(), field_idx_val.into(), field_i64.into()], "sv_push")
+                    .map_err(err)?;
+            }
+        }
+
+        let vec_ptr = self.builder
+            .build_call(finish_fn, &[builder_ptr.into()], "sv_ptr")
+            .map_err(err)?
+            .try_as_basic_value().left()
+            .ok_or_else(|| CompileError::Internal("cantor_struct_vec_builder_finish returned void".into()))?;
+
+        Ok((vec_ptr, Kind::Vector(Box::new(Kind::Tuple(field_kinds.to_vec())))))
+    }
+
+    /// Emit the multi-call get for `xs[i]` where `xs : (A * B)*`.
+    /// Calls `cantor_struct_vec_get_field` once per field and assembles an LLVM struct.
+    fn compile_struct_vec_index(
+        &self,
+        base_val: inkwell::values::BasicValueEnum<'ctx>,
+        idx_val: inkwell::values::BasicValueEnum<'ctx>,
+        field_kinds: &[Kind],
+    ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, Kind), CompileError> {
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let i64t = self.context.i64_type();
+
+        let get_fn = self.module.get_function("cantor_struct_vec_get_field")
+            .ok_or_else(|| CompileError::Internal("cantor_struct_vec_get_field not declared".into()))?;
+
+        let base_i64 = base_val.into_int_value();
+        let idx_i64  = idx_val.into_int_value();
+
+        let llvm_types: Vec<_> = field_kinds.iter().map(|k| self.kind_to_llvm_type(k)).collect();
+        let struct_type = self.context.struct_type(&llvm_types, false);
+        let mut agg: inkwell::values::AggregateValueEnum<'ctx> = struct_type.get_undef().into();
+
+        for (j, fk) in field_kinds.iter().enumerate() {
+            let field_idx = i64t.const_int(j as u64, false);
+            let raw = self.builder
+                .build_call(get_fn, &[base_i64.into(), idx_i64.into(), field_idx.into()], "sv_get_f")
+                .map_err(err)?
+                .try_as_basic_value().left()
+                .ok_or_else(|| CompileError::Internal("cantor_struct_vec_get_field returned void".into()))?;
+            let field_val = if *fk == Kind::Bool {
+                self.builder
+                    .build_int_truncate(raw.into_int_value(), self.context.bool_type(), "sv_f_trunc")
+                    .map_err(err)?
+                    .into()
+            } else {
+                raw
+            };
+            agg = self.builder
+                .build_insert_value(agg, field_val, j as u32, "sv_row_f")
+                .map_err(err)?;
+        }
+
+        Ok((agg.into_struct_value().into(), Kind::Tuple(field_kinds.to_vec())))
+    }
+
+    /// Compile `base.N` (or `base[N]` with a literal N) — extract element N.
+    ///
+    /// For tuple bases this extracts the Nth LLVM struct field.
+    /// For struct-vector bases (`(A * B)*`) this routes to `compile_struct_vec_index`
+    /// with a compile-time constant index, returning the Nth field of a runtime row.
     fn compile_proj(
         &self,
         base: &Expr,
@@ -836,6 +954,15 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (base_val, base_kind) = self.compile_expr(base, env)?;
+
+        // Struct vector: `xs.N` / `xs[N]` on a `(A * B)*` value → compile-time known field index
+        if let Kind::Vector(ek) = &base_kind {
+            if let Kind::Tuple(field_kinds) = ek.as_ref() {
+                let idx_val = self.context.i64_type().const_int(index as u64, false).into();
+                return self.compile_struct_vec_index(base_val, idx_val, field_kinds);
+            }
+        }
+
         let elem_kinds = match base_kind {
             Kind::Tuple(ek) => ek,
             _ => return Err(CompileError::Internal(

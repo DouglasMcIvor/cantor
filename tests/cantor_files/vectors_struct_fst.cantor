@@ -1,0 +1,14 @@
+-- Verify literal bracket-index + dot-projection on a struct vector:
+--   [(1,10),(2,20),(3,30)][0].0 = 1
+
+make_pairs : -> (Nat * Nat)*
+make_pairs() = [(1, 10), (2, 20), (3, 30)]
+
+first_fst : -> Nat
+first_fst() = make_pairs()[0].0
+
+second_snd : -> Nat
+second_snd() = make_pairs()[2].1
+
+main : -> Nat
+main() = first_fst()

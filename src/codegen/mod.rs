@@ -693,6 +693,16 @@ impl<'ctx> Compiler<'ctx> {
         self.module.add_function("cantor_list_vec_len_bool",            i64t.fn_type(i,    false), None);
         self.module.add_function("cantor_list_vec_get_bool",            i64t.fn_type(ii,   false), None);
         self.module.add_function("cantor_list_vec_concat_bool",         i64t.fn_type(ii,   false), None);
+
+        // Struct vectors ((A * B)*) — columnar Arrow Int64Array per field.
+        // push_field / get_field take (ptr, field_idx, value) — three i64 args.
+        let iii = &[i64t.into(), i64t.into(), i64t.into()] as &[_];
+        self.module.add_function("cantor_struct_vec_builder_new",        i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_struct_vec_builder_push_field", void.fn_type(iii,  false), None);
+        self.module.add_function("cantor_struct_vec_builder_finish",     i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_struct_vec_len",                i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_struct_vec_get_field",          i64t.fn_type(iii,  false), None);
+        self.module.add_function("cantor_struct_vec_concat",             i64t.fn_type(ii,   false), None);
     }
 
     pub fn print_ir(&self) {

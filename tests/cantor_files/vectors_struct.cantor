@@ -1,0 +1,48 @@
+-- Struct vector tests: (Nat * Nat)* backed by columnar Arrow Int64Array per field.
+
+-- Build a (Nat * Nat)* from a literal.
+make_pairs : -> (Nat * Nat)*
+make_pairs() = [(1, 10), (2, 20), (3, 30)]
+
+-- Length of a struct vector.
+pair_vec_len : (Nat * Nat)* -> Nat
+pair_vec_len(ps) = len(ps)
+
+-- Index into a struct vector — xs[i] returns a (Nat * Nat) tuple.
+first_pair : (Nat * Nat)* -> Nat * Nat
+first_pair(ps) = ps[0]
+
+-- Project first field of an indexed element.
+first_fst : -> Nat
+first_fst() = make_pairs()[0].0
+
+-- Project second field of an indexed element.
+second_snd : -> Nat
+second_snd() = make_pairs()[2].1
+
+-- Block-body coercion for (Nat * Nat)* bindings.
+block_struct_len : -> Nat
+block_struct_len() {
+    ps : (Nat * Nat)* = [(10, 100), (20, 200)]
+    return len(ps)
+}
+
+-- Runtime index in a block body.
+block_struct_index : -> Nat
+block_struct_index() {
+    ps : (Nat * Nat)* = [(10, 100), (20, 200), (30, 300)]
+    i : Nat = 2
+    return ps[i].0
+}
+
+-- Concatenate two struct vectors.
+concat_struct : -> Nat
+concat_struct() {
+    xs : (Nat * Nat)* = [(1, 2), (3, 4)]
+    ys : (Nat * Nat)* = [(5, 6)]
+    zs : (Nat * Nat)* = xs ++ ys
+    return len(zs)
+}
+
+main : -> Nat
+main() = pair_vec_len(make_pairs())
