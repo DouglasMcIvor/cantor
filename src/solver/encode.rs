@@ -129,7 +129,6 @@ pub(crate) fn encode_expr<'tm>(
     if let ExprKind::Call { callee, args } = &expr.kind {
         // `len(xs)` — the number of elements in a vector (X* value).
         // Encoded as `seq.len(xs)` in the cvc5 sequence theory.
-        // TODO: if/when arrays get codegen, also support `len` on fixed-length tuples.
         if callee.0 == "len" && args.len() == 1 {
             let arg_term = enc!(&args[0])?;
             if !arg_term.sort().is_sequence() {

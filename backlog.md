@@ -311,6 +311,7 @@ Algorithm:
 - I can viscerally feel the development process slowing down as the codebase grows. The changes are getting more complex, the amount of code that needs to change is growing, and unsurprisingly this means both Claude and I are beginning to make more mistakes and need more guidance and review.
 - All the different theories that cvc5 supports, including "bags" as a name for multisets in the theory of bags
 - LLVM supports arbitrary size integers out of the box, as long as their size is known at compile time
+- Manually debugging a JIT is annoying, the backtrace is essentially useless!
 
 # Things that surprised me
 
