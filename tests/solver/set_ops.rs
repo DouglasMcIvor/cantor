@@ -374,6 +374,79 @@ f(x) = x
 ");
 }
 
+// ── Cross-sort symmetric difference (^) — NOT YET SUPPORTED ─────────────────
+// When the LHS and RHS of `^` have different CVC5 sorts (e.g. Seq(Int) vs Int,
+// or tuple sort vs Int), `set_sort` currently panics with a TODO.
+// These tests document the intended semantics.  Un-ignore once `set_sort` builds
+// the cross-kind union sort for SymDiff (same DT machinery as cross-kind `|`).
+//
+// Semantics under sequence unification:
+//   Nat* ^ Int = (Nat* - Int) ∪ (Int - Nat*)
+//             = (sequences of length ≠ 1) ∪ ∅    -- Int ⊆ Nat* so Int - Nat* = ∅
+//             = sequences of length ≠ 1
+//
+//   (Nat * Nat) ^ Int = (Nat*Nat - Int) ∪ (Int - Nat*Nat)
+//                     = (2-element sequences) ∪ ∅   -- Nat*Nat ⊆ Nat* and Int ⊆ Nat*;
+//                                                        Int has length 1 ≠ 2, so disjoint
+//                     = length-2 sequences with Nat elements
+//
+//   Bool ^ Nat = (Bool - Nat) ∪ (Nat - Bool) -- Bool ⊆ Nat (0/1), so Bool - Nat = ∅
+//              = Nat - Bool = Nat - {0,1} = {2, 3, 4, ...}
+
+// Nat* ^ Int = sequences of length ≠ 1.
+// xs[0] + xs[1] is safe because domain guarantees length ≥ 2 (combining with non-empty).
+// TODO: requires cross-sort SymDiff in set_sort.
+#[test]
+#[ignore = "TODO: cross-sort SymDiff (Seq(Int) ^ Int) — set_sort panics; \
+            implement cross-kind union sort for SymDiff"]
+fn cross_sort_sym_diff_kleene_minus_scalar_proved() {
+    proved("
+h : (Nat* ^ Int) - {[]} -> Nat
+h(xs) = xs[0] + xs[1]
+");
+}
+
+// Nat* ^ Int = sequences of length ≠ 1; identity back into Nat* is proved.
+#[test]
+#[ignore = "TODO: cross-sort SymDiff (Seq(Int) ^ Int) — set_sort panics"]
+fn cross_sort_sym_diff_kleene_scalar_identity_proved() {
+    proved("
+f : Nat* ^ Int -> Nat*
+f(xs) = xs
+");
+}
+
+// (Nat * Nat) ^ Int = length-2 Nat sequences; both xs[0] and xs[1] safe.
+#[test]
+#[ignore = "TODO: cross-sort SymDiff (tuple sort ^ Int) — set_sort panics"]
+fn cross_sort_sym_diff_tuple_scalar_proved() {
+    proved("
+f : (Nat * Nat) ^ Int -> Nat
+f(t) = t[0] + t[1]
+");
+}
+
+// Bool ^ Nat = Nat - {0, 1} = integers ≥ 2.
+// x + 1 ≥ 3 is in NatPos; proved.
+#[test]
+#[ignore = "TODO: cross-sort SymDiff (Bool sort ^ Int sort) — set_sort panics"]
+fn cross_sort_sym_diff_bool_nat_succ_proved() {
+    proved("
+f : Bool ^ Nat -> NatPos
+f(x) = x + 1
+");
+}
+
+// Bool ^ Nat = integers ≥ 2; 0 is not in that set.
+#[test]
+#[ignore = "TODO: cross-sort SymDiff (Bool sort ^ Int sort) — set_sort panics"]
+fn cross_sort_sym_diff_bool_nat_zero_counterexample() {
+    counterexample("
+bad : NatPos -> Bool ^ Nat
+bad(x) = 0
+");
+}
+
 // Nat ^ {0} and Nat - {0} are both NatPos; identity across operators proved.
 #[test]
 fn cross_sym_diff_to_set_diff_proved() {

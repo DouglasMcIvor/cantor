@@ -253,12 +253,27 @@ pub(crate) fn set_sort<'tm>(
                 .collect::<Option<Vec<_>>>()?;
             tm.mk_tuple_sort(&sorts)
         }
-        // Set diff (`-`), symmetric diff (`^`), intersection (`&`): elements live in
-        // the same space as the LHS (e.g. `Nat* - {}` is still a set of sequences).
-        // Propagate the LHS sort; fall through to integer sort if the LHS has no
-        // representable CVC5 sort.
-        ExprKind::BinOp { op: BinOp::Sub | BinOp::SymDiff | BinOp::Intersect, lhs, .. } => {
+        // Set diff (`-`) and intersection (`&`): the result is a subset of A, so its
+        // CVC5 sort is the LHS sort (e.g. `Nat* - {}` is still a set of sequences).
+        ExprKind::BinOp { op: BinOp::Sub | BinOp::Intersect, lhs, .. } => {
             return set_sort(tm, lhs, distinct_preds);
+        }
+        // Symmetric diff (`^`): the result contains elements from EITHER side.
+        // When both sides have the same CVC5 sort, that sort suffices.
+        // When they differ (e.g. `Nat* ^ Int` mixes sequences and integers), building
+        // the correct cross-kind sort requires a datatype — not yet implemented.
+        // TODO: support cross-sort SymDiff (requires same DT machinery as cross-kind Union).
+        ExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
+            let lhs_sort = set_sort(tm, lhs, distinct_preds)?;
+            let rhs_sort = set_sort(tm, rhs, distinct_preds)?;
+            if lhs_sort == rhs_sort {
+                return Some(lhs_sort);
+            }
+            panic!(
+                "TODO: symmetric difference of sets with different CVC5 sorts is not yet \
+                 supported — LHS and RHS must belong to the same value space. \
+                 Use `(A - B) | (B - A)` as an explicit workaround."
+            );
         }
         // Union (`|`) and disjoint union (`+`).
         // Cross-kind (tuple arm ∪ scalar, sequence arm ∪ non-same-sequence, or

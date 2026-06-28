@@ -135,8 +135,10 @@ fn membership_constraint_for_dt<'tm>(
 /// sequences.  Used to decide when a sequence-sorted term should be lifted by length.
 ///
 /// Built-in scalar named sets, set literals, and Cartesian products are atomic.
-/// Kleene-star sets, unions, comprehensions, and user-defined aliases/distinct sets
+/// Kleene-star sets, unions, comprehensions, and user-defined distinct sets
 /// are NOT atomic (they contain elements of varying length or unknown structure).
+/// User-defined aliases fall through to their own `Var` arm, which recurses
+/// into the alias body — they may end up atomic or not depending on that body.
 fn is_atomic_set(set_expr: &Expr) -> bool {
     match &set_expr.kind {
         ExprKind::Var(sym) => matches!(

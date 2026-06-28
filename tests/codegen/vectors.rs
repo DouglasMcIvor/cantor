@@ -151,7 +151,7 @@ fn bracket_index_on_param() {
 
 // Length of an empty vector is 0.
 #[test]
-#[ignore = "Kleene-star (X*) not yet implemented"]
+#[ignore = "len of tuples not yet implemented"]
 fn kleene_len_empty() {
     assert_eq!(
         jit_src_zero_arg("main : -> Nat\nmain() = len([])"),
@@ -161,7 +161,7 @@ fn kleene_len_empty() {
 
 // Length of a three-element vector is 3.
 #[test]
-#[ignore = "Kleene-star (X*) not yet implemented"]
+#[ignore = "len of tuples not yet implemented"]
 fn kleene_len_three() {
     assert_eq!(
         jit_src_zero_arg("main : -> Nat\nmain() = len([1, 2, 3])"),
@@ -171,7 +171,6 @@ fn kleene_len_three() {
 
 // Indexing into a known-length Nat* value.
 #[test]
-#[ignore = "Kleene-star (X*) not yet implemented"]
 fn kleene_index_known_length() {
     assert_eq!(
         jit_src_zero_arg("main : -> Nat\nmain() = [10, 20, 30].1"),
@@ -181,7 +180,6 @@ fn kleene_index_known_length() {
 
 // Passing a Nat* parameter and returning its length.
 #[test]
-#[ignore = "Kleene-star (X*) not yet implemented"]
 fn kleene_param_len_returned() {
     // Build a two-element Int* value inline and pass to a function.
     assert_eq!(
@@ -197,7 +195,7 @@ main() {
 
 // Sum all elements of a Nat* with a for-in loop.
 #[test]
-#[ignore = "Kleene-star (X*) not yet implemented"]
+#[ignore = "for over sequences not yet implemented"]
 fn kleene_sum_via_loop() {
     assert_eq!(
         jit_src_zero_arg("

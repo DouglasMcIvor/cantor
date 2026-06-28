@@ -598,6 +598,7 @@ Dependencies:
 - Rust (edition 2024)
 - LLVM 18 (`llvm-18-dev` on Debian/Ubuntu)
 - cvc5 (`libcvc5-dev` on Debian/Ubuntu)
+- Apache Arrow (`arrow-array` crate, fetched automatically by Cargo)
 
 ```
 cargo build

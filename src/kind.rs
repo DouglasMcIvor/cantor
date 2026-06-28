@@ -68,10 +68,28 @@ pub fn set_kind(set_expr: &Expr) -> Kind {
             let parts = flatten_domain(set_expr);
             Kind::Tuple(parts.into_iter().map(set_kind).collect())
         }
-        // `A - B`, `A & B`, `A ^ B` — set difference, intersection, symmetric difference.
-        // The result contains elements drawn from A's space, so the kind is A's kind.
-        ExprKind::BinOp { op: BinOp::Sub | BinOp::Intersect | BinOp::SymDiff, lhs, .. } => {
+        // `A - B`, `A & B` — set difference, intersection.
+        // The result is a subset of A, so its kind is A's kind.
+        ExprKind::BinOp { op: BinOp::Sub | BinOp::Intersect, lhs, .. } => {
             set_kind(lhs)
+        }
+        // `A ^ B` — symmetric difference.
+        // The result contains elements from A *and* elements from B, so when the two
+        // sides have different kinds the result is their union kind.
+        ExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs, .. } => {
+            let lk = set_kind(lhs);
+            let rk = set_kind(rhs);
+            if lk == rk {
+                return lk;
+            }
+            // Cross-kind symmetric difference: use the same union-kind rules as `|`.
+            let arms = vec![lk, rk];
+            if arms.iter().any(|k| matches!(k, Kind::Tuple(_) | Kind::TaggedUnion(_))) {
+                let arms = flatten_tag_arms(arms);
+                Kind::TaggedUnion(arms)
+            } else {
+                Kind::Int
+            }
         }
         // `A + B + C` — disjoint union → Union.
         ExprKind::BinOp { op: BinOp::Add, .. } => {
