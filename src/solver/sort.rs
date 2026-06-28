@@ -253,9 +253,12 @@ pub(crate) fn set_sort<'tm>(
                 .collect::<Option<Vec<_>>>()?;
             tm.mk_tuple_sort(&sorts)
         }
-        // Set diff (`-`), symmetric diff (`^`), intersection (`&`): always subsets of ℤ.
-        ExprKind::BinOp { op: BinOp::Sub | BinOp::SymDiff | BinOp::Intersect, .. } => {
-            tm.integer_sort()
+        // Set diff (`-`), symmetric diff (`^`), intersection (`&`): elements live in
+        // the same space as the LHS (e.g. `Nat* - {}` is still a set of sequences).
+        // Propagate the LHS sort; fall through to integer sort if the LHS has no
+        // representable CVC5 sort.
+        ExprKind::BinOp { op: BinOp::Sub | BinOp::SymDiff | BinOp::Intersect, lhs, .. } => {
+            return set_sort(tm, lhs, distinct_preds);
         }
         // Union (`|`) and disjoint union (`+`).
         // Cross-kind (tuple arm ∪ scalar, sequence arm ∪ non-same-sequence, or

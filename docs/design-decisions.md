@@ -435,7 +435,7 @@ than `TupleProject` for the same reason. Logic must be `"ALL"` (replaces
 `cantor_main_into(*mut i64)` which stores each leaf into a caller buffer, avoiding
 fragile struct-return FFI.
 
-### Kleene-star sets and vectors (`X*`) (solver complete; codegen complete for Int*/Bool*)
+### Kleene-star sets and vectors (`X*`) (solver complete; codegen complete for Int*/Bool*; sequence unification complete)
 
 `X*` is a postfix set operator that denotes the set of all finite sequences of elements
 drawn from `X`.  It is the standard Kleene closure: `{} | X | X×X | X×X×X | …`.
@@ -525,7 +525,8 @@ depending on the element kind.
 `cantor_vec_get_i64` or `cantor_vec_get_bool`.  No bounds check is emitted (the SMT
 solver proves the index is in range where possible; otherwise the check is deferred
 to runtime via `assert`/`assume`).  Compile-time literal indices (non-negative integer
-literals) still desugar to `ExprKind::Proj` for tuple access.
+literals) parse to `ExprKind::Proj`; `compile_proj` handles flat vectors by calling
+the same `cantor_vec_get_*` path as `compile_index`.
 
 *`xs ++ ys` concatenation*: `BinOp::Concat` dispatches to `cantor_vec_concat_i64` or
 `cantor_vec_concat_bool`, both of which copy all elements into a new Arrow array (O(n+m)).
@@ -643,6 +644,84 @@ encoding was generalized from integer-leaf selectors to **one selector per arm o
 the arm's natural CVC5 sort**.  This makes `Nat* | Int`, `(Nat * Nat) | Bool*`, and
 future `Float32 | Int` all representable without touching the core DT builder.  See
 `src/solver/sort.rs` for the forward-compatibility checklist for adding new sorts.
+
+**Sequence unification** (COMPLETE — solver and codegen):
+
+Scalars and tuples are identified with fixed-length sequences.  A scalar `n` is the
+length-1 sequence `[n]`; a tuple `(a, b)` is the length-2 sequence `[a, b]`.  This is
+forced by `(5) == 5` — parentheses are overloaded for grouping and tupling, so there is
+no distinct "1-tuple".
+
+*Implementation*: the unification is *semantic* (membership only), not *representational*
+(sort).  Scalars stay integer-sorted in the solver and `i64` in codegen; we do NOT rewrite
+all arithmetic onto sequences.  Two boundaries bridge the gap:
+
+*Membership — Direction 1* (`scalar ∈ X*`): in `membership_constraint`, the
+`KleeneStar` arm now has three cases: (a) sequence-sorted term → ∀-quantified (existing);
+(b) tuple-sorted term → per-child (existing); **(c) scalar (integer- or bool-sorted) term
+→ `t ∈ X*` ⟺ `t ∈ X`**.  This lets `foo() = 5 : Nat*` prove (the body `5` is checked
+against `Nat`, not `Nat*`), and lets `bar(5)` pass the call-obligation against a `Nat*`
+parameter.
+
+*Membership — Direction 2* (`sequence ∈ scalar/tuple set`): a guard at the top of
+`membership_constraint` intercepts sequence-sorted terms against *atomic* sets (built-in
+scalar names, set literals, or products):
+```
+if t.sort().is_sequence() && is_atomic_set(set_expr) {
+    return lift_sequence_into_atomic(tm, t, set_expr, …);
+}
+```
+`is_atomic_set` returns `true` for built-in scalar `Var` names (`Int`, `Nat`, `NatPos`,
+`NonZeroInt`, `Bool`, `Fail`, `Int8`–`Int64`), `SetLit`, and `BinOp::Mul` (products).
+Compound operators (`Sub`, `Union`, `KleeneStar`, user-defined `Var`) fall through to their
+own arms, which recurse and re-enter the guard on atomic leaves.
+
+`lift_sequence_into_atomic` encodes:
+- **Scalar** (`Int`, `Nat`, …): `len(t) == 1  ∧  nth(t,0) ∈ X`.
+- **Product** (`A * B`): `len(t) == N  ∧  ⋀ⱼ nth(t,j) ∈ partⱼ`.
+- **SetLit**: `[]` element (empty tuple) → `len(t) == 0`; integer constants → `len(t)==1 ∧ nth(t,0)==n`; unknown elements → `Unsupported`.
+
+This makes `Nat* - Nat` mean "sequences of length ≠ 1" and `Nat* - Nat - {[]}` mean
+"sequences of length ≥ 2":
+```
+h : (Nat* - Nat - {[]}) -> Nat
+h(xs) = xs[0] + xs[1]   -- proved: solver sees len ≥ 2
+```
+
+*`{[]}` syntax*: the set containing the empty sequence.  `[]` already parses to
+`ExprKind::Tuple(vec![])` (same as the empty tuple — they are identical).  No parser
+change was needed; `{[]}` just needs membership-encoding support (the SetLit handler was
+extended to recognise the empty-tuple element).
+
+*Codegen — boxing at boundaries* (option 3 / always-box):
+
+At function-call argument and function-return boundaries, the compiler boxes a scalar or
+tuple value into an Arrow vector.  Boxing allocates a singleton/flat Arrow array.
+
+> **TODO**: the "stay-i64 when statically length-1" optimisation is deferred — the compiler
+> always allocates at boundaries even when the length is statically known to be 1.
+
+Two changes:
+- **Return boundary** (`coerce_vector_return`): extended to handle `Kind::Int | Kind::Bool`
+  in addition to `Kind::Tuple`.  Uses `compile_scalar_as_singleton_vector` (new helper in
+  `src/codegen/expr.rs`) which calls `cantor_vec_builder_new_i64` → `_push_i64` → `_finish_i64`
+  (or `_bool` variants).
+- **Call-argument boundary**: `Compiler` gained a new field
+  `fn_param_kinds: HashMap<String, Vec<Kind>>` (populated alongside `fn_return_kinds` in
+  pass 1).  The argument loop in `compile_call` looks up the expected param kind; if
+  expected is `Vector(ek)` and the compiled argument isn't, it calls
+  `compile_scalar_as_singleton_vector` or delegates to `compile_tuple_as_vector`.
+
+A separate pre-existing codegen bug was also fixed here: `xs[0]` (literal integer subscript)
+parses to `ExprKind::Proj` (not `ExprKind::Index`), but `compile_proj` only handled
+`Vector(Tuple)` (struct vectors); plain `Vector(Int)` / `Vector(Bool)` subscripts now
+dispatch to the same `cantor_vec_get_*` path as runtime indices.
+
+*Deferred*:
+- `Vector → scalar` un-boxing at call sites.
+- Stay-i64 optimisation when length is statically 1.
+- General sequence-literal set elements (`{[1, 2]}`, `{[3]}`).
+- Products whose components are sequences (correctness currently limited to simple cases).
 
 **Desugaring**: `X * N *` (Kleene star of a repeated product) correctly desugars the
 inner `X * N` → `X * … * X` before wrapping in `KleeneStar`.

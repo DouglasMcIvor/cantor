@@ -9,11 +9,15 @@ use crate::{
 };
 
 /// True when `tok` can legally begin an expression (used for Kleene-star disambiguation).
-fn token_starts_expr(tok: &Token) -> bool {
+// Disambiguates postfix `*` (Kleene star) from binary `*` (Cartesian product /
+// multiplication).  `-` is intentionally excluded: `X* - A` must parse as
+// KleeneStar(X) Sub A (set difference), not as X Mul UnOp(Neg, A).
+// Use `x * (-5)` instead of `x * -5` if you need to multiply by a literal negative.
+fn token_starts_expr_after_star(tok: &Token) -> bool {
     matches!(
         tok,
         Token::Int(_) | Token::True | Token::False | Token::Ident(_)
-            | Token::Minus | Token::Not | Token::If | Token::LParen
+            | Token::Not | Token::If | Token::LParen
             | Token::LBrace | Token::LBracket | Token::Fail | Token::From | Token::Size
     )
 }
@@ -569,7 +573,7 @@ impl<'src> Parser<'src> {
             // Disambiguation: `X * Y` (product/multiply) has an expression following `*`;
             // `X*` (Kleene star) has a non-expression token following `*` (e.g. `->`, `)`, newline).
             // We only produce KleeneStar when the token after `*` cannot start an expression.
-            if self.peek() == &Token::Star && !token_starts_expr(self.peek2()) {
+            if self.peek() == &Token::Star && !token_starts_expr_after_star(self.peek2()) {
                 let star_span = self.peek_span();
                 self.advance()?;
                 let span = Span::new(lhs.span.start, star_span.end);

@@ -1,0 +1,15 @@
+-- Direction 2 (solver): a sequence-sorted term checked against a scalar/product set
+-- is constrained by length.  Set difference narrows the length:
+--   Nat* - Nat        = sequences of length ≠ 1   (Nat identifies length-1 sequences)
+--   Nat* - Nat - {[]} = sequences of length ≥ 2   (additionally exclude length 0)
+--
+-- The {[]} literal contains the empty sequence (parsed as the empty tuple []).
+
+-- Proved: domain length ≥ 2 discharges both xs[0] and xs[1] bounds obligations.
+h : (Nat* - Nat - {[]}) -> Nat
+h(xs) = xs[0] + xs[1]
+
+-- Control: Nat* - Nat (length ≠ 1) still allows empty sequences,
+-- so xs[0] is not proved safe.
+h_no_empty_guard : (Nat* - Nat) -> Nat
+h_no_empty_guard(xs) = xs[0]

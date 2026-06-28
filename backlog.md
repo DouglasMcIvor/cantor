@@ -20,7 +20,19 @@ You probably don't want to read this unless you're me.
 - operator overloading for things like List(Byte)?
   - custom operator overloading syntax like with haskell? I don't care for inventing new ops but supporting existing ones might be important
   - automatic operator overloading for disinct sets, like allowing arithmetic on Litre, maybe via generics mechanism below?
-- BigInt runtime support for our unsized Int and Nat sets
+- BigInt runtime support for our unsized Int and Nat sets, should come after function overloading so that
+  ```
+  foo : Int -> Int
+  ```
+  gets compiled into an `Int64` overload and a `BigInt = Int - Int64` overload. That way if someone writes a main
+  that verifies input is within a reasonable range they should never need to link the big int library.
+  `BigInt` is platform dependent, it just means "can't fit into a machine word" so
+  ```
+  require x not in BigInt
+  assert x not in BigInt
+  ```
+  becomes useful for optimization without needing to know about the target architecture.
+  ChatGPT suggests num-bigint as a mature widely used pure rust impl.
 - constants JIT'd instead of at rust level to get consistency 
 - spin up some code review agents to assess quality of rust implementation, factoring and maintainability before it gets too large
 - human intros (familiar with types, newbie with the word type taboo'd) and LLM intro. The human intros would be good to include a bunch of Venn diagrams and ye olde curved arrows between ovals representing functions to visualise the concepts along the way.
@@ -87,9 +99,16 @@ Algorithm:
   size(Tree.leaf2(x, y)) = ..
   ```
 - outer IO loop
+  - allow different Output sets, can write pure cantor transformers from one Output to another
+  - eventually lots of different output backends: CLI, TUI, web, SDL, OpenGL, vulkan, etc.
 - write-only side effects via `emit`
 - compiled binaries
 - linker integration
+  - ChatGPT says that rust makes crates instantiate generics only when they are used, we should do the same
+  - so we will need to ship all the instantiations, the source (or an IR) for any generics, and the domain/range constraints
+  - we can do this for the "under the hood" overloads too, like `Int64` vs `BigInt`. If a package doesn't statically make
+  use of the `BigInt` overloads then we can put those in as generics and let them instantiate on use
+- FFI particularly useful for defining Output handlers
 - enums. like distinct these create new distinct values. Sugar for distinct Nat with named values?
   ```
   enum {a, b, c} -- no value provided, auto derive from Nat
@@ -270,6 +289,7 @@ Algorithm:
 - Learned about alloca and how a `mem2reg` optimization will often replace it with phi nodes etc
 - Claude will often remove its own comments when editing sections of code. I'm not sure why it does this.
 - I can viscerally feel the development process slowing down as the codebase grows. The changes are getting more complex, the amount of code that needs to change is growing, and unsurprisingly this means both Claude and I are beginning to make more mistakes and need more guidance and review.
+- All the different theories that cvc5 supports, including "bags" as a name for multisets in the theory of bags
 
 # Things that surprised me
 
@@ -280,10 +300,6 @@ Algorithm:
 
 # Open questions
 
-- How should we implement built in containers like sets and so? Pull in a library or roll our own?
-  - For temporaries: flat arrays to start to keep it simple, deallocate entire arena each IO loop, one arena to start
-  - ChatGPT suggests `im` or `rpds` (its preference for some reason) for persistent data structures and eventually we can roll our own
-- Should we represent values of lists of product sets automatically as a struct of arrays? That might be fun
 - Does all of overloading, generics and dynamic dispatch collapse into the one thing? Either the compiler proves a particular definition is used or else it outputs a vtable?
 - I wanted 'emit' for write only effects, but when we added multithreading we will need synchronoisation. Is that a problem?
 I guess it depends on how we handle threading.
@@ -299,8 +315,6 @@ I guess it depends on how we handle threading.
   ```
   The persistent state can use tracing GC _during the diff_. This is also simultaneous with IO so can naturally run in parallel.
   The only gap left is that the mutable arena could grow too large. Later on we could add pages to the arena to allow partial clean up like with tcmalloc and marking the pages available to the OS!
-- Does cvc5 come with a built-in timeout or limit for complex proofs? Should we let the user configure an "effort" value?
-- Should we have an early `return` statement? Seems expected in imperative languages.
 - How to define exception handlers?
 - More generally, how to define the IO loop?
 - Should we have a way to write programs without the IO loop runtime? If so how?

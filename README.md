@@ -394,6 +394,101 @@ $ cantor overflow.cantor
 
 **Disambiguation rule**: `f : Int * Int -> Int` with `f(x, y)` means two separate scalar parameters (existing behaviour); `f : Int * Int -> Int * Int` with `f(t)` means a single tuple parameter. The number of declared parameters determines which reading applies — no extra syntax needed. In the future this same pattern will be supported in destructuring assignment.
 
+### Vectors and bounds safety
+
+`X*` is a variable-length sequence of values from the set `X`.
+The built-in `len(xs)` returns the length; `xs[i]` indexes by position; `++` concatenates two vectors.
+
+Like [divide by zero](#division-safety), **out-of-bounds indexing is a class of safety violation that Cantor catches by proof.**
+
+When the length is statically known — because the vector was built from a literal — the compiler proves the index is safe and no check is needed:
+
+```haskell
+first_elem : -> Nat
+first_elem() = [10, 20, 30][0]    -- proved: index 0 < 3 ✓
+
+third_field : -> Nat
+third_field() = [(1, 10), (2, 20), (3, 30)][2].1    -- proved: index 2 < 3 ✓
+```
+
+When the vector or index is only known at runtime, the compiler cannot prove safety and gives a counterexample — just as it does for division:
+
+```haskell
+head : Nat* -> Nat
+head(xs) = xs[0]
+```
+
+```
+$ cantor head.cantor
+  counterexample  head : Nat* -> Nat
+    xs = []  ->  (vector index 0 may be out of bounds)
+```
+
+The solver found that an empty vector makes index 0 invalid.
+If you can't justify why the index is in range, you have no business indexing.
+
+To pass the check, restrict the domain so the compiler has enough information, or add an `assert` to insert a runtime guard:
+
+```haskell
+-- Explicit runtime guard: turns the obligation into a checked failure
+safe_head : Nat* -> Nat | Fail
+safe_head(xs) {
+    assert len(xs) > 0 else fail
+    xs[0]
+}
+```
+
+With a runtime-variable index the same story applies — `assert i < len(xs) else fail` is the escape hatch when the compiler can't see a static proof:
+
+```haskell
+nth : Nat* * Nat -> Nat | Fail
+nth(xs, i) {
+    assert i < len(xs) else fail
+    xs[i]
+}
+```
+
+Vectors of tuples (`(Nat * Nat)*`) and nested vectors (`Nat**`) work the same way — the bounds obligation is attached to any indexing expression, and a literal-length vector with a literal index is always proved statically.
+
+#### Scalars and tuples are sequences too
+
+Every scalar `n` and every tuple `(a, b, c)` is a length-1 and length-3 sequence respectively.
+This follows from the fact that `(5) == 5` — parentheses are overloaded for grouping and tupling, so there is no distinct "1-tuple"; the length-1 sequence **is** the scalar.
+The compiler automatically boxes a scalar or tuple into an Arrow vector when crossing a `X*` function boundary:
+
+```haskell
+foo : -> Nat*
+foo() = 5            -- proved: 5 is the length-1 sequence [5]
+
+get : (Nat* - {[]}) -> Nat
+get(xs) = xs[0]
+
+val : -> Nat
+val() = get(5)       -- proved: 5 is boxed to [5] before the call
+```
+
+> **Note:** boxing allocates a singleton Arrow array on every call.
+> The scalar-stays-i64 optimisation (when the callee is statically known to consume exactly one element) is on the roadmap but not yet implemented.
+
+#### Length-narrowing with set difference
+
+Because scalars identify with length-1 sequences and tuples with length-N sequences, set difference narrows the _length_ of a domain:
+
+| Domain expression | Meaning |
+|-------------------|---------|
+| `Nat*`              | all non-negative integer sequences (any length) |
+| `Nat* - {[]}`       | non-empty Nat sequences (length ≥ 1) |
+| `Nat* - Nat`        | Nat sequences of length ≠ 1 |
+| `Nat* - Nat - {[]}` | Nat sequences of length ≥ 2 |
+
+The special literal `{[]}` is the set containing the empty sequence.
+Combined, these let the compiler prove that multi-element access is safe:
+
+```haskell
+h : (Nat* - Nat - {[]}) -> Nat   -- length ≥ 2
+h(xs) = xs[0] + xs[1]             -- proved: both indices in range
+```
+
 ### Fixed-length arrays
 
 `X * N` in a signature is sugar for the N-fold Cartesian product `X * X * … * X`, making it easy to write functions over fixed-size collections without spelling out every component.
@@ -423,7 +518,7 @@ So in Cantor most of the time square brackets don't communicate homogeneity, the
 
 The only exception to this case is where the compiler is automatically inferring a suitable range for a value: `(x, y, z)` can have any range of the form `X * Y * Z` but `[x, y,z]` will be inferred to have a range of the form `X * X * X`.
 
-**Bracket indexing** `t[N]` is an alias for `t.N`, keeping a consistent `t[i]` indexing syntax that will extend naturally to runtime-variable indices once Kleene-star vectors are implemented.
+**Bracket indexing** `t[N]` is an alias for `t.N`, keeping a consistent `t[i]` indexing syntax that extends naturally to the runtime-variable indices used with Kleene-star vectors.
 
 ```haskell
 nat_triple : -> Nat * 3
@@ -441,7 +536,8 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 - **Bool as a first-class value kind** — `Bool` is disjoint from all integer sets; comparisons (`>`, `==`, …) produce `Bool`; `and`, `or`, `not` operate on `Bool`; no implicit coercion between `Bool` and integers
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` in domain/range/`in`/`for` positions; finite literal sources unrolled statically; infinite named sources encoded as SMT predicates
 - **Product Set values (aka tuples)** — `f : Int * Int -> Int * Int`; tuple literals `(e1, e2)`; positional projection `t.0`, `t.1`; tuples as parameters and return values; the compiler proves tuple domain and range claims end-to-end; `cantor run` prints tuple results as `(a, b)`. Disambiguation: `f(x, y)` with two params = two scalars; `f(t)` with one param = single tuple.
-- **Fixed-length arrays** — `X * N` in a signature desugars to the N-fold Cartesian product `X * X * … * X`; array literals `[e1, e2, e3]` are syntactic sugar for tuple literals `(e1, e2, e3)`; bracket indexing `t[N]` is an alias for `t.N`, providing a uniform `t[i]` syntax that will extend to runtime indices with Kleene-star vectors
+- **Fixed-length arrays** — `X * N` in a signature desugars to the N-fold Cartesian product `X * X * … * X`; array literals `[e1, e2, e3]` are syntactic sugar for tuple literals `(e1, e2, e3)`; bracket indexing `t[N]` is an alias for `t.N`
+- **Variable-length vectors** — `X*` (Kleene star) for runtime-variable-length sequences; `len(xs)` for cardinality; `xs[i]` with a runtime index; `xs ++ ys` concatenation; vectors of tuples `(A * B)*` (columnar Arrow backing) and nested vectors `X**` (ListArray backing). Scalars and tuples are sequences (every scalar `n` is the length-1 sequence `[n]`; every N-tuple is the length-N sequence), so `foo() = 5 : Nat*` is valid and the compiler boxes the scalar automatically at function boundaries. Length-narrowing set difference: `Nat* - Nat` restricts to length ≠ 1, `Nat* - Nat - {[]}` to length ≥ 2. Bounds safety: literal-length vectors with literal indices are proved statically; runtime-length or runtime-index access generates a bounds obligation — a counterexample is reported unless the compiler can prove the index is always valid, otherwise an `assert` inserts a runtime guard
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis
 - **Unified named definitions** — constants (`pi : Nat = 314`) and compile-time set definitions (`Colour = {1, 2, 3}`) share the same one-line syntax and the same AST node; both are auto-inlined at compile time; constants are checked against their range annotation
@@ -462,7 +558,7 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 
 ## On the roadmap
 
-- **Vectors** — `X*` (Kleene star) for variable-length sequences; `len(xs)` for cardinality; `xs[i]` with a runtime index; `for x in xs` iteration. The bracket-index syntax `t[N]` introduced for fixed-length arrays is designed to extend to this naturally.
+- **Vector iteration** — `for x in xs` over a `X*` vector; the remaining iteration pattern to complement the existing `len`, `xs[i]`, and `++` operations.
 
 - **Namespaces and named structured data** — Named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`), and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
 

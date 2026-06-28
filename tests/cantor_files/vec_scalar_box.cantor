@@ -1,0 +1,19 @@
+-- Sequence unification: scalar/tuple values are identified with fixed-length sequences.
+-- A scalar `n` is the length-1 sequence [n]; a tuple `(a, b)` is the length-2 sequence [a, b].
+-- At function boundaries the compiler automatically boxes scalars into singleton vectors.
+
+-- Direction 1 (solver): 5 ∈ Nat* because 5 ∈ Nat (length-1 element check).
+foo : -> Nat*
+foo() = 5
+
+-- A Nat* function that retrieves index 0 (proved safe when domain is non-empty).
+get : (Nat* - {[]}) -> Nat
+get(xs) = xs[0]
+
+-- Passing the scalar 5 to get: proved because 5 ∈ Nat* - {[]} (non-empty singleton).
+val : -> Nat
+val() = get(5)
+
+-- Entry point: verify runtime boxing by checking len and element.
+main : -> Nat
+main() = len(foo())

@@ -1,0 +1,10 @@
+-- Tuple boxing: a tuple (a, b) is identified with the length-2 sequence [a, b].
+-- At return boundaries the compiler boxes a Tuple value into a flat Arrow vector.
+
+-- (3, 4) returned as Nat* boxes to a 2-element vector [3, 4].
+pair : -> Nat*
+pair() = (3, 4)
+
+-- Entry point: verify length and element access at runtime.
+main : -> Nat
+main() = len(pair())

@@ -596,9 +596,36 @@ impl<'ctx> Compiler<'ctx> {
             CompileError::UndefinedVariable { name: callee.0.clone(), span }
         })?;
 
+        let param_kinds_for_callee = self.fn_param_kinds.get(&callee.0).cloned();
         let mut compiled_args = Vec::with_capacity(args.len());
-        for arg in args {
+        for (arg_idx, arg) in args.iter().enumerate() {
             let (v, arg_kind) = self.compile_expr(arg, env)?;
+            let expected_kind = param_kinds_for_callee
+                .as_deref()
+                .and_then(|ks| ks.get(arg_idx));
+
+            // When the callee expects a Vector but we have a scalar or tuple,
+            // box it into a singleton/flat Arrow vector (sequence unification).
+            let (v, arg_kind) = if let Some(Kind::Vector(ek)) = expected_kind {
+                if !matches!(arg_kind, Kind::Vector(_)) {
+                    let ek = ek.as_ref().clone();
+                    match &arg_kind {
+                        Kind::Int | Kind::Bool => {
+                            self.compile_scalar_as_singleton_vector(v, &arg_kind, &ek)?
+                        }
+                        Kind::Tuple(elems) => {
+                            let elems = elems.clone();
+                            self.compile_tuple_as_vector(v, &elems, &ek)?
+                        }
+                        _ => (v, arg_kind),
+                    }
+                } else {
+                    (v, arg_kind)
+                }
+            } else {
+                (v, arg_kind)
+            };
+
             // All function parameters are i64 (uniform ABI); widen Bool args.
             let v_i64 = if arg_kind == Kind::Bool {
                 self.builder
@@ -898,6 +925,62 @@ impl<'ctx> Compiler<'ctx> {
         Ok((vec_ptr, Kind::Vector(Box::new(Kind::Tuple(field_kinds.to_vec())))))
     }
 
+    /// Box a scalar (`Int` or `Bool`) value into a singleton Arrow vector.
+    ///
+    /// Sequence-unification: a scalar `n` is identified with `[n]`, the length-1
+    /// sequence.  At function return and call-argument boundaries we materialise
+    /// this boxing.  `val_kind` must be `Kind::Int` or `Kind::Bool`; `elem_kind`
+    /// is the declared element kind of the target `Vector` (usually the same as the
+    /// scalar kind, but could differ if e.g. the callee expects `Int` elements and
+    /// we pass a `Bool`).
+    pub(crate) fn compile_scalar_as_singleton_vector(
+        &self,
+        val: inkwell::values::BasicValueEnum<'ctx>,
+        val_kind: &Kind,
+        elem_kind: &Kind,
+    ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, Kind), CompileError> {
+        let (new_fn, push_fn, finish_fn, _) = vec_builder_fns(elem_kind)
+            .map_err(CompileError::Internal)?;
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+
+        let new_fn_val = self.module.get_function(new_fn)
+            .ok_or_else(|| CompileError::Internal(format!("{new_fn} not declared")))?;
+        let push_fn_val = self.module.get_function(push_fn)
+            .ok_or_else(|| CompileError::Internal(format!("{push_fn} not declared")))?;
+        let finish_fn_val = self.module.get_function(finish_fn)
+            .ok_or_else(|| CompileError::Internal(format!("{finish_fn} not declared")))?;
+
+        let builder_ptr = self.builder
+            .build_call(new_fn_val, &[], "singleton_builder")
+            .map_err(err)?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::Internal("singleton builder new returned void".into()))?;
+
+        // Bool must be zero-extended to i64 before pushing.
+        let push_val: inkwell::values::BasicValueEnum<'ctx> = if *val_kind == Kind::Bool {
+            self.builder
+                .build_int_z_extend(val.into_int_value(), self.context.i64_type(), "singleton_ext")
+                .map_err(err)?
+                .into()
+        } else {
+            val
+        };
+
+        self.builder
+            .build_call(push_fn_val, &[builder_ptr.into(), push_val.into()], "singleton_push")
+            .map_err(err)?;
+
+        let vec_ptr = self.builder
+            .build_call(finish_fn_val, &[builder_ptr.into()], "singleton_ptr")
+            .map_err(err)?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::Internal("singleton builder finish returned void".into()))?;
+
+        Ok((vec_ptr, Kind::Vector(Box::new(elem_kind.clone()))))
+    }
+
     /// Emit the multi-call get for `xs[i]` where `xs : (A * B)*`.
     /// Calls `cantor_struct_vec_get_field` once per field and assembles an LLVM struct.
     fn compile_struct_vec_index(
@@ -955,11 +1038,43 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (base_val, base_kind) = self.compile_expr(base, env)?;
 
-        // Struct vector: `xs.N` / `xs[N]` on a `(A * B)*` value → compile-time known field index
+        // Vector: `xs.N` / `xs[N]` with a compile-time literal index.
         if let Kind::Vector(ek) = &base_kind {
-            if let Kind::Tuple(field_kinds) = ek.as_ref() {
-                let idx_val = self.context.i64_type().const_int(index as u64, false).into();
-                return self.compile_struct_vec_index(base_val, idx_val, field_kinds);
+            match ek.as_ref() {
+                // Struct vector `(A * B)*`: per-field projection.
+                Kind::Tuple(field_kinds) => {
+                    let idx_val = self.context.i64_type().const_int(index as u64, false).into();
+                    return self.compile_struct_vec_index(base_val, idx_val, field_kinds);
+                }
+                // Flat or nested vector: delegate to compile_index with a constant-index wrapper.
+                _ => {
+                    let idx_val = self.context.i64_type().const_int(index as u64, false);
+                    let (get_fn, elem_kind) = match ek.as_ref() {
+                        Kind::Int  => ("cantor_vec_get_i64",  Kind::Int),
+                        Kind::Bool => ("cantor_vec_get_bool", Kind::Bool),
+                        Kind::Vector(inner) => match inner.as_ref() {
+                            Kind::Int  => ("cantor_list_vec_get_i64",  Kind::Vector(Box::new(Kind::Int))),
+                            Kind::Bool => ("cantor_list_vec_get_bool", Kind::Vector(Box::new(Kind::Bool))),
+                            other => return Err(CompileError::Internal(format!(
+                                "xs[N]: unsupported nested element kind {other:?}"
+                            ))),
+                        },
+                        other => return Err(CompileError::Internal(format!(
+                            "xs[N]: unsupported element kind {other:?}"
+                        ))),
+                    };
+                    let fn_val = self.module.get_function(get_fn).ok_or_else(|| {
+                        CompileError::Internal(format!("runtime function `{get_fn}` not declared"))
+                    })?;
+                    let base_i64 = base_val.into_int_value();
+                    let result = self.builder
+                        .build_call(fn_val, &[base_i64.into(), idx_val.into()], "vec_proj")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    let result_val = result.try_as_basic_value().left().ok_or_else(|| {
+                        CompileError::Internal(format!("`{get_fn}` returned void unexpectedly"))
+                    })?;
+                    return Ok((result_val, elem_kind));
+                }
             }
         }
 

@@ -1,0 +1,21 @@
+-- Set difference in vector domain constraints.
+--
+-- Previously these panicked with "set_sort: value-position expression in
+-- set-expression context" because `Nat* - A` was misparsed as `Nat * (-A)`
+-- (the `-` token triggered unary-negation disambiguation for `*`).
+
+-- Nat* - {} = Nat* (subtracting the empty set changes nothing).
+-- Gets a COUNTEREXAMPLE because xs could be empty, violating the bounds obligation.
+first_elem : (Nat* - {}) -> Nat
+first_elem(xs) = xs[0]
+
+-- Nat* - Nat = sequences of length ≠ 1 (under sequence unification, Nat identifies
+-- the set of length-1 sequences, so subtracting Nat excludes those).
+-- Still gets a COUNTEREXAMPLE because length-0 sequences are still allowed.
+first_elem2 : (Nat* - Nat) -> Nat
+first_elem2(xs) = xs[0]
+
+-- Domain-restricted to proven non-empty: pass a (Nat* - {}) through identity.
+-- Proved: the parameter already carries the Nat* constraint.
+pass_through : (Nat* - {}) -> Nat*
+pass_through(xs) = xs

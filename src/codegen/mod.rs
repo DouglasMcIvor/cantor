@@ -57,6 +57,10 @@ pub struct Compiler<'ctx> {
     /// Names of all `distinct` sets in the file (e.g. `"Litre"`, `"Kelvin"`).
     /// Used to detect auto-generated constructors like `litre(x)` → identity.
     distinct_names: HashSet<String>,
+    /// Maps each declared function name to the runtime Kind of each parameter.
+    /// Populated in pass 1 alongside `fn_return_kinds`; used at call sites to
+    /// box scalar/tuple arguments when the callee expects a `Kind::Vector`.
+    fn_param_kinds: HashMap<String, Vec<Kind>>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -71,6 +75,7 @@ impl<'ctx> Compiler<'ctx> {
             fn_ranges: HashMap::new(),
             user_set_vals: HashMap::new(),
             distinct_names: HashSet::new(),
+            fn_param_kinds: HashMap::new(),
         }
     }
 
@@ -107,6 +112,7 @@ impl<'ctx> Compiler<'ctx> {
             }
         };
         self.fn_return_kinds.insert(name.to_owned(), return_kind);
+        self.fn_param_kinds.insert(name.to_owned(), param_kinds.to_vec());
         fn_val
     }
 
@@ -319,14 +325,17 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Vector(ek) => ek.as_ref().clone(),
             _ => return Ok((val, val_kind)),
         };
-        let tuple_elems = match &val_kind {
-            Kind::Tuple(elems) => elems.clone(),
-            Kind::Vector(_) => return Ok((val, val_kind)), // already a vector
-            other => return Err(CompileError::Internal(format!(
+        match &val_kind {
+            Kind::Vector(_) => Ok((val, val_kind)), // already a vector
+            Kind::Tuple(elems) => {
+                let elems = elems.clone();
+                self.compile_tuple_as_vector(val, &elems, &elem_kind)
+            }
+            Kind::Int | Kind::Bool => self.compile_scalar_as_singleton_vector(val, &val_kind, &elem_kind),
+            other => Err(CompileError::Internal(format!(
                 "coerce_vector_return: cannot convert {other:?} to Vector"
             ))),
-        };
-        self.compile_tuple_as_vector(val, &tuple_elems, &elem_kind)
+        }
     }
 
     /// If the function's declared return kind is `Kind::TaggedUnion(arms)` and

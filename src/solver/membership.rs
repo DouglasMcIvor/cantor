@@ -7,7 +7,7 @@ use cvc5::{Kind, Sort, Term, TermManager};
 use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp};
 use crate::span::Symbol;
 
-use super::sort::{arm_ctor_name_for_arm, flatten_any_union};
+use super::sort::{arm_ctor_name_for_arm, flatten_any_union, flatten_product};
 use super::NameDefs;
 
 /// Per-distinct-set CVC5 artefacts created when `D = distinct B` is declared.
@@ -128,6 +128,120 @@ fn membership_constraint_for_dt<'tm>(
     Membership::Constrained(term)
 }
 
+// ── Sequence-unification helpers ─────────────────────────────────────────────
+
+/// Returns true for set expressions that represent "atomic" (scalar or fixed-length)
+/// sets — i.e. sets whose elements have a concrete, finite length when viewed as
+/// sequences.  Used to decide when a sequence-sorted term should be lifted by length.
+///
+/// Built-in scalar named sets, set literals, and Cartesian products are atomic.
+/// Kleene-star sets, unions, comprehensions, and user-defined aliases/distinct sets
+/// are NOT atomic (they contain elements of varying length or unknown structure).
+fn is_atomic_set(set_expr: &Expr) -> bool {
+    match &set_expr.kind {
+        ExprKind::Var(sym) => matches!(
+            sym.0.as_str(),
+            "Int" | "Nat" | "NatPos" | "NonZeroInt" | "Bool" | "Fail"
+                | "Int8" | "Int16" | "Int32" | "Int64"
+        ),
+        ExprKind::SetLit(_) => true,
+        ExprKind::BinOp { op: BinOp::Mul, .. } => true,
+        _ => false,
+    }
+}
+
+/// Encode `t ∈ set_expr` for a *sequence-sorted* term `t` against an *atomic* set.
+///
+/// Under the sequence-unification model `n ∈ Nat*` and `(a,b) ∈ Nat*` both hold
+/// because scalars and tuples are identified with fixed-length sequences.  The
+/// reverse direction handled here: `t ∈ Nat` (for sequence-sorted `t`) is true iff
+/// `len(t) == 1  ∧  nth(t,0) ∈ Nat`.  Products check the appropriate N-ary length.
+/// Set literals handle `[]` (empty-sequence element, encoding `len(t) == 0`) and
+/// integer elements (encoding `len(t) == 1 ∧ nth(t,0) == n`).
+fn lift_sequence_into_atomic<'tm>(
+    tm: &'tm TermManager,
+    t: Term<'tm>,
+    set_expr: &Expr,
+    name_defs: &NameDefs<'_>,
+    distinct_preds: &DistinctPreds<'tm>,
+) -> Membership<'tm> {
+    match &set_expr.kind {
+        // Product A*B*C: t ∈ A*B*C ⟺ len(t)==N ∧ nth(t,0)∈A ∧ nth(t,1)∈B ∧ …
+        ExprKind::BinOp { op: BinOp::Mul, .. } => {
+            let parts = flatten_product(set_expr);
+            let n = parts.len() as i64;
+            let len_term = tm.mk_term(Kind::SeqLength, &[t.clone()]);
+            let len_eq = tm.mk_term(Kind::Equal, &[len_term, tm.mk_integer(n)]);
+            let mut constraints = vec![len_eq];
+            for (j, part) in parts.iter().enumerate() {
+                let nth = tm.mk_term(Kind::SeqNth, &[t.clone(), tm.mk_integer(j as i64)]);
+                match membership_constraint(tm, nth, part, name_defs, distinct_preds) {
+                    Membership::Constrained(c) => constraints.push(c),
+                    Membership::Unconstrained => {}
+                    Membership::Unsupported => return Membership::Unsupported,
+                }
+            }
+            Membership::Constrained(if constraints.len() == 1 {
+                constraints.remove(0)
+            } else {
+                tm.mk_term(Kind::And, &constraints)
+            })
+        }
+
+        // SetLit: handle the empty-sequence element `[]` (Tuple([])) and integer
+        // constants.  Non-empty-tuple elements (like `[1,2]`) are deferred.
+        // TODO: support general sequence-literal set elements like `{[1,2], [3]}`
+        ExprKind::SetLit(elements) => {
+            if elements.is_empty() {
+                return Membership::Constrained(tm.mk_boolean(false));
+            }
+            let len_term = tm.mk_term(Kind::SeqLength, &[t.clone()]);
+            let mut disjuncts: Vec<Term<'_>> = Vec::new();
+            for elem in elements {
+                match &elem.kind {
+                    // `[]` — the empty sequence; t ∈ {[]} ⟺ len(t) == 0
+                    ExprKind::Tuple(parts) if parts.is_empty() => {
+                        disjuncts.push(tm.mk_term(
+                            Kind::Equal,
+                            &[len_term.clone(), tm.mk_integer(0)],
+                        ));
+                    }
+                    // integer-valued element: t ∈ {n} ⟺ len(t)==1 ∧ nth(t,0)==n
+                    _ => match eval_const_int(elem) {
+                        Some(n) => {
+                            let nth0 = tm.mk_term(Kind::SeqNth, &[t.clone(), tm.mk_integer(0)]);
+                            let len1 = tm.mk_term(Kind::Equal, &[len_term.clone(), tm.mk_integer(1)]);
+                            let eq_n = tm.mk_term(Kind::Equal, &[nth0, tm.mk_integer(n)]);
+                            disjuncts.push(tm.mk_term(Kind::And, &[len1, eq_n]));
+                        }
+                        None => return Membership::Unsupported,
+                    },
+                }
+            }
+            Membership::Constrained(if disjuncts.len() == 1 {
+                disjuncts.remove(0)
+            } else {
+                tm.mk_term(Kind::Or, &disjuncts)
+            })
+        }
+
+        // Scalar named set (Int, Nat, NatPos, etc.): t ∈ S ⟺ len(t)==1 ∧ nth(t,0) ∈ S
+        // The recursive call will use the normal scalar path (nth0 has integer sort).
+        _ => {
+            let len_term = tm.mk_term(Kind::SeqLength, &[t.clone()]);
+            let len1 = tm.mk_term(Kind::Equal, &[len_term, tm.mk_integer(1)]);
+            let nth0 = tm.mk_term(Kind::SeqNth, &[t, tm.mk_integer(0)]);
+            match membership_constraint(tm, nth0, set_expr, name_defs, distinct_preds) {
+                Membership::Unconstrained => Membership::Constrained(len1),
+                Membership::Constrained(elem_c) => {
+                    Membership::Constrained(tm.mk_term(Kind::And, &[len1, elem_c]))
+                }
+                Membership::Unsupported => Membership::Unsupported,
+            }
+        }
+    }
+}
+
 /// Recursively build a membership predicate for structured set expressions.
 ///
 /// Handles named built-in sets, user-defined alias sets (expanded inline),
@@ -147,6 +261,13 @@ pub(crate) fn membership_constraint<'tm>(
     // by the existing `BinOp::Mul` arm below via `child()` extraction.
     if t.sort().is_dt() && !t.sort().is_tuple() {
         return membership_constraint_for_dt(tm, t, set_expr, name_defs, distinct_preds);
+    }
+    // Sequence-unification Direction 2: a sequence-sorted term checked against an
+    // *atomic* set (scalar or product) is lifted by length.  Compound set operators
+    // (Sub, Union, KleeneStar, …) are not intercepted here — they fall through to
+    // their own arms, which recurse and re-enter this guard on atomic leaves.
+    if t.sort().is_sequence() && is_atomic_set(set_expr) {
+        return lift_sequence_into_atomic(tm, t, set_expr, name_defs, distinct_preds);
     }
     match &set_expr.kind {
         ExprKind::Var(sym) => match sym.0.as_str() {
@@ -246,32 +367,38 @@ pub(crate) fn membership_constraint<'tm>(
 
         ExprKind::SetLit(elements) => {
             if elements.is_empty() {
-                return Membership::Unsupported; // empty set — caller gets Unknown
+                // ∅ has no members: t ∈ {} is always false.
+                // Returning Constrained(false) rather than Unsupported lets
+                // set-difference work correctly: t ∈ (A - {}) = t ∈ A ∧ ¬false = t ∈ A.
+                return Membership::Constrained(tm.mk_boolean(false));
             }
             // t ∈ {v₁, v₂, …}  ↔  t == v₁  ∨  t == v₂  ∨  …
             // Constant-fold integer expressions (including negation like `-1`).
             let Some(t_int) = to_integer_term(tm, t) else {
                 return Membership::Constrained(tm.mk_boolean(false));
             };
-            let eqs: Option<Vec<Term<'_>>> = elements
-                .iter()
-                .map(|e| eval_const_int(e).map(|n| {
-                    let n_term = tm.mk_integer(n);
-                    tm.mk_term(Kind::Equal, &[t_int.clone(), n_term])
-                }))
-                .collect();
-
-            match eqs {
-                None => Membership::Unsupported,
-                Some(mut eqs) => {
-                    let term = if eqs.len() == 1 {
-                        eqs.remove(0)
-                    } else {
-                        tm.mk_term(Kind::Or, &eqs)
-                    };
-                    Membership::Constrained(term)
+            // Build equality terms for each element.  `[]` (empty tuple = empty
+            // sequence) is never equal to a scalar, so it contributes `false` to the
+            // disjunction and is simply skipped.  Unknown elements return Unsupported.
+            let mut eqs: Vec<Term<'_>> = Vec::new();
+            for e in elements {
+                if matches!(&e.kind, ExprKind::Tuple(parts) if parts.is_empty()) {
+                    // Scalar ≠ empty sequence — skip (contributes false).
+                    continue;
+                }
+                match eval_const_int(e) {
+                    Some(n) => {
+                        let n_term = tm.mk_integer(n);
+                        eqs.push(tm.mk_term(Kind::Equal, &[t_int.clone(), n_term]));
+                    }
+                    None => return Membership::Unsupported,
                 }
             }
+            Membership::Constrained(match eqs.len() {
+                0 => tm.mk_boolean(false),
+                1 => eqs.remove(0),
+                _ => tm.mk_term(Kind::Or, &eqs),
+            })
         }
 
         // `-` in signature position means set difference (A ∖ B).
@@ -404,7 +531,8 @@ pub(crate) fn membership_constraint<'tm>(
 
         // `t ∈ X*`  ↔  every element of `t` is in `X`.
         //
-        // Two representations of `t`:
+        // Under the sequence-unification model, scalars and tuples are identified with
+        // fixed-length sequences, so there are three representations of `t`:
         //
         // (a) Sequence-sorted term (variable-length parameter encoded as `(Seq elem)`):
         //     Encode as a universally-quantified constraint:
@@ -416,6 +544,11 @@ pub(crate) fn membership_constraint<'tm>(
         // (b) Tuple-sorted term (fixed-length concrete bodies like `[1, 2, 3]`):
         //     Read the element count from the tuple sort and check each child against X.
         //     An empty tuple `[]` satisfies any `X*` vacuously.
+        //
+        // (c) Scalar term (integer- or boolean-sorted): identified with the length-1
+        //     sequence `[t]`, so `t ∈ X*`  ⟺  `t ∈ X`.  This lets `foo() = 5`
+        //     prove against a range of `Nat*`, and lets `bar(5)` pass a scalar to a
+        //     `Nat*` parameter (the codegen boxes it at the call boundary).
         ExprKind::KleeneStar(inner) => {
             if t.sort().is_sequence() {
                 // Build a bound variable `i` for the universal quantifier.
@@ -435,6 +568,10 @@ pub(crate) fn membership_constraint<'tm>(
                         Membership::Constrained(tm.mk_term(Kind::Forall, &[vars, body]))
                     }
                 };
+            }
+            if t.sort().is_integer() || t.sort().is_boolean() {
+                // Scalar is identified with the length-1 sequence [t]: t ∈ X* ⟺ t ∈ X.
+                return membership_constraint(tm, t, inner, name_defs, distinct_preds);
             }
             if !t.sort().is_tuple() {
                 return Membership::Unsupported;
@@ -467,7 +604,6 @@ pub(crate) fn membership_constraint<'tm>(
             if !t.sort().is_tuple() {
                 return Membership::Constrained(tm.mk_boolean(false));
             }
-            use super::sort::flatten_product;
             let parts = flatten_product(set_expr);
             let dt = t.sort().datatype();
             let ctor = dt.constructor(0); // tuples have exactly one constructor

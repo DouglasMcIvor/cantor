@@ -68,6 +68,11 @@ pub fn set_kind(set_expr: &Expr) -> Kind {
             let parts = flatten_domain(set_expr);
             Kind::Tuple(parts.into_iter().map(set_kind).collect())
         }
+        // `A - B`, `A & B`, `A ^ B` — set difference, intersection, symmetric difference.
+        // The result contains elements drawn from A's space, so the kind is A's kind.
+        ExprKind::BinOp { op: BinOp::Sub | BinOp::Intersect | BinOp::SymDiff, lhs, .. } => {
+            set_kind(lhs)
+        }
         // `A + B + C` — disjoint union → Union.
         ExprKind::BinOp { op: BinOp::Add, .. } => {
             let arms = flatten_disjoint_union(set_expr);
