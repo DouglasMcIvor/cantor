@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, Int64Array, StructArray,
-    builder::{BooleanBuilder, Int64Builder},
+    Array, BooleanArray, Int64Array, StructArray,
+    builder::{ArrayBuilder, BooleanBuilder, Int64Builder, StructBuilder},
 };
 use arrow_schema::{DataType, Field, Fields};
 
@@ -299,7 +299,17 @@ pub struct CantorStructVec {
 
 pub struct CantorStructVecBuilder {
     n_fields: usize,
-    builders: Vec<Int64Builder>,
+    builder: StructBuilder,
+}
+
+fn make_struct_builder(n: usize) -> StructBuilder {
+    let fields: Fields = (0..n)
+        .map(|i| Arc::new(Field::new(format!("f{i}"), DataType::Int64, false)))
+        .collect::<Vec<_>>()
+        .into();
+    let field_builders: Vec<Box<dyn ArrayBuilder>> =
+        (0..n).map(|_| Box::new(Int64Builder::new()) as Box<dyn ArrayBuilder>).collect();
+    StructBuilder::new(fields, field_builders)
 }
 
 #[unsafe(no_mangle)]
@@ -307,32 +317,27 @@ pub extern "C" fn cantor_struct_vec_builder_new(n_fields: i64) -> i64 {
     let n = n_fields as usize;
     Box::into_raw(Box::new(CantorStructVecBuilder {
         n_fields: n,
-        builders: (0..n).map(|_| Int64Builder::new()).collect(),
+        builder: make_struct_builder(n),
     })) as i64
 }
 
 /// Append `value` to column `field_idx` of the current row.
 /// Bool values are already widened to 0/1 i64 by the codegen.
+/// Calls `builder.append(true)` after the last field to commit the row.
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_struct_vec_builder_push_field(builder: i64, field_idx: i64, value: i64) {
     let b = unsafe { &mut *(builder as *mut CantorStructVecBuilder) };
-    b.builders[field_idx as usize].append_value(value);
+    let idx = field_idx as usize;
+    b.builder.field_builder::<Int64Builder>(idx).unwrap().append_value(value);
+    if idx == b.n_fields - 1 {
+        b.builder.append(true);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_struct_vec_builder_finish(builder: i64) -> i64 {
     let mut b = unsafe { Box::from_raw(builder as *mut CantorStructVecBuilder) };
-    let n = b.n_fields;
-    let columns: Vec<Int64Array> = b.builders.iter_mut().map(|bld| bld.finish()).collect();
-    let fields: Fields = (0..n)
-        .map(|i| Arc::new(Field::new(format!("f{i}"), DataType::Int64, false)))
-        .collect::<Vec<_>>()
-        .into();
-    let arrays: Vec<ArrayRef> = columns.into_iter()
-        .map(|c| Arc::new(c) as ArrayRef)
-        .collect();
-    let array = StructArray::try_new(fields, arrays, None)
-        .expect("CantorStructVec: StructArray construction failed");
+    let array = b.builder.finish();
     Box::into_raw(Box::new(CantorStructVec { array })) as i64
 }
 
@@ -361,23 +366,21 @@ pub extern "C" fn cantor_struct_vec_concat(a: i64, b: i64) -> i64 {
     let vb = unsafe { &*(b as *const CantorStructVec) };
     let n = va.array.num_columns();
     assert_eq!(n, vb.array.num_columns(), "cantor_struct_vec_concat: field count mismatch");
-    let mut builders: Vec<Int64Builder> = (0..n).map(|_| Int64Builder::new()).collect();
+    let mut sb = make_struct_builder(n);
     for sv in [&va.array, &vb.array] {
-        for (col_idx, col) in sv.columns().iter().enumerate() {
-            let arr = col.as_any().downcast_ref::<Int64Array>()
-                .expect("struct col must be Int64Array");
-            for i in 0..arr.len() { builders[col_idx].append_value(arr.value(i)); }
+        for row in 0..sv.len() {
+            for col in 0..n {
+                let val = sv.column(col)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .expect("struct col must be Int64Array")
+                    .value(row);
+                sb.field_builder::<Int64Builder>(col).unwrap().append_value(val);
+            }
+            sb.append(true);
         }
     }
-    let fields: Fields = (0..n)
-        .map(|i| Arc::new(Field::new(format!("f{i}"), DataType::Int64, false)))
-        .collect::<Vec<_>>()
-        .into();
-    let arrays: Vec<ArrayRef> = builders.iter_mut()
-        .map(|bld| Arc::new(bld.finish()) as ArrayRef)
-        .collect();
-    let array = StructArray::try_new(fields, arrays, None)
-        .expect("cantor_struct_vec_concat: StructArray construction failed");
+    let array = sb.finish();
     Box::into_raw(Box::new(CantorStructVec { array })) as i64
 }
 
@@ -398,6 +401,13 @@ pub extern "C" fn cantor_struct_vec_concat(a: i64, b: i64) -> i64 {
 //   cantor_list_vec_len / get / concat
 //
 // The six functions work identically for Nat**, Nat***, Bool**, (A*B)**, etc.
+//
+// NOTE on Arrow's ListArray: Arrow's ListArray models an *array of variable-
+// length lists* (each element is itself a list of inlined sub-elements). Using
+// it here would require type- and depth-aware builders that inline inner data,
+// which would break this generic pointer-erasing ABI. `Int64Array` is the right
+// backing here; adopting ListArray properly is a larger rearchitecture of the
+// nested-vector ABI.
 
 /// Outer vector for X** at any nesting depth.
 /// Elements are i64 values — scalars for X* (handled elsewhere), or opaque
