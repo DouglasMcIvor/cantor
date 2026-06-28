@@ -1,5 +1,6 @@
 use cantor::ast::{BinOp, Expr, NameDefs};
-use cantor::kind::{Kind, SetElemKind, range_kind, set_kind};
+use cantor::codegen::wire::range_kind;
+use cantor::kind::{Kind, SetElemKind, set_kind};
 // TODO: add `array_elem_kind` to the import once the function is implemented.
 
 #[test]

@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use cantor::{
     ast::{Item, NameDefs},
-    codegen::compile_file,
-    kind::{Kind, range_kind},
+    codegen::{compile_file, wire::range_kind},
+    kind::Kind,
     names::check_names,
     parser::parse_file,
     solver::{CheckResult, check_file},

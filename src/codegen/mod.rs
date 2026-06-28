@@ -14,7 +14,7 @@ use inkwell::{
 use crate::{
     ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDefs, Param, Stmt, UnOp},
     error::CompileError,
-    kind::{Kind, param_kinds, range_kind},
+    kind::Kind,
     span::Symbol,
 };
 
@@ -24,6 +24,9 @@ mod expr_vec;
 mod jit;
 mod loops;
 mod membership;
+pub mod wire;
+
+use wire::{param_kinds, range_kind, tagged_union_leaf_count};
 
 pub use jit::compile_file;
 
@@ -125,7 +128,6 @@ impl<'ctx> Compiler<'ctx> {
     /// Scalars: Int/Set/Union → i64, Bool → i1.  Tuple → struct of element types.
     /// TaggedUnion → `{ i32 tag, i64, …, i64 }` with enough i64 slots for the widest arm.
     pub(crate) fn kind_to_llvm_type(&self, kind: &Kind) -> BasicTypeEnum<'ctx> {
-        use crate::kind::tagged_union_leaf_count;
         match kind {
             Kind::Int | Kind::Set(_) => self.context.i64_type().into(),
             Kind::Bool | Kind::Fail => self.context.bool_type().into(),
@@ -242,7 +244,6 @@ impl<'ctx> Compiler<'ctx> {
         new_arms: &[Kind],
         new_tag: inkwell::values::IntValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
-        use crate::kind::tagged_union_leaf_count;
         let old_leaf_count = tagged_union_leaf_count(old_arms);
         let new_struct_ty = self.kind_to_llvm_type(&Kind::TaggedUnion(new_arms.to_vec()))
             .into_struct_type();

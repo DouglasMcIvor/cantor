@@ -17,8 +17,10 @@ use inkwell::values::{AggregateValueEnum, BasicValueEnum};
 use crate::{
     ast::Expr,
     error::CompileError,
-    kind::{Kind, leaf_count, tagged_union_leaf_count},
+    kind::Kind,
 };
+
+use super::wire::{leaf_count, tagged_union_leaf_count};
 
 use super::{Compiler, Env};
 
