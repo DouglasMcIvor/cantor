@@ -590,9 +590,15 @@ h    : -> Nat;              h() = make()[2].1           -- 30
 - Block-body coercion (`ps : (Nat * Nat)* = [(1,2),(3,4)]`) uses
   `cantor_struct_vec_builder_push_field(builder, field_idx, value)` once per field
   per row.
-- The solver currently returns Unknown for any function involving struct-vec
-  indexing (projection on a sequence-sorted term is not yet SMT-encoded).
-  TODO: add `SeqNth + ApplySelector` encoding for struct-vec index proofs.
+- **Solver encoding**: `proj_from_tuple` uses `ApplySelector` (not `child(index+1)`)
+  so it works on any tuple-sorted term including `SeqNth` results.
+  - Literal-array indexing (`[(1,10),...][0].field`): the array has tuple sort in the
+    solver (not sequence sort), so the field projection is statically computable and
+    functions using it can be proved.
+  - Sequence-indexed access (`xs[i]` or `xs[n]` where `xs : (A*B)*` is a parameter):
+    the solver emits `SeqNth(xs, i)` with a bounds obligation (`i < len(xs)`).
+    Functions that can't prove the index is in bounds are Unknown or have a bounds
+    counterexample. This is correct: out-of-bounds indexing IS a genuine violation.
 
 *TODO — deferred*:
 - Vectors of unions `(Nat | Bool)*` — DenseUnionArray (pending runtime union value design)

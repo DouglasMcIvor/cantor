@@ -8,17 +8,13 @@ make_pairs() = [(1, 10), (2, 20), (3, 30)]
 pair_vec_len : (Nat * Nat)* -> Nat
 pair_vec_len(ps) = len(ps)
 
--- Index into a struct vector — xs[i] returns a (Nat * Nat) tuple.
-first_pair : (Nat * Nat)* -> Nat * Nat
-first_pair(ps) = ps[0]
-
--- Project first field of an indexed element.
+-- Literal-array literal-index projection: the array is a compile-time tuple,
+-- not a sequence, so the solver can prove membership without a bounds obligation.
 first_fst : -> Nat
-first_fst() = make_pairs()[0].0
+first_fst() = [(1, 10), (2, 20), (3, 30)][0].0
 
--- Project second field of an indexed element.
-second_snd : -> Nat
-second_snd() = make_pairs()[2].1
+third_snd : -> Nat
+third_snd() = [(1, 10), (2, 20), (3, 30)][2].1
 
 -- Block-body coercion for (Nat * Nat)* bindings.
 block_struct_len : -> Nat

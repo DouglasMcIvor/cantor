@@ -239,19 +239,21 @@ pub(crate) fn encode_expr<'tm>(
             if !base_term.sort().is_sequence() {
                 return Err("runtime index `xs[i]` is only valid on vector (X*) values".into());
             }
-            // SeqNth returns the element sort of the sequence.
-            // For scalar elements (Int / Bool) this is fine: an out-of-bounds SeqNth
-            // returns 0 / false which stays within the element's range, so the solver
-            // can still prove membership goals.
-            // For tuple elements (struct vecs, (A * B)*), CVC5 may assign an arbitrary
-            // out-of-bounds default that has components outside the element range,
-            // producing false counterexamples.  Return Unknown in that case.
-            // TODO: add proper bounds obligations (0 ≤ i < len(xs)) to prevent this.
-            let elem_sort = base_term.sort().sequence_element_sort();
-            if elem_sort.is_tuple() || elem_sort.is_dt() {
-                return Err("xs[i] on a struct/tuple-element vector is not yet supported \
-                            in the SMT encoder (element sort is non-scalar)".into());
-            }
+            // Push a bounds obligation for all vector indexing: the solver tracks
+            // whether `0 ≤ i < len(xs)` is provable.  Scalar element sorts (Int /
+            // Bool) have benign out-of-bounds defaults (0 / false), so this is
+            // technically optional for them but keeps the model correct.  For tuple
+            // element sorts (struct vecs) it is essential: CVC5 can assign arbitrary
+            // default components that fall outside the element range, producing false
+            // counterexamples without this obligation.
+            let len = tm.mk_term(Kind::SeqLength, &[base_term.clone()]);
+            let lo = tm.mk_term(Kind::Leq, &[tm.mk_integer(0), idx_term.clone()]);
+            let hi = tm.mk_term(Kind::Lt,  &[idx_term.clone(), len]);
+            builtin_obligs.push(BuiltinObligation {
+                path_cond: path_cond.clone(),
+                obligation: tm.mk_term(Kind::And, &[lo, hi]),
+                violated_reason: "vector index may be out of bounds".into(),
+            });
             Ok(tm.mk_term(Kind::SeqNth, &[base_term, idx_term]))
         }
 
@@ -666,16 +668,22 @@ fn encode_proj<'tm>(
     let base_term = encode_expr(base, env, name_defs, fn_env, tm, solver, call_counter,
                                 builtin_obligs, path_cond.clone(), distinct_preds, None)?;
 
-    // Struct vector indexing: `xs.N` / `xs[N]` where xs is a sequence-sorted term
+    // Struct vector indexing: `xs.N` / `xs[N]` on a sequence-sorted term.
     // (e.g. `(Nat * Nat)*` encoded as `Seq(Tuple(Int, Int))`).
-    // The SMT encoder can't verify the result field — return Unknown.
-    // TODO: add proper SeqNth + field-projection encoding for struct vec index proofs.
+    // Encode as SeqNth(xs, N) and push a bounds obligation (N < len(xs)).
+    // The result has the element sort (e.g. Tuple(Int, Int)); the caller's
+    // outer Proj, if any, lands on a tuple-sorted term that ApplySelector handles.
     if base_term.sort().is_sequence() {
-        return Err(format!(
-            "projection `.{}` on a sequence-sorted value (struct vector element access) \
-             is not yet supported in the SMT encoder",
-            index
-        ));
+        let idx_term = tm.mk_integer(index as i64);
+        let nth = tm.mk_term(Kind::SeqNth, &[base_term.clone(), idx_term.clone()]);
+        let len = tm.mk_term(Kind::SeqLength, &[base_term]);
+        let in_bounds = tm.mk_term(Kind::Lt, &[idx_term, len]);
+        builtin_obligs.push(BuiltinObligation {
+            path_cond: path_cond.clone(),
+            obligation: in_bounds,
+            violated_reason: format!("vector index {index} may be out of bounds"),
+        });
+        return Ok(nth);
     }
 
     // CVC5 tuple sorts also satisfy is_dt() == true; we only want the
@@ -799,21 +807,12 @@ pub(crate) fn boolean_value(term: &Term<'_>) -> bool {
 
 /// Project field `index` from a tuple-sorted CVC5 term.
 ///
-/// `child(index + 1)` works only on `APPLY_CONSTRUCTOR` terms.  For `Ite`
-/// results produced by if/else expressions that return tuples we push the
-/// projection inside the Ite recursively so each leaf is an `APPLY_CONSTRUCTOR`
-/// term where `child` gives the correct field.
+/// Uses `ApplySelector` rather than `child(index + 1)` so this works for any
+/// tuple-sorted term: concrete `mk_tuple(a, b, c)` applications, `Ite` results,
+/// and `SeqNth` results (which are symbolic, not `APPLY_CONSTRUCTOR` terms).
 fn proj_from_tuple<'tm>(tm: &'tm TermManager, base: Term<'tm>, index: usize) -> Result<Term<'tm>, String> {
-    if base.kind() == Kind::Ite {
-        let cond   = base.child(0);
-        let then_b = base.child(1);
-        let else_b = base.child(2);
-        let proj_t = proj_from_tuple(tm, then_b, index)?;
-        let proj_e = proj_from_tuple(tm, else_b, index)?;
-        Ok(tm.mk_term(Kind::Ite, &[cond, proj_t, proj_e]))
-    } else {
-        Ok(base.child(index + 1))
-    }
+    let sel = base.sort().datatype().constructor(0).selector(index);
+    Ok(tm.mk_term(Kind::ApplySelector, &[sel.term(), base]))
 }
 
 /// Create a decomposed representation of a tuple-valued term.

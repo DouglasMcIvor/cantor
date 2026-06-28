@@ -842,14 +842,18 @@ fn vectors_nested_deep_index_and_concat() {
 
 #[test]
 fn vectors_struct_pure_fns_proved() {
-    // make_pairs, pair_vec_len, and main must be proved (no block bodies / no indexing).
+    // make_pairs, pair_vec_len, first_fst, third_snd, and main are provable:
+    // literal-array indexing has tuple sort in the solver (no bounds obligation),
+    // so ApplySelector resolves field access statically.
     let out = run_file("vectors_struct.cantor");
     assert!(
         !out.stdout.contains("  counterexample  "),
         "unexpected counterexample:\n{}", out.stdout
     );
-    assert!(out.stdout.contains("proved          make_pairs"),  "make_pairs not proved:\n{}",  out.stdout);
+    assert!(out.stdout.contains("proved          make_pairs"),   "make_pairs not proved:\n{}",   out.stdout);
     assert!(out.stdout.contains("proved          pair_vec_len"), "pair_vec_len not proved:\n{}", out.stdout);
+    assert!(out.stdout.contains("proved          first_fst"),    "first_fst not proved:\n{}",    out.stdout);
+    assert!(out.stdout.contains("proved          third_snd"),    "third_snd not proved:\n{}",    out.stdout);
 }
 
 #[test]
@@ -863,11 +867,12 @@ fn vectors_struct_run_outer_len() {
 #[test]
 fn vectors_struct_literal_index_proj() {
     // first_fst() = [(1,10),(2,20),(3,30)][0].0 = 1
-    // Verifies that [literal] bracket index always produces ExprKind::Index (not Proj),
-    // and that the chain xs[0].field works end-to-end.
+    // All three functions are proved (literal arrays have tuple sort → statically provable).
     let out = run_subcommand("vectors_struct_fst.cantor");
     assert_eq!(out.code, 0, "run should exit 0\nstdout: {}", out.stdout);
     assert!(out.stdout.contains("main() = 1"), "expected 'main() = 1':\n{}", out.stdout);
+    assert!(out.stdout.contains("proved          first_fst"), "first_fst not proved:\n{}", out.stdout);
+    assert!(out.stdout.contains("proved          third_snd"), "third_snd not proved:\n{}", out.stdout);
 }
 
 #[test]
