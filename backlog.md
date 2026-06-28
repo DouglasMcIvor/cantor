@@ -3,7 +3,7 @@ You probably don't want to read this unless you're me.
 
 # To do
 
-- a REPL to make playing with the language easier
+- should len be replaced with just size? any other built in functions I need?
 - `none` value and `None` set, currently missing
 - function overloads, or as ChatGPT suggests "the language should officially define an overloaded function as *the union of compatible partial functions*". In my own words "all functions are partial until linking is complete"
 - CLI to output IR
