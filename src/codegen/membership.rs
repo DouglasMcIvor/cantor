@@ -156,7 +156,7 @@ impl<'ctx> Compiler<'ctx> {
         arms: &[Kind],
         set_expr: &Expr,
     ) -> Result<IntValue<'ctx>, CompileError> {
-        let target_kind = set_kind(set_expr);
+        let target_kind = set_kind(set_expr, &self.name_defs);
         let arm_idx = arms.iter().position(|k| *k == target_kind)
             .ok_or_else(|| CompileError::Internal(format!(
                 "tagged-union membership: set expression kind {target_kind:?} \

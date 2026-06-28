@@ -12,7 +12,7 @@ use inkwell::{
 };
 
 use crate::{
-    ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, Param, Stmt, UnOp},
+    ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDefs, Param, Stmt, UnOp},
     error::CompileError,
     kind::{Kind, param_kinds, range_kind},
     span::Symbol,
@@ -62,6 +62,9 @@ pub struct Compiler<'ctx> {
     /// Populated in pass 1 alongside `fn_return_kinds`; used at call sites to
     /// box scalar/tuple arguments when the callee expects a `Kind::Vector`.
     fn_param_kinds: HashMap<String, Vec<Kind>>,
+    /// All user-defined named set definitions in the file, used to resolve
+    /// aliases and distinct sets in `set_kind` calls during codegen.
+    pub(crate) name_defs: NameDefs,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -77,6 +80,7 @@ impl<'ctx> Compiler<'ctx> {
             user_set_vals: HashMap::new(),
             distinct_names: HashSet::new(),
             fn_param_kinds: HashMap::new(),
+            name_defs: NameDefs::new(),
         }
     }
 
@@ -834,6 +838,14 @@ pub(super) fn compile_items<'ctx>(
         })
         .collect();
 
+    compiler.name_defs = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::NameDef(def) => Some((def.name.clone(), def.clone())),
+            _ => None,
+        })
+        .collect();
+
     let i64_type = ctx.i64_type();
     let const_env: Env<'ctx> = const_vals
         .iter()
@@ -852,10 +864,10 @@ pub(super) fn compile_items<'ctx>(
             Item::FunctionDef(def) => {
                 let first_sig = def.sigs.first();
                 let p_kinds: Vec<Kind> = first_sig
-                    .map(|s| param_kinds(s, def.params.len()))
+                    .map(|s| param_kinds(s, def.params.len(), &compiler.name_defs))
                     .unwrap_or_else(|| vec![Kind::Int; def.params.len()]);
                 let ret_kind = first_sig
-                    .map(|s| range_kind(&s.range))
+                    .map(|s| range_kind(&s.range, &compiler.name_defs))
                     .unwrap_or(Kind::Int);
                 let fn_val = compiler.declare_function(&def.name.0, &def.params, &p_kinds, ret_kind);
                 // Record the range expression so `compile_try` can determine what
@@ -875,7 +887,7 @@ pub(super) fn compile_items<'ctx>(
         let p_kinds: Vec<Kind> = def
             .sigs
             .first()
-            .map(|s| param_kinds(s, def.params.len()))
+            .map(|s| param_kinds(s, def.params.len(), &compiler.name_defs))
             .unwrap_or_else(|| vec![Kind::Int; def.params.len()]);
 
         match &def.body {

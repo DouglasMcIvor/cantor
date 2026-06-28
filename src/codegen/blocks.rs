@@ -413,7 +413,7 @@ fn coerce_to_vector_if_needed<'ctx>(
     (val, kind): (inkwell::values::BasicValueEnum<'ctx>, Kind),
     constraint: &Expr,
 ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, Kind), CompileError> {
-    let expected_kind = set_kind(constraint);
+    let expected_kind = set_kind(constraint, &compiler.name_defs);
     let elem_kind = match &expected_kind {
         Kind::Vector(ek) => ek.as_ref().clone(),
         _ => return Ok((val, kind)),

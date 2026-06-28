@@ -80,7 +80,7 @@ fn membership_constraint_for_dt<'tm>(
     tm: &'tm TermManager,
     t: Term<'tm>,
     set_expr: &Expr,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
     let dt = t.sort().datatype();
@@ -88,7 +88,7 @@ fn membership_constraint_for_dt<'tm>(
 
     let mut disjuncts: Vec<Term<'_>> = Vec::new();
     for arm_expr in arm_exprs {
-        let ctor_name = arm_ctor_name_for_arm(arm_expr, distinct_preds);
+        let ctor_name = arm_ctor_name_for_arm(arm_expr, distinct_preds, name_defs);
 
         // Find the constructor by name — if not present, this arm can't match.
         let ctor = (0..dt.num_constructors())
@@ -164,7 +164,7 @@ fn lift_sequence_into_atomic<'tm>(
     tm: &'tm TermManager,
     t: Term<'tm>,
     set_expr: &Expr,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
     match &set_expr.kind {
@@ -254,7 +254,7 @@ pub(crate) fn membership_constraint<'tm>(
     tm: &'tm TermManager,
     t: Term<'tm>,
     set_expr: &Expr,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
     // Fast path: datatype-sorted terms (cross-kind union values) use
@@ -643,7 +643,7 @@ fn comprehension_membership<'tm>(
     var: &Symbol,
     source: &Expr,
     filter: Option<&Expr>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
     // Case 1: source is a finite set literal — unroll.
@@ -711,7 +711,7 @@ fn encode_comp_expr<'tm>(
     var: &Symbol,
     var_term: Term<'tm>,
     tm: &'tm TermManager,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Option<Term<'tm>> {
     match &expr.kind {

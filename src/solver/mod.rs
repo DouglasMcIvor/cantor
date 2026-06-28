@@ -32,6 +32,7 @@ use crate::{
     ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef, param_set_exprs},
     span::Symbol,
 };
+pub(crate) use crate::ast::NameDefs;
 
 use crate::kind::{Kind as ValKind, set_kind};
 
@@ -56,7 +57,6 @@ pub enum CheckResult {
 }
 
 type FunctionEnv<'a> = HashMap<Symbol, &'a FunctionDef>;
-pub(crate) type NameDefs<'a> = HashMap<Symbol, &'a NameDef>;
 
 // ── Distinct predicate builder ────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ pub(crate) type NameDefs<'a> = HashMap<Symbol, &'a NameDef>;
 ///
 /// No global axioms are needed; basis constraints are emitted on-demand when
 /// `litre(n)` or `from(x)` is encoded.
-fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs<'_>) -> DistinctPreds<'tm> {
+fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs) -> DistinctPreds<'tm> {
     name_defs.iter()
         .filter(|(_, def)| def.kind == DefKind::Distinct)
         .map(|(sym, _)| {
@@ -104,10 +104,10 @@ pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<Vec<(String, Vec<(S
         })
         .collect();
 
-    let name_defs: NameDefs<'_> = items
+    let name_defs: NameDefs = items
         .iter()
         .filter_map(|item| match item {
-            Item::NameDef(def) => Some((def.name.clone(), def)),
+            Item::NameDef(def) => Some((def.name.clone(), def.clone())),
             _ => None,
         })
         .collect();
@@ -137,7 +137,7 @@ pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<Vec<(String, Vec<(S
 pub fn check_function(
     def: &FunctionDef,
     fn_env: &FunctionEnv<'_>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     timeout_ms: u64,
 ) -> Result<Vec<(String, CheckResult)>, crate::error::CompileError> {
     let param_names: Vec<Symbol> = def.params.iter().map(|p| p.name.clone()).collect();
@@ -165,7 +165,7 @@ fn sig_label(name: &str, idx: usize, total: usize) -> String {
     }
 }
 
-fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs: &NameDefs<'_>, timeout_ms: u64) -> CheckResult {
+fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs: &NameDefs, timeout_ms: u64) -> CheckResult {
     if let Some(result) = validate_disjoint_unions(ty, name_defs, timeout_ms) { return result; }
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
@@ -232,7 +232,7 @@ fn range_contains_fail(range: &Expr) -> bool {
 /// Uses a fresh SMT solver per `+` node to avoid polluting the main check's solver state.
 ///
 /// TODO: also validate `+` that appears inside function bodies (e.g. in `in` expressions).
-fn validate_disjoint_unions(set_expr: &Expr, name_defs: &NameDefs<'_>, timeout_ms: u64) -> Option<CheckResult> {
+fn validate_disjoint_unions(set_expr: &Expr, name_defs: &NameDefs, timeout_ms: u64) -> Option<CheckResult> {
     match &set_expr.kind {
         ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
             if let Some(err) = validate_disjoint_unions(lhs, name_defs, timeout_ms) { return Some(err); }
@@ -295,7 +295,7 @@ fn check_block_sig(
     param_names: &[Symbol],
     stmts: &[crate::ast::Stmt],
     fn_env: &FunctionEnv<'_>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     timeout_ms: u64,
 ) -> CheckResult {
     if let Some(dom) = &sig.domain {
@@ -325,9 +325,9 @@ fn check_block_sig(
     // Same decomposition as check_sig: tuple params → leaf constants + mk_tuple.
     let mut param_terms: Vec<Term<'_>> = Vec::new();
     for (n, part) in param_names.iter().zip(domain_parts.iter()) {
-        let k = set_kind(part);
+        let k = set_kind(part, &name_defs);
         if matches!(k, ValKind::Tuple(_)) {
-            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part, &distinct_preds);
+            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part, &distinct_preds, &name_defs);
             for (leaf, leaf_set) in leaves {
                 match membership_constraint(&tm, leaf.clone(), leaf_set, name_defs, &distinct_preds) {
                     Membership::Unconstrained => {}
@@ -342,7 +342,7 @@ fn check_block_sig(
             }
             param_terms.push(assembled);
         } else {
-            let sort = match set_sort(&tm, part, &distinct_preds) {
+            let sort = match set_sort(&tm, part, &distinct_preds, &name_defs) {
                 Some(s) => s,
                 None => return CheckResult::Unknown(format!(
                     "parameter `{}` has an unsupported domain sort (internal error)",
@@ -379,7 +379,7 @@ fn check_block_sig(
     let mut has_runtime_assert = false;
     let mut immutable_names: HashSet<Symbol> = HashSet::new();
 
-    let result_sort = set_sort_for_range(&tm, &sig.range, &distinct_preds);
+    let result_sort = set_sort_for_range(&tm, &sig.range, &distinct_preds, &name_defs);
     let body_term = match encode_block(
         stmts,
         &mut env,
@@ -468,7 +468,7 @@ fn check_block_sig(
             .map(|((n, t), p)| (n, t, p))
         {
             let val = solver.get_value(term.clone());
-            let k = set_kind(part);
+            let k = set_kind(part, &name_defs);
             let n = if k == ValKind::Bool {
                 boolean_value(&val) as i64
             } else if matches!(k, ValKind::Tuple(_)) {
@@ -513,7 +513,7 @@ fn check_sig(
     param_names: &[Symbol],
     body: &Expr,
     fn_env: &FunctionEnv<'_>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     timeout_ms: u64,
 ) -> CheckResult {
     if let Some(dom) = &sig.domain {
@@ -548,9 +548,9 @@ fn check_sig(
     // which is required for cvc5's arithmetic beta-reduction to apply.
     let mut param_terms: Vec<Term<'_>> = Vec::new();
     for (n, part) in param_names.iter().zip(domain_parts.iter()) {
-        let k = set_kind(part);
+        let k = set_kind(part, &name_defs);
         if matches!(k, ValKind::Tuple(_)) {
-            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part, &distinct_preds);
+            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part, &distinct_preds, &name_defs);
             for (leaf, leaf_set) in leaves {
                 match membership_constraint(&tm, leaf, leaf_set, name_defs, &distinct_preds) {
                     Membership::Unconstrained => {}
@@ -562,7 +562,7 @@ fn check_sig(
             }
             param_terms.push(assembled);
         } else {
-            let sort = match set_sort(&tm, part, &distinct_preds) {
+            let sort = match set_sort(&tm, part, &distinct_preds, &name_defs) {
                 Some(s) => s,
                 None => return CheckResult::Unknown(format!(
                     "parameter `{}` has an unsupported domain sort (internal error)",
@@ -594,7 +594,7 @@ fn check_sig(
     let top_guard = tm.mk_boolean(true);
     let body_term = match encode_expr(
         body, &env, name_defs, fn_env, &tm, &mut solver, &mut call_counter,
-        &mut builtin_obligs, top_guard, &distinct_preds, set_sort_for_range(&tm, &sig.range, &distinct_preds),
+        &mut builtin_obligs, top_guard, &distinct_preds, set_sort_for_range(&tm, &sig.range, &distinct_preds, &name_defs),
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
@@ -646,7 +646,7 @@ fn check_sig(
             .map(|((n, t), p)| (n, t, p))
         {
             let val = solver.get_value(term.clone());
-            let k = set_kind(part);
+            let k = set_kind(part, &name_defs);
             let n = if k == ValKind::Bool {
                 boolean_value(&val) as i64
             } else if matches!(k, ValKind::Tuple(_)) {

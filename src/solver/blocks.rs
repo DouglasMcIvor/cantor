@@ -10,7 +10,8 @@ use crate::{
     span::Symbol,
 };
 
-use super::{CheckResult, NameDefs};
+use super::NameDefs;
+use super::CheckResult;
 use super::loops::{check_inductive_step, check_for_inductive_step};
 use super::encode::{Env, BuiltinObligation, encode_expr, integer_value};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
@@ -27,7 +28,7 @@ pub(crate) fn body_has_unconstrained_loop_var<'tm>(
     stmts: &[Stmt],
     constraint_env: &HashMap<Symbol, Expr>,
     tm: &'tm TermManager,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> bool {
     stmts.iter().any(|s| match s {
@@ -61,7 +62,7 @@ pub(crate) fn body_has_unconstrained_loop_var<'tm>(
 pub(crate) fn encode_block<'tm>(
     stmts: &[Stmt],
     env: &mut Env<'tm>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     fn_env: &HashMap<Symbol, &FunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
@@ -86,7 +87,7 @@ pub(crate) fn encode_block<'tm>(
         last_expr = None; // only the last Expr stmt is the return value
         match stmt {
             Stmt::Let { name, constraint, value: _, .. }
-                if matches!(set_kind(constraint), ValKind::Set(_)) =>
+                if matches!(set_kind(constraint, name_defs), ValKind::Set(_)) =>
             {
                 // Immutable runtime set: opaque integer (heap pointer), no value encoding.
                 let fresh_name = format!("{}_{}", name.0, ssa_counter);
@@ -97,7 +98,7 @@ pub(crate) fn encode_block<'tm>(
             }
 
             Stmt::Let { name, constraint, value: _, .. }
-                if matches!(set_kind(constraint), ValKind::Vector(_)) =>
+                if matches!(set_kind(constraint, name_defs), ValKind::Vector(_)) =>
             {
                 // Immutable runtime vector (X*): opaque integer (Arrow array pointer).
                 // Vector literals can't be represented in the QF sequence theory
@@ -142,7 +143,7 @@ pub(crate) fn encode_block<'tm>(
             }
 
             Stmt::MutLet { name, constraint, value: _, .. }
-                if matches!(set_kind(constraint), ValKind::Set(_)) =>
+                if matches!(set_kind(constraint, name_defs), ValKind::Set(_)) =>
             {
                 // Runtime set values (Set(Int), Set(Bool)) can't be encoded in
                 // QF_NIA. Represent the binding as an opaque integer (the heap
@@ -155,7 +156,7 @@ pub(crate) fn encode_block<'tm>(
             }
 
             Stmt::MutLet { name, constraint, value: _, .. }
-                if matches!(set_kind(constraint), ValKind::Vector(_)) =>
+                if matches!(set_kind(constraint, name_defs), ValKind::Vector(_)) =>
             {
                 // Mutable runtime vector (X*): opaque integer (Arrow array pointer).
                 let fresh_name = format!("{}_{}", name.0, ssa_counter);

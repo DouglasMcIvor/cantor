@@ -7,7 +7,7 @@ use inkwell::context::Context;
 use std::collections::HashMap;
 
 use cantor::{
-    ast::Item,
+    ast::{Item, NameDefs},
     codegen::compile_file,
     kind::{Kind, range_kind},
     names::check_names,
@@ -209,10 +209,17 @@ fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
         }
     };
 
+    let name_defs: NameDefs = items.iter()
+        .filter_map(|item| match item {
+            Item::NameDef(def) => Some((def.name.clone(), def.clone())),
+            _ => None,
+        })
+        .collect();
+
     // Determine main's return Kind from the first signature.
     let main_return_kind = items.iter().find_map(|item| match item {
         Item::FunctionDef(def) if def.name.0 == "main" && def.params.is_empty() => {
-            def.sigs.first().map(|s| range_kind(&s.range))
+            def.sigs.first().map(|s| range_kind(&s.range, &name_defs))
         }
         _ => None,
     }).unwrap_or(Kind::Int);

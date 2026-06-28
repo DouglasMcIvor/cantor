@@ -11,7 +11,7 @@
 use cvc5::{DatatypeConstructorDecl, Kind, Sort, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, flatten_domain},
+    ast::{BinOp, Expr, ExprKind, NameDefs, flatten_domain},
     kind::{Kind as ValKind, set_kind as val_set_kind},
 };
 
@@ -73,13 +73,14 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
 pub(crate) fn arm_ctor_name_for_arm<'tm>(
     arm_expr: &Expr,
     distinct_preds: &DistinctPreds<'tm>,
+    name_defs: &NameDefs,
 ) -> String {
     if let ExprKind::Var(sym) = &arm_expr.kind {
         if distinct_preds.contains_key(sym) {
             return format!("ck_D_{}", sym.0);
         }
     }
-    arm_ctor_name(&val_set_kind(arm_expr))
+    arm_ctor_name(&val_set_kind(arm_expr, name_defs))
 }
 
 // ── Cross-kind union datatype construction ───────────────────────────────────
@@ -108,6 +109,7 @@ fn build_union_datatype_sort<'tm>(
     tm: &'tm TermManager,
     arms: &[&Expr],
     distinct_preds: &DistinctPreds<'tm>,
+    name_defs: &NameDefs,
 ) -> Sort<'tm> {
     let arm_infos: Vec<(String, Sort<'_>)> = arms.iter().map(|arm_expr| {
         if let ExprKind::Var(sym) = &arm_expr.kind {
@@ -115,8 +117,8 @@ fn build_union_datatype_sort<'tm>(
                 return (format!("ck_D_{}", sym.0), info.sort.clone());
             }
         }
-        let ctor_name = arm_ctor_name(&val_set_kind(arm_expr));
-        let sort = set_sort(tm, arm_expr, distinct_preds)
+        let ctor_name = arm_ctor_name(&val_set_kind(arm_expr, name_defs));
+        let sort = set_sort(tm, arm_expr, distinct_preds, name_defs)
             .expect("build_union_datatype_sort: arm has no representable CVC5 sort");
         (ctor_name, sort)
     }).collect();
@@ -213,6 +215,7 @@ pub(crate) fn set_sort<'tm>(
     tm: &'tm TermManager,
     set_expr: &Expr,
     distinct_preds: &DistinctPreds<'tm>,
+    name_defs: &NameDefs,
 ) -> Option<Sort<'tm>> {
     Some(match &set_expr.kind {
         // Bool has its own CVC5 boolean sort.
@@ -236,14 +239,14 @@ pub(crate) fn set_sort<'tm>(
         ExprKind::BinOp { op: BinOp::Mul, .. } => {
             let parts = flatten_domain(set_expr);
             let sorts: Vec<Sort<'_>> = parts.iter()
-                .map(|p| set_sort(tm, p, distinct_preds))
+                .map(|p| set_sort(tm, p, distinct_preds, name_defs))
                 .collect::<Option<Vec<_>>>()?;
             tm.mk_tuple_sort(&sorts)
         }
         // Set diff (`-`) and intersection (`&`): the result is a subset of A, so its
         // CVC5 sort is the LHS sort (e.g. `Nat* - {}` is still a set of sequences).
         ExprKind::BinOp { op: BinOp::Sub | BinOp::Intersect, lhs, .. } => {
-            return set_sort(tm, lhs, distinct_preds);
+            return set_sort(tm, lhs, distinct_preds, name_defs);
         }
         // Symmetric diff (`^`): the result contains elements from EITHER side.
         // When both sides have the same CVC5 sort, that sort suffices.
@@ -251,8 +254,8 @@ pub(crate) fn set_sort<'tm>(
         // the correct cross-kind sort requires a datatype — not yet implemented.
         // TODO: support cross-sort SymDiff (requires same DT machinery as cross-kind Union).
         ExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
-            let lhs_sort = set_sort(tm, lhs, distinct_preds)?;
-            let rhs_sort = set_sort(tm, rhs, distinct_preds)?;
+            let lhs_sort = set_sort(tm, lhs, distinct_preds, name_defs)?;
+            let rhs_sort = set_sort(tm, rhs, distinct_preds, name_defs)?;
             if lhs_sort == rhs_sort {
                 return Some(lhs_sort);
             }
@@ -267,8 +270,8 @@ pub(crate) fn set_sort<'tm>(
         // distinct-sort ∪ anything different) → CVC5 algebraic datatype.
         // Same-kind scalar unions (Bool | Nat, Int | NatPos, Nat* | Int*) → no DT.
         ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
-            let ls = set_sort(tm, lhs, distinct_preds)?;
-            let rs = set_sort(tm, rhs, distinct_preds)?;
+            let ls = set_sort(tm, lhs, distinct_preds, name_defs)?;
+            let rs = set_sort(tm, rhs, distinct_preds, name_defs)?;
             let is_distinct_sort = |s: &Sort<'_>| distinct_preds.values().any(|i| &i.sort == s);
             // Sequence arms with the same sort are "same-kind" (e.g. Nat* | Int* both
             // give Seq<Int>); sequences with different element sorts, or one sequence and
@@ -280,7 +283,7 @@ pub(crate) fn set_sort<'tm>(
             {
                 // Cross-kind: build a CVC5 algebraic datatype with one constructor per arm.
                 let arms = flatten_any_union(set_expr);
-                return Some(build_union_datatype_sort(tm, &arms, distinct_preds));
+                return Some(build_union_datatype_sort(tm, &arms, distinct_preds, name_defs));
             }
             // Both arms are plain scalar (Int-family) or same-sort sequences;
             // integer sort covers the scalar case, and the sequence case uses OR of constraints.
@@ -301,7 +304,7 @@ pub(crate) fn set_sort<'tm>(
         // The element sort is derived recursively; if the element set has no
         // representable CVC5 sort we propagate None so callers surface Unknown.
         ExprKind::KleeneStar(inner) => {
-            let elem = set_sort(tm, inner, distinct_preds)?;
+            let elem = set_sort(tm, inner, distinct_preds, name_defs)?;
             tm.mk_sequence_sort(elem)
         }
         // Value-position ExprKind variants must never appear as set expressions.
@@ -354,6 +357,7 @@ pub(crate) fn set_sort_for_range<'tm>(
     tm: &'tm TermManager,
     range: &Expr,
     distinct_preds: &DistinctPreds<'tm>,
+    name_defs: &NameDefs,
 ) -> Option<Sort<'tm>> {
     match &range.kind {
         ExprKind::Var(sym) if sym.0 == "Fail" => Some(tm.integer_sort()),
@@ -363,11 +367,11 @@ pub(crate) fn set_sort_for_range<'tm>(
                 ExprKind::BinOp { op: BinOp::Mul, lhs, .. }
                     if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
             );
-            if is_fail_product(rhs) { return set_sort_for_range(tm, lhs, distinct_preds); }
-            if is_fail_product(lhs) { return set_sort_for_range(tm, rhs, distinct_preds); }
-            set_sort(tm, range, distinct_preds)
+            if is_fail_product(rhs) { return set_sort_for_range(tm, lhs, distinct_preds, name_defs); }
+            if is_fail_product(lhs) { return set_sort_for_range(tm, rhs, distinct_preds, name_defs); }
+            set_sort(tm, range, distinct_preds, name_defs)
         }
-        _ => set_sort(tm, range, distinct_preds),
+        _ => set_sort(tm, range, distinct_preds, name_defs),
     }
 }
 

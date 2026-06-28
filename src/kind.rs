@@ -7,7 +7,7 @@
 //! works at the set layer and has no notion of Kind.  Many set names can share
 //! the same Kind (e.g. `Nat`, `NatPos`, and `Int16` are all `Kind::Int`).
 
-use crate::ast::{BinOp, Expr, ExprKind, FunctionSig, flatten_domain, flatten_disjoint_union, param_set_exprs};
+use crate::ast::{BinOp, DefKind, Expr, ExprKind, FunctionSig, NameDefs, flatten_domain, flatten_disjoint_union, param_set_exprs};
 
 /// The element kind of a homogeneous runtime set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,22 +45,28 @@ pub enum Kind {
 }
 
 /// The runtime Kind of a value drawn from `set_expr`.
-pub fn set_kind(set_expr: &Expr) -> Kind {
+pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
     match &set_expr.kind {
-        //TODO: central location for symbols rather than string matching here
-        //TODO: we actually need to know how the symbol was defined, e.g. MyNat = Nat!
-        ExprKind::Var(sym) if sym.0 == "Bool" => Kind::Bool,
-        ExprKind::Var(sym) if sym.0 == "Int" => Kind::Int,
-        ExprKind::Var(sym) if sym.0 == "Nat" => Kind::Int,
-        ExprKind::Var(sym) if sym.0 == "NatPos" => Kind::Int,
-        ExprKind::Var(sym) if sym.0 == "NonZeroInt" => Kind::Int,
-        ExprKind::Var(sym) if sym.0 == "Int8" => Kind::Int,
-        ExprKind::Var(sym) if sym.0 == "Int16" => Kind::Int,
-        ExprKind::Var(sym) if sym.0 == "Int32" => Kind::Int,
-        ExprKind::Var(sym) if sym.0 == "Int64" => Kind::Int,
-        ExprKind::Var(sym) if sym.0 == "Fail" => Kind::Fail,
+        ExprKind::Var(sym) => match sym.0.as_str() {
+            "Bool" => Kind::Bool,
+            "Int" | "Nat" | "NatPos" | "NonZeroInt"
+            | "Int8" | "Int16" | "Int32" | "Int64" => Kind::Int,
+            "Fail" => Kind::Fail,
+            _ => {
+                // Resolve user-defined names through the symbol table.
+                if let Some(def) = name_defs.get(sym) {
+                    match def.kind {
+                        DefKind::Alias => set_kind(&def.value, name_defs),
+                        // Distinct sets are always integer-backed at the LLVM level.
+                        DefKind::Distinct => Kind::Int,
+                    }
+                } else {
+                    unreachable!("set_kind: unknown set name `{}` — not a built-in and not in name_defs", sym.0)
+                }
+            }
+        },
         ExprKind::SetLit(exprs) => {
-            let kinds = exprs.iter().map(|e| set_kind(&e)).collect();
+            let kinds = exprs.iter().map(|e| set_kind(e, name_defs)).collect();
             let elem_kind = union_if_distinct(kinds);
             match elem_kind {
                 Kind::Int => Kind::Set(SetElemKind::Int),
@@ -70,7 +76,7 @@ pub fn set_kind(set_expr: &Expr) -> Kind {
         }
         // `Set(Int)` / `Set(Bool)` — the power set of the given element set.
         ExprKind::Call { callee, args } if callee.0 == "Set" && args.len() == 1 => {
-            match set_kind(&args[0]) {
+            match set_kind(&args[0], name_defs) {
                 Kind::Bool => Kind::Set(SetElemKind::Bool),
                 Kind::Int => Kind::Set(SetElemKind::Int),
                 // TODO should this be a compile error instead?
@@ -80,30 +86,29 @@ pub fn set_kind(set_expr: &Expr) -> Kind {
         // `A * B * C` — Cartesian product → tuple.
         ExprKind::BinOp { op: BinOp::Mul, .. } => {
             let parts = flatten_domain(set_expr);
-            Kind::Tuple(parts.into_iter().map(set_kind).collect())
+            Kind::Tuple(parts.into_iter().map(|p| set_kind(p, name_defs)).collect())
         }
         // `A - B`, `A & B` — set difference, intersection.
         // The result is a subset of A, so its kind is A's kind.
         ExprKind::BinOp { op: BinOp::Sub | BinOp::Intersect, lhs, .. } => {
-            set_kind(lhs)
+            set_kind(lhs, name_defs)
         }
         // `A ^ B` — symmetric difference.
         // The result contains elements from A *and* elements from B, so when the two
         // sides have different kinds the result is their union kind.
         ExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs, .. } => {
-            merge_into_union(set_kind(lhs), set_kind(rhs))
+            merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs))
         }
         // `A + B` — disjoint union
         ExprKind::BinOp { op: BinOp::Add, .. } => {
-            // Don't merge the individual Kinds when the union is disjoint
             let parts = flatten_disjoint_union(set_expr);
-            Kind::TaggedUnion(parts.into_iter().map(set_kind).collect())
+            Kind::TaggedUnion(parts.into_iter().map(|p| set_kind(p, name_defs)).collect())
         }
         // `A | B` — union
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs, .. } => {
-            merge_into_union(set_kind(lhs), set_kind(rhs))
+            merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs))
         }
-        ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner))),
+        ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner, name_defs))),
         _ => unreachable!("{}", format!("Unexpected expression kind {set_expr:?}")),
     }
 }
@@ -172,31 +177,31 @@ fn is_fail_arm(expr: &Expr) -> bool {
 ///
 /// `Fail` is the out-of-band failure sentinel and does not change the Kind of
 /// the successful return values; it is stripped before inspecting the union.
-pub fn range_kind(range: &Expr) -> Kind {
+pub fn range_kind(range: &Expr, name_defs: &NameDefs) -> Kind {
     match &range.kind {
         ExprKind::Var(sym) => {
             // Bare `Fail` has its own Kind; it becomes the flag field of {Fail, Int} structs.
-            if sym.0 == "Fail" { Kind::Fail } else { set_kind(range) }
+            if sym.0 == "Fail" { Kind::Fail } else { set_kind(range, name_defs) }
         }
         // `A | B` — any union with a fail arm produces the fallible struct wire type {i1, i64}.
         ExprKind::BinOp { op: BinOp::Union, lhs, rhs, .. } => {
-            fail_kind(range, lhs, rhs)
+            fail_kind(range, lhs, rhs, name_defs)
         }
         // `A + B + C` — disjoint union; each arm retains its own kind.
         ExprKind::BinOp { op: BinOp::Add, lhs, rhs, .. } => {
-            fail_kind(range, lhs, rhs)
+            fail_kind(range, lhs, rhs, name_defs)
         }
-        _ => set_kind(range),
+        _ => set_kind(range, name_defs),
     }
 }
 
-fn fail_kind(range: &Expr, lhs: &Expr, rhs: &Expr) -> Kind {
+fn fail_kind(range: &Expr, lhs: &Expr, rhs: &Expr, name_defs: &NameDefs) -> Kind {
     if is_fail_arm(lhs) {
-        Kind::Tuple(vec![Kind::Fail, set_kind(rhs)])
+        Kind::Tuple(vec![Kind::Fail, set_kind(rhs, name_defs)])
     } else if is_fail_arm(rhs) {
-        Kind::Tuple(vec![Kind::Fail, set_kind(lhs)])
+        Kind::Tuple(vec![Kind::Fail, set_kind(lhs, name_defs)])
     } else {
-        set_kind(range)
+        set_kind(range, name_defs)
     }
 }
 
@@ -207,9 +212,9 @@ fn fail_kind(range: &Expr, lhs: &Expr, rhs: &Expr) -> Kind {
 /// function yields `[Kind::Tuple(...)]` rather than the individual element kinds.
 ///
 /// Returns an empty vec for zero-argument functions (domain is `None`).
-pub fn param_kinds(sig: &FunctionSig, n_params: usize) -> Vec<Kind> {
+pub fn param_kinds(sig: &FunctionSig, n_params: usize, name_defs: &NameDefs) -> Vec<Kind> {
     match param_set_exprs(sig.domain.as_ref(), n_params) {
-        Ok(parts) => parts.into_iter().map(set_kind).collect(),
+        Ok(parts) => parts.into_iter().map(|p| set_kind(p, name_defs)).collect(),
         Err(_) => vec![Kind::Int; n_params],
     }
 }

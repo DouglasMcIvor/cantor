@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::span::{Span, Symbol};
@@ -390,6 +391,13 @@ pub struct NameDef {
     pub value: Expr,
     pub span: Span,
 }
+
+/// Map from each user-defined name to its definition, used for alias resolution.
+///
+/// Both the solver and codegen thread this through `set_kind` so that a name
+/// like `MyNat = alias Nat` resolves to the same `Kind` as `Nat` rather than
+/// hitting the unreachable arm.
+pub type NameDefs = HashMap<Symbol, NameDef>;
 
 // ── Top-level items ───────────────────────────────────────────────────────────
 

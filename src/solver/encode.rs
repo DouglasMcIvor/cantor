@@ -107,7 +107,7 @@ pub(crate) fn named_set(name: &'static str) -> Expr {
 pub(crate) fn encode_expr<'tm>(
     expr: &Expr,
     env: &Env<'tm>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     fn_env: &HashMap<Symbol, &FunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
@@ -270,7 +270,7 @@ fn encode_unop<'tm>(
     op: &UnOp,
     inner: &Expr,
     env: &Env<'tm>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     fn_env: &HashMap<Symbol, &FunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
@@ -353,7 +353,7 @@ fn encode_binop<'tm>(
     lhs: &Expr,
     rhs: &Expr,
     env: &Env<'tm>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     fn_env: &HashMap<Symbol, &FunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
@@ -476,7 +476,7 @@ fn encode_if<'tm>(
     then_expr: &Expr,
     else_expr: &Expr,
     env: &Env<'tm>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     fn_env: &HashMap<Symbol, &FunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
@@ -565,7 +565,7 @@ fn encode_call<'tm>(
     callee: &Symbol,
     args: &[Expr],
     env: &Env<'tm>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     fn_env: &HashMap<Symbol, &FunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
@@ -622,7 +622,7 @@ fn encode_call<'tm>(
     // a symbolic tuple constant can't be used with child() extraction.
     let result_var = if let Some(first_sig) = callee_def.sigs.first() {
         if is_product_range(&first_sig.range) {
-            let (assembled, leaves) = mk_decomposed_tuple(tm, &fresh, &first_sig.range, distinct_preds);
+            let (assembled, leaves) = mk_decomposed_tuple(tm, &fresh, &first_sig.range, distinct_preds, name_defs);
             for (leaf, leaf_set) in leaves {
                 if let Membership::Constrained(c) =
                     membership_constraint(tm, leaf, leaf_set, name_defs, distinct_preds)
@@ -632,7 +632,7 @@ fn encode_call<'tm>(
             }
             assembled
         } else {
-            match set_sort_for_range(tm, &first_sig.range, distinct_preds) {
+            match set_sort_for_range(tm, &first_sig.range, distinct_preds, name_defs) {
                 Some(sort) => tm.mk_const(sort, &fresh),
                 None => return Err(format!(
                     "call to `{}` has an unsupported range sort (internal error)",
@@ -655,7 +655,7 @@ fn encode_proj<'tm>(
     base: &Expr,
     index: usize,
     env: &Env<'tm>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     fn_env: &HashMap<Symbol, &FunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
@@ -743,7 +743,7 @@ pub(crate) fn assert_call_contract<'tm>(
     result: Term<'tm>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
-    name_defs: &NameDefs<'_>,
+    name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) {
     let mut antecedents: Vec<Term<'_>> = Vec::new();
@@ -828,10 +828,11 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
     name: &str,
     set_expr: &'e Expr,
     distinct_preds: &DistinctPreds<'tm>,
+    name_defs: &NameDefs,
 ) -> (Term<'tm>, Vec<(Term<'tm>, &'e Expr)>) {
     let parts = flatten_domain(set_expr);
     if parts.len() <= 1 {
-        let sort = set_sort(tm, set_expr, distinct_preds)
+        let sort = set_sort(tm, set_expr, distinct_preds, name_defs)
             .expect("mk_decomposed_tuple: leaf set expression has no representable CVC5 sort");
         let leaf = tm.mk_const(sort, name);
         return (leaf.clone(), vec![(leaf, set_expr)]);
@@ -840,7 +841,7 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
     let mut child_terms = Vec::new();
     for (i, part) in parts.iter().enumerate() {
         let child_name = format!("{name}__{i}");
-        let (child_term, child_leaves) = mk_decomposed_tuple(tm, &child_name, part, distinct_preds);
+        let (child_term, child_leaves) = mk_decomposed_tuple(tm, &child_name, part, distinct_preds, name_defs);
         leaves.extend(child_leaves);
         child_terms.push(child_term);
     }
@@ -854,12 +855,12 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
 /// return that NameDef.
 pub(crate) fn distinct_def_for_constructor<'a>(
     callee: &Symbol,
-    name_defs: &'a NameDefs<'_>,
+    name_defs: &'a NameDefs,
 ) -> Option<&'a crate::ast::NameDef> {
     use crate::ast::DefKind;
     let mut chars = callee.0.chars();
     let first = chars.next()?;
     let capitalized = first.to_uppercase().collect::<String>() + chars.as_str();
     let sym = Symbol::new(capitalized);
-    name_defs.get(&sym).filter(|def| def.kind == DefKind::Distinct).copied()
+    name_defs.get(&sym).filter(|def| def.kind == DefKind::Distinct).map(|def| def)
 }
