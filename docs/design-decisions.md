@@ -543,35 +543,44 @@ correctly.  The solver currently reports such functions as Unknown (the SMT bloc
 does not yet support early `return` — it is aware of the limitation and will not produce
 false proofs).
 
-*Nested vectors (`Nat**` = `(Nat*)*`)* (COMPLETE):
+*Nested vectors (`Nat**`, `Nat***`, …)* (COMPLETE):
 
-`Nat**` is backed by Apache Arrow `ListArray` where the child type is `Int64`.
-The outer vector is a `CantorListVecI64` (wrapping a `ListArray`); each inner
-element is a `CantorVecI64` (wrapping an `Int64Array` slice of the child buffer).
+Nested vectors at any depth share a single unified runtime type `CantorListVec`
+wrapping an Apache Arrow `ListArray` whose child `ArrayRef` varies by depth:
+
+| Cantor kind | Child array |
+|---|---|
+| `Nat**`  | `Int64Array` (values of inner `Nat*` elements) |
+| `Bool**` | `BooleanArray` (values of inner `Bool*` elements) |
+| `Nat***` | `ListArray<Int64Array>` (the inner `Nat**` arrays, recursively) |
 
 ```
--- Build, index, and concat at two levels
+-- Two-level nesting
 make : -> Nat**;   make() = [[1, 2, 3], [4, 5]]
-f    : Nat** -> Nat;  f(xss) = len(xss)         -- 2
+f    : Nat** -> Nat;  f(xss) = len(xss)                          -- 2
 g    : Nat** -> Nat;  g(xss) { i:Nat=1; j:Nat=2; return xss[i][j] }  -- 5
+
+-- Three-level nesting
+deep : -> Nat***;  deep() = [[[1, 2], [3]], [[4, 5, 6]]]
+h    : -> Nat;     h() { xsss:Nat***=deep(); return xsss[1][0][2] }  -- 6
 ```
 
-- `xs[i]` where `xs : Nat**` calls `cantor_list_vec_get_i64(xs, i)`, which
-  returns a new `CantorVecI64` wrapping an O(1) Arc-sliced view into the child buffer.
-- `++` calls `cantor_list_vec_concat_i64(a, b)` — O(total child elements).
-- `len(xss)` calls `cantor_list_vec_len_i64(xss)` — the outer list length.
-- Block-body coercion (`xss : Nat** = [[1,2],[3,4]]`) works by recursively
-  coercing each inner tuple literal to a `CantorVecI64`, then pushing those
-  pointers into a `ListBuilder<Int64Builder>`.
-- `Bool**` is symmetric, backed by `ListArray` with `Boolean` child.
+- Builders are typed per child kind: `CantorListVecBuilderI64` (`Nat**`),
+  `CantorListVecBuilderBool` (`Bool**`), `CantorListVecBuilderListI64` (`Nat***`).
+  All produce the unified `CantorListVec` result.
+- `len` is unified: `cantor_list_vec_len(xs)` works for any depth.
+- `xs[i]` dispatches on child kind: `cantor_list_vec_get_i64` (→ `CantorVecI64`),
+  `cantor_list_vec_get_bool` (→ `CantorVecBool`), or
+  `cantor_list_vec_get_list_i64` (→ `CantorListVec`) for `Nat***`.
+- `++` dispatches similarly: `cantor_list_vec_concat_{i64,bool,list_i64}`.
 
 *Struct vectors (`(Nat * Nat)*` = vector of tuples)* (COMPLETE):
 
-`(A * B)*` is backed by a `CantorStructVec` holding one Apache Arrow `Int64Array`
-per field — the same columnar layout that Arrow `StructArray` uses internally.
-Bool fields are widened to `0/1 i64` at push time and truncated back to `i1` on
-get. The field count is passed to `cantor_struct_vec_builder_new(n_fields)` at
-runtime and stored in the struct, so the ABI is fully generic across any tuple shape.
+`(A * B)*` is backed by a `CantorStructVec` wrapping an Apache Arrow `StructArray`
+with one `Int64Array` column per field.  All field values are stored as `i64`
+(Bool fields widened to `0/1` by codegen, vector fields stored as `i64` pointers).
+The field count is passed to `cantor_struct_vec_builder_new(n_fields)` at runtime;
+field names are `"f0"`, `"f1"`, … (opaque internal detail).
 
 ```
 -- Build, index, and project fields
@@ -587,7 +596,7 @@ h    : -> Nat;              h() = make()[2].1           -- 30
   for each field and assembling an LLVM struct result.
 - `xs[i]` (non-literal i) produces `ExprKind::Index`, handled the same way.
 - `++` calls `cantor_struct_vec_concat(a, b)` — O(total rows × fields).
-- `len(ps)` calls `cantor_struct_vec_len(ps)` — length of any column.
+- `len(ps)` calls `cantor_struct_vec_len(ps)` — delegates to `StructArray::len()`.
 - Block-body coercion (`ps : (Nat * Nat)* = [(1,2),(3,4)]`) uses
   `cantor_struct_vec_builder_push_field(builder, field_idx, value)` once per field
   per row.

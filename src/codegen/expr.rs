@@ -24,10 +24,12 @@ fn vec_builder_fns(ek: &Kind) -> Result<(&'static str, &'static str, &'static st
                           "cantor_vec_builder_finish_bool", "cantor_vec_len_bool")),
         // Nested vectors: element is itself a vector; push takes an inner-vector pointer.
         Kind::Vector(inner_ek) => match inner_ek.as_ref() {
-            Kind::Int  => Ok(("cantor_list_vec_builder_new_i64",  "cantor_list_vec_builder_push_i64",
-                              "cantor_list_vec_builder_finish_i64", "cantor_list_vec_len_i64")),
-            Kind::Bool => Ok(("cantor_list_vec_builder_new_bool", "cantor_list_vec_builder_push_bool",
-                              "cantor_list_vec_builder_finish_bool", "cantor_list_vec_len_bool")),
+            Kind::Int  => Ok(("cantor_list_vec_builder_new_i64",      "cantor_list_vec_builder_push_i64",
+                              "cantor_list_vec_builder_finish_i64",    "cantor_list_vec_len")),
+            Kind::Bool => Ok(("cantor_list_vec_builder_new_bool",     "cantor_list_vec_builder_push_bool",
+                              "cantor_list_vec_builder_finish_bool",   "cantor_list_vec_len")),
+            Kind::Vector(_) => Ok(("cantor_list_vec_builder_new_list_i64",  "cantor_list_vec_builder_push_list_i64",
+                                   "cantor_list_vec_builder_finish_list_i64", "cantor_list_vec_len")),
             other => Err(format!("vec_builder_fns: unsupported nested element kind {other:?}")),
         },
         other => Err(format!("vec_builder_fns: unsupported element kind {other:?}")),
@@ -437,8 +439,9 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Int  => "cantor_vec_concat_i64",
             Kind::Bool => "cantor_vec_concat_bool",
             Kind::Vector(inner_ek) => match inner_ek.as_ref() {
-                Kind::Int  => "cantor_list_vec_concat_i64",
-                Kind::Bool => "cantor_list_vec_concat_bool",
+                Kind::Int     => "cantor_list_vec_concat_i64",
+                Kind::Bool    => "cantor_list_vec_concat_bool",
+                Kind::Vector(_) => "cantor_list_vec_concat_list_i64",
                 other => return Err(CompileError::Internal(format!(
                     "TODO: `++` not yet implemented for nested element kind {other:?}"
                 ))),
@@ -478,8 +481,9 @@ impl<'ctx> Compiler<'ctx> {
                     Kind::Bool => "cantor_vec_get_bool",
                     // Nested vector (X**): inner element is itself a vector pointer (i64).
                     Kind::Vector(inner_ek) => match inner_ek.as_ref() {
-                        Kind::Int  => "cantor_list_vec_get_i64",
-                        Kind::Bool => "cantor_list_vec_get_bool",
+                        Kind::Int     => "cantor_list_vec_get_i64",
+                        Kind::Bool    => "cantor_list_vec_get_bool",
+                        Kind::Vector(_) => "cantor_list_vec_get_list_i64",
                         other => return Err(CompileError::Internal(format!(
                             "TODO: `xs[i]` not yet implemented for nested element kind {other:?}"
                         ))),
@@ -566,13 +570,7 @@ impl<'ctx> Compiler<'ctx> {
                     let len_fn = match ek.as_ref() {
                         Kind::Int  => "cantor_vec_len_i64",
                         Kind::Bool => "cantor_vec_len_bool",
-                        Kind::Vector(inner_ek) => match inner_ek.as_ref() {
-                            Kind::Int  => "cantor_list_vec_len_i64",
-                            Kind::Bool => "cantor_list_vec_len_bool",
-                            other => return Err(CompileError::Internal(format!(
-                                "len() on Vector(Vector({other:?})) not yet supported"
-                            ))),
-                        },
+                        Kind::Vector(_) => "cantor_list_vec_len",
                         Kind::Tuple(_) => "cantor_struct_vec_len",
                         other => return Err(CompileError::Internal(format!(
                             "len() on Vector({other:?}) not yet supported"
@@ -1061,8 +1059,9 @@ impl<'ctx> Compiler<'ctx> {
                         Kind::Int  => ("cantor_vec_get_i64",  Kind::Int),
                         Kind::Bool => ("cantor_vec_get_bool", Kind::Bool),
                         Kind::Vector(inner) => match inner.as_ref() {
-                            Kind::Int  => ("cantor_list_vec_get_i64",  Kind::Vector(Box::new(Kind::Int))),
-                            Kind::Bool => ("cantor_list_vec_get_bool", Kind::Vector(Box::new(Kind::Bool))),
+                            Kind::Int     => ("cantor_list_vec_get_i64",      Kind::Vector(Box::new(Kind::Int))),
+                            Kind::Bool    => ("cantor_list_vec_get_bool",     Kind::Vector(Box::new(Kind::Bool))),
+                            Kind::Vector(deeper) => ("cantor_list_vec_get_list_i64", Kind::Vector(deeper.clone())),
                             other => return Err(CompileError::Internal(format!(
                                 "xs[N]: unsupported nested element kind {other:?}"
                             ))),

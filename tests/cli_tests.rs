@@ -838,6 +838,16 @@ fn vectors_nested_deep_index_and_concat() {
     assert!(out.stdout.contains("main() = 50"), "expected 'main() = 50':\n{}", out.stdout);
 }
 
+// ── Triple-nested vectors (Nat***) ───────────────────────────────────────────
+
+#[test]
+fn vectors_triple_nested_run_deep_index() {
+    // main() = get_deep() = xsss[1][0][2] on [[[1,2],[3]],[[4,5,6]]] = 6
+    let out = run_subcommand("vectors_triple_nested.cantor");
+    assert_eq!(out.code, 0, "run should exit 0\nstdout: {}", out.stdout);
+    assert!(out.stdout.contains("main() = 6"), "expected 'main() = 6':\n{}", out.stdout);
+}
+
 // ── Struct vectors ((A * B)*) ────────────────────────────────────────────────
 
 #[test]
