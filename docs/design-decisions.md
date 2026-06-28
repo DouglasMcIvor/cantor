@@ -614,8 +614,42 @@ h    : -> Nat;              h() = make()[2].1           -- 30
     Functions that can't prove the index is in bounds are Unknown or have a bounds
     counterexample. This is correct: out-of-bounds indexing IS a genuine violation.
 
-*TODO — deferred*:
-- Vectors of unions `(Nat | Bool)*` — DenseUnionArray (pending runtime union value design)
+*Union vectors (`(Nat | (Nat * Bool))*` = vector of `|`-unions)* (COMPLETE):
+
+`(A | B)*` where at least one arm is a tuple is backed by `CantorUnionVec`, an Apache
+Arrow `DenseUnionArray` with one `StructArray` child per arm.  Each child `StructArray`
+has one `Int64Array` column per leaf of that arm (`leaf_count(arm_i)` columns).  All
+values are stored as `i64`; Bool fields are widened by codegen before pushing.
+
+The runtime wire for `Kind::TaggedUnion(arms)` is the LLVM struct
+`{ i32 tag, i64 leaf_0, …, i64 leaf_{N-1} }` where `N = max_leaf_count(arms)`.
+
+```
+-- Build, index, and project union-vector elements
+xs : (Nat | (Nat * Bool))* = [1, (2, true), 3]
+len(xs)              -- 3
+
+xs[0].1              -- 1  (leaf 0 of the Nat arm: value 1)
+xs[1].2              -- 1  (leaf 1 of the (Nat*Bool) arm: Bool true → i64 1)
+len(xs ++ xs)        -- 6
+```
+
+- `xs[i]` and `xs.n` (where `xs : TaggedUnion*`) call `cantor_union_vec_get_tag` + one
+  `cantor_union_vec_get_leaf` per leaf slot, assembling the LLVM tagged-union struct.
+  Extra leaf calls for narrower arms return 0 (padding — the tag disambiguates at use).
+- `.N` on a `TaggedUnion` value extracts LLVM struct field `N` directly.  Field 0 is the
+  i32 tag; fields 1, 2, … are the raw i64 leaves.
+- `++` calls `cantor_union_vec_concat(a, b)` — O(n + m) via the builder API.
+- `len` calls `cantor_union_vec_len(xs)`.
+- Building uses the four-step API: `builder_new(n_arms)` → `builder_set_arm(b, i, n_leaves)` ×
+  n_arms → `builder_push_leaf(b, arm_idx, leaf_idx, value)` × (leaves per element) →
+  `builder_finish(b)`.
+
+*TODO (Stage 3)*: `Kind::Union` (the `+` disjoint union, all-scalar arms) vectors are
+not yet backed by `DenseUnionArray` — their wire is still a raw `i64` which discards arm
+information at runtime.  Until Stage 3 is implemented, attempting to build, index, or
+concatenate `(A + B)*` vectors produces a compile error directing the developer to use
+`|` unions for vector elements.
 
 **Solver support** (COMPLETE):
 

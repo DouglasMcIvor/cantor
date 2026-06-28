@@ -9,10 +9,11 @@
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, BooleanArray, Int64Array, StructArray,
+    Array, ArrayRef, BooleanArray, Int64Array, StructArray, UnionArray,
     builder::{ArrayBuilder, BooleanBuilder, Int64Builder, StructBuilder},
 };
-use arrow_schema::{DataType, Field, Fields};
+use arrow_buffer::ScalarBuffer;
+use arrow_schema::{DataType, Field, Fields, UnionFields};
 
 // ── Int set ───────────────────────────────────────────────────────────────────
 
@@ -462,4 +463,210 @@ pub extern "C" fn cantor_list_vec_concat(va: i64, vb: i64) -> i64 {
     for i in 0..a.elems.len() { builder.append_value(a.elems.value(i)); }
     for i in 0..b.elems.len() { builder.append_value(b.elems.value(i)); }
     Box::into_raw(Box::new(CantorListVec { elems: builder.finish() })) as i64
+}
+
+// ── Union vectors ((A | B)* with at least one Tuple arm) ─────────────────────
+//
+// Kind::Vector(Kind::TaggedUnion(arms)) is backed by a CantorUnionVec wrapping
+// an Apache Arrow DenseUnionArray.  Each arm `i` has a StructArray child with
+// `leaf_count(arm_i)` Int64Array columns.  Single-leaf arms (scalars) still use
+// a 1-column StructArray for uniform access.
+//
+// ABI contract (codegen responsibilities):
+//   1. Call `cantor_union_vec_builder_new(n_arms)` to create a builder.
+//   2. For each arm i, call `cantor_union_vec_builder_set_arm(b, i, n_leaves_i)`.
+//   3. For each row (element), call `cantor_union_vec_builder_push_leaf(b, arm_i, li, v)`
+//      for li = 0 .. n_leaves_i - 1.  The last push auto-commits the row.
+//      Extra pushes with li >= n_leaves_i are silently ignored.
+//   4. Call `cantor_union_vec_builder_finish(b)` to get the frozen vec pointer.
+
+pub struct CantorUnionVecBuilder {
+    n_arms: usize,
+    arm_leaf_counts: Vec<usize>,
+    arm_col_builders: Vec<Vec<Int64Builder>>,
+    type_ids: Vec<i8>,
+    offsets: Vec<i32>,
+    arm_row_counts: Vec<usize>,
+    in_row: bool,
+    current_arm: usize,
+    leaves_pushed: usize,
+}
+
+pub struct CantorUnionVec {
+    array: UnionArray,
+    arm_leaf_counts: Vec<usize>,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_union_vec_builder_new(n_arms: i64) -> i64 {
+    let n = n_arms as usize;
+    Box::into_raw(Box::new(CantorUnionVecBuilder {
+        n_arms: n,
+        arm_leaf_counts: vec![0; n],
+        arm_col_builders: (0..n).map(|_| vec![]).collect(),
+        type_ids: Vec::new(),
+        offsets: Vec::new(),
+        arm_row_counts: vec![0; n],
+        in_row: false,
+        current_arm: 0,
+        leaves_pushed: 0,
+    })) as i64
+}
+
+/// Register arm `arm_idx` as having `n_leaves` leaf columns.
+/// Must be called for every arm before any `push_leaf` calls.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_union_vec_builder_set_arm(builder: i64, arm_idx: i64, n_leaves: i64) {
+    let b = unsafe { &mut *(builder as *mut CantorUnionVecBuilder) };
+    let ai = arm_idx as usize;
+    let nl = n_leaves as usize;
+    b.arm_leaf_counts[ai] = nl;
+    b.arm_col_builders[ai] = (0..nl).map(|_| Int64Builder::new()).collect();
+}
+
+/// Append leaf `leaf_idx` of arm `arm_idx` for the current row.
+///
+/// When `leaf_idx == 0` a new row begins.  The row is committed automatically
+/// when `leaf_idx == arm_leaf_counts[arm_idx] - 1`.  Pushes where
+/// `leaf_idx >= arm_leaf_counts[arm_idx]` are silently ignored so that the
+/// codegen can always push `max_leaf_count` times per element without branching.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_union_vec_builder_push_leaf(
+    builder: i64, arm_idx: i64, leaf_idx: i64, value: i64,
+) {
+    let b = unsafe { &mut *(builder as *mut CantorUnionVecBuilder) };
+    let ai = arm_idx as usize;
+    let li = leaf_idx as usize;
+    let n_leaves = b.arm_leaf_counts[ai];
+
+    if li == 0 {
+        b.in_row = true;
+        b.current_arm = ai;
+        b.leaves_pushed = 0;
+    }
+
+    if b.in_row && li < n_leaves {
+        b.arm_col_builders[ai][li].append_value(value);
+        b.leaves_pushed += 1;
+        if b.leaves_pushed == n_leaves {
+            let offset = b.arm_row_counts[ai] as i32;
+            b.type_ids.push(ai as i8);
+            b.offsets.push(offset);
+            b.arm_row_counts[ai] += 1;
+            b.in_row = false;
+        }
+    }
+}
+
+/// Consume the builder, assemble a DenseUnionArray, and return a frozen CantorUnionVec.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_union_vec_builder_finish(builder: i64) -> i64 {
+    let mut b = unsafe { Box::from_raw(builder as *mut CantorUnionVecBuilder) };
+    let arm_leaf_counts = b.arm_leaf_counts.clone();
+
+    let mut children: Vec<ArrayRef> = Vec::with_capacity(b.n_arms);
+    let mut union_field_list: Vec<(i8, Arc<Field>)> = Vec::with_capacity(b.n_arms);
+
+    for (ai, col_builders) in b.arm_col_builders.iter_mut().enumerate() {
+        let n_leaves = b.arm_leaf_counts[ai];
+        let arm_fields: Fields = (0..n_leaves)
+            .map(|j| Arc::new(Field::new(format!("l{j}"), DataType::Int64, false)))
+            .collect::<Vec<_>>()
+            .into();
+        let columns: Vec<ArrayRef> = col_builders.iter_mut()
+            .map(|bld| Arc::new(bld.finish()) as ArrayRef)
+            .collect();
+        let struct_arr = StructArray::new(arm_fields.clone(), columns, None);
+        children.push(Arc::new(struct_arr));
+        union_field_list.push((
+            ai as i8,
+            Arc::new(Field::new(format!("arm{ai}"), DataType::Struct(arm_fields), false)),
+        ));
+    }
+
+    let union_fields: UnionFields = union_field_list.into_iter().collect();
+    let type_ids_buf: ScalarBuffer<i8> = b.type_ids.into();
+    let offsets_buf: ScalarBuffer<i32> = b.offsets.into();
+
+    let array = UnionArray::try_new(union_fields, type_ids_buf, Some(offsets_buf), children)
+        .expect("cantor_union_vec_builder_finish: UnionArray::try_new failed");
+
+    Box::into_raw(Box::new(CantorUnionVec { array, arm_leaf_counts })) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_union_vec_len(vec: i64) -> i64 {
+    unsafe { &*(vec as *const CantorUnionVec) }.array.len() as i64
+}
+
+/// Return the arm index (type_id) of row `row_idx` as i64.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_union_vec_get_tag(vec: i64, row_idx: i64) -> i64 {
+    let v = unsafe { &*(vec as *const CantorUnionVec) };
+    v.array.type_id(row_idx as usize) as i64
+}
+
+/// Return leaf `leaf_idx` of row `row_idx`.
+///
+/// Looks up the arm's StructArray child via the DenseUnionArray offsets buffer,
+/// then reads the Int64Array column at `leaf_idx`.
+///
+/// Returns 0 when `leaf_idx >= arm_leaf_count` — the codegen emits `max_leaves`
+/// get_leaf calls for every element regardless of arm width, so narrower arms
+/// get padding zeros for the extra slots.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_union_vec_get_leaf(vec: i64, row_idx: i64, leaf_idx: i64) -> i64 {
+    let v = unsafe { &*(vec as *const CantorUnionVec) };
+    let row = row_idx as usize;
+    let li = leaf_idx as usize;
+    let type_id = v.array.type_id(row);
+    if li >= v.arm_leaf_counts[type_id as usize] {
+        return 0;
+    }
+    let offset = v.array.value_offset(row);
+    v.array.child(type_id)
+        .as_any().downcast_ref::<StructArray>()
+        .expect("union child must be StructArray")
+        .column(li)
+        .as_any().downcast_ref::<Int64Array>()
+        .expect("union child column must be Int64Array")
+        .value(offset)
+}
+
+/// Concatenate two union vectors of identical arm layout (purely functional, O(n)).
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_union_vec_concat(va: i64, vb: i64) -> i64 {
+    let a = unsafe { &*(va as *const CantorUnionVec) };
+    let b = unsafe { &*(vb as *const CantorUnionVec) };
+    assert_eq!(
+        a.arm_leaf_counts, b.arm_leaf_counts,
+        "cantor_union_vec_concat: arm layout mismatch",
+    );
+
+    let n_arms = a.arm_leaf_counts.len() as i64;
+    let out = cantor_union_vec_builder_new(n_arms);
+    for (ai, &nl) in a.arm_leaf_counts.iter().enumerate() {
+        cantor_union_vec_builder_set_arm(out, ai as i64, nl as i64);
+    }
+
+    for arr in [&a.array, &b.array] {
+        for row in 0..arr.len() {
+            let type_id = arr.type_id(row);
+            let offset = arr.value_offset(row);
+            let ai = type_id as usize;
+            let n_leaves = a.arm_leaf_counts[ai];
+            let child = arr.child(type_id)
+                .as_any().downcast_ref::<StructArray>()
+                .expect("union child must be StructArray");
+            for li in 0..n_leaves {
+                let val = child.column(li)
+                    .as_any().downcast_ref::<Int64Array>()
+                    .expect("union child column must be Int64Array")
+                    .value(offset);
+                cantor_union_vec_builder_push_leaf(out, ai as i64, li as i64, val);
+            }
+        }
+    }
+
+    cantor_union_vec_builder_finish(out)
 }

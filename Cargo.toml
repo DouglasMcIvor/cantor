@@ -12,6 +12,7 @@ llvm-sys = { version = "180", features = ["prefer-dynamic"] }
 # Requires system packages: libcvc5-1 libcvc5-dev (apt).
 cvc5 = "0.4"
 arrow-array = "59"
+arrow-buffer = "59"
 arrow-schema = "59"
 rustyline = "14"
 

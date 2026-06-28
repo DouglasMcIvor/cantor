@@ -20,6 +20,7 @@ use crate::{
 
 mod blocks;
 mod expr;
+mod expr_vec;
 mod jit;
 mod loops;
 mod membership;
@@ -704,6 +705,21 @@ impl<'ctx> Compiler<'ctx> {
         self.module.add_function("cantor_struct_vec_len",                i64t.fn_type(i,    false), None);
         self.module.add_function("cantor_struct_vec_get_field",          i64t.fn_type(iii,  false), None);
         self.module.add_function("cantor_struct_vec_concat",             i64t.fn_type(ii,   false), None);
+
+        // Union vectors (Kind::Vector(Kind::TaggedUnion(arms))) — DenseUnionArray,
+        // one StructArray child per arm (each with leaf_count(arm) Int64Array columns).
+        // set_arm takes (builder, arm_idx, n_leaves) — three i64 args.
+        // push_leaf takes (builder, arm_idx, leaf_idx, value) — four i64 args.
+        // get_leaf takes (vec, row_idx, leaf_idx) — three i64 args.
+        let iiii = &[i64t.into(), i64t.into(), i64t.into(), i64t.into()] as &[_];
+        self.module.add_function("cantor_union_vec_builder_new",       i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_union_vec_builder_set_arm",   void.fn_type(iii,  false), None);
+        self.module.add_function("cantor_union_vec_builder_push_leaf", void.fn_type(iiii, false), None);
+        self.module.add_function("cantor_union_vec_builder_finish",    i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_union_vec_len",               i64t.fn_type(i,    false), None);
+        self.module.add_function("cantor_union_vec_get_tag",           i64t.fn_type(ii,   false), None);
+        self.module.add_function("cantor_union_vec_get_leaf",          i64t.fn_type(iii,  false), None);
+        self.module.add_function("cantor_union_vec_concat",            i64t.fn_type(ii,   false), None);
     }
 
     pub fn print_ir(&self) {

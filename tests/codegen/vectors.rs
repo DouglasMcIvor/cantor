@@ -191,6 +191,67 @@ main() {
     );
 }
 
+// ── Union vectors ─────────────────────────────────────────────────────────────
+//
+// `(Nat | (Nat * Bool))*` — a TaggedUnion element kind.
+// Arm 0 = Nat (1 leaf); arm 1 = Nat * Bool (2 leaves).
+
+#[test]
+fn union_vec_len() {
+    // Two arm-0 elements and one arm-1 element → length 3.
+    assert_eq!(
+        jit_src_zero_arg("
+main : -> Nat
+main() {
+    xs : (Nat | (Nat * Bool))* = [1, (2, true), 3]
+    len(xs)
+}"),
+        3,
+    );
+}
+
+#[test]
+fn union_vec_scalar_arm_index() {
+    // xs[0] is a Nat arm; access its single leaf via arm tag.
+    assert_eq!(
+        jit_src_zero_arg("
+main : -> Nat
+main() {
+    xs : (Nat | (Nat * Bool))* = [42, (1, false)]
+    xs[0].1
+}"),
+        42,
+    );
+}
+
+#[test]
+fn union_vec_tuple_arm_index() {
+    // xs[1] is a (Nat * Bool) arm; extract the Bool field.
+    assert_eq!(
+        jit_src_zero_arg("
+main : -> Nat
+main() {
+    xs : (Nat | (Nat * Bool))* = [99, (7, true)]
+    xs[1].2
+}"),
+        1, // true as i64
+    );
+}
+
+#[test]
+fn union_vec_concat_len() {
+    assert_eq!(
+        jit_src_zero_arg("
+main : -> Nat
+main() {
+    a : (Nat | (Nat * Bool))* = [1, (2, true)]
+    b : (Nat | (Nat * Bool))* = [(3, false), 4]
+    len(a ++ b)
+}"),
+        4,
+    );
+}
+
 // Sum all elements of a Nat* with a for-in loop.
 #[test]
 #[ignore = "for over sequences not yet implemented"]

@@ -59,6 +59,15 @@ impl<'ctx> Compiler<'ctx> {
                 ("cantor_struct_vec_len",                runtime::cantor_struct_vec_len                as *const () as usize),
                 ("cantor_struct_vec_get_field",          runtime::cantor_struct_vec_get_field          as *const () as usize),
                 ("cantor_struct_vec_concat",             runtime::cantor_struct_vec_concat             as *const () as usize),
+                // Union vectors ((A | B)* with at least one Tuple arm)
+                ("cantor_union_vec_builder_new",       runtime::cantor_union_vec_builder_new       as *const () as usize),
+                ("cantor_union_vec_builder_set_arm",   runtime::cantor_union_vec_builder_set_arm   as *const () as usize),
+                ("cantor_union_vec_builder_push_leaf", runtime::cantor_union_vec_builder_push_leaf as *const () as usize),
+                ("cantor_union_vec_builder_finish",    runtime::cantor_union_vec_builder_finish    as *const () as usize),
+                ("cantor_union_vec_len",               runtime::cantor_union_vec_len               as *const () as usize),
+                ("cantor_union_vec_get_tag",           runtime::cantor_union_vec_get_tag           as *const () as usize),
+                ("cantor_union_vec_get_leaf",          runtime::cantor_union_vec_get_leaf          as *const () as usize),
+                ("cantor_union_vec_concat",            runtime::cantor_union_vec_concat            as *const () as usize),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))
