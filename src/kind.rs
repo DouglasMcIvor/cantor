@@ -7,7 +7,7 @@
 //! works at the set layer and has no notion of Kind.  Many set names can share
 //! the same Kind (e.g. `Nat`, `NatPos`, and `Int16` are all `Kind::Int`).
 
-use crate::ast::{BinOp, Expr, ExprKind, FunctionSig};
+use crate::ast::{BinOp, Expr, ExprKind, FunctionSig, flatten_domain, flatten_disjoint_union, param_set_exprs};
 
 /// The element kind of a homogeneous runtime set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,18 +155,6 @@ fn into_union(kind: Kind) -> Vec<Kind> {
     }
 }
 
-/// Flatten a left-associated disjoint union `((A + B) + C)` into `[A, B, C]`.
-pub fn flatten_disjoint_union(expr: &Expr) -> Vec<&Expr> {
-    match &expr.kind {
-        ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
-            let mut arms = flatten_disjoint_union(lhs);
-            arms.extend(flatten_disjoint_union(rhs));
-            arms
-        }
-        _ => vec![expr],
-    }
-}
-
 /// True if an expression is a pure failure arm — either bare `Fail` or `Fail * Y`
 /// (the desugared form of `!! Y`).  These arms do not contribute to the success
 /// wire kind and are stripped by `range_kind`'s Union rule.
@@ -226,42 +214,3 @@ pub fn param_kinds(sig: &FunctionSig, n_params: usize) -> Vec<Kind> {
     }
 }
 
-/// Map each function parameter to its set expression, implementing the
-/// arity disambiguation rule:
-///
-/// - `parts.len() == n_params` → N scalar params (each part is one param's set).
-/// - `n_params == 1` and `parts.len() > 1` → the single param is a tuple whose
-///   set is the entire domain expression.
-/// - Otherwise → arity error.
-pub fn param_set_exprs<'a>(domain: Option<&'a Expr>, n_params: usize) -> Result<Vec<&'a Expr>, String> {
-    match domain {
-        None if n_params == 0 => Ok(vec![]),
-        None => Err(format!("domain has 0 parts but function has {n_params} parameters")),
-        Some(domain_expr) => {
-            let parts = flatten_domain(domain_expr);
-            if parts.len() == n_params {
-                Ok(parts)
-            } else if n_params == 1 {
-                // Single tuple parameter covering the whole product domain.
-                Ok(vec![domain_expr])
-            } else {
-                Err(format!(
-                    "domain arity {} doesn't match parameter count {}",
-                    parts.len(), n_params
-                ))
-            }
-        }
-    }
-}
-
-/// Flatten a left-associative `A * B * C` product into `[A, B, C]`.
-pub(crate) fn flatten_domain(expr: &Expr) -> Vec<&Expr> {
-    match &expr.kind {
-        ExprKind::BinOp { op: BinOp::Mul, lhs, rhs } => {
-            let mut parts = flatten_domain(lhs);
-            parts.push(rhs);
-            parts
-        }
-        _ => vec![expr],
-    }
-}

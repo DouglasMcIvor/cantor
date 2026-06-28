@@ -226,6 +226,62 @@ pub enum AssertElse {
     Return(Expr),
 }
 
+// ── Set-expression AST utilities ─────────────────────────────────────────────
+
+/// Flatten a left-associative `A * B * C` product into `[A, B, C]`.
+pub fn flatten_domain(expr: &Expr) -> Vec<&Expr> {
+    match &expr.kind {
+        ExprKind::BinOp { op: BinOp::Mul, lhs, rhs } => {
+            let mut parts = flatten_domain(lhs);
+            parts.push(rhs);
+            parts
+        }
+        _ => vec![expr],
+    }
+}
+
+/// Flatten a left-associated disjoint union `((A + B) + C)` into `[A, B, C]`.
+pub fn flatten_disjoint_union(expr: &Expr) -> Vec<&Expr> {
+    match &expr.kind {
+        ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
+            let mut arms = flatten_disjoint_union(lhs);
+            arms.extend(flatten_disjoint_union(rhs));
+            arms
+        }
+        _ => vec![expr],
+    }
+}
+
+/// Map each function parameter to its set expression, implementing the
+/// arity disambiguation rule:
+///
+/// - `parts.len() == n_params` → N scalar params (each part is one param's set).
+/// - `n_params == 1` and `parts.len() > 1` → the single param is a tuple whose
+///   set is the entire domain expression.
+/// - Otherwise → arity error.
+pub fn param_set_exprs<'a>(domain: Option<&'a Expr>, n_params: usize) -> Result<Vec<&'a Expr>, String> {
+    match domain {
+        None if n_params == 0 => Ok(vec![]),
+        None => Err(format!("domain has 0 parts but function has {n_params} parameters")),
+        Some(domain_expr) => {
+            let parts = flatten_domain(domain_expr);
+            if parts.len() == n_params {
+                Ok(parts)
+            } else if n_params == 1 {
+                // Single tuple parameter covering the whole product domain.
+                Ok(vec![domain_expr])
+            } else {
+                Err(format!(
+                    "domain arity {} doesn't match parameter count {}",
+                    parts.len(), n_params
+                ))
+            }
+        }
+    }
+}
+
+// ── Loop variable collection ──────────────────────────────────────────────────
+
 /// Collect all names that are assigned (by `mut` or reassignment) anywhere
 /// inside `stmts`, recursively through nested blocks and while loops.
 ///

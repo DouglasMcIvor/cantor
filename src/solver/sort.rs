@@ -11,25 +11,13 @@
 use cvc5::{DatatypeConstructorDecl, Kind, Sort, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind},
+    ast::{BinOp, Expr, ExprKind, flatten_domain},
     kind::{Kind as ValKind, set_kind as val_set_kind},
 };
 
 use super::membership::DistinctPreds;
 
 // ── AST flattening ────────────────────────────────────────────────────────────
-
-/// Flatten a left-associative `A * B * C` product into `[A, B, C]`.
-pub(crate) fn flatten_product(expr: &Expr) -> Vec<&Expr> {
-    match &expr.kind {
-        ExprKind::BinOp { op: BinOp::Mul, lhs, rhs } => {
-            let mut parts = flatten_product(lhs);
-            parts.push(rhs);
-            parts
-        }
-        _ => vec![expr],
-    }
-}
 
 /// Flatten a left-associative `A | B | C` or `A + B + C` into `[A, B, C]`.
 ///
@@ -246,7 +234,7 @@ pub(crate) fn set_sort<'tm>(
         ExprKind::Call { .. } => tm.integer_sort(),
         // `A * B * C` — Cartesian product → CVC5 tuple sort.
         ExprKind::BinOp { op: BinOp::Mul, .. } => {
-            let parts = flatten_product(set_expr);
+            let parts = flatten_domain(set_expr);
             let sorts: Vec<Sort<'_>> = parts.iter()
                 .map(|p| set_sort(tm, p, distinct_preds))
                 .collect::<Option<Vec<_>>>()?;

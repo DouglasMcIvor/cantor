@@ -5,13 +5,13 @@ use std::collections::HashMap;
 use cvc5::{Kind, Solver, Sort, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, FunctionDef, FunctionSig, UnOp},
+    ast::{BinOp, Expr, ExprKind, FunctionDef, FunctionSig, UnOp, flatten_domain},
     span::{Span, Symbol},
 };
 
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 use super::sort::{
-    flatten_product, is_product_range, maybe_coerce, set_sort, set_sort_for_range,
+    is_product_range, maybe_coerce, set_sort, set_sort_for_range,
     success_arm_of_range,
 };
 use super::NameDefs;
@@ -750,7 +750,7 @@ pub(crate) fn assert_call_contract<'tm>(
     match &sig.domain {
         None => {}
         Some(domain_expr) => {
-            let parts = flatten_product(domain_expr);
+            let parts = flatten_domain(domain_expr);
             if parts.len() != arg_terms.len() {
                 return;
             }
@@ -829,7 +829,7 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
     set_expr: &'e Expr,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> (Term<'tm>, Vec<(Term<'tm>, &'e Expr)>) {
-    let parts = flatten_product(set_expr);
+    let parts = flatten_domain(set_expr);
     if parts.len() <= 1 {
         let sort = set_sort(tm, set_expr, distinct_preds)
             .expect("mk_decomposed_tuple: leaf set expression has no representable CVC5 sort");

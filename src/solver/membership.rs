@@ -4,10 +4,10 @@ use std::collections::HashMap;
 
 use cvc5::{Kind, Sort, Term, TermManager};
 
-use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp};
+use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp, flatten_domain};
 use crate::span::Symbol;
 
-use super::sort::{arm_ctor_name_for_arm, flatten_any_union, flatten_product};
+use super::sort::{arm_ctor_name_for_arm, flatten_any_union};
 use super::NameDefs;
 
 /// Per-distinct-set CVC5 artefacts created when `D = distinct B` is declared.
@@ -170,7 +170,7 @@ fn lift_sequence_into_atomic<'tm>(
     match &set_expr.kind {
         // Product A*B*C: t ∈ A*B*C ⟺ len(t)==N ∧ nth(t,0)∈A ∧ nth(t,1)∈B ∧ …
         ExprKind::BinOp { op: BinOp::Mul, .. } => {
-            let parts = flatten_product(set_expr);
+            let parts = flatten_domain(set_expr);
             let n = parts.len() as i64;
             let len_term = tm.mk_term(Kind::SeqLength, &[t.clone()]);
             let len_eq = tm.mk_term(Kind::Equal, &[len_term, tm.mk_integer(n)]);
@@ -606,7 +606,7 @@ pub(crate) fn membership_constraint<'tm>(
             if !t.sort().is_tuple() {
                 return Membership::Constrained(tm.mk_boolean(false));
             }
-            let parts = flatten_product(set_expr);
+            let parts = flatten_domain(set_expr);
             let dt = t.sort().datatype();
             let ctor = dt.constructor(0); // tuples have exactly one constructor
             let mut constraints: Vec<Term<'_>> = Vec::new();

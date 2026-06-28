@@ -29,11 +29,11 @@ use std::collections::{HashMap, HashSet};
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef},
+    ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef, param_set_exprs},
     span::Symbol,
 };
 
-use crate::kind::{Kind as ValKind, param_set_exprs, set_kind};
+use crate::kind::{Kind as ValKind, set_kind};
 
 use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, mk_decomposed_tuple};
 use self::sort::{set_sort, set_sort_for_range};
