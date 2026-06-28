@@ -392,7 +392,29 @@ $ cantor overflow.cantor
     t = 0  ->  output = -32769  (not in Int16)
 ```
 
-**Disambiguation rule**: `f : Int * Int -> Int` with `f(x, y)` means two separate scalar parameters (existing behaviour); `f : Int * Int -> Int * Int` with `f(t)` means a single tuple parameter. The number of declared parameters determines which reading applies — no extra syntax needed. In the future this same pattern will be supported in destructuring assignment.
+**Destructuring**
+
+`f : Int * Int -> Int` with `f(x, y)` means two separate scalar parameters; `f : Int * Int -> Int * Int` with `f(t)` means a single tuple parameter. The number of declared parameters determines which reading applies — no extra syntax needed.
+
+Destructing assignment works as you would expect, and supports both tuples and vectors.
+The only requirement is that the compiler can statically prove that your tuple/vector has at least as many elements as binders that you request.
+
+```haskell
+x, y = (a, b) -- alias constants x=a, y=b by constructing and destructuring a tuple
+
+v = (1, 2, 3)
+x, y, z = v -- pattern match on a tuple passed in
+
+v = [1, 2, 3, 4, 5]
+h, t = v -- h == 1 and t == [2, 3, 4, 5]
+         -- with fewer binders than elements the tail is placed into the last element
+
+foo : Nat* -> Nat
+foo(x, y) = x  -- Error: Nat* may be empty
+
+foo : Nat* - {[]} -> Nat
+foo(x, y) = x  -- Okay! Nat is known to be non-empty
+```
 
 ### Vectors and bounds safety
 
@@ -449,6 +471,9 @@ nth(xs, i) {
 ```
 
 Vectors of tuples (`(Nat * Nat)*`) and nested vectors (`Nat**`) work the same way — the bounds obligation is attached to any indexing expression, and a literal-length vector with a literal index is always proved statically.
+
+Vectors are resticted to have a length representable by a single machine word. If you are writing for a system with segmented memory then you'll need to split your incredibly long vectors into segments!
+Hopefully that will help you feel right at home.
 
 #### Scalars and tuples are sequences too
 
@@ -558,11 +583,13 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 
 ## On the roadmap
 
-- **Vector iteration** — `for x in xs` over a `X*` vector; the remaining iteration pattern to complement the existing `len`, `xs[i]`, and `++` operations.
+- **Vector iteration** — `for x in xs` over a `X*` vector; the remaining iteration pattern to complement the existing `len`, `xs[i]`, and `++` operations. Includes support for a `Size` set that aliases the machine word size, e.g. `Nat64`.
+
+- **Function overloading and pattern matching** — functions can be overloaded on distinct sets, `match x { Shape.Circle(r) => …, Shape.Rect(w, h) => … }` or some similar syntax for pattern matching
 
 - **Namespaces and named structured data** — Named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`), and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
 
-- **Function overloading and pattern matching** — functions can be overloaded on distinct sets, `match x { Shape.Circle(r) => …, Shape.Rect(w, h) => … }` or some similar syntax for pattern matching
+- **Quotient sets and wrapping arithmetic** - Quotient sets to be defined by a canonicalizer, which would let us write `WrappingNat32 = distinct Nat / (x -> x mod 2^32) deriving Arithmetic + ...`. Built in quotient sets for native machine arithmetic.
 
 - **Lambdas, closures, and higher-order functions** — anonymous functions, captured variables, and functions as first-class values. Unlocks `map`, `filter`, `fold`, and combinators without needing the full generics machinery.
 
