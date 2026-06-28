@@ -561,35 +561,43 @@ impl<'ctx> Compiler<'ctx> {
         // `len(xs)` — built-in length function for vectors (Kind::Vector).
         if callee.0 == "len" && args.len() == 1 {
             let (ptr, kind) = self.compile_expr(&args[0], env)?;
-            let len_fn = match &kind {
-                Kind::Vector(ek) => match ek.as_ref() {
-                    Kind::Int  => "cantor_vec_len_i64",
-                    Kind::Bool => "cantor_vec_len_bool",
-                    Kind::Vector(inner_ek) => match inner_ek.as_ref() {
-                        Kind::Int  => "cantor_list_vec_len_i64",
-                        Kind::Bool => "cantor_list_vec_len_bool",
+            return match &kind {
+                Kind::Vector(ek) => {
+                    let len_fn = match ek.as_ref() {
+                        Kind::Int  => "cantor_vec_len_i64",
+                        Kind::Bool => "cantor_vec_len_bool",
+                        Kind::Vector(inner_ek) => match inner_ek.as_ref() {
+                            Kind::Int  => "cantor_list_vec_len_i64",
+                            Kind::Bool => "cantor_list_vec_len_bool",
+                            other => return Err(CompileError::Internal(format!(
+                                "len() on Vector(Vector({other:?})) not yet supported"
+                            ))),
+                        },
+                        Kind::Tuple(_) => "cantor_struct_vec_len",
                         other => return Err(CompileError::Internal(format!(
-                            "len() on Vector(Vector({other:?})) not yet supported"
+                            "len() on Vector({other:?}) not yet supported"
                         ))),
-                    },
-                    Kind::Tuple(_) => "cantor_struct_vec_len",
-                    other => return Err(CompileError::Internal(format!(
-                        "len() on Vector({other:?}) not yet supported"
-                    ))),
+                    };
+
+                    let fn_val = self.module.get_function(len_fn)
+                        .ok_or_else(|| CompileError::Internal(format!("{len_fn} not declared")))?;
+                    let result = self.builder
+                        .build_call(fn_val, &[ptr.into()], "len")
+                        .map_err(|e| CompileError::Internal(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .ok_or_else(|| CompileError::Internal("len fn returned void".into()))?;
+                    Ok((result, Kind::Int))
                 },
-                _ => return Err(CompileError::Internal(
+                Kind::Tuple(inner_eks) => {
+                    let length = Vec::len(inner_eks);
+                    let v = self.context.i64_type().const_int(length as u64, true);
+                    Ok((v.into(), Kind::Int))
+                },
+                _ => Err(CompileError::Internal(
                     "len() requires a vector (X*) argument".into(),
                 )),
             };
-            let fn_val = self.module.get_function(len_fn)
-                .ok_or_else(|| CompileError::Internal(format!("{len_fn} not declared")))?;
-            let result = self.builder
-                .build_call(fn_val, &[ptr.into()], "len")
-                .map_err(|e| CompileError::Internal(e.to_string()))?
-                .try_as_basic_value()
-                .left()
-                .ok_or_else(|| CompileError::Internal("len fn returned void".into()))?;
-            return Ok((result, Kind::Int));
         }
 
         let function = self.module.get_function(&callee.0).ok_or_else(|| {

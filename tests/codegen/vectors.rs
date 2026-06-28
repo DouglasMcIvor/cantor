@@ -151,7 +151,6 @@ fn bracket_index_on_param() {
 
 // Length of an empty vector is 0.
 #[test]
-#[ignore = "len of tuples not yet implemented"]
 fn kleene_len_empty() {
     assert_eq!(
         jit_src_zero_arg("main : -> Nat\nmain() = len([])"),
@@ -161,7 +160,6 @@ fn kleene_len_empty() {
 
 // Length of a three-element vector is 3.
 #[test]
-#[ignore = "len of tuples not yet implemented"]
 fn kleene_len_three() {
     assert_eq!(
         jit_src_zero_arg("main : -> Nat\nmain() = len([1, 2, 3])"),
