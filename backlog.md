@@ -257,6 +257,16 @@ Algorithm:
   map : (A -> B) * F(A) -> F(B)
   what exactly is Functor then? A set of what?
   I suppose F is a compile time function! while A/B is a compile time set
+  The syntax might just be 'open Functor' at the global scope (rather than _within_ the function def), so
+  open Functor 
+  given A, B, F
+  require F in Functor
+  map : (A -> B) * F(A) -> F(B)
+  then instantiation will check that F is in Functor 
+  We define values within Functor by declaring it to be true:
+  (*) in Functor 
+  not sure how we interpret that to be the Kleene star?
+  That should cover all of list, option and error tuples etc.
 - automatic multithreading for semi-pure core?
 - multiple concurrent IO threads? ChatGPT convo suggests developing a _scheduler_ using optimisitic concurrency control, taking adaptive measurements on which events conflicts, both statically and dynamically determining state partitions for different event handlers, letting the developer declare that events are `ordered` or `unordered` or `mostly independent` so that we know the "shape" of events. Lots of fun stuff we could do!
 - small runtime sets optimized as bitmasks. Once we get to the homogeneous set level the runtime doesn't actually care what the values are. So a cardinality 64 set can be encoded as just a uint64. It may make sense to extend this to fairly large sets with vectors of uint64. It would be nice to benchmark when this breaks down (time space tradeoff right?)
@@ -292,8 +302,7 @@ Algorithm:
 
 # To learn
 
-- Actually write some rust by hand, old skool
-- Haha, even funnier: actually run the _build command_ by hand!
+- More about LLVM features so I can make better use of them
 
 # Interesting things I have learned
 
