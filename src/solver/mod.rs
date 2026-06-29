@@ -88,6 +88,8 @@ fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs) -> Dist
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
+// TODO: make a struct with member functions to hold things like timeout_ms
+
 /// Check every function in a parsed file, using each function's signature as
 /// a contract available to all other functions in the file.
 ///

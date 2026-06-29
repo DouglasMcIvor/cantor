@@ -11,7 +11,7 @@
 //! Many set names share the same Kind (e.g. `Nat`, `NatPos`, and `Int16` are
 //! all `Kind::Int`).
 
-use crate::ast::{BinOp, DefKind, Expr, ExprKind, NameDefs, flatten_domain, flatten_disjoint_union};
+use crate::ast::{UnOp, BinOp, DefKind, Expr, ExprKind, NameDefs, flatten_domain, flatten_disjoint_union};
 
 /// The element kind of a homogeneous runtime set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +20,11 @@ pub enum SetElemKind {
     Bool,
 }
 
-/// The LLVM type a Cantor value compiles to.
+// TODO: We should call this "Value" and move it into a semantics namespace
+//       OR we should split it into Atom, Algebra?
+//       We need to make a SemanticTree that an "elaboration" pass produces from the AST
+//       that is what annotates the Kind and distinguishes "+" from context
+/// All the possible fundamental Cantor values
 ///
 /// `Copy` was intentionally dropped when `Tuple(Vec<Kind>)` was added; use
 /// `.clone()` where a copy was previously implicit.
@@ -48,10 +52,14 @@ pub enum Kind {
     Vector(Box<Kind>),
 }
 
-/// The runtime Kind of a value drawn from `set_expr`.
+// TODO: This appears to be growing into the Kind of any expression, not just sets
 pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
     match &set_expr.kind {
+        ExprKind::IntLit { .. } => Kind::Int,
+        ExprKind::BoolLit { .. } => Kind::Bool,
         ExprKind::Var(sym) => match sym.0.as_str() {
+            // TODO we should have a symbol table for built ins rather than string matching here
+            //      The `name_defs` here should include both built in and user defined
             "Bool" => Kind::Bool,
             "Int" | "Nat" | "NatPos" | "NonZeroInt"
             | "Int8" | "Int16" | "Int32" | "Int64" => Kind::Int,
@@ -65,10 +73,35 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
                         DefKind::Distinct => Kind::Int,
                     }
                 } else {
-                    unreachable!("set_kind: unknown set name `{}` — not a built-in and not in name_defs", sym.0)
+                    // TODO: Compile error
+                    unreachable!("set_kind: unknown set name `{}`", sym.0)
                 }
             }
-        },
+        }
+        ExprKind::BinOp { op, lhs, rhs } => {
+            binop_kind(op, lhs, rhs, name_defs)
+        }
+        ExprKind::UnOp { op, expr, .. } => {
+            unop_kind(op, expr, name_defs)
+        }
+        // TODO: "Set" should also be part of the built in symbol table
+        // `Set(Int)` / `Set(Bool)` — the power set of the given element set.
+        ExprKind::Call { callee, args } => {
+            if callee.0 == "Set" && args.len() == 1 {
+                // TODO replace SetElemKind with just a nested Kind
+                match set_kind(&args[0], name_defs) {
+                    Kind::Bool => Kind::Set(SetElemKind::Bool),
+                    Kind::Int => Kind::Set(SetElemKind::Int),
+                    _ => unreachable!("{}", format!("Unexpected set element kind {set_expr:?}")),
+                }
+            } else {
+                // TODO: Compile error
+                unreachable!("set_kind: unknown compile time function name `{}`", callee.0)
+            }
+        }
+        ExprKind::If { then_expr,else_expr, .. } => {
+            merge_into_union(set_kind(then_expr, name_defs), set_kind(else_expr, name_defs))
+        }
         ExprKind::SetLit(exprs) => {
             let kinds = exprs.iter().map(|e| set_kind(e, name_defs)).collect();
             let elem_kind = union_if_distinct(kinds);
@@ -78,42 +111,76 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
                 _ => unimplemented!("Sets may currently only contain values representable as Int or Bool")
             }
         }
-        // `Set(Int)` / `Set(Bool)` — the power set of the given element set.
-        ExprKind::Call { callee, args } if callee.0 == "Set" && args.len() == 1 => {
-            match set_kind(&args[0], name_defs) {
-                Kind::Bool => Kind::Set(SetElemKind::Bool),
-                Kind::Int => Kind::Set(SetElemKind::Int),
-                // TODO should this be a compile error instead?
-                _ => unreachable!("{}", format!("Unexpected set element kind {set_expr:?}")),
-            }
+        ExprKind::Try(expr) => set_kind(expr, name_defs),
+        ExprKind::FailLit => Kind::Fail,
+        ExprKind::FailWith(expr) => set_kind(expr, name_defs),
+        ExprKind::Comprehension { source, .. } => {
+            set_kind(source, name_defs)
         }
-        // `A * B * C` — Cartesian product → tuple.
-        ExprKind::BinOp { op: BinOp::Mul, .. } => {
-            let parts = flatten_domain(set_expr);
-            Kind::Tuple(parts.into_iter().map(|p| set_kind(p, name_defs)).collect())
+        ExprKind::Tuple(exprs) => {
+            Kind::Tuple(exprs.into_iter().map(|p| set_kind(p, name_defs)).collect())
         }
-        // `A - B`, `A & B` — set difference, intersection.
-        // The result is a subset of A, so its kind is A's kind.
-        ExprKind::BinOp { op: BinOp::Sub | BinOp::Intersect, lhs, .. } => {
+        ExprKind::Proj { base, .. } => set_kind(base, name_defs),
+        ExprKind::Index { base, .. } => set_kind(base, name_defs),
+        ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner, name_defs)))
+    }
+}
+
+fn binop_kind(bin_op: &BinOp, lhs: &Box<Expr>, rhs: &Box<Expr>, name_defs: &NameDefs) -> Kind {
+    match &bin_op {
+        // TODO: this is also "add" we need to know the context, doesn't the parser do this?
+        // `A + B` — disjoint union
+        BinOp::Add => {
+            let left_parts = flatten_disjoint_union(lhs);
+            let right_parts = flatten_disjoint_union(lhs);
+            Kind::Tuple(left_parts
+                .into_iter()
+                .chain(right_parts)
+                .map(|p| set_kind(p, name_defs))
+                .collect())
+        }
+        // TODO: this is also "sub" we need to know the context, doesn't the parser do this?
+        // `A - B` — set difference.
+        BinOp::Sub => {
             set_kind(lhs, name_defs)
         }
-        // `A ^ B` — symmetric difference.
-        // The result contains elements from A *and* elements from B, so when the two
-        // sides have different kinds the result is their union kind.
-        ExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs, .. } => {
-            merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs))
+        // TODO: this is also "mul" we need to know the context, doesn't the parser do this?
+        // `A * B * C` — Cartesian product → tuple.
+        BinOp::Mul => {
+            let left_parts = flatten_domain(lhs);
+            let right_parts = flatten_domain(lhs);
+            Kind::Tuple(left_parts
+                .into_iter()
+                .chain(right_parts)
+                .map(|p| set_kind(p, name_defs))
+                .collect())
         }
-        // `A + B` — disjoint union
-        ExprKind::BinOp { op: BinOp::Add, .. } => {
-            let parts = flatten_disjoint_union(set_expr);
-            Kind::TaggedUnion(parts.into_iter().map(|p| set_kind(p, name_defs)).collect())
-        }
+        // TODO: this will be both "div" and set quotient, again need context
+        BinOp::Div => set_kind(lhs, name_defs),
+
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Kind::Bool,
+        BinOp::In | BinOp::NotIn => Kind::Bool,
+
         // `A | B` — union
-        ExprKind::BinOp { op: BinOp::Union, lhs, rhs, .. } => {
+        BinOp::Union => {
             merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs))
         }
-        ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner, name_defs))),
-        _ => unreachable!("{}", format!("Unexpected expression kind {set_expr:?}")),
+        // `A & B` — set intersection.
+        BinOp::Intersect => set_kind(lhs, name_defs),
+        // `A ^ B` — symmetric difference.
+        BinOp::SymDiff => {
+            merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs))
+        }
+        BinOp::Concat => set_kind(lhs, name_defs),
+
+        BinOp::And | BinOp::Or => Kind::Bool,
+    }
+}
+
+fn unop_kind(un_op: &UnOp, expr: &Box<Expr>, name_defs: &NameDefs) -> Kind {
+    match &un_op {
+        UnOp::Not => Kind::Bool,
+        UnOp::Neg => set_kind(expr, name_defs),
     }
 }
 
