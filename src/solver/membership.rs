@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use cvc5::{Kind, Sort, Term, TermManager};
 
 use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp, flatten_domain};
+use crate::kind::Kind as ValKind;
+use crate::semantics::builtins::{self, IntBound};
 use crate::span::Symbol;
 
 use super::sort::{arm_ctor_name_for_arm, flatten_any_union};
@@ -141,11 +143,7 @@ fn membership_constraint_for_dt<'tm>(
 /// into the alias body — they may end up atomic or not depending on that body.
 fn is_atomic_set(set_expr: &Expr) -> bool {
     match &set_expr.kind {
-        ExprKind::Var(sym) => matches!(
-            sym.0.as_str(),
-            "Int" | "Nat" | "NatPos" | "NonZeroInt" | "Bool" | "Fail"
-                | "Int8" | "Int16" | "Int32" | "Int64"
-        ),
+        ExprKind::Var(sym) => builtins::lookup(&sym.0).is_some(),
         ExprKind::SetLit(_) => true,
         ExprKind::BinOp { op: BinOp::Mul, .. } => true,
         _ => false,
@@ -272,21 +270,11 @@ pub(crate) fn membership_constraint<'tm>(
         return lift_sequence_into_atomic(tm, t, set_expr, name_defs, distinct_preds);
     }
     match &set_expr.kind {
-        ExprKind::Var(sym) => match sym.0.as_str() {
-            // Integer sort is the only sort in Int.  A term of distinct sort,
-            // boolean sort, or tuple sort is NOT in Int.
-            "Int"        => {
-                if t.sort().is_integer() {
-                    Membership::Unconstrained
-                } else {
-                    // Bool-sort, distinct-sort, tuple-sort — not in Int.
-                    Membership::Constrained(tm.mk_boolean(false))
-                }
-            }
+        ExprKind::Var(sym) => match builtins::lookup(&sym.0) {
             // Fail is the failure singleton.  In the solver's integer model it is
             // encoded as i64::MIN so that `Nat | Fail` correctly accepts the
             // fail sentinel while rejecting all integers below zero.
-            "Fail"       => {
+            Some(b) if b.kind == ValKind::Fail => {
                 let Some(t) = to_integer_term(tm, t) else {
                     return Membership::Constrained(tm.mk_boolean(false));
                 };
@@ -298,7 +286,7 @@ pub(crate) fn membership_constraint<'tm>(
             // • integer-sort terms (e.g. from a Bool|Nat domain) need t = 0 OR t = 1.
             // Checking the term's sort avoids creating arithmetic constraints on
             // boolean-sort terms, which would cause a fatal CVC5 sort error.
-            "Bool"       => {
+            Some(b) if b.kind == ValKind::Bool => {
                 if t.sort().is_boolean() {
                     Membership::Unconstrained
                 } else {
@@ -314,32 +302,34 @@ pub(crate) fn membership_constraint<'tm>(
                     }
                 }
             }
-            "Nat"        => {
-                let Some(t) = to_integer_term(tm, t) else {
-                    return Membership::Constrained(tm.mk_boolean(false));
-                };
-                let zero = tm.mk_integer(0);
-                Membership::Constrained(tm.mk_term(Kind::Geq, &[t, zero]))
+            // `Int` and its named integer subsets (Nat, NatPos, NonZeroInt,
+            // Int8…Int64) all resolve to an integer-sort membership predicate
+            // parameterised by `IntBound` — which name means which bound is
+            // decided once, centrally, in `semantics::builtins`.
+            Some(b) => {
+                if b.bound == IntBound::Any {
+                    // Integer sort is the only sort in plain `Int`.  A term of
+                    // distinct sort, boolean sort, or tuple sort is NOT in Int.
+                    if t.sort().is_integer() {
+                        Membership::Unconstrained
+                    } else {
+                        Membership::Constrained(tm.mk_boolean(false))
+                    }
+                } else {
+                    let Some(t) = to_integer_term(tm, t) else {
+                        return Membership::Constrained(tm.mk_boolean(false));
+                    };
+                    let zero = tm.mk_integer(0);
+                    match b.bound {
+                        IntBound::NonNeg => Membership::Constrained(tm.mk_term(Kind::Geq, &[t, zero])),
+                        IntBound::Positive => Membership::Constrained(tm.mk_term(Kind::Gt, &[t, zero])),
+                        IntBound::NonZero => Membership::Constrained(tm.mk_term(Kind::Distinct, &[t, zero])),
+                        IntBound::Bounded(min, max) => bounded(tm, t, min, max),
+                        IntBound::Any => unreachable!(),
+                    }
+                }
             }
-            "NatPos"     => {
-                let Some(t) = to_integer_term(tm, t) else {
-                    return Membership::Constrained(tm.mk_boolean(false));
-                };
-                let zero = tm.mk_integer(0);
-                Membership::Constrained(tm.mk_term(Kind::Gt, &[t, zero]))
-            }
-            "NonZeroInt" => {
-                let Some(t) = to_integer_term(tm, t) else {
-                    return Membership::Constrained(tm.mk_boolean(false));
-                };
-                let zero = tm.mk_integer(0);
-                Membership::Constrained(tm.mk_term(Kind::Distinct, &[t, zero]))
-            }
-            "Int8"   => bounded(tm, t, i8::MIN  as i64, i8::MAX  as i64),
-            "Int16"  => bounded(tm, t, i16::MIN as i64, i16::MAX as i64),
-            "Int32"  => bounded(tm, t, i32::MIN as i64, i32::MAX as i64),
-            "Int64"  => bounded(tm, t, i64::MIN,        i64::MAX        ),
-            _ => {
+            None => {
                 // Check user-defined set definitions.
                 if let Some(def) = name_defs.get(sym) {
                     match def.kind {

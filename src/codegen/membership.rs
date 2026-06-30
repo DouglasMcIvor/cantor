@@ -4,6 +4,7 @@ use crate::{
     ast::{BinOp, Expr, ExprKind},
     error::CompileError,
     kind::{Kind, SetElemKind, set_kind},
+    semantics::builtins::{self, IntBound},
 };
 
 use super::Compiler;
@@ -23,24 +24,13 @@ impl<'ctx> Compiler<'ctx> {
         let i64  = self.context.i64_type();
         let bool = self.context.bool_type();
 
-        //TODO: central location for symbols rather than string matching here - see kind.rs for the same issue
         match &set_expr.kind {
-            ExprKind::Var(sym) => match sym.0.as_str() {
-                "Int"       => Ok(bool.const_int(1, false)),
-                "Nat"       => b
-                    .build_int_compare(IntPredicate::SGE, val, i64.const_int(0, true), "in_nat")
-                    .map_err(|e| CompileError::Internal(e.to_string())),
-                "NatPos"    => b
-                    .build_int_compare(IntPredicate::SGT, val, i64.const_int(0, true), "in_natpos")
-                    .map_err(|e| CompileError::Internal(e.to_string())),
-                "NonZeroInt" => b
-                    .build_int_compare(IntPredicate::NE, val, i64.const_int(0, true), "in_nonzero")
-                    .map_err(|e| CompileError::Internal(e.to_string())),
-                "Fail"  => Ok(bool.const_int(0, false)),
+            ExprKind::Var(sym) => match builtins::lookup(&sym.0) {
+                Some(builtin) if builtin.kind == Kind::Fail => Ok(bool.const_int(0, false)),
                 // Bool values are represented as i1 (0/1) at runtime.  A value
                 // is in Bool iff it is 0 or 1 as an i64.  Normalise i1 to i64
                 // first so the integer comparisons below are well-typed.
-                "Bool"  => {
+                Some(builtin) if builtin.kind == Kind::Bool => {
                     let val_i64 = if val.get_type().get_bit_width() == 1 {
                         self.builder
                             .build_int_z_extend(val, i64, "bool_to_i64_mem")
@@ -57,16 +47,25 @@ impl<'ctx> Compiler<'ctx> {
                     b.build_or(eq0, eq1, "in_bool")
                         .map_err(|e| CompileError::Internal(e.to_string()))
                 }
-                "Int8"  => self.compile_bounded_membership(val, i8::MIN  as i64, i8::MAX  as i64),
-                "Int16" => self.compile_bounded_membership(val, i16::MIN as i64, i16::MAX as i64),
-                "Int32" => self.compile_bounded_membership(val, i32::MIN as i64, i32::MAX as i64),
-                "Int64" => self.compile_bounded_membership(val, i64::MIN,        i64::MAX        ),
-                other => {
+                Some(builtin) => match builtin.bound {
+                    IntBound::Any => Ok(bool.const_int(1, false)),
+                    IntBound::NonNeg => b
+                        .build_int_compare(IntPredicate::SGE, val, i64.const_int(0, true), "in_nat")
+                        .map_err(|e| CompileError::Internal(e.to_string())),
+                    IntBound::Positive => b
+                        .build_int_compare(IntPredicate::SGT, val, i64.const_int(0, true), "in_natpos")
+                        .map_err(|e| CompileError::Internal(e.to_string())),
+                    IntBound::NonZero => b
+                        .build_int_compare(IntPredicate::NE, val, i64.const_int(0, true), "in_nonzero")
+                        .map_err(|e| CompileError::Internal(e.to_string())),
+                    IntBound::Bounded(min, max) => self.compile_bounded_membership(val, min, max),
+                },
+                None => {
                     // Check user-defined named sets (e.g. `HTTPError = {400, 503}`).
-                    if let Some(vals) = self.user_set_vals.get(other) {
+                    if let Some(vals) = self.user_set_vals.get(sym.0.as_str()) {
                         self.build_int_set_membership(val, vals)
                     } else {
-                        Err(CompileError::Internal(format!("unknown set `{other}`")))
+                        Err(CompileError::Internal(format!("unknown set `{}`", sym.0)))
                     }
                 }
             },

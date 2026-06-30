@@ -5,5 +5,6 @@ pub mod error;
 pub mod names;
 pub mod parser;
 pub mod runtime;
+pub mod semantics;
 pub mod solver;
 pub mod span;

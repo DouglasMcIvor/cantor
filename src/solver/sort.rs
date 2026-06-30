@@ -13,6 +13,7 @@ use cvc5::{DatatypeConstructorDecl, Kind, Sort, Term, TermManager};
 use crate::{
     ast::{BinOp, Expr, ExprKind, NameDefs, flatten_domain},
     kind::{Kind as ValKind, set_kind as val_set_kind},
+    semantics::builtins,
 };
 
 use super::membership::DistinctPreds;
@@ -219,7 +220,9 @@ pub(crate) fn set_sort<'tm>(
 ) -> Option<Sort<'tm>> {
     Some(match &set_expr.kind {
         // Bool has its own CVC5 boolean sort.
-        ExprKind::Var(sym) if sym.0 == "Bool" => tm.boolean_sort(),
+        ExprKind::Var(sym) if matches!(builtins::lookup(&sym.0), Some(b) if b.kind == ValKind::Bool) => {
+            tm.boolean_sort()
+        }
         // Distinct sets each have their own CVC5 uninterpreted sort.
         ExprKind::Var(sym) => {
             if let Some(info) = distinct_preds.get(sym) {

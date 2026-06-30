@@ -12,6 +12,7 @@
 //! all `Kind::Int`).
 
 use crate::ast::{UnOp, BinOp, DefKind, Expr, ExprKind, NameDefs, flatten_domain, flatten_disjoint_union};
+use crate::semantics::builtins;
 
 /// The element kind of a homogeneous runtime set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,25 +59,18 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
     match &set_expr.kind {
         ExprKind::IntLit { .. } => Kind::Int,
         ExprKind::BoolLit { .. } => Kind::Bool,
-        ExprKind::Var(sym) => match sym.0.as_str() {
-            // TODO we should have a symbol table for built ins rather than string matching here
-            //      The `name_defs` here should include both built in and user defined
-            "Bool" => Kind::Bool,
-            "Int" | "Nat" | "NatPos" | "NonZeroInt"
-            | "Int8" | "Int16" | "Int32" | "Int64" => Kind::Int,
-            "Fail" => Kind::Fail,
-            _ => {
-                // Resolve user-defined names through the symbol table.
-                if let Some(def) = name_defs.get(sym) {
-                    match def.kind {
-                        DefKind::Alias => set_kind(&def.value, name_defs),
-                        // Distinct sets are always integer-backed at the LLVM level.
-                        DefKind::Distinct => Kind::Int,
-                    }
-                } else {
-                    // TODO: Compile error
-                    unreachable!("set_kind: unknown set name `{}`", sym.0)
+        ExprKind::Var(sym) => {
+            if let Some(builtin) = builtins::lookup(&sym.0) {
+                builtin.kind
+            } else if let Some(def) = name_defs.get(sym) {
+                match def.kind {
+                    DefKind::Alias => set_kind(&def.value, name_defs),
+                    // Distinct sets are always integer-backed at the LLVM level.
+                    DefKind::Distinct => Kind::Int,
                 }
+            } else {
+                // TODO: Compile error
+                unreachable!("set_kind: unknown set name `{}`", sym.0)
             }
         }
         ExprKind::BinOp { op, lhs, rhs } => {
