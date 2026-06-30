@@ -12,7 +12,10 @@ use inkwell::{
 };
 
 use crate::{
-    ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDefs, Param, Stmt, UnOp},
+    ast::{
+        BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDefs, Param, Stmt,
+        UnOp, flatten_disjoint_union, param_set_exprs,
+    },
     error::CompileError,
     kind::Kind,
     span::Symbol,
@@ -65,6 +68,11 @@ pub struct Compiler<'ctx> {
     /// Populated in pass 1 alongside `fn_return_kinds`; used at call sites to
     /// box scalar/tuple arguments when the callee expects a `Kind::Vector`.
     fn_param_kinds: HashMap<String, Vec<Kind>>,
+    /// Maps each declared function name to its first-signature per-parameter
+    /// domain set expressions. Used by `coerce_call_arg` the same way
+    /// `fn_ranges` is used by `coerce_tagged_union_return`: to disambiguate
+    /// which arm of a `+`-typed parameter a scalar call argument belongs to.
+    fn_param_set_exprs: HashMap<String, Vec<Expr>>,
     /// All user-defined named set definitions in the file, used to resolve
     /// aliases and distinct sets in `set_kind` calls during codegen.
     pub(crate) name_defs: NameDefs,
@@ -82,6 +90,7 @@ impl<'ctx> Compiler<'ctx> {
             fn_ranges: HashMap::new(),
             user_set_vals: HashMap::new(),
             distinct_names: HashSet::new(),
+            fn_param_set_exprs: HashMap::new(),
             fn_param_kinds: HashMap::new(),
             name_defs: NameDefs::new(),
         }
@@ -220,10 +229,24 @@ impl<'ctx> Compiler<'ctx> {
         arm_kind: &Kind,
         all_arms: &[Kind],
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let tag = self.context.i32_type().const_int(arm_idx as u64, false);
+        self.build_tagged_union_value_with_tag(tag, arm_value, arm_kind, all_arms)
+    }
+
+    /// Same as [`Self::build_tagged_union_value`] but takes a runtime-computed
+    /// tag instead of a compile-time-constant arm index — used when the arm
+    /// can only be determined by a runtime membership check (see
+    /// `select_disjoint_union_arm`).
+    pub(crate) fn build_tagged_union_value_with_tag(
+        &self,
+        tag: inkwell::values::IntValue<'ctx>,
+        arm_value: BasicValueEnum<'ctx>,
+        arm_kind: &Kind,
+        all_arms: &[Kind],
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         let struct_ty = self.kind_to_llvm_type(&Kind::TaggedUnion(all_arms.to_vec()))
             .into_struct_type();
         let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
-        let tag = self.context.i32_type().const_int(arm_idx as u64, false);
         agg = self.builder
             .build_insert_value(agg, tag, 0, "tu_tag")
             .map_err(|e| CompileError::Internal(e.to_string()))?;
@@ -346,6 +369,10 @@ impl<'ctx> Compiler<'ctx> {
 
     /// If the function's declared return kind is `Kind::TaggedUnion(arms)` and
     /// `val_kind` is not already that union, find the matching arm and wrap.
+    /// Conversely, if `val_kind` is a `TaggedUnion` but the declared return is
+    /// a plain scalar, narrow it back down by dropping the tag — needed when
+    /// a `+`-typed (forced-disjoint) value is returned into a non-disjoint
+    /// context, e.g. `{0} + NatPos -> Nat; main(x) = x`.
     /// Returns `(val, kind)` — unchanged if no coercion is needed.
     pub(crate) fn coerce_tagged_union_return(
         &self,
@@ -355,20 +382,175 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let fn_name = function.get_name().to_str().unwrap_or("");
         let expected = self.fn_return_kinds.get(fn_name).cloned().unwrap_or_else(|| val_kind.clone());
-        let arms = match &expected {
+        let set_expr = self.fn_ranges.get(fn_name);
+        self.coerce_to_kind(val, val_kind, &expected, set_expr)
+    }
+
+    /// Coerce a call argument `val : val_kind` to the callee's `expected`
+    /// param Kind — the call-site mirror of `coerce_tagged_union_return`.
+    /// Needed when a scalar value is passed directly into a `+`-typed
+    /// (forced-disjoint) parameter, e.g. `accept_nat(7)` where
+    /// `accept_nat : {0} + NatPos -> Nat`.
+    pub(crate) fn coerce_call_arg(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_kind: Kind,
+        expected: &Kind,
+        callee: &str,
+        arg_idx: usize,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let set_expr = self.fn_param_set_exprs.get(callee).and_then(|exprs| exprs.get(arg_idx));
+        self.coerce_to_kind(val, val_kind, expected, set_expr)
+    }
+
+    /// Shared core for `coerce_tagged_union_return` and `coerce_call_arg`:
+    /// coerce `val : val_kind` to `expected`, widening a scalar/tuple into a
+    /// declared TaggedUnion, or narrowing a TaggedUnion back to a declared
+    /// scalar. `set_expr` (the range/domain expression `expected` was derived
+    /// from) is only consulted when multiple TaggedUnion arms share
+    /// `val_kind` and must be runtime-disambiguated via a membership check —
+    /// only possible for `+`, which keeps same-kind arms distinct on purpose.
+    fn coerce_to_kind(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_kind: Kind,
+        expected: &Kind,
+        set_expr: Option<&Expr>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let arms = match expected {
             Kind::TaggedUnion(a) => a.clone(),
-            _ => return Ok((val, val_kind)),
+            _ => {
+                return match &val_kind {
+                    Kind::TaggedUnion(val_arms) => self.narrow_tagged_union(val, val_arms, expected),
+                    _ => Ok((val, val_kind)),
+                };
+            }
         };
         if matches!(&val_kind, Kind::TaggedUnion(a) if a == &arms) {
             return Ok((val, val_kind)); // already the right TaggedUnion
         }
-        let arm_idx = arms.iter().position(|k| *k == val_kind)
-            .ok_or_else(|| CompileError::Internal(format!(
-                "coerce_tagged_union_return: body kind {val_kind:?} does not match \
-                 any arm of declared return {arms:?}"
-            )))?;
-        let wrapped = self.build_tagged_union_value(arm_idx, val, &val_kind, &arms)?;
-        Ok((wrapped, expected))
+        let candidates: Vec<usize> = arms.iter().enumerate()
+            .filter(|(_, k)| **k == val_kind)
+            .map(|(i, _)| i)
+            .collect();
+        match candidates.as_slice() {
+            [] => Err(CompileError::Internal(format!(
+                "coerce_to_kind: value kind {val_kind:?} does not match any arm of {arms:?}"
+            ))),
+            [arm_idx] => {
+                let wrapped = self.build_tagged_union_value(*arm_idx, val, &val_kind, &arms)?;
+                Ok((wrapped, expected.clone()))
+            }
+            _ => {
+                let set_expr = set_expr.ok_or_else(|| CompileError::Internal(format!(
+                    "coerce_to_kind: value kind {val_kind:?} matches multiple arms of {arms:?} \
+                     but no set expression was recorded to disambiguate them"
+                )))?;
+                let wrapped = self.select_disjoint_union_arm(val, &val_kind, &arms, &candidates, set_expr)?;
+                Ok((wrapped, expected.clone()))
+            }
+        }
+    }
+
+    /// Coerce `val : kind` down to a raw scalar `IntValue`, narrowing a
+    /// `TaggedUnion` (e.g. a `+`-typed value) by dropping its tag first.
+    ///
+    /// Used wherever an expression is consumed as a plain integer — arithmetic,
+    /// comparisons, etc. — so a `+`-typed variable like `x : {0} + NatPos` can
+    /// be used directly in `x + 1`. Only single-leaf-scalar arms are supported
+    /// today (see `narrow_tagged_union`); anything else fails loudly rather
+    /// than panicking on a mismatched `into_int_value()`.
+    pub(crate) fn scalarize_to_int(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        kind: &Kind,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CompileError> {
+        match kind {
+            Kind::TaggedUnion(arms) => {
+                let (narrowed, _) = self.narrow_tagged_union(val, arms, &Kind::Int)?;
+                Ok(narrowed.into_int_value())
+            }
+            _ => Ok(val.into_int_value()),
+        }
+    }
+
+    /// Narrow a `TaggedUnion(arms)` value down to a plain scalar `expected`
+    /// Kind by dropping the tag and reading the single i64 payload field.
+    /// Valid only when every arm is a single-leaf scalar (Int/Bool) — e.g.
+    /// unwrapping a `+`-typed value (forced-disjoint, same payload shape per
+    /// arm) back into a non-disjoint context.
+    fn narrow_tagged_union(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_arms: &[Kind],
+        expected: &Kind,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let supported = matches!(expected, Kind::Int | Kind::Bool)
+            && val_arms.iter().all(|k| matches!(k, Kind::Int | Kind::Bool));
+        if !supported {
+            return Err(CompileError::Internal(format!(
+                "narrow_tagged_union: not yet implemented for arms {val_arms:?} -> {expected:?}"
+            )));
+        }
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let payload = self.builder
+            .build_extract_value(val.into_struct_value(), 1, "tu_narrow_payload")
+            .map_err(err)?
+            .into_int_value();
+        let result: BasicValueEnum = if matches!(expected, Kind::Bool) {
+            self.builder
+                .build_int_truncate(payload, self.context.bool_type(), "tu_narrow_bool")
+                .map_err(err)?
+                .into()
+        } else {
+            payload.into()
+        };
+        Ok((result, expected.clone()))
+    }
+
+    /// Resolve which arm of a `+`-typed (forced-disjoint) return a scalar
+    /// value belongs to when multiple arms share the same elaborated Kind
+    /// (e.g. `{0}` and `NatPos` are both `Kind::Int`). Builds a runtime
+    /// membership check against each candidate arm's named set, in
+    /// declaration order, defaulting to the last candidate — the function's
+    /// domain is solver-checked, so by construction the value belongs to
+    /// exactly one of them.
+    fn select_disjoint_union_arm(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_kind: &Kind,
+        arms: &[Kind],
+        candidates: &[usize],
+        set_expr: &Expr,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let arm_exprs = flatten_disjoint_union(set_expr);
+        if arm_exprs.len() != arms.len() {
+            return Err(CompileError::Internal(format!(
+                "select_disjoint_union_arm: not yet implemented for a Kind whose TaggedUnion \
+                 arms ({}) don't align with a top-level `+` chain in the recorded set \
+                 expression ({} parts) — only plain `A + B + …` domains/ranges are supported today",
+                arms.len(), arm_exprs.len()
+            )));
+        }
+
+        let i32t = self.context.i32_type();
+        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let val_int = val.into_int_value();
+
+        let (&last, rest) = candidates.split_last().ok_or_else(|| CompileError::Internal(
+            "select_disjoint_union_arm: called with no candidate arms".into()
+        ))?;
+        let mut tag = i32t.const_int(last as u64, false);
+        for &candidate in rest.iter().rev() {
+            let in_arm = self.compile_membership(val_int, arm_exprs[candidate])?;
+            let candidate_tag = i32t.const_int(candidate as u64, false);
+            tag = self.builder
+                .build_select(in_arm, candidate_tag, tag, "tu_arm_sel")
+                .map_err(err)?
+                .into_int_value();
+        }
+
+        self.build_tagged_union_value_with_tag(tag, val, val_kind, arms)
     }
 
     /// Build a `{i1=0, i64=payload}` success-tagged struct.
@@ -875,6 +1057,15 @@ pub(super) fn compile_items<'ctx>(
                 // error values `?` should propagate for this callee.
                 if let Some(sig) = first_sig {
                     compiler.fn_ranges.insert(def.name.0.clone(), sig.range.clone());
+                    // Record per-parameter domain set expressions so `coerce_call_arg`
+                    // can disambiguate which arm of a `+`-typed parameter a scalar
+                    // call argument belongs to.
+                    if let Ok(parts) = param_set_exprs(sig.domain.as_ref(), def.params.len()) {
+                        compiler.fn_param_set_exprs.insert(
+                            def.name.0.clone(),
+                            parts.into_iter().cloned().collect(),
+                        );
+                    }
                 }
                 Some((fn_val, def))
             }

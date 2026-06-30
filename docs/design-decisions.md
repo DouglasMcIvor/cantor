@@ -390,6 +390,15 @@ implementation detail the developer should not rely on.
 | Superset / proper superset | ⊇ / ⊃ | `>=` / `>` |
 | Cardinality | \|S\| (math convention) | `size(S)` as the actual syntax — avoids visual clash with `\|` as union, avoids `len` because it would wrongly imply an ordering |
 
+`+` always carries a runtime tag, even when both operands share the same
+underlying Kind — e.g. `{0} + NatPos` is `{ tag, payload }`, not a bare `Int`,
+because `+` *forces* disjointness rather than merely permitting overlap.
+This mirrors `distinct` (§`alias` and `distinct` below): both create values
+that are kept apart in the platonic space of Cantor atoms regardless of
+whether their runtime representation happens to coincide. Plain `\|` union
+collapses same-Kind operands with no tag, since there nothing demands they
+stay distinguishable.
+
 ### Product set values (tuples) (DECIDED)
 
 Anonymous product values are fully supported. The `*` operator in a signature

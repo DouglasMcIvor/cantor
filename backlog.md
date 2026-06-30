@@ -19,10 +19,12 @@ You probably don't want to read this unless you're me.
   - math syntax `{x*2 | x ∈ Nat, x > 0}` as sugar for the python form (deferred)
   - multi-binder `{x+y for x in A for y in B}` desugaring to Cartesian product (deferred)
 - list comprehensions
-- 'take n from' operator on infinite/generative collections? is this actually useful?
-- ah! useful if we allow generators at runtime! we can relax restriction on infinite 
-  sets being compile time only, under the restriction that they have a generator.
-  generator for totally ordered built in sets (Nat, Bool, not Int?) come for free
+- generators at runtime. we can relax restriction on infinite 
+  sets being compile-time only, under the restriction that they have a generator.
+  generator for totally ordered, well founded built in sets (Nat, Bool, not Int?) come for free
+- ordered sets `<1, 2, 3>`, sequences are _semantically_ `['a', 'b'] == <(0, 'a'), (1, 'b')>`
+- `OrderedSet(X)`, `FiniteOrderedSet(X)` and `InfiniteOrderedSet(X) == UniqueGenerator(X)`
+- `X*`/`X^ == Generator(X)` for finite and infinite sequences 
 - immutable set constants like `s = {1, 2, 3}`, need to be baked in as statics
 - value literals desugaring in compile time set positions and support for sequences of literal values.
   E.g.

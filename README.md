@@ -580,6 +580,7 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 - **`alias` and `distinct` set modifiers** — `Colour = {1, 2, 3}` and `Animal = alias Cat | Dog` declare transparent aliases (the solver expands membership inline); `Litre = distinct Nat` declares a new solver-opaque set disjoint from `Nat` with full SMT-backed value proofs (see below)
 - **`distinct` value proofs** — `Litre = distinct Nat` automatically provides the constructor `litre : Nat -> Litre` and the built-in destructor `from(x)` which returns the basis-type value. The solver uses an uninterpreted predicate `is_Litre : Int -> Bool` (via `QF_UFNIA`) to reason about membership: `litre(n)` asserts `n ∈ Nat → is_Litre(result)`; `from(x)` asserts `is_Litre(x) → result ∈ Nat`; identity functions (`volume : Litre -> Litre`) are proved directly. Plain integer literals not wrapped in a constructor are correctly rejected with a counterexample. Both `litre` and `from` are identity operations at runtime. `from` and `size` are reserved keywords.
 - **JIT execution** — `cantor run <file>` checks proofs then JIT-compiles and runs `main` via LLVM
+- **LLVM IR dump** — `cantor llvm-ir <file>` skips the SMT solver and prints the compiled LLVM IR to stdout, for debugging codegen without JIT-running anything
 
 ## On the roadmap
 

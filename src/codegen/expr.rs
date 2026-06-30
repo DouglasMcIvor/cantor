@@ -322,10 +322,10 @@ impl<'ctx> Compiler<'ctx> {
             _ => {}
         }
 
-        let (lv, _) = self.compile_expr(lhs, env)?;
-        let (rv, _) = self.compile_expr(rhs, env)?;
-        let li = lv.into_int_value();
-        let ri = rv.into_int_value();
+        let (lv, lk) = self.compile_expr(lhs, env)?;
+        let (rv, rk) = self.compile_expr(rhs, env)?;
+        let li = self.scalarize_to_int(lv, &lk)?;
+        let ri = self.scalarize_to_int(rv, &rk)?;
         let b = &self.builder;
 
         macro_rules! int_op {
@@ -548,6 +548,22 @@ impl<'ctx> Compiler<'ctx> {
                 }
             } else {
                 (v, arg_kind)
+            };
+
+            // When the callee expects (or doesn't expect) a TaggedUnion param —
+            // e.g. a `+`-typed domain like `{0} + NatPos` — but the argument's
+            // Kind disagrees, widen/narrow it. Mirrors `coerce_tagged_union_return`
+            // at the call boundary instead of the return boundary; see
+            // `coerce_call_arg` for why this needs the callee's recorded domain
+            // set expression to disambiguate same-Kind `+` arms.
+            let (v, arg_kind) = match expected_kind {
+                Some(expected @ Kind::TaggedUnion(_)) if !matches!(arg_kind, Kind::TaggedUnion(_)) => {
+                    self.coerce_call_arg(v, arg_kind, expected, &callee.0, arg_idx)?
+                }
+                Some(expected) if matches!(arg_kind, Kind::TaggedUnion(_)) && !matches!(expected, Kind::TaggedUnion(_)) => {
+                    self.coerce_call_arg(v, arg_kind, expected, &callee.0, arg_idx)?
+                }
+                _ => (v, arg_kind),
             };
 
             // All function parameters are i64 (uniform ABI); widen Bool args.

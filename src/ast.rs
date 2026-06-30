@@ -399,7 +399,7 @@ pub struct NameDef {
 /// hitting the unreachable arm.
 pub type NameDefs = HashMap<Symbol, NameDef>;
 
-// TODO: AST to hold Vec<Item>
+// TODO: AST to hold Vec<Item>?
 
 // ── Top-level items ───────────────────────────────────────────────────────────
 

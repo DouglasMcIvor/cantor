@@ -38,6 +38,51 @@ pub fn jit_eval_fn(params: &[Param], body: Expr, args: &[i64]) -> i64 {
     }
 }
 
+/// Wire layout for a single-leaf `{ i32 tag, i64 payload }` TaggedUnion —
+/// matches `Compiler::kind_to_llvm_type`'s `Kind::TaggedUnion` struct exactly
+/// when every arm is a scalar (Int/Bool), so `tagged_union_leaf_count == 1`.
+/// `#[repr(C)]` gives this the same SysV ABI layout and calling convention
+/// LLVM uses for the `{i32, i64}` struct type, so it can marshal a real
+/// TaggedUnion param/return across the JIT call boundary — unlike
+/// `jit_src_one_arg`, which assumes every function is `fn(i64) -> i64` and
+/// silently produces garbage when the real signature takes/returns a struct.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaggedScalar {
+    pub tag: i32,
+    pub payload: i64,
+}
+
+/// Call `main` where the parameter is a single-leaf `TaggedUnion` (e.g. a
+/// `+`-typed domain like `{0} + NatPos`) and the return is a plain scalar.
+pub fn jit_src_tagged_domain(src: &str, tag: i32, payload: i64) -> i64 {
+    use cantor::parser::parse_file;
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let ctx = Context::create();
+    let engine = compile_file(&ctx, &items).unwrap_or_else(|e| panic!("compile error: {e}"));
+    unsafe {
+        let f = engine
+            .get_function::<unsafe extern "C" fn(TaggedScalar) -> i64>("main")
+            .unwrap();
+        f.call(TaggedScalar { tag, payload })
+    }
+}
+
+/// Call `main` where the parameter is a plain scalar and the return is a
+/// single-leaf `TaggedUnion` (e.g. a `+`/cross-kind `|`-typed range).
+pub fn jit_src_tagged_range(src: &str, arg: i64) -> TaggedScalar {
+    use cantor::parser::parse_file;
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let ctx = Context::create();
+    let engine = compile_file(&ctx, &items).unwrap_or_else(|e| panic!("compile error: {e}"));
+    unsafe {
+        let f = engine
+            .get_function::<unsafe extern "C" fn(i64) -> TaggedScalar>("main")
+            .unwrap();
+        f.call(arg)
+    }
+}
+
 pub fn jit_src_one_arg(src: &str, arg: i64) -> i64 {
     use cantor::parser::parse_file;
     let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));

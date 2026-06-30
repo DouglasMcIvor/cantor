@@ -24,6 +24,7 @@ pub enum SetElemKind {
 //       OR we should split it into Atom, Algebra?
 //       We need to make a SemanticTree that an "elaboration" pass produces from the AST
 //       that is what annotates the Kind and distinguishes "+" from context
+//       Then the solver will produce a ConstrainedTree
 /// All the possible fundamental Cantor values
 ///
 /// `Copy` was intentionally dropped when `Tuple(Vec<Kind>)` was added; use
@@ -102,12 +103,16 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
         ExprKind::If { then_expr,else_expr, .. } => {
             merge_into_union(set_kind(then_expr, name_defs), set_kind(else_expr, name_defs))
         }
+        // `{0, 1, 2}` as a set-builder expression — describes a domain restriction
+        // to these elements, so its Kind is the *element* Kind (Int/Bool), not
+        // `Kind::Set` (which is reserved for genuine runtime Set values, e.g. the
+        // result of the `Set(Int)` constructor). `set_kind` is only ever called on
+        // set-describing expressions (domain/range positions), never on arbitrary
+        // value expressions, so this context assumption always holds.
         ExprKind::SetLit(exprs) => {
             let kinds = exprs.iter().map(|e| set_kind(e, name_defs)).collect();
-            let elem_kind = union_if_distinct(kinds);
-            match elem_kind {
-                Kind::Int => Kind::Set(SetElemKind::Int),
-                Kind::Bool => Kind::Set(SetElemKind::Bool),
+            match union_if_distinct(kinds) {
+                elem_kind @ (Kind::Int | Kind::Bool) => elem_kind,
                 _ => unimplemented!("Sets may currently only contain values representable as Int or Bool")
             }
         }
@@ -129,11 +134,14 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
 fn binop_kind(bin_op: &BinOp, lhs: &Box<Expr>, rhs: &Box<Expr>, name_defs: &NameDefs) -> Kind {
     match &bin_op {
         // TODO: this is also "add" we need to know the context, doesn't the parser do this?
-        // `A + B` — disjoint union
+        // `A + B` — disjoint union. Unlike `|`, `+` *forces* disjointness (akin to
+        // `distinct`): arms are never deduplicated by Kind, even when they share
+        // the same underlying Kind (e.g. `{0} + NatPos` is still tagged), so the
+        // result is always a TaggedUnion, never a bare Kind.
         BinOp::Add => {
             let left_parts = flatten_disjoint_union(lhs);
-            let right_parts = flatten_disjoint_union(lhs);
-            Kind::Tuple(left_parts
+            let right_parts = flatten_disjoint_union(rhs);
+            Kind::TaggedUnion(left_parts
                 .into_iter()
                 .chain(right_parts)
                 .map(|p| set_kind(p, name_defs))
@@ -148,7 +156,7 @@ fn binop_kind(bin_op: &BinOp, lhs: &Box<Expr>, rhs: &Box<Expr>, name_defs: &Name
         // `A * B * C` — Cartesian product → tuple.
         BinOp::Mul => {
             let left_parts = flatten_domain(lhs);
-            let right_parts = flatten_domain(lhs);
+            let right_parts = flatten_domain(rhs);
             Kind::Tuple(left_parts
                 .into_iter()
                 .chain(right_parts)

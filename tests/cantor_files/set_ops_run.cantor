@@ -1,0 +1,12 @@
+-- Disjoint union (+) and symmetric difference (^) round-tripped through the
+-- JIT at runtime: accept_nat's TaggedUnion-typed parameter is narrowed back
+-- to a plain Nat, and strip_zero's domain is a `^`-collapsed (untagged) Int.
+
+accept_nat : {0} + NatPos -> Nat
+accept_nat(x) = x
+
+strip_zero : Nat ^ {0} -> NatPos
+strip_zero(x) = x
+
+main : -> Int
+main() = accept_nat(7) + strip_zero(3)

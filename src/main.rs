@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use cantor::{
     ast::{Item, NameDefs},
-    codegen::{compile_file, wire::range_kind},
+    codegen::{compile_file, compile_to_ir, wire::range_kind},
     kind::Kind,
     names::check_names,
     parser::parse_file,
@@ -54,17 +54,21 @@ fn main() {
     }
     let timeout_ms = timeout_secs * 1000;
 
-    let (do_run, path) = match positional.len() {
+    let (do_run, do_llvm_ir, path) = match positional.len() {
         0 => {
             repl::run();
             return;
         }
-        1 if positional[0] != "run" => (false, positional[0]),
-        2 if positional[0] == "run" => (true, positional[1]),
+        1 if positional[0] != "run" && positional[0] != "llvm-ir" => {
+            (false, false, positional[0])
+        }
+        2 if positional[0] == "run" => (true, false, positional[1]),
+        2 if positional[0] == "llvm-ir" => (false, true, positional[1]),
         _ => {
             eprintln!("usage: cantor [--timeout <secs>]");
             eprintln!("       cantor [--timeout <secs>] <file.cantor>");
             eprintln!("       cantor [--timeout <secs>] run <file.cantor>");
+            eprintln!("       cantor llvm-ir <file.cantor>");
             process::exit(2);
         }
     };
@@ -102,6 +106,22 @@ fn main() {
             }
         }
         process::exit(1);
+    }
+
+    // `llvm-ir` is a pure codegen debugging tool: skip the SMT solver
+    // entirely and go straight to LLVM IR, printed to stdout.
+    if do_llvm_ir {
+        let ctx = Context::create();
+        match compile_to_ir(&ctx, &items) {
+            Ok(ir) => {
+                println!("{ir}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("{path}: compile error: {e}");
+                process::exit(1);
+            }
+        }
     }
 
     let all_results = match check_file(&items, timeout_ms) {

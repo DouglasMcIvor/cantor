@@ -72,6 +72,11 @@ fn run_subcommand(name: &str) -> Output {
     run(&["run", path.to_str().unwrap()])
 }
 
+fn run_llvm_ir(name: &str) -> Output {
+    let path = fixture(name);
+    run(&["llvm-ir", path.to_str().unwrap()])
+}
+
 // ── No-arg / REPL ────────────────────────────────────────────────────────────
 
 #[test]
@@ -344,6 +349,54 @@ fn run_no_main_function_exits_nonzero() {
 fn run_usage_shown_for_missing_arg() {
     // `cantor run` with no file should show usage.
     let out = run(&["run"]);
+    assert_eq!(out.code, 2);
+    assert!(out.stderr.contains("usage"), "expected usage hint:\n{}", out.stderr);
+}
+
+// ── cantor llvm-ir ───────────────────────────────────────────────────────────
+
+#[test]
+fn llvm_ir_exits_zero_and_prints_module() {
+    let out = run_llvm_ir("good.cantor");
+    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(out.stdout.contains("define"), "expected LLVM IR function definitions:\n{}", out.stdout);
+}
+
+#[test]
+fn llvm_ir_skips_the_solver() {
+    // No proof-checking output (`proved`/`counterexample`/`unknown` lines) —
+    // llvm-ir is a pure codegen debugging tool, it never invokes the SMT solver.
+    let out = run_llvm_ir("good.cantor");
+    assert!(
+        !out.stdout.contains("proved") && !out.stdout.contains("counterexample"),
+        "expected no solver output:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn llvm_ir_runs_even_with_a_counterexample() {
+    // bad.cantor has a function the solver disproves; llvm-ir doesn't care —
+    // it never runs the solver, so it should still emit valid IR.
+    let out = run_llvm_ir("bad.cantor");
+    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(out.stdout.contains("define"), "expected LLVM IR function definitions:\n{}", out.stdout);
+}
+
+#[test]
+fn llvm_ir_shows_tagged_union_wire_type_for_disjoint_union() {
+    // Regression test for the kind.rs Add fix: `{0} + NatPos` must compile to
+    // a `{ i32, i64 }` TaggedUnion struct, never a bare i64 or a 2-element Tuple.
+    let out = run_llvm_ir("set_ops_run.cantor");
+    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("@accept_nat({ i32, i64 }"),
+        "expected accept_nat's TaggedUnion param wire type:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn llvm_ir_usage_shown_for_missing_arg() {
+    let out = run(&["llvm-ir"]);
     assert_eq!(out.code, 2);
     assert!(out.stderr.contains("usage"), "expected usage hint:\n{}", out.stderr);
 }
@@ -769,6 +822,21 @@ fn set_ops_bad_counterexample_mentions_not_disjoint() {
     assert!(
         out.stdout.contains("not disjoint"),
         "expected 'not disjoint' in counterexample message:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn set_ops_run_produces_correct_output() {
+    // set_ops_run.cantor: accept_nat(7) + strip_zero(3) = 7 + 3 = 10.
+    // Regression test for the TaggedUnion narrow/widen codegen paths that
+    // back `+` (forced-disjoint union) at runtime — both at function return
+    // and at the call-argument boundary (accept_nat(7) widens the literal
+    // into a {0} + NatPos tagged value; `main(x) = x` narrows it back).
+    let out = run_subcommand("set_ops_run.cantor");
+    assert_eq!(out.code, 0, "set_ops_run.cantor run should exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("main() = 10"),
+        "expected 'main() = 10' in output:\n{}", out.stdout
     );
 }
 
