@@ -5,7 +5,9 @@
 //! recorded, consulted by `kind.rs`, the solver, and codegen so each backend
 //! doesn't independently re-encode "Nat means x >= 0".
 //!
-//! Future home for the elaboration pass (AST → SemanticTree) described in
-//! `kind.rs`'s top-of-file TODO.
+//! `elaborate`/`tree` implement the elaboration pass (AST → SemanticTree)
+//! described in `kind.rs`'s top-of-file TODO.
 
 pub mod builtins;
+pub mod elaborate;
+pub mod tree;
