@@ -183,3 +183,124 @@ pub fn flatten_disjoint_union(expr: &SemExpr) -> Vec<&SemExpr> {
         _ => vec![expr],
     }
 }
+
+/// Map each function parameter to its (already-elaborated) domain set
+/// expression. Mirrors `ast::param_set_exprs`'s arity disambiguation exactly,
+/// operating on `CartesianProduct` (the disambiguated variant) instead of
+/// `BinOp::Mul`.
+pub fn sem_param_set_exprs(domain: Option<&SemExpr>, n_params: usize) -> Result<Vec<&SemExpr>, String> {
+    match domain {
+        None if n_params == 0 => Ok(vec![]),
+        None => Err(format!("domain has 0 parts but function has {n_params} parameters")),
+        Some(domain_expr) => {
+            let parts = flatten_cartesian_product(domain_expr);
+            if parts.len() == n_params {
+                Ok(parts)
+            } else if n_params == 1 {
+                Ok(vec![domain_expr])
+            } else {
+                Err(format!(
+                    "domain arity {} doesn't match parameter count {}",
+                    parts.len(), n_params
+                ))
+            }
+        }
+    }
+}
+
+/// True if the range expression can produce a failure value at runtime.
+/// Mirrors `codegen::range_contains_fail`, operating on the disambiguated
+/// `CartesianProduct` variant (the elaborated form of `Fail * Y`, desugared
+/// from `!! Y`) instead of `BinOp::Mul`.
+pub fn range_contains_fail(range: &SemExpr) -> bool {
+    match &range.kind {
+        SemExprKind::Var(sym) => sym.0 == "Fail",
+        SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+            range_contains_fail(lhs) || range_contains_fail(rhs)
+        }
+        SemExprKind::CartesianProduct(lhs, _) => {
+            matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
+        }
+        _ => false,
+    }
+}
+
+/// Collect all names assigned (by `mut` or reassignment) anywhere inside
+/// `stmts`, recursively through nested blocks and loops. Mirrors
+/// `ast::collect_loop_modified`, operating on `SemStmt`.
+pub fn collect_loop_modified(stmts: &[SemStmt]) -> std::collections::HashSet<Symbol> {
+    let mut names = std::collections::HashSet::new();
+    collect_loop_modified_rec(stmts, &mut names);
+    names
+}
+
+fn collect_loop_modified_rec(stmts: &[SemStmt], names: &mut std::collections::HashSet<Symbol>) {
+    for stmt in stmts {
+        match stmt {
+            SemStmt::MutLet { name, .. } | SemStmt::Assign { name, .. } => { names.insert(name.clone()); }
+            SemStmt::DestructMutLet { bindings, .. } => {
+                for b in bindings { names.insert(b.name.clone()); }
+            }
+            SemStmt::DestructAssign { names: dest_names, .. } => {
+                for n in dest_names { names.insert(n.clone()); }
+            }
+            SemStmt::While { body, .. } | SemStmt::ForIn { body, .. } => collect_loop_modified_rec(body, names),
+            SemStmt::Block(inner) => collect_loop_modified_rec(inner, names),
+            _ => {}
+        }
+    }
+}
+
+// ── Span-free constructors for tests and hand-built SemanticTrees ──────────
+//
+// Mirrors `ast::Expr`'s own span-free constructors. Unlike the AST versions,
+// these require an explicit Kind for anything beyond simple arithmetic —
+// there's no elaboration pass to infer it from context when a tree is built
+// by hand.
+
+impl SemExpr {
+    pub fn new(kind: SemExprKind, kind_of: Kind, span: Span) -> Self {
+        Self { kind, kind_of, span }
+    }
+
+    pub fn int(n: i64) -> Self {
+        Self::new(SemExprKind::IntLit(n), Kind::Int, Span::dummy())
+    }
+
+    pub fn bool(b: bool) -> Self {
+        Self::new(SemExprKind::BoolLit(b), Kind::Bool, Span::dummy())
+    }
+
+    pub fn var(name: &str, kind_of: Kind) -> Self {
+        Self::new(SemExprKind::Var(Symbol::new(name)), kind_of, Span::dummy())
+    }
+
+    /// Value-position binary operator — `Add`/`Sub`/`Mul`/`Div` become their
+    /// arithmetic variant (never the set-position `DisjointUnion`/etc.);
+    /// comparisons and `and`/`or` produce `Bool`. Other operators need an
+    /// explicit Kind context this constructor can't infer — use `new` directly.
+    pub fn binop(op: BinOp, lhs: SemExpr, rhs: SemExpr) -> Self {
+        let span = Span::dummy();
+        match op {
+            BinOp::Add => Self::new(SemExprKind::Add(Box::new(lhs), Box::new(rhs)), Kind::Int, span),
+            BinOp::Sub => Self::new(SemExprKind::Sub(Box::new(lhs), Box::new(rhs)), Kind::Int, span),
+            BinOp::Mul => Self::new(SemExprKind::Mul(Box::new(lhs), Box::new(rhs)), Kind::Int, span),
+            BinOp::Div => Self::new(SemExprKind::Div(Box::new(lhs), Box::new(rhs)), Kind::Int, span),
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or =>
+                Self::new(SemExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, Kind::Bool, span),
+            _ => panic!(
+                "SemExpr::binop: `{op}` needs an explicit kind_of (set-position/`in`/`++` \
+                 operator) — use SemExpr::new directly"
+            ),
+        }
+    }
+
+    pub fn unop(op: UnOp, expr: SemExpr) -> Self {
+        let kind_of = match op { UnOp::Neg => Kind::Int, UnOp::Not => Kind::Bool };
+        Self::new(SemExprKind::UnOp { op, expr: Box::new(expr) }, kind_of, Span::dummy())
+    }
+
+    pub fn call(callee: &str, args: Vec<SemExpr>, return_kind: Kind) -> Self {
+        Self::new(SemExprKind::Call { callee: Symbol::new(callee), args }, return_kind, Span::dummy())
+    }
+}

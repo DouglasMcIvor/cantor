@@ -98,17 +98,19 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
             merge_into_union(set_kind(then_expr, name_defs), set_kind(else_expr, name_defs))
         }
         // `{0, 1, 2}` as a set-builder expression — describes a domain restriction
-        // to these elements, so its Kind is the *element* Kind (Int/Bool), not
-        // `Kind::Set` (which is reserved for genuine runtime Set values, e.g. the
-        // result of the `Set(Int)` constructor). `set_kind` is only ever called on
+        // to these elements, so its Kind is the *element* Kind, not `Kind::Set`
+        // (which is reserved for genuine runtime Set values, e.g. the result of
+        // the `Set(Int)` constructor). `set_kind` is only ever called on
         // set-describing expressions (domain/range positions), never on arbitrary
-        // value expressions, so this context assumption always holds.
+        // value expressions, so this context assumption always holds. Element
+        // Kind isn't restricted to Int/Bool here — e.g. `Nat* - {[]}` needs
+        // `{[]}`'s element Kind to be `Vector(Int)` to describe the excluded
+        // empty-sequence value. Constructing a genuine *runtime* Set value
+        // (Position::Value) is a separate, still-scalar-only restriction
+        // enforced by `codegen::compile_set_lit_value`.
         ExprKind::SetLit(exprs) => {
             let kinds = exprs.iter().map(|e| set_kind(e, name_defs)).collect();
-            match union_if_distinct(kinds) {
-                elem_kind @ (Kind::Int | Kind::Bool) => elem_kind,
-                _ => unimplemented!("Sets may currently only contain values representable as Int or Bool")
-            }
+            union_if_distinct(kinds)
         }
         ExprKind::Try(expr) => set_kind(expr, name_defs),
         ExprKind::FailLit => Kind::Fail,

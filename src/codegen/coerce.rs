@@ -11,7 +11,7 @@ use inkwell::{
     values::{AggregateValueEnum, BasicValueEnum},
 };
 
-use crate::{ast::{Expr, flatten_disjoint_union}, error::CompileError, kind::Kind};
+use crate::{error::CompileError, kind::Kind, semantics::tree::{SemExpr, flatten_disjoint_union}};
 
 use super::{Compiler, wire::tagged_union_leaf_count};
 
@@ -212,7 +212,7 @@ impl<'ctx> Compiler<'ctx> {
         val: BasicValueEnum<'ctx>,
         val_kind: Kind,
         expected: &Kind,
-        set_expr: Option<&Expr>,
+        set_expr: Option<&SemExpr>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let arms = match expected {
             Kind::TaggedUnion(a) => a.clone(),
@@ -318,7 +318,7 @@ impl<'ctx> Compiler<'ctx> {
         val_kind: &Kind,
         arms: &[Kind],
         candidates: &[usize],
-        set_expr: &Expr,
+        set_expr: &SemExpr,
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         let arm_exprs = flatten_disjoint_union(set_expr);
         if arm_exprs.len() != arms.len() {

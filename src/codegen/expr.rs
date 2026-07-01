@@ -4,9 +4,10 @@ use inkwell::{
 };
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, UnOp},
+    ast::{BinOp, UnOp},
     error::CompileError,
     kind::{Kind, SetElemKind},
+    semantics::tree::{SemExpr, SemExprKind},
     span::{Span, Symbol},
 };
 
@@ -16,60 +17,96 @@ use super::{Compiler, Env};
 impl<'ctx> Compiler<'ctx> {
     pub(crate) fn compile_expr(
         &self,
-        expr: &Expr,
+        expr: &SemExpr,
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         match &expr.kind {
-            ExprKind::IntLit(n) => {
+            SemExprKind::IntLit(n) => {
                 let v = self.context.i64_type().const_int(*n as u64, true);
                 Ok((v.into(), Kind::Int))
             }
-            ExprKind::BoolLit(b) => {
+            SemExprKind::BoolLit(b) => {
                 let v = self.context.bool_type().const_int(*b as u64, false);
                 Ok((v.into(), Kind::Bool))
             }
-            ExprKind::Var(sym) => env
+            SemExprKind::Var(sym) => env
                 .get(sym)
                 .map(|(v, t)| (*v, t.clone()))
                 .ok_or_else(|| CompileError::UndefinedVariable {
                     name: sym.0.clone(),
                     span: expr.span,
                 }),
-            ExprKind::UnOp { op, expr: inner } => self.compile_unop(*op, inner, env, expr.span),
-            ExprKind::BinOp { op, lhs, rhs } => self.compile_binop(*op, lhs, rhs, env, expr.span),
-            ExprKind::Call { callee, args } => self.compile_call(callee, args, env, expr.span),
-            ExprKind::If { cond, then_expr, else_expr } => {
+            SemExprKind::Add(lhs, rhs) => self.compile_arith(BinOp::Add, lhs, rhs, env),
+            SemExprKind::Sub(lhs, rhs) => self.compile_arith(BinOp::Sub, lhs, rhs, env),
+            SemExprKind::Mul(lhs, rhs) => self.compile_arith(BinOp::Mul, lhs, rhs, env),
+            SemExprKind::Div(lhs, rhs) => self.compile_arith(BinOp::Div, lhs, rhs, env),
+            // Set-position-only variants: elaboration never threads these into
+            // a value-position tree (see `semantics::elaborate`'s module doc),
+            // so reaching them here means an elaborator invariant broke —
+            // fail loudly rather than guess.
+            SemExprKind::DisjointUnion(..)
+            | SemExprKind::SetDifference(..)
+            | SemExprKind::CartesianProduct(..)
+            | SemExprKind::SetQuotient(..)
+            | SemExprKind::Comprehension { .. }
+            | SemExprKind::KleeneStar(_) => Err(CompileError::Internal(format!(
+                "elaborator invariant broken: set-position node {:?} reached compile_expr \
+                 (value position)", expr.kind
+            ))),
+            SemExprKind::UnOp { op, expr: inner } => self.compile_unop(*op, inner, env, expr.span),
+            SemExprKind::BinOp { op, lhs, rhs } => self.compile_binop(*op, lhs, rhs, env, expr.span),
+            SemExprKind::Call { callee, args } => self.compile_call(callee, args, env, expr.span),
+            SemExprKind::If { cond, then_expr, else_expr } => {
                 self.compile_if(cond, then_expr, else_expr, env)
             }
-            ExprKind::SetLit(elements) => self.compile_set_lit_value(elements, env),
-            ExprKind::Comprehension { .. } => Err(CompileError::Internal(
-                "comprehension in value position not yet supported".into(),
-            )),
-            ExprKind::Try(inner) => self.compile_try(inner, env),
-            ExprKind::FailLit => {
+            SemExprKind::SetLit(elements) => self.compile_set_lit_value(elements, env),
+            SemExprKind::Try(inner) => self.compile_try(inner, env),
+            SemExprKind::FailLit => {
                 // fail → {i1=1, i64=0}
                 let zero = self.context.i64_type().const_int(0, false);
                 let v = self.build_fail_struct(zero.into())?;
                 Ok((v, Kind::Tuple(vec![Kind::Fail, Kind::Int])))
             }
-            ExprKind::FailWith(inner) => {
+            SemExprKind::FailWith(inner) => {
                 // fail n → {i1=1, i64=n}
                 let (v, _) = self.compile_expr(inner, env)?;
                 let s = self.build_fail_struct(v)?;
                 Ok((s, Kind::Tuple(vec![Kind::Fail, Kind::Int])))
             }
-            ExprKind::Tuple(elems) => self.compile_tuple(elems, env),
-            ExprKind::Proj { base, index } => self.compile_proj(base, *index, env),
-            ExprKind::Index { base, index } => self.compile_index(base, index, env),
-            ExprKind::KleeneStar(_) => Err(CompileError::Internal(
-                "X* is a set expression and cannot appear in value position".into(),
-            )),
+            SemExprKind::Tuple(elems) => self.compile_tuple(elems, env),
+            SemExprKind::Proj { base, index } => self.compile_proj(base, *index, env),
+            SemExprKind::Index { base, index } => self.compile_index(base, index, env),
         }
+    }
+
+    /// Value-position `+ - * /` — dedicated `SemExprKind` variants (never
+    /// wrapped in `BinOp`, see `tree.rs`'s module doc), always plain i64 arithmetic.
+    fn compile_arith(
+        &self,
+        op: BinOp,
+        lhs: &SemExpr,
+        rhs: &SemExpr,
+        env: &Env<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let (lv, lk) = self.compile_expr(lhs, env)?;
+        let (rv, rk) = self.compile_expr(rhs, env)?;
+        let li = self.scalarize_to_int(lv, &lk)?;
+        let ri = self.scalarize_to_int(rv, &rk)?;
+        let b = &self.builder;
+        let v = match op {
+            BinOp::Add => b.build_int_add(li, ri, "add"),
+            BinOp::Sub => b.build_int_sub(li, ri, "sub"),
+            BinOp::Mul => b.build_int_mul(li, ri, "mul"),
+            BinOp::Div => b.build_int_signed_div(li, ri, "div"),
+            _ => unreachable!("compile_arith is only called for Add/Sub/Mul/Div"),
+        }
+        .map_err(|e| CompileError::Internal(e.to_string()))?;
+        Ok((v.into(), Kind::Int))
     }
 
     fn compile_try(
         &self,
-        inner: &Expr,
+        inner: &SemExpr,
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (val, _kind) = self.compile_expr(inner, env)?;
@@ -115,9 +152,9 @@ impl<'ctx> Compiler<'ctx> {
 
     fn compile_if(
         &self,
-        cond: &Expr,
-        then_expr: &Expr,
-        else_expr: &Expr,
+        cond: &SemExpr,
+        then_expr: &SemExpr,
+        else_expr: &SemExpr,
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let function = self
@@ -238,7 +275,7 @@ impl<'ctx> Compiler<'ctx> {
     fn compile_unop(
         &self,
         op: UnOp,
-        inner: &Expr,
+        inner: &SemExpr,
         env: &Env<'ctx>,
         _span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
@@ -263,11 +300,14 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Every binary operator except `+ - * /` (which are dedicated
+    /// `SemExprKind` variants, see `compile_arith`) — comparisons, `and`/`or`,
+    /// `in`/`not in`, `|`/`&`/`^`, and `++`.
     fn compile_binop(
         &self,
         op: BinOp,
-        lhs: &Expr,
-        rhs: &Expr,
+        lhs: &SemExpr,
+        rhs: &SemExpr,
         env: &Env<'ctx>,
         _span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
@@ -280,7 +320,7 @@ impl<'ctx> Compiler<'ctx> {
                 let pred = if let Kind::TaggedUnion(ref arms) = lk {
                     // Tagged-union values: check the tag against the matching arm.
                     self.compile_tagged_union_membership(lv, arms, rhs)?
-                } else if let ExprKind::Var(sym) = &rhs.kind {
+                } else if let SemExprKind::Var(sym) = &rhs.kind {
                     if let Some(&(set_ptr, Kind::Set(ek))) = env.get(sym) {
                         self.compile_runtime_contains(lv, lk, set_ptr, ek)?
                     } else {
@@ -305,14 +345,6 @@ impl<'ctx> Compiler<'ctx> {
         let ri = self.scalarize_to_int(rv, &rk)?;
         let b = &self.builder;
 
-        macro_rules! int_op {
-            ($method:ident, $name:literal) => {{
-                let v = b
-                    .$method(li, ri, $name)
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
-                Ok((v.into(), Kind::Int))
-            }};
-        }
         macro_rules! cmp_op {
             ($pred:ident, $name:literal) => {{
                 let v = b
@@ -331,10 +363,6 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         match op {
-            BinOp::Add => int_op!(build_int_add, "add"),
-            BinOp::Sub => int_op!(build_int_sub, "sub"),
-            BinOp::Mul => int_op!(build_int_mul, "mul"),
-            BinOp::Div => int_op!(build_int_signed_div, "div"),
             BinOp::Eq  => cmp_op!(EQ,  "eq"),
             BinOp::Ne  => cmp_op!(NE,  "ne"),
             BinOp::Lt  => cmp_op!(SLT, "lt"),
@@ -344,6 +372,9 @@ impl<'ctx> Compiler<'ctx> {
             BinOp::And => bool_op!(build_and, "and"),
             BinOp::Or  => bool_op!(build_or,  "or"),
             BinOp::In | BinOp::NotIn => unreachable!("handled above"),
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => unreachable!(
+                "Add/Sub/Mul/Div are dedicated SemExprKind variants, never wrapped in BinOp"
+            ),
             BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
                 Err(CompileError::Internal("set operations not yet implemented".into()))
             }
@@ -353,8 +384,8 @@ impl<'ctx> Compiler<'ctx> {
 
     fn compile_vec_concat(
         &self,
-        lhs: &Expr,
-        rhs: &Expr,
+        lhs: &SemExpr,
+        rhs: &SemExpr,
         env: &Env<'ctx>,
         _span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
@@ -421,7 +452,7 @@ impl<'ctx> Compiler<'ctx> {
     fn compile_call(
         &self,
         callee: &Symbol,
-        args: &[Expr],
+        args: &[SemExpr],
         env: &Env<'ctx>,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
@@ -606,7 +637,7 @@ impl<'ctx> Compiler<'ctx> {
     /// Returns a pointer-as-i64 with `Kind::Set(elem_kind)`.
     fn compile_set_lit_value(
         &self,
-        elements: &[Expr],
+        elements: &[SemExpr],
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         if elements.is_empty() {
@@ -685,7 +716,7 @@ impl<'ctx> Compiler<'ctx> {
     /// Compile `(e0, e1, …)` into an LLVM struct value.
     fn compile_tuple(
         &self,
-        elems: &[Expr],
+        elems: &[SemExpr],
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let compiled: Vec<(BasicValueEnum<'ctx>, Kind)> = elems

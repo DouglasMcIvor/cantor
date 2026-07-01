@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use inkwell::{IntPredicate, values::{BasicValueEnum, IntValue, PointerValue}};
 
 use crate::{
-    ast::{Expr, ExprKind, Stmt, collect_loop_modified},
     error::CompileError,
     kind::{Kind, SetElemKind},
+    semantics::tree::{SemExpr, SemExprKind, SemStmt, collect_loop_modified},
     span::Symbol,
 };
 
@@ -20,8 +20,8 @@ impl<'ctx> Compiler<'ctx> {
     /// loops correctly write through to the outermost alloca.
     pub(super) fn compile_while(
         &mut self,
-        cond: &Expr,
-        body: &[Stmt],
+        cond: &SemExpr,
+        body: &[SemStmt],
         env: &mut Env<'ctx>,
         outer_alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
     ) -> Result<(), CompileError> {
@@ -133,13 +133,13 @@ impl<'ctx> Compiler<'ctx> {
     pub(super) fn compile_for_in(
         &mut self,
         var: &Symbol,
-        set: &Expr,
-        body: &[Stmt],
+        set: &SemExpr,
+        body: &[SemStmt],
         env: &mut Env<'ctx>,
         alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
     ) -> Result<(), CompileError> {
         match &set.kind {
-            ExprKind::SetLit(elements) => {
+            SemExprKind::SetLit(elements) => {
                 let i64_type = self.context.i64_type();
                 for elem in elements {
                     let (elem_val, elem_ty) = self.compile_expr(elem, env)?;
@@ -156,7 +156,7 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 Ok(())
             }
-            ExprKind::Comprehension { output, var: comp_var, source, filter } => {
+            SemExprKind::Comprehension { output, var: comp_var, source, filter } => {
                 let comp_var = comp_var.clone();
                 let output   = output.as_ref().clone();
                 let source   = source.as_ref().clone();
@@ -192,7 +192,7 @@ impl<'ctx> Compiler<'ctx> {
         var: &Symbol,
         set_ptr: BasicValueEnum<'ctx>,
         elem_kind: SetElemKind,
-        body: &[Stmt],
+        body: &[SemStmt],
         env: &mut Env<'ctx>,
         outer_alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
     ) -> Result<(), CompileError> {
@@ -346,15 +346,15 @@ impl<'ctx> Compiler<'ctx> {
     fn compile_for_in_comprehension(
         &mut self,
         var: &Symbol,
-        output: &Expr,
+        output: &SemExpr,
         comp_var: &Symbol,
-        source: &Expr,
-        filter: Option<&Expr>,
-        body: &[Stmt],
+        source: &SemExpr,
+        filter: Option<&SemExpr>,
+        body: &[SemStmt],
         env: &mut Env<'ctx>,
         outer_alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
     ) -> Result<(), CompileError> {
-        let ExprKind::SetLit(elements) = &source.kind else {
+        let SemExprKind::SetLit(elements) = &source.kind else {
             return Err(CompileError::Internal(
                 "comprehension in `for` source: only set literal sources are supported \
                  in this version"

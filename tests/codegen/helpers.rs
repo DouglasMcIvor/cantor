@@ -1,14 +1,15 @@
 use cantor::{
-    ast::{Expr, Param},
+    ast::Param,
     codegen::{compile_file, compile_to_ir, Compiler},
+    semantics::tree::SemExpr,
 };
 use inkwell::context::Context;
 
-pub fn jit_eval(body: Expr) -> i64 {
+pub fn jit_eval(body: SemExpr) -> i64 {
     jit_eval_fn(&[], body, &[])
 }
 
-pub fn jit_eval_fn(params: &[Param], body: Expr, args: &[i64]) -> i64 {
+pub fn jit_eval_fn(params: &[Param], body: SemExpr, args: &[i64]) -> i64 {
     let ctx = Context::create();
     let mut compiler = Compiler::new(&ctx, "test");
     compiler.compile_function("__test__", params, &body).unwrap();

@@ -6,10 +6,7 @@
 //! code generator.  Nothing here calls inkwell directly; the LLVM-specific
 //! calls live in `codegen/mod.rs` (kind_to_llvm_type, declare_function, etc.).
 
-use crate::{
-    ast::{FunctionSig, NameDefs, param_set_exprs},
-    kind::{Kind, set_kind},
-};
+use crate::kind::Kind;
 
 pub use crate::kind::range_kind;
 
@@ -28,18 +25,4 @@ pub fn leaf_count(kind: &Kind) -> usize {
 /// Maximum leaf count over all arms; gives the payload width of the tagged-union struct.
 pub fn tagged_union_leaf_count(arms: &[Kind]) -> usize {
     arms.iter().map(leaf_count).max().unwrap_or(0)
-}
-
-/// The per-parameter Kinds for a function signature's domain.
-///
-/// `n_params` is `def.params.len()` — the number of named parameters in the
-/// function definition.  Uses `param_set_exprs` so that a single-tuple-param
-/// function yields `[Kind::Tuple(...)]` rather than the individual element kinds.
-///
-/// Returns an empty vec for zero-argument functions (domain is `None`).
-pub fn param_kinds(sig: &FunctionSig, n_params: usize, name_defs: &NameDefs) -> Vec<Kind> {
-    match param_set_exprs(sig.domain.as_ref(), n_params) {
-        Ok(parts) => parts.into_iter().map(|p| set_kind(p, name_defs)).collect(),
-        Err(_) => vec![Kind::Int; n_params],
-    }
 }

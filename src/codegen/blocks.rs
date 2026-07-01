@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use inkwell::values::{AggregateValueEnum, BasicValueEnum, IntValue, PointerValue};
 
 use crate::{
-    ast::{AssertElse, Expr, Stmt},
     error::CompileError,
-    kind::{set_kind, Kind},
+    kind::Kind,
+    semantics::tree::{SemAssertElse, SemExpr, SemStmt},
     span::Symbol,
 };
 
@@ -20,7 +20,7 @@ impl<'ctx> Compiler<'ctx> {
     /// header on the next iteration).
     pub(super) fn compile_stmts(
         &mut self,
-        stmts: &[Stmt],
+        stmts: &[SemStmt],
         env: &mut Env<'ctx>,
         alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
     ) -> Result<Option<(BasicValueEnum<'ctx>, Kind)>, CompileError> {
@@ -28,7 +28,7 @@ impl<'ctx> Compiler<'ctx> {
         for stmt in stmts {
             last = None;
             match stmt {
-                Stmt::Let { name, constraint, value, .. } => {
+                SemStmt::Let { name, constraint, value, .. } => {
                     // Immutable: compile the value, optionally coerce to a vector, and bind.
                     // No alloca needed — this name cannot appear in alloca_map
                     // because collect_loop_modified skips Let bindings.
@@ -37,7 +37,7 @@ impl<'ctx> Compiler<'ctx> {
                     env.insert(name.clone(), result);
                 }
 
-                Stmt::MutLet { name, constraint, value, .. } => {
+                SemStmt::MutLet { name, constraint, value, .. } => {
                     let result = self.compile_expr(value, env)?;
                     let result = coerce_to_vector_if_needed(self, result, constraint)?;
                     // If this variable is backed by an alloca (i.e. we're in a loop
@@ -59,7 +59,7 @@ impl<'ctx> Compiler<'ctx> {
                     env.insert(name.clone(), result);
                 }
 
-                Stmt::Assign { name, value, .. } => {
+                SemStmt::Assign { name, value, .. } => {
                     let result = self.compile_expr(value, env)?;
                     // If this variable is backed by an alloca (i.e. we're in a loop
                     // body and this variable persists across iterations), write
@@ -80,7 +80,7 @@ impl<'ctx> Compiler<'ctx> {
                     env.insert(name.clone(), result);
                 }
 
-                Stmt::DestructLet { bindings, value, .. } => {
+                SemStmt::DestructLet { bindings, value, .. } => {
                     let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
                     let elem_kinds = match rhs_kind {
                         Kind::Tuple(ek) => ek,
@@ -126,7 +126,7 @@ impl<'ctx> Compiler<'ctx> {
                     }
                 }
 
-                Stmt::DestructMutLet { bindings, value, .. } => {
+                SemStmt::DestructMutLet { bindings, value, .. } => {
                     let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
                     let elem_kinds = match rhs_kind {
                         Kind::Tuple(ek) => ek,
@@ -193,7 +193,7 @@ impl<'ctx> Compiler<'ctx> {
                     }
                 }
 
-                Stmt::DestructAssign { names: dest_names, value, .. } => {
+                SemStmt::DestructAssign { names: dest_names, value, .. } => {
                     let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
                     let elem_kinds = match rhs_kind {
                         Kind::Tuple(ek) => ek,
@@ -259,33 +259,33 @@ impl<'ctx> Compiler<'ctx> {
                 }
 
                 // Static-only constructs — no runtime representation.
-                Stmt::Require { .. } | Stmt::Assume { .. } => {}
+                SemStmt::Require { .. } | SemStmt::Assume { .. } => {}
 
-                Stmt::Assert { predicate, else_clause: None, .. } => {
+                SemStmt::Assert { predicate, else_clause: None, .. } => {
                     self.compile_assert(predicate, env)?;
                 }
 
-                Stmt::Assert { predicate, else_clause: Some(else_clause), .. } => {
+                SemStmt::Assert { predicate, else_clause: Some(else_clause), .. } => {
                     self.compile_assert_else(predicate, else_clause, env)?;
                 }
 
-                Stmt::Return { value, .. } => {
+                SemStmt::Return { value, .. } => {
                     self.compile_return_stmt(value, env)?;
                 }
 
-                Stmt::Expr(e) => {
+                SemStmt::Expr(e) => {
                     last = Some(self.compile_expr(e, env)?);
                 }
 
-                Stmt::Block(inner) => {
+                SemStmt::Block(inner) => {
                     last = self.compile_stmts(inner, env, alloca_map)?;
                 }
 
-                Stmt::While { cond, body, .. } => {
+                SemStmt::While { cond, body, .. } => {
                     self.compile_while(cond, body, env, alloca_map)?;
                 }
 
-                Stmt::ForIn { var, set, body, .. } => {
+                SemStmt::ForIn { var, set, body, .. } => {
                     self.compile_for_in(var, set, body, env, alloca_map)?;
                 }
             }
@@ -300,7 +300,7 @@ impl<'ctx> Compiler<'ctx> {
     /// assertion or returned Unknown; we skip the check (no runtime overhead).
     pub(super) fn compile_assert(
         &mut self,
-        predicate: &Expr,
+        predicate: &SemExpr,
         env: &Env<'ctx>,
     ) -> Result<(), CompileError> {
         let Some(fail_bb) = self.fail_bb else {
@@ -336,8 +336,8 @@ impl<'ctx> Compiler<'ctx> {
     /// the early return so inkwell doesn't require a terminator.
     pub(super) fn compile_assert_else(
         &mut self,
-        predicate: &Expr,
-        else_clause: &AssertElse,
+        predicate: &SemExpr,
+        else_clause: &SemAssertElse,
         env: &Env<'ctx>,
     ) -> Result<(), CompileError> {
         let function = self
@@ -357,12 +357,12 @@ impl<'ctx> Compiler<'ctx> {
         // ── else branch: emit the value to return and exit early ──────────────
         self.builder.position_at_end(fail_out_bb);
         let else_val: BasicValueEnum<'ctx> = match else_clause {
-            AssertElse::FailWith(fail_expr) => {
+            SemAssertElse::FailWith(fail_expr) => {
                 // `assert pred else fail n` → return {i1=1, i64=n}
                 let (v, _) = self.compile_expr(fail_expr, env)?;
                 self.build_fail_struct(v)?
             }
-            AssertElse::Return(ret_expr) => {
+            SemAssertElse::Return(ret_expr) => {
                 // `assert pred else return expr` → return normally (may be success or fail struct)
                 let (v, kind) = self.compile_expr(ret_expr, env)?;
                 self.wrap_return_value(v, &kind)?
@@ -384,7 +384,7 @@ impl<'ctx> Compiler<'ctx> {
     /// need a terminator.
     pub(super) fn compile_return_stmt(
         &mut self,
-        value: &Expr,
+        value: &SemExpr,
         env: &Env<'ctx>,
     ) -> Result<(), CompileError> {
         let function = self
@@ -411,10 +411,9 @@ impl<'ctx> Compiler<'ctx> {
 fn coerce_to_vector_if_needed<'ctx>(
     compiler: &Compiler<'ctx>,
     (val, kind): (inkwell::values::BasicValueEnum<'ctx>, Kind),
-    constraint: &Expr,
+    constraint: &SemExpr,
 ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, Kind), CompileError> {
-    let expected_kind = set_kind(constraint, &compiler.name_defs);
-    let elem_kind = match &expected_kind {
+    let elem_kind = match &constraint.kind_of {
         Kind::Vector(ek) => ek.as_ref().clone(),
         _ => return Ok((val, kind)),
     };

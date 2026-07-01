@@ -15,9 +15,9 @@
 use inkwell::values::{AggregateValueEnum, BasicValueEnum};
 
 use crate::{
-    ast::Expr,
     error::CompileError,
     kind::Kind,
+    semantics::tree::SemExpr,
 };
 
 use super::wire::{leaf_count, tagged_union_leaf_count};
@@ -48,8 +48,8 @@ fn vec_builder_fns(ek: &Kind) -> Result<(&'static str, &'static str, &'static st
 impl<'ctx> Compiler<'ctx> {
     pub(crate) fn compile_index(
         &self,
-        base: &Expr,
-        index: &Expr,
+        base: &SemExpr,
+        index: &SemExpr,
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (base_val, base_kind) = self.compile_expr(base, env)?;
@@ -99,7 +99,7 @@ impl<'ctx> Compiler<'ctx> {
     /// For vector bases (`(A * B)*`, `X*`) this calls the appropriate Arrow get function.
     pub(crate) fn compile_proj(
         &self,
-        base: &Expr,
+        base: &SemExpr,
         index: usize,
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {

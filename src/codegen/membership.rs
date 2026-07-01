@@ -1,10 +1,11 @@
 use inkwell::{IntPredicate, values::{BasicValueEnum, IntValue}};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind},
+    ast::BinOp,
     error::CompileError,
-    kind::{Kind, SetElemKind, set_kind},
+    kind::{Kind, SetElemKind},
     semantics::builtins::{self, IntBound},
+    semantics::tree::{SemExpr, SemExprKind},
 };
 
 use super::Compiler;
@@ -18,14 +19,14 @@ impl<'ctx> Compiler<'ctx> {
     pub(in crate::codegen) fn compile_membership(
         &self,
         val: IntValue<'ctx>,
-        set_expr: &Expr,
+        set_expr: &SemExpr,
     ) -> Result<IntValue<'ctx>, CompileError> {
         let b    = &self.builder;
         let i64  = self.context.i64_type();
         let bool = self.context.bool_type();
 
         match &set_expr.kind {
-            ExprKind::Var(sym) => match builtins::lookup(&sym.0) {
+            SemExprKind::Var(sym) => match builtins::lookup(&sym.0) {
                 Some(builtin) if builtin.kind == Kind::Fail => Ok(bool.const_int(0, false)),
                 // Bool values are represented as i1 (0/1) at runtime.  A value
                 // is in Bool iff it is 0 or 1 as an i64.  Normalise i1 to i64
@@ -70,13 +71,13 @@ impl<'ctx> Compiler<'ctx> {
                 }
             },
 
-            ExprKind::SetLit(elements) => {
+            SemExprKind::SetLit(elements) => {
                 if elements.is_empty() {
                     return Ok(bool.const_int(0, false));
                 }
                 let mut acc: Option<IntValue<'ctx>> = None;
                 for elem in elements {
-                    let ExprKind::IntLit(n) = &elem.kind else {
+                    let SemExprKind::IntLit(n) = &elem.kind else {
                         return Err(CompileError::Internal("non-literal in set literal".into()));
                     };
                     let elem_val = i64.const_int(*n as u64, true);
@@ -94,7 +95,7 @@ impl<'ctx> Compiler<'ctx> {
             }
 
             // t ∈ A - B  →  (t ∈ A) && !(t ∈ B)
-            ExprKind::BinOp { op: BinOp::Sub, lhs, rhs } => {
+            SemExprKind::SetDifference(lhs, rhs) => {
                 let in_a  = self.compile_membership(val, lhs)?;
                 let in_b  = self.compile_membership(val, rhs)?;
                 let not_b = b.build_not(in_b, "not_b")
@@ -104,7 +105,7 @@ impl<'ctx> Compiler<'ctx> {
             }
 
             // t ∈ A | B  →  (t ∈ A) || (t ∈ B)
-            ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+            SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
                 let in_a = self.compile_membership(val, lhs)?;
                 let in_b = self.compile_membership(val, rhs)?;
                 b.build_or(in_a, in_b, "set_union")
@@ -112,7 +113,7 @@ impl<'ctx> Compiler<'ctx> {
             }
 
             // t ∈ A + B  →  (t ∈ A) || (t ∈ B)  (disjointness is proved statically)
-            ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
+            SemExprKind::DisjointUnion(lhs, rhs) => {
                 let in_a = self.compile_membership(val, lhs)?;
                 let in_b = self.compile_membership(val, rhs)?;
                 b.build_or(in_a, in_b, "djunion_mem")
@@ -120,7 +121,7 @@ impl<'ctx> Compiler<'ctx> {
             }
 
             // t ∈ A & B  →  (t ∈ A) && (t ∈ B)
-            ExprKind::BinOp { op: BinOp::Intersect, lhs, rhs } => {
+            SemExprKind::BinOp { op: BinOp::Intersect, lhs, rhs } => {
                 let in_a = self.compile_membership(val, lhs)?;
                 let in_b = self.compile_membership(val, rhs)?;
                 b.build_and(in_a, in_b, "set_inter")
@@ -128,7 +129,7 @@ impl<'ctx> Compiler<'ctx> {
             }
 
             // t ∈ A ^ B  →  (t ∈ A) XOR (t ∈ B)  =  (a || b) && !(a && b)
-            ExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
+            SemExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
                 let in_a = self.compile_membership(val, lhs)?;
                 let in_b = self.compile_membership(val, rhs)?;
                 let or_ab  = b.build_or (in_a, in_b, "symdiff_or" ).map_err(|e| CompileError::Internal(e.to_string()))?;
@@ -153,10 +154,10 @@ impl<'ctx> Compiler<'ctx> {
         &self,
         val: BasicValueEnum<'ctx>,
         arms: &[Kind],
-        set_expr: &Expr,
+        set_expr: &SemExpr,
     ) -> Result<IntValue<'ctx>, CompileError> {
-        let target_kind = set_kind(set_expr, &self.name_defs);
-        let arm_idx = arms.iter().position(|k| *k == target_kind)
+        let target_kind = &set_expr.kind_of;
+        let arm_idx = arms.iter().position(|k| k == target_kind)
             .ok_or_else(|| CompileError::Internal(format!(
                 "tagged-union membership: set expression kind {target_kind:?} \
                  does not match any arm in {arms:?}"

@@ -8,7 +8,7 @@ use cantor::ast::Item;
 use cantor::kind::Kind;
 use cantor::parser::parse_file;
 use cantor::semantics::elaborate::elaborate;
-use cantor::semantics::tree::{SemExprKind, SemFunctionBody, SemItem};
+use cantor::semantics::tree::{SemExprKind, SemFunctionBody, SemItem, SemStmt};
 
 fn elaborate_src(src: &str) -> Vec<SemItem> {
     let items: Vec<Item> = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
@@ -267,4 +267,75 @@ fn for_in_over_set_literal_elaborates_elements_as_arithmetic_not_disjoint_union(
     };
     let SemExprKind::SetLit(elements) = &set.kind else { panic!("expected a SetLit, got {:?}", set.kind) };
     assert!(matches!(elements[1].kind, SemExprKind::Add(_, _)), "expected Add, got {:?}", elements[1].kind);
+}
+
+#[test]
+fn for_in_over_empty_set_literal_does_not_error() {
+    // Zero elements means the element Kind can't be inferred, but the body
+    // never actually runs (codegen unrolls a SetLit iterable at compile
+    // time) — this must not error the way an empty value-position SetLit
+    // elsewhere legitimately does.
+    let def = only_function("f : -> Int\nf() {\n for x in {} {\n }\n 0\n}");
+    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let cantor::semantics::tree::SemStmt::ForIn { set, .. } = &stmts[0] else {
+        panic!("expected a ForIn statement, got {:?}", stmts[0])
+    };
+    assert!(matches!(&set.kind, SemExprKind::SetLit(elements) if elements.is_empty()));
+}
+
+// ── Prerequisites found while wiring `elaborate()` into the real codegen
+// pipeline (Stage 2b) — all four were previously unreachable because nothing
+// but elaborate_tests.rs itself called `elaborate()` on real programs.
+
+#[test]
+fn membership_rhs_local_runtime_set_variable_is_value_position() {
+    // `primes` here is a local `mut ... : Set(Int)` variable, not a named
+    // set — `in`'s RHS must be Position::Value (an env lookup) for it,
+    // mirroring codegen::compile_binop's own env-first dispatch. Treating
+    // it as Position::Set unconditionally panics via `set_kind`'s "unknown
+    // set name" (there's no NameDef for a local).
+    let def = only_function(
+        "f : -> Bool\nf() {\n mut primes : Set(Int) = {2, 3, 5}\n 3 in primes\n}"
+    );
+    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let SemStmt::Expr(e) = &stmts[1] else { panic!("expected an Expr statement, got {:?}", stmts[1]) };
+    let SemExprKind::BinOp { op: cantor::ast::BinOp::In, rhs, .. } = &e.kind else {
+        panic!("expected a top-level `in`, got {:?}", e.kind)
+    };
+    assert!(matches!(rhs.kind, SemExprKind::Var(_)));
+    assert_eq!(rhs.kind_of, Kind::Set(cantor::kind::SetElemKind::Int));
+}
+
+#[test]
+fn builtin_len_call_is_not_treated_as_an_undeclared_function() {
+    // `len`/`size`/`from`/auto-generated `distinct` constructors are
+    // recognized by name directly in codegen::compile_call and never
+    // appear in `fn_sigs` — calling them must not error as "undeclared".
+    let def = only_function("f : Nat* -> Nat\nf(xs) = len(xs)");
+    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
+    assert_eq!(body.kind_of, Kind::Int);
+}
+
+#[test]
+fn unconstrained_destructuring_binding_gets_a_kind_from_the_tuple_value() {
+    // `x, y = (p.0, p.1)` has no per-binding `: Type` annotations — the
+    // binding Kind must come from the value's Tuple element Kinds (mirrors
+    // codegen::blocks's DestructLet handling, which never even looks at
+    // constraints for Kind purposes), not be left unbound.
+    let def = only_function(
+        "f : Int * Int -> Int\nf(p) {\n x, y = (p.0, p.1)\n x + y\n}"
+    );
+    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let SemStmt::Expr(e) = &stmts[1] else { panic!("expected an Expr statement, got {:?}", stmts[1]) };
+    assert_eq!(e.kind_of, Kind::Int);
+}
+
+#[test]
+fn value_position_var_falls_back_to_a_top_level_scalar_constant() {
+    // `base` is a top-level annotated constant (`base : Nat = 10`), not a
+    // local — referencing it from another function's body must resolve via
+    // `name_defs`, not just the local `env`.
+    let def = elaborate_function("base : Nat = 10\nadd_base : Nat -> Nat\nadd_base(x) = x + base", "add_base");
+    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
+    assert_eq!(body.kind_of, Kind::Int);
 }

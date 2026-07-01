@@ -10,12 +10,10 @@ use inkwell::{
 };
 
 use crate::{
-    ast::{
-        BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDefs, Param, Stmt,
-        UnOp, param_set_exprs,
-    },
+    ast::{BinOp, DefKind, Expr, ExprKind, Item, Param, UnOp},
     error::CompileError,
     kind::Kind,
+    semantics::{elaborate::elaborate, tree::{SemExpr, SemFunctionBody, SemItem, SemStmt}},
     span::Symbol,
 };
 
@@ -30,7 +28,7 @@ mod runtime_decls;
 mod trampoline;
 pub mod wire;
 
-use wire::{param_kinds, range_kind, tagged_union_leaf_count};
+use wire::tagged_union_leaf_count;
 
 pub use jit::compile_file;
 
@@ -57,7 +55,7 @@ pub struct Compiler<'ctx> {
     /// Maps each declared function name to its first-signature range expression.
     /// Used by `compile_try` to determine which named error sets `?` should
     /// propagate for that callee.
-    fn_ranges: HashMap<String, Expr>,
+    fn_ranges: HashMap<String, SemExpr>,
     /// Pre-expanded integer values for user-defined named sets whose definitions
     /// are set literals (e.g. `HTTPError = {400, 503}` → `[400, 503]`).
     /// Used by `compile_try` and `compile_membership` for named error set checks.
@@ -73,10 +71,7 @@ pub struct Compiler<'ctx> {
     /// domain set expressions. Used by `coerce_call_arg` the same way
     /// `fn_ranges` is used by `coerce_tagged_union_return`: to disambiguate
     /// which arm of a `+`-typed parameter a scalar call argument belongs to.
-    fn_param_set_exprs: HashMap<String, Vec<Expr>>,
-    /// All user-defined named set definitions in the file, used to resolve
-    /// aliases and distinct sets in `set_kind` calls during codegen.
-    pub(crate) name_defs: NameDefs,
+    fn_param_set_exprs: HashMap<String, Vec<SemExpr>>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -93,7 +88,6 @@ impl<'ctx> Compiler<'ctx> {
             distinct_names: HashSet::new(),
             fn_param_set_exprs: HashMap::new(),
             fn_param_kinds: HashMap::new(),
-            name_defs: NameDefs::new(),
         }
     }
 
@@ -327,7 +321,7 @@ impl<'ctx> Compiler<'ctx> {
         function: FunctionValue<'ctx>,
         params: &[Param],
         param_kinds: &[Kind],
-        body: &Expr,
+        body: &SemExpr,
         is_fallible: bool,
         const_env: &Env<'ctx>,
     ) -> Result<FunctionValue<'ctx>, CompileError> {
@@ -398,7 +392,7 @@ impl<'ctx> Compiler<'ctx> {
         function: FunctionValue<'ctx>,
         params: &[Param],
         param_kinds: &[Kind],
-        stmts: &[Stmt],
+        stmts: &[SemStmt],
         is_fallible: bool,
         const_env: &Env<'ctx>,
     ) -> Result<FunctionValue<'ctx>, CompileError> {
@@ -483,7 +477,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         name: &str,
         params: &[Param],
-        body: &Expr,
+        body: &SemExpr,
     ) -> Result<FunctionValue<'ctx>, CompileError> {
         let all_int: Vec<Kind> = vec![Kind::Int; params.len()];
         let function = self.declare_function(name, params, &all_int, Kind::Int);
@@ -497,23 +491,6 @@ impl<'ctx> Compiler<'ctx> {
 
     pub fn print_ir(&self) {
         self.module.print_to_stderr();
-    }
-}
-
-/// True if the range expression can produce a failure value at runtime.
-///
-/// Covers `| Fail`, `| (Fail * Y)` (desugared from `!! Y`), and their unions.
-pub fn range_contains_fail(range: &Expr) -> bool {
-    match &range.kind {
-        ExprKind::Var(sym) => sym.0 == "Fail",
-        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
-            range_contains_fail(lhs) || range_contains_fail(rhs)
-        }
-        // `Fail * Y` — desugared from `!! Y`; always a failure arm.
-        ExprKind::BinOp { op: BinOp::Mul, lhs, .. } => {
-            matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
-        }
-        _ => false,
     }
 }
 
@@ -554,8 +531,8 @@ fn eval_const(expr: &Expr, known: &HashMap<Symbol, i64>) -> Result<i64, CompileE
 }
 
 /// Compile every function in `items` into a single JIT module.
-/// Three-pass compilation (constants → declarations → bodies) into a `Compiler`.
-/// Both `compile_file` and `compile_to_ir` delegate here.
+/// Elaborates once up front, then does a two-pass compilation (declarations →
+/// bodies) into a `Compiler`. Both `compile_file` and `compile_to_ir` delegate here.
 pub(super) fn compile_items<'ctx>(
     ctx: &'ctx Context,
     items: &[Item],
@@ -566,7 +543,9 @@ pub(super) fn compile_items<'ctx>(
     // Pass 0 — evaluate scalar constants and build a shared env of inlined values.
     // Set-definition NameDefs (e.g. `HTTPError = {400, 503}`) are silently skipped
     // here because they have no scalar value to inline into function bodies; they
-    // are collected separately into `user_set_vals` below.
+    // are collected separately into `user_set_vals` below. This pass works from
+    // the raw AST — it's pure constant-folding, not a Kind/position concern the
+    // elaborator needs to disambiguate.
     let mut const_vals: HashMap<Symbol, i64> = HashMap::new();
     for item in items {
         if let Item::NameDef(def) = item {
@@ -607,14 +586,6 @@ pub(super) fn compile_items<'ctx>(
         })
         .collect();
 
-    compiler.name_defs = items
-        .iter()
-        .filter_map(|item| match item {
-            Item::NameDef(def) => Some((def.name.clone(), def.clone())),
-            _ => None,
-        })
-        .collect();
-
     let i64_type = ctx.i64_type();
     let const_env: Env<'ctx> = const_vals
         .iter()
@@ -624,29 +595,26 @@ pub(super) fn compile_items<'ctx>(
         })
         .collect();
 
+    let sem_items = elaborate(items)?;
+
     // Pass 1 — declare all function signatures so forward calls resolve.
-    // Param and return Kinds are derived from the first signature; overloaded
-    // functions must agree on the Kind of each position.
-    let decls: Vec<(FunctionValue<'ctx>, &FunctionDef)> = items
+    // Param and return Kinds come from the elaborator's first-signature
+    // computation; overloaded functions must agree on the Kind of each position.
+    let decls: Vec<(FunctionValue<'ctx>, &crate::semantics::tree::SemFunctionDef)> = sem_items
         .iter()
         .filter_map(|item| match item {
-            Item::FunctionDef(def) => {
-                let first_sig = def.sigs.first();
-                let p_kinds: Vec<Kind> = first_sig
-                    .map(|s| param_kinds(s, def.params.len(), &compiler.name_defs))
-                    .unwrap_or_else(|| vec![Kind::Int; def.params.len()]);
-                let ret_kind = first_sig
-                    .map(|s| range_kind(&s.range, &compiler.name_defs))
-                    .unwrap_or(Kind::Int);
-                let fn_val = compiler.declare_function(&def.name.0, &def.params, &p_kinds, ret_kind);
+            SemItem::FunctionDef(def) => {
+                let fn_val = compiler.declare_function(
+                    &def.name.0, &def.params, &def.param_kinds, def.return_kind.clone(),
+                );
                 // Record the range expression so `compile_try` can determine what
                 // error values `?` should propagate for this callee.
-                if let Some(sig) = first_sig {
+                if let Some(sig) = def.sigs.first() {
                     compiler.fn_ranges.insert(def.name.0.clone(), sig.range.clone());
                     // Record per-parameter domain set expressions so `coerce_call_arg`
                     // can disambiguate which arm of a `+`-typed parameter a scalar
                     // call argument belongs to.
-                    if let Ok(parts) = param_set_exprs(sig.domain.as_ref(), def.params.len()) {
+                    if let Ok(parts) = crate::semantics::tree::sem_param_set_exprs(sig.domain.as_ref(), def.params.len()) {
                         compiler.fn_param_set_exprs.insert(
                             def.name.0.clone(),
                             parts.into_iter().cloned().collect(),
@@ -655,28 +623,23 @@ pub(super) fn compile_items<'ctx>(
                 }
                 Some((fn_val, def))
             }
-            Item::NameDef(_) => None,
+            SemItem::NameDef(_) => None,
         })
         .collect();
 
     // Pass 2 — compile bodies with constants available.
     for (fn_val, def) in decls {
-        let is_fallible = def.sigs.iter().any(|s| range_contains_fail(&s.range));
-        let p_kinds: Vec<Kind> = def
-            .sigs
-            .first()
-            .map(|s| param_kinds(s, def.params.len(), &compiler.name_defs))
-            .unwrap_or_else(|| vec![Kind::Int; def.params.len()]);
+        let is_fallible = def.sigs.iter().any(|s| crate::semantics::tree::range_contains_fail(&s.range));
 
         match &def.body {
-            FunctionBody::Expr(e) => {
+            SemFunctionBody::Expr(e) => {
                 compiler.compile_function_body(
-                    fn_val, &def.params, &p_kinds, e, is_fallible, &const_env,
+                    fn_val, &def.params, &def.param_kinds, e, is_fallible, &const_env,
                 )?;
             }
-            FunctionBody::Block(stmts) => {
+            SemFunctionBody::Block(stmts) => {
                 compiler.compile_block_body(
-                    fn_val, &def.params, &p_kinds, stmts, is_fallible, &const_env,
+                    fn_val, &def.params, &def.param_kinds, stmts, is_fallible, &const_env,
                 )?;
             }
         }

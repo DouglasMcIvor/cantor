@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{self, BinOp, Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDef, NameDefs, Stmt, UnOp};
+use crate::ast::{self, BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDef, NameDefs, Stmt, UnOp};
 use crate::error::CompileError;
 use crate::kind::{Kind, set_kind};
 use crate::semantics::tree::*;
@@ -79,6 +79,25 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
 
     let ctx = Ctx { name_defs: &name_defs, fn_sigs };
     items.iter().map(|item| elaborate_item(item, &ctx)).collect()
+}
+
+/// `codegen::compile_call`'s built-in identity/cardinality calls — never
+/// user-declared, so absent from `fn_sigs`. All four always return `Kind::Int`.
+fn builtin_call_kind(callee: &Symbol, args_len: usize, name_defs: &NameDefs) -> Option<Kind> {
+    if args_len != 1 {
+        return None;
+    }
+    if callee.0 == "from" || callee.0 == "size" || callee.0 == "len" {
+        return Some(Kind::Int);
+    }
+    // Auto-generated constructor `d(x)` for `D = distinct B`.
+    let mut chars = callee.0.chars();
+    let first = chars.next()?;
+    let capitalized = first.to_uppercase().collect::<String>() + chars.as_str();
+    match name_defs.get(&Symbol(capitalized)) {
+        Some(def) if def.kind == DefKind::Distinct => Some(Kind::Int),
+        _ => None,
+    }
 }
 
 fn function_param_kinds(sig: &ast::FunctionSig, n_params: usize, name_defs: &NameDefs) -> Result<Vec<Kind>, CompileError> {
@@ -174,13 +193,13 @@ fn elaborate_stmt(stmt: &Stmt, ctx: &Ctx, env: &mut Env) -> Result<SemStmt, Comp
             SemStmt::Assign { name: name.clone(), value: v, span: *span }
         }
         Stmt::DestructLet { bindings, tuple_constraint, value, span } => {
-            let (b, tc) = elaborate_destruct_bindings(bindings, tuple_constraint, ctx, env)?;
             let v = elaborate_expr(value, Position::Value, ctx, env)?;
+            let (b, tc) = elaborate_destruct_bindings(bindings, tuple_constraint, &v.kind_of, ctx, env)?;
             SemStmt::DestructLet { bindings: b, tuple_constraint: tc, value: v, span: *span }
         }
         Stmt::DestructMutLet { bindings, tuple_constraint, value, span } => {
-            let (b, tc) = elaborate_destruct_bindings(bindings, tuple_constraint, ctx, env)?;
             let v = elaborate_expr(value, Position::Value, ctx, env)?;
+            let (b, tc) = elaborate_destruct_bindings(bindings, tuple_constraint, &v.kind_of, ctx, env)?;
             SemStmt::DestructMutLet { bindings: b, tuple_constraint: tc, value: v, span: *span }
         }
         Stmt::DestructAssign { names, value, span } => {
@@ -218,7 +237,18 @@ fn elaborate_stmt(stmt: &Stmt, ctx: &Ctx, env: &mut Env) -> Result<SemStmt, Comp
             // variable is a runtime `Kind::Set(_)` value looked up like any
             // other local. Both need Position::Value.
             let is_comprehension = matches!(set.kind, ExprKind::Comprehension { .. });
-            let s = elaborate_expr(set, if is_comprehension { Position::Set } else { Position::Value }, ctx, env)?;
+            let is_empty_set_lit = matches!(&set.kind, ExprKind::SetLit(elements) if elements.is_empty());
+            let s = if is_empty_set_lit {
+                // Element Kind is unknowable from zero elements — but
+                // harmless: `codegen::compile_for_in` unrolls a SetLit
+                // iterable at compile time, so an empty literal produces
+                // zero copies of the body regardless of what Kind `var`
+                // gets bound to here. (The generic value-position SetLit
+                // rule below requires a nonempty literal to infer one.)
+                SemExpr { kind: SemExprKind::SetLit(vec![]), kind_of: Kind::Int, span: set.span }
+            } else {
+                elaborate_expr(set, if is_comprehension { Position::Set } else { Position::Value }, ctx, env)?
+            };
             let elem_kind = match &s.kind_of {
                 Kind::Set(crate::kind::SetElemKind::Int) => Kind::Int,
                 Kind::Set(crate::kind::SetElemKind::Bool) => Kind::Bool,
@@ -236,18 +266,46 @@ fn elaborate_stmt(stmt: &Stmt, ctx: &Ctx, env: &mut Env) -> Result<SemStmt, Comp
     })
 }
 
+/// Elaborate a destructuring's per-binding constraints and bind each name to
+/// its Kind in `env`. A binding's Kind always comes from `value_kind` (the
+/// already-elaborated RHS's Tuple element Kinds) — mirrors
+/// `codegen::blocks`'s `DestructLet` handling exactly, which derives Kind
+/// purely from the RHS tuple and never consults the constraint annotations
+/// (those are solver-only proof obligations, not a second source of Kind).
+/// Using the constraint's Kind instead would leave *unconstrained* bindings
+/// (`x, y = (p.0, p.1)`, no `: Type` annotations) with no Kind in `env` at all.
 fn elaborate_destruct_bindings(
     bindings: &[ast::DestructBinding],
     tuple_constraint: &Option<Expr>,
+    value_kind: &Kind,
     ctx: &Ctx,
     env: &mut Env,
 ) -> Result<(Vec<SemDestructBinding>, Option<SemExpr>), CompileError> {
     let tc = tuple_constraint.as_ref().map(|t| elaborate_expr(t, Position::Set, ctx, env)).transpose()?;
-    let sem_bindings = bindings.iter().map(|b| {
+    let elem_kinds = match value_kind {
+        Kind::Tuple(ek) => ek,
+        other => return Err(CompileError::Internal(format!(
+            "destructuring requires a tuple on the right-hand side, got {other:?}"
+        ))),
+    };
+    if bindings.len() > elem_kinds.len() {
+        return Err(CompileError::Internal(format!(
+            "destructuring arity mismatch: {} binding(s) but tuple has only {} element(s)",
+            bindings.len(), elem_kinds.len()
+        )));
+    }
+    let last_i = bindings.len() - 1;
+    let sem_bindings = bindings.iter().enumerate().map(|(i, b)| {
         let c = b.constraint.as_ref().map(|c| elaborate_expr(c, Position::Set, ctx, env)).transpose()?;
-        if let Some(c) = &c {
-            env.insert(b.name.clone(), c.kind_of.clone());
-        }
+        let tail_count = elem_kinds.len() - i;
+        // The last binder receives the remaining elements as a sub-tuple
+        // when there are more tuple elements than bindings.
+        let binding_kind = if i < last_i || tail_count == 1 {
+            elem_kinds[i].clone()
+        } else {
+            Kind::Tuple(elem_kinds[i..].to_vec())
+        };
+        env.insert(b.name.clone(), binding_kind);
         Ok(SemDestructBinding { name: b.name.clone(), constraint: c })
     }).collect::<Result<Vec<_>, CompileError>>()?;
     Ok((sem_bindings, tc))
@@ -286,9 +344,23 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
         ExprKind::Var(sym) => {
             let kind_of = match pos {
                 Position::Set => kind_of_for_set(),
-                Position::Value => env.get(sym).cloned().ok_or_else(|| CompileError::Internal(
-                    format!("elaborate: reference to undefined local `{}`", sym.0)
-                ))?,
+                // A local (param/let) takes priority; falling through to
+                // `name_defs` covers a value-position reference to a
+                // top-level scalar constant (e.g. `base : Nat = 10` used in
+                // another function's body) — mirrors `set_kind`'s own
+                // `Var` fallback, reused here since Kind doesn't depend on
+                // position for a name lookup, only *whether* it's local.
+                Position::Value => match env.get(sym) {
+                    Some(k) => k.clone(),
+                    None => ctx.name_defs.get(sym)
+                        .map(|def| match def.kind {
+                            ast::DefKind::Alias => set_kind(&def.value, ctx.name_defs),
+                            ast::DefKind::Distinct => Kind::Int,
+                        })
+                        .ok_or_else(|| CompileError::Internal(
+                            format!("elaborate: reference to undefined local `{}`", sym.0)
+                        ))?,
+                },
             };
             Ok(SemExpr { kind: SemExprKind::Var(sym.clone()), kind_of, span })
         }
@@ -326,13 +398,21 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
             Ok(SemExpr { kind: node, kind_of, span })
         }
 
-        // `in`/`not in`: the RHS is always a set description, regardless of
+        // `in`/`not in`: the RHS is normally a set *description* regardless of
         // the position the `in` expression itself appears in (mirrors
-        // compile_membership / membership_constraint, which always treat
-        // the RHS as a set expression).
+        // compile_membership / membership_constraint). But when the RHS is a
+        // local variable already bound to a genuine runtime `Kind::Set(_)`
+        // value (e.g. `mut s : Set(Int) = {...}`), it's a value lookup
+        // instead — mirrors codegen::compile_binop's own dispatch (env
+        // lookup first, set-description fallback second). Using Position::Set
+        // unconditionally would call `set_kind` on a local name and panic
+        // with "unknown set name".
         ExprKind::BinOp { op: op @ (BinOp::In | BinOp::NotIn), lhs, rhs } => {
             let l = elaborate_expr(lhs, Position::Value, ctx, env)?;
-            let r = elaborate_expr(rhs, Position::Set, ctx, env)?;
+            let rhs_is_local_set_var = matches!(&rhs.kind, ExprKind::Var(sym)
+                if matches!(env.get(sym), Some(Kind::Set(_))));
+            let rhs_pos = if rhs_is_local_set_var { Position::Value } else { Position::Set };
+            let r = elaborate_expr(rhs, rhs_pos, ctx, env)?;
             Ok(SemExpr {
                 kind: SemExprKind::BinOp { op: *op, lhs: Box::new(l), rhs: Box::new(r) },
                 kind_of: Kind::Bool,
@@ -390,9 +470,17 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
         }
         ExprKind::Call { callee, args } => {
             let sem_args = args.iter().map(|a| elaborate_expr(a, Position::Value, ctx, env)).collect::<Result<Vec<_>, _>>()?;
-            let kind_of = ctx.fn_sigs.get(callee)
-                .map(|s| s.return_kind.clone())
-                .ok_or_else(|| CompileError::Internal(format!("elaborate: call to undeclared function `{}`", callee.0)))?;
+            // `from`/`size`/`len`/auto-generated `distinct` constructors are
+            // recognized directly by name in codegen::compile_call — they're
+            // never user-declared functions, so they'd never appear in
+            // `fn_sigs`. Mirrors that special-casing exactly.
+            let kind_of = if let Some(k) = builtin_call_kind(callee, sem_args.len(), ctx.name_defs) {
+                k
+            } else {
+                ctx.fn_sigs.get(callee)
+                    .map(|s| s.return_kind.clone())
+                    .ok_or_else(|| CompileError::Internal(format!("elaborate: call to undeclared function `{}`", callee.0)))?
+            };
             Ok(SemExpr { kind: SemExprKind::Call { callee: callee.clone(), args: sem_args }, kind_of, span })
         }
 
