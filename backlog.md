@@ -7,6 +7,7 @@ You probably don't want to read this unless you're me.
   we should either:
   - first analyze the AST and produce an intermediate value that both the solver and LLVM can use
   - figure out what logic the solver is using from `set_kind` and extract it out
+- add some property based tests! we have a lot of unit tests but could go further
 - should `len` be replaced with just `size`? any other built in functions I need?
 - `none` value and `None` set, currently missing
 - function overloads, or as ChatGPT suggests "the language should officially define an overloaded
