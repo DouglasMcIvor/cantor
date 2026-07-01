@@ -3,11 +3,26 @@ You probably don't want to read this unless you're me.
 
 # To do
 
-- banish ValKind from the solver, it shouldn't depend on how LLVM represents the value,
-  we should either:
-  - first analyze the AST and produce an intermediate value that both the solver and LLVM can use
-  - figure out what logic the solver is using from `set_kind` and extract it out
-- add some property based tests! we have a lot of unit tests but could go further
+- more testing
+  - some property based tests! we have a lot of unit tests but could go further, `proptest` crate recommended
+  - fuzzing too, `cargo-fuzz` crate recommended
+  - snapshot testing, i.e. output
+    ```
+    foo.ast
+    foo.semantic
+    foo.constraints
+    foo.kinds
+    foo.ll
+    ```
+    and so we can see exactly what a refactor changed, `insta` crate recommended
+  - Lots nice built in static analysis
+    - `cargo clippy -- -W clippy::pedantic`
+    -  `cargo fmt --check`
+    -  `cargo udeps` and `cargo machete`
+    -  `cargo deny` for vulns, dupes and licensing
+    -  `cargo llvm-cov` for coverage
+    -  `cargo +nightly miri test` for UB, aliasing, invalid references
+  - "giving every stage a `validate()` method"
 - should `len` be replaced with just `size`? any other built in functions I need?
 - `none` value and `None` set, currently missing
 - function overloads, or as ChatGPT suggests "the language should officially define an overloaded
