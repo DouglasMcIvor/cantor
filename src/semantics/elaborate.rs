@@ -6,18 +6,17 @@
 //! function's domain/range, a `let` constraint, the RHS of `in`, …) — never
 //! guessed from the operator alone.
 //!
-//! **Scope note on value-position Kind.** For most expressions, Kind is a
-//! simple structural function of the AST and is computed directly here. But
-//! a few cases — `if` with mismatched branch Kinds, `.N`/`[i]` on a
-//! `Vector(Tuple(_))`/`Vector(TaggedUnion(_))` base, `++` requiring a
-//! tuple-to-vector coercion — are currently *decided* by codegen's own
-//! coercion logic (`compile_if`'s tagged-union merging, `compile_proj`'s
-//! per-Kind dispatch), entangled with actual LLVM value construction. Rather
-//! than re-derive that logic independently here — risking a second
-//! implementation that silently disagrees with codegen, exactly the bug
-//! class this refactor exists to kill — those cases fail loudly with a
-//! clear "not yet implemented in elaborator" error. They become correct once
-//! Stage 2 extracts the real decision logic out of codegen.
+//! **Value-position Kind for `if`/`++`/vector indexing** used to be decided
+//! only by codegen's own coercion logic, entangled with actual LLVM value
+//! construction — re-deriving it independently here risked a second
+//! implementation that silently disagreed with codegen, exactly the bug
+//! class this refactor exists to kill. `kind::merge_if_branches` and
+//! `kind::merge_concat_kinds` now extract that decision (the resulting Kind
+//! and which coercion applies) into pure functions that both codegen and
+//! this module call, so the two cannot drift apart. `.N`/`[i]` on a
+//! `Vector(Tuple(_))`/`Vector(TaggedUnion(_))` base needed no extraction:
+//! indexing into either always yields the element Kind unchanged (see
+//! `vector_elem_kind`).
 
 use std::collections::HashMap;
 
@@ -341,13 +340,8 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
         ExprKind::BinOp { op: BinOp::Concat, lhs, rhs } => {
             let l = elaborate_expr(lhs, Position::Value, ctx, env)?;
             let r = elaborate_expr(rhs, Position::Value, ctx, env)?;
-            // Matches compile_vec_concat's clean case: both sides already
-            // Vector. Tuple-to-vector coercion is a codegen decision, not
-            // yet re-derived here.
-            let kind_of = match &l.kind_of {
-                Kind::Vector(ek) if matches!(r.kind_of, Kind::Vector(_)) => Kind::Vector(ek.clone()),
-                _ => return Err(not_yet_implemented("`++` requiring tuple-to-vector coercion")),
-            };
+            let (_, kind_of) = crate::kind::merge_concat_kinds(&l.kind_of, &r.kind_of)
+                .map_err(CompileError::Internal)?;
             Ok(SemExpr { kind: SemExprKind::BinOp { op: BinOp::Concat, lhs: Box::new(l), rhs: Box::new(r) }, kind_of, span })
         }
 
@@ -394,12 +388,9 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
             let e = elaborate_expr(else_expr, pos, ctx, env)?;
             let kind_of = match pos {
                 Position::Set => kind_of_for_set(),
-                Position::Value if t.kind_of == e.kind_of => t.kind_of.clone(),
-                // codegen::compile_if merges mismatched branches via tagged-union
-                // wrapping/coercion logic not yet re-derived here.
-                Position::Value => return Err(not_yet_implemented(&format!(
-                    "`if` with mismatched branch kinds (then={:?}, else={:?})", t.kind_of, e.kind_of
-                ))),
+                Position::Value => crate::kind::merge_if_branches(&t.kind_of, &e.kind_of)
+                    .map(|merge| merge.result_kind())
+                    .map_err(CompileError::Internal)?,
             };
             Ok(SemExpr { kind: SemExprKind::If { cond: Box::new(c), then_expr: Box::new(t), else_expr: Box::new(e) }, kind_of, span })
         }
@@ -525,15 +516,14 @@ fn proj_kind(base_kind: &Kind, index: usize) -> Result<Kind, CompileError> {
     }
 }
 
-/// `Vector(ek)`'s element Kind for `[i]`/`.N` indexing — only the simple
-/// cases (`Int`/`Bool`/nested `Vector`) are re-derived here; `Vector(Tuple)`
-/// and `Vector(TaggedUnion)` use dedicated codegen dispatch not yet ported.
+/// `Vector(ek)`'s element Kind for `[i]`/`.N` indexing. `codegen::expr_vec`
+/// dispatches to different runtime helpers per element Kind (scalar Arrow
+/// arrays vs. `cantor_struct_vec_*`/`cantor_union_vec_*` for `Tuple`/
+/// `TaggedUnion` elements), but every one of those helpers reassembles the
+/// *same* element Kind it was given — indexing never changes the Kind.
 fn vector_elem_kind(ek: &Kind) -> Result<Kind, CompileError> {
     match ek {
-        Kind::Int | Kind::Bool | Kind::Vector(_) => Ok(ek.clone()),
-        Kind::Tuple(_) | Kind::TaggedUnion(_) => Err(not_yet_implemented(&format!(
-            "indexing into Vector({ek:?}) — requires codegen's struct/union vector dispatch"
-        ))),
+        Kind::Int | Kind::Bool | Kind::Vector(_) | Kind::Tuple(_) | Kind::TaggedUnion(_) => Ok(ek.clone()),
         other => Err(CompileError::Internal(format!("indexing into Vector({other:?}) is not supported"))),
     }
 }

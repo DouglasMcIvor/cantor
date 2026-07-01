@@ -217,5 +217,134 @@ fn into_union(kind: Kind) -> Vec<Kind> {
     }
 }
 
+// ── Value-position `if`/`else` branch merging ───────────────────────────────
+//
+// `merge_into_union`/`union_if_distinct` above are the *set-position* merge
+// (domain/range unions: `A | B`, `if` in a set expression). Value-position
+// `if` needs a different, LLVM-value-shaped merge — a runtime value can't be
+// silently reinterpreted the way a compile-time set description can — so it
+// gets its own decision function here. Both `codegen::compile_if` (which
+// performs the actual LLVM coercion this describes) and the elaborator
+// (which only needs the resulting Kind) call this one function, so they
+// cannot silently disagree about what an `if` with mismatched branches means.
+
+/// How two `if`/`else` branch Kinds merge into a single result Kind.
+/// Mirrors `codegen::compile_if`'s coercion paths exactly; each variant here
+/// corresponds 1:1 to one of its branches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IfMerge {
+    /// Branches already agree — no coercion.
+    Same(Kind),
+    /// Either branch is the fallible `{Fail, Int}` wrapper; both become it.
+    CoerceToFailStruct,
+    /// Neither branch is already a TaggedUnion, and at least one is a Tuple:
+    /// wrap both into a fresh 2-arm union (then = arm 0, else = arm 1).
+    NewTaggedUnion { arms: Vec<Kind> },
+    /// Both branches are already (different) TaggedUnions. `then`'s arms are
+    /// an unchanged prefix of `merged_arms` (append-only); `else`'s tags need
+    /// runtime remapping via `else_remap` (old arm index -> merged arm index).
+    MergeTaggedUnions { merged_arms: Vec<Kind>, else_remap: Vec<usize> },
+    /// `then` is already a TaggedUnion; `else` is a single plain Kind
+    /// appended as the final new arm.
+    AppendElseArm { merged_arms: Vec<Kind> },
+    /// `else` is already a TaggedUnion; `then` is a single plain Kind
+    /// appended as the final new arm.
+    AppendThenArm { merged_arms: Vec<Kind> },
+}
+
+impl IfMerge {
+    /// The Kind that results from this merge — all a consumer that doesn't
+    /// need to build LLVM values (i.e. the elaborator) cares about.
+    pub fn result_kind(&self) -> Kind {
+        match self {
+            IfMerge::Same(k) => k.clone(),
+            IfMerge::CoerceToFailStruct => Kind::Tuple(vec![Kind::Fail, Kind::Int]),
+            IfMerge::NewTaggedUnion { arms } => Kind::TaggedUnion(arms.clone()),
+            IfMerge::MergeTaggedUnions { merged_arms, .. }
+            | IfMerge::AppendElseArm { merged_arms }
+            | IfMerge::AppendThenArm { merged_arms } => Kind::TaggedUnion(merged_arms.clone()),
+        }
+    }
+}
+
+/// Decide how two `if`/`else` branch Kinds merge. `Err` when the branches
+/// genuinely can't be reconciled (e.g. bare `Int` vs `Bool`) — codegen has no
+/// coercion for this today, so this must fail loudly rather than let codegen
+/// build an invalid phi from two different LLVM types.
+pub fn merge_if_branches(then_ty: &Kind, else_ty: &Kind) -> Result<IfMerge, String> {
+    let is_fail_struct = |k: &Kind| matches!(k, Kind::Tuple(e) if e.first() == Some(&Kind::Fail));
+    if is_fail_struct(then_ty) || is_fail_struct(else_ty) {
+        return Ok(IfMerge::CoerceToFailStruct);
+    }
+    if then_ty == else_ty {
+        return Ok(IfMerge::Same(then_ty.clone()));
+    }
+
+    let then_is_tu = matches!(then_ty, Kind::TaggedUnion(_));
+    let else_is_tu = matches!(else_ty, Kind::TaggedUnion(_));
+
+    if !then_is_tu && !else_is_tu {
+        if matches!(then_ty, Kind::Tuple(_)) || matches!(else_ty, Kind::Tuple(_)) {
+            return Ok(IfMerge::NewTaggedUnion { arms: vec![then_ty.clone(), else_ty.clone()] });
+        }
+        return Err(format!(
+            "if-branches with different Kinds and no Tuple/TaggedUnion side cannot be merged \
+             (then={then_ty:?}, else={else_ty:?})"
+        ));
+    }
+
+    match (then_ty, else_ty) {
+        (Kind::TaggedUnion(then_inner), Kind::TaggedUnion(else_inner)) => {
+            let mut merged = then_inner.clone();
+            for arm in else_inner {
+                if !merged.contains(arm) {
+                    merged.push(arm.clone());
+                }
+            }
+            let else_remap = else_inner.iter()
+                .map(|arm| merged.iter().position(|m| m == arm).unwrap())
+                .collect();
+            Ok(IfMerge::MergeTaggedUnions { merged_arms: merged, else_remap })
+        }
+        (Kind::TaggedUnion(inner), _) => {
+            let mut merged = inner.clone();
+            merged.push(else_ty.clone());
+            Ok(IfMerge::AppendElseArm { merged_arms: merged })
+        }
+        (_, Kind::TaggedUnion(inner)) => {
+            let mut merged = inner.clone();
+            merged.push(then_ty.clone());
+            Ok(IfMerge::AppendThenArm { merged_arms: merged })
+        }
+        _ => unreachable!("then_is_tu || else_is_tu guarantees at least one TaggedUnion branch"),
+    }
+}
+
+// ── `++` tuple-to-vector coercion ────────────────────────────────────────────
+
+/// Which side (if either) of a `lhs ++ rhs` needs its literal Tuple coerced
+/// into a Vector before the runtime concat call. Mirrors
+/// `codegen::compile_vec_concat`'s coercion exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConcatMerge {
+    /// Both sides are already `Vector` — no coercion.
+    Same,
+    /// `lhs` is a `Tuple`; coerce it into a `Vector` matching `rhs`'s element kind.
+    CoerceLhsToVector,
+    /// `rhs` is a `Tuple`; coerce it into a `Vector` matching `lhs`'s element kind.
+    CoerceRhsToVector,
+}
+
+/// Decide how `lhs ++ rhs` merges, and the resulting (always-`Vector`) Kind.
+/// `Err` when neither side is a `Vector` to coerce the other towards.
+pub fn merge_concat_kinds(lhs: &Kind, rhs: &Kind) -> Result<(ConcatMerge, Kind), String> {
+    match (lhs, rhs) {
+        (Kind::Vector(ek), Kind::Vector(_)) => Ok((ConcatMerge::Same, Kind::Vector(ek.clone()))),
+        (Kind::Tuple(_), Kind::Vector(ek)) => Ok((ConcatMerge::CoerceLhsToVector, Kind::Vector(ek.clone()))),
+        (Kind::Vector(ek), Kind::Tuple(_)) => Ok((ConcatMerge::CoerceRhsToVector, Kind::Vector(ek.clone()))),
+        _ => Err(format!("`++` requires vector (X*) operands, got {lhs:?} ++ {rhs:?}")),
+    }
+}
+
 
 

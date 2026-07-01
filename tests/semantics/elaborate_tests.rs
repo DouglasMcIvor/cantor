@@ -138,3 +138,81 @@ fn in_rhs_is_set_position_regardless_of_surrounding_position() {
     assert_eq!(rhs.kind_of, Kind::Int);
     assert_eq!(body.kind_of, Kind::Bool);
 }
+
+// ── Stage 2a: `if`/`++`/vector-indexing gaps closed via kind::merge_* ───────
+
+#[test]
+fn if_merges_tuple_and_scalar_branches_into_tagged_union() {
+    // Neither branch is already a TaggedUnion, but one is a Tuple — merges
+    // into a fresh 2-arm union (mirrors codegen's `IfMerge::NewTaggedUnion`).
+    let def = only_function("f : Nat -> (Nat * Nat) | Nat\nf(x) = if x > 0 then (x, x) else x");
+    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
+    assert_eq!(body.kind_of, Kind::TaggedUnion(vec![Kind::Tuple(vec![Kind::Int, Kind::Int]), Kind::Int]));
+}
+
+#[test]
+fn if_extends_existing_tagged_union_with_new_arm() {
+    // `then` is already a 2-arm TaggedUnion (from the inner `if`); `else` is a
+    // plain Bool appended as a third arm (mirrors `IfMerge::AppendElseArm`).
+    let def = only_function(
+        "f : Nat -> (Nat * Nat) | Nat | Bool\nf(x) = if x > 2 then (if x > 5 then (x, x) else x) else false"
+    );
+    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
+    assert_eq!(body.kind_of, Kind::TaggedUnion(vec![Kind::Tuple(vec![Kind::Int, Kind::Int]), Kind::Int, Kind::Bool]));
+}
+
+#[test]
+fn if_merges_two_different_tagged_unions() {
+    // Both branches are already (different) TaggedUnions — arms dedup, then's
+    // arms first (mirrors `IfMerge::MergeTaggedUnions`).
+    let def = only_function(
+        "f : Nat -> (Nat * Nat) | Nat | Bool\n\
+         f(x) = if x > 3 then (if x > 5 then (x, x) else x) else (if x > 1 then false else (x, x + 1))"
+    );
+    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
+    assert_eq!(body.kind_of, Kind::TaggedUnion(vec![Kind::Tuple(vec![Kind::Int, Kind::Int]), Kind::Int, Kind::Bool]));
+}
+
+#[test]
+fn if_with_unmergeable_branch_kinds_fails_loudly() {
+    // Int vs Bool, neither a Tuple nor a TaggedUnion — no coercion path
+    // exists, so elaboration must error rather than guess a Kind.
+    let items = parse_file("f : Nat -> Int\nf(x) = if x > 0 then 1 else true")
+        .unwrap_or_else(|e| panic!("parse error: {e}"));
+    assert!(elaborate(&items).is_err(), "expected elaborate to reject unmergeable if-branches");
+}
+
+#[test]
+fn concat_coerces_tuple_literal_to_vector() {
+    // lhs is a literal Tuple; rhs (`xs`, constrained to `Nat*`) is already a
+    // Vector — lhs must be coerced, and the result Kind is the shared Vector
+    // element Kind.
+    let def = only_function("f : Nat -> Nat*\nf(x) {\n xs : Nat* = [x]\n (x, x) ++ xs\n}");
+    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let cantor::semantics::tree::SemStmt::Expr(e) = &stmts[1] else {
+        panic!("expected an Expr statement, got {:?}", stmts[1])
+    };
+    assert_eq!(e.kind_of, Kind::Vector(Box::new(Kind::Int)));
+}
+
+#[test]
+fn indexing_vector_of_tuples_yields_the_tuple_kind_unchanged() {
+    let def = only_function("f : -> Nat\nf() {\n xs : (Nat * Nat)* = [(1, 2), (3, 4)]\n xs[0]\n}");
+    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let cantor::semantics::tree::SemStmt::Expr(e) = &stmts[1] else {
+        panic!("expected an Expr statement, got {:?}", stmts[1])
+    };
+    assert_eq!(e.kind_of, Kind::Tuple(vec![Kind::Int, Kind::Int]));
+}
+
+#[test]
+fn indexing_vector_of_tagged_unions_yields_the_union_kind_unchanged() {
+    let def = only_function(
+        "f : -> Nat\nf() {\n xs : (Nat | (Nat * Bool))* = [1, (2, true)]\n xs[0]\n}"
+    );
+    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let cantor::semantics::tree::SemStmt::Expr(e) = &stmts[1] else {
+        panic!("expected an Expr statement, got {:?}", stmts[1])
+    };
+    assert_eq!(e.kind_of, Kind::TaggedUnion(vec![Kind::Int, Kind::Tuple(vec![Kind::Int, Kind::Bool])]));
+}

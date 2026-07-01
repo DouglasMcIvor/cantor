@@ -143,96 +143,73 @@ impl<'ctx> Compiler<'ctx> {
         let (else_val_raw, else_ty) = self.compile_expr(else_expr, env)?;
         let else_bb_cur = self.builder.get_insert_block().unwrap();
 
-        // When one branch is a fail struct and the other is not, coerce the
-        // non-struct branch to {i1=0, i64=val} before the phi merge.
-        let is_fail_struct = |k: &Kind| matches!(k, Kind::Tuple(e) if e.first() == Some(&Kind::Fail));
-        let needs_coerce = is_fail_struct(&then_ty) || is_fail_struct(&else_ty);
+        // The Kind-level decision (what the merged Kind is, and which
+        // coercion path gets there) is shared with the elaborator via
+        // `kind::merge_if_branches` so the two can't silently disagree; only
+        // the LLVM value construction below is codegen-specific.
+        let merge = crate::kind::merge_if_branches(&then_ty, &else_ty)
+            .map_err(CompileError::Internal)?;
 
-        // Detect cross-kind branches that need a tagged-union wrapper.
-        // Handles `then : Kind::Tuple` vs `else : Kind::Int` (and vice versa).
-        let needs_tagged_union = !needs_coerce
-            && then_ty != else_ty
-            && (matches!(&then_ty, Kind::Tuple(_)) || matches!(&else_ty, Kind::Tuple(_)))
-            && !matches!(&then_ty, Kind::TaggedUnion(_))
-            && !matches!(&else_ty, Kind::TaggedUnion(_));
-
-        // Detect the case where one or both branches are already a TaggedUnion and
-        // the kinds differ.  Covers both the simple append (one branch is a plain kind)
-        // and the full merge (both branches are different TaggedUnions).
-        let needs_extend_tagged_union = !needs_coerce
-            && !needs_tagged_union
-            && then_ty != else_ty
-            && (matches!(&then_ty, Kind::TaggedUnion(_)) || matches!(&else_ty, Kind::TaggedUnion(_)));
-
-        let (then_val, else_val, result_ty) = if needs_coerce {
-            self.builder.position_at_end(then_bb_cur);
-            let tv = self.coerce_to_fail_struct(then_val_raw, &then_ty)?;
-            self.builder.position_at_end(else_bb_cur);
-            let ev = self.coerce_to_fail_struct(else_val_raw, &else_ty)?;
-            (tv, ev, Kind::Tuple(vec![Kind::Fail, Kind::Int]))
-        } else if needs_tagged_union {
-            let arms = vec![then_ty.clone(), else_ty.clone()];
-            self.builder.position_at_end(then_bb_cur);
-            let tv = self.build_tagged_union_value(0, then_val_raw, &then_ty, &arms)?;
-            self.builder.position_at_end(else_bb_cur);
-            let ev = self.build_tagged_union_value(1, else_val_raw, &else_ty, &arms)?;
-            (tv, ev, Kind::TaggedUnion(arms))
-        } else if needs_extend_tagged_union {
-            match (&then_ty, &else_ty) {
-                (Kind::TaggedUnion(then_inner), Kind::TaggedUnion(else_inner)) => {
-                    // Both branches are different TaggedUnions.
-                    // Merge: start with then_inner, append unique arms from else_inner.
-                    let mut merged_arms = then_inner.clone();
-                    for arm in else_inner {
-                        if !merged_arms.contains(arm) {
-                            merged_arms.push(arm.clone());
-                        }
-                    }
-                    // Mapping: else_arm_idx → merged_arm_idx (for runtime re-tagging).
-                    let else_to_merged: Vec<usize> = else_inner.iter()
-                        .map(|arm| merged_arms.iter().position(|m| m == arm).unwrap())
-                        .collect();
-
-                    self.builder.position_at_end(then_bb_cur);
-                    let tv = self.rewrap_tagged_union_value(then_val_raw, then_inner, &merged_arms)?;
-
-                    self.builder.position_at_end(else_bb_cur);
-                    let old_struct = AggregateValueEnum::StructValue(else_val_raw.into_struct_value());
-                    let old_tag = self.builder
-                        .build_extract_value(old_struct, 0, "tu_merge_tag")
-                        .map_err(|e| CompileError::Internal(e.to_string()))?
-                        .into_int_value();
-                    let new_tag = self.remap_tagged_union_tag(old_tag, &else_to_merged)?;
-                    let ev = self.rewrap_tagged_union_with_tag(else_val_raw, else_inner, &merged_arms, new_tag)?;
-
-                    (tv, ev, Kind::TaggedUnion(merged_arms))
-                }
-                (Kind::TaggedUnion(inner_arms), _) => {
-                    // then = TaggedUnion, else = plain kind: append else as new arm.
-                    let n = inner_arms.len();
-                    let mut new_arms = inner_arms.clone();
-                    new_arms.push(else_ty.clone());
-                    self.builder.position_at_end(then_bb_cur);
-                    let tv = self.rewrap_tagged_union_value(then_val_raw, inner_arms, &new_arms)?;
-                    self.builder.position_at_end(else_bb_cur);
-                    let ev = self.build_tagged_union_value(n, else_val_raw, &else_ty, &new_arms)?;
-                    (tv, ev, Kind::TaggedUnion(new_arms))
-                }
-                (_, Kind::TaggedUnion(inner_arms)) => {
-                    // then = plain kind, else = TaggedUnion: append then as new arm.
-                    let n = inner_arms.len();
-                    let mut new_arms = inner_arms.clone();
-                    new_arms.push(then_ty.clone());
-                    self.builder.position_at_end(then_bb_cur);
-                    let tv = self.build_tagged_union_value(n, then_val_raw, &then_ty, &new_arms)?;
-                    self.builder.position_at_end(else_bb_cur);
-                    let ev = self.rewrap_tagged_union_value(else_val_raw, inner_arms, &new_arms)?;
-                    (tv, ev, Kind::TaggedUnion(new_arms))
-                }
-                _ => unreachable!("needs_extend_tagged_union guarantees at least one TaggedUnion branch"),
+        let (then_val, else_val, result_ty) = match &merge {
+            crate::kind::IfMerge::Same(_) => (then_val_raw, else_val_raw, then_ty),
+            crate::kind::IfMerge::CoerceToFailStruct => {
+                self.builder.position_at_end(then_bb_cur);
+                let tv = self.coerce_to_fail_struct(then_val_raw, &then_ty)?;
+                self.builder.position_at_end(else_bb_cur);
+                let ev = self.coerce_to_fail_struct(else_val_raw, &else_ty)?;
+                (tv, ev, merge.result_kind())
             }
-        } else {
-            (then_val_raw, else_val_raw, then_ty)
+            crate::kind::IfMerge::NewTaggedUnion { arms } => {
+                self.builder.position_at_end(then_bb_cur);
+                let tv = self.build_tagged_union_value(0, then_val_raw, &then_ty, arms)?;
+                self.builder.position_at_end(else_bb_cur);
+                let ev = self.build_tagged_union_value(1, else_val_raw, &else_ty, arms)?;
+                (tv, ev, merge.result_kind())
+            }
+            crate::kind::IfMerge::MergeTaggedUnions { merged_arms, else_remap } => {
+                let Kind::TaggedUnion(then_inner) = &then_ty else {
+                    unreachable!("MergeTaggedUnions guarantees a TaggedUnion then-branch")
+                };
+                let Kind::TaggedUnion(else_inner) = &else_ty else {
+                    unreachable!("MergeTaggedUnions guarantees a TaggedUnion else-branch")
+                };
+
+                self.builder.position_at_end(then_bb_cur);
+                let tv = self.rewrap_tagged_union_value(then_val_raw, then_inner, merged_arms)?;
+
+                self.builder.position_at_end(else_bb_cur);
+                let old_struct = AggregateValueEnum::StructValue(else_val_raw.into_struct_value());
+                let old_tag = self.builder
+                    .build_extract_value(old_struct, 0, "tu_merge_tag")
+                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                    .into_int_value();
+                let new_tag = self.remap_tagged_union_tag(old_tag, else_remap)?;
+                let ev = self.rewrap_tagged_union_with_tag(else_val_raw, else_inner, merged_arms, new_tag)?;
+
+                (tv, ev, merge.result_kind())
+            }
+            crate::kind::IfMerge::AppendElseArm { merged_arms } => {
+                let Kind::TaggedUnion(inner_arms) = &then_ty else {
+                    unreachable!("AppendElseArm guarantees a TaggedUnion then-branch")
+                };
+                let n = inner_arms.len();
+                self.builder.position_at_end(then_bb_cur);
+                let tv = self.rewrap_tagged_union_value(then_val_raw, inner_arms, merged_arms)?;
+                self.builder.position_at_end(else_bb_cur);
+                let ev = self.build_tagged_union_value(n, else_val_raw, &else_ty, merged_arms)?;
+                (tv, ev, merge.result_kind())
+            }
+            crate::kind::IfMerge::AppendThenArm { merged_arms } => {
+                let Kind::TaggedUnion(inner_arms) = &else_ty else {
+                    unreachable!("AppendThenArm guarantees a TaggedUnion else-branch")
+                };
+                let n = inner_arms.len();
+                self.builder.position_at_end(then_bb_cur);
+                let tv = self.build_tagged_union_value(n, then_val_raw, &then_ty, merged_arms)?;
+                self.builder.position_at_end(else_bb_cur);
+                let ev = self.rewrap_tagged_union_value(else_val_raw, inner_arms, merged_arms)?;
+                (tv, ev, merge.result_kind())
+            }
         };
 
         // Emit unconditional branches and capture the ending blocks.
@@ -384,29 +361,37 @@ impl<'ctx> Compiler<'ctx> {
         let (lv, lk) = self.compile_expr(lhs, env)?;
         let (rv, rk) = self.compile_expr(rhs, env)?;
 
-        // Coerce a literal tuple to a vector if the other side is a vector.
-        let (lv, lk) = match (&lk, &rk) {
-            (Kind::Tuple(elems), Kind::Vector(ek)) => {
+        // The Kind-level decision (does either side's literal Tuple need
+        // coercing into a Vector, and what's the resulting element Kind) is
+        // shared with the elaborator via `kind::merge_concat_kinds`, so the
+        // two can't silently disagree; only the LLVM value construction
+        // below is codegen-specific.
+        let (mode, result_kind) = crate::kind::merge_concat_kinds(&lk, &rk)
+            .map_err(|e| CompileError::Internal(format!("{e} at {_span:?}")))?;
+        let elem_kind = match &result_kind {
+            Kind::Vector(ek) => ek.as_ref().clone(),
+            _ => unreachable!("merge_concat_kinds always returns a Vector result Kind"),
+        };
+
+        let (lv, _lk) = match mode {
+            crate::kind::ConcatMerge::CoerceLhsToVector => {
+                let Kind::Tuple(elems) = &lk else {
+                    unreachable!("CoerceLhsToVector guarantees a Tuple lhs")
+                };
                 let elems = elems.clone();
-                let ek = ek.as_ref().clone();
-                self.compile_tuple_as_vector(lv, &elems, &ek)?
+                self.compile_tuple_as_vector(lv, &elems, &elem_kind)?
             }
             _ => (lv, lk),
         };
-        let (rv, rk) = match (&rk, &lk) {
-            (Kind::Tuple(elems), Kind::Vector(ek)) => {
+        let (rv, _rk) = match mode {
+            crate::kind::ConcatMerge::CoerceRhsToVector => {
+                let Kind::Tuple(elems) = &rk else {
+                    unreachable!("CoerceRhsToVector guarantees a Tuple rhs")
+                };
                 let elems = elems.clone();
-                let ek = ek.as_ref().clone();
-                self.compile_tuple_as_vector(rv, &elems, &ek)?
+                self.compile_tuple_as_vector(rv, &elems, &elem_kind)?
             }
             _ => (rv, rk),
-        };
-
-        let elem_kind = match (&lk, &rk) {
-            (Kind::Vector(ek), Kind::Vector(_)) => ek.as_ref().clone(),
-            _ => return Err(CompileError::Internal(format!(
-                "`++` requires vector (X*) operands, got {lk:?} ++ {rk:?} at {_span:?}"
-            ))),
         };
 
         let concat_fn = match &elem_kind {

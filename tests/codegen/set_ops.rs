@@ -460,3 +460,22 @@ main(x) = if f(x) in Bool then 1 else 0
     assert_eq!(jit_src_one_arg(src, 2), 1); // Bool arm (tag 2, remapped from 0)
     assert_eq!(jit_src_one_arg(src, 0), 0); // Tuple arm (from else path)
 }
+
+// ── `if` branches that cannot be merged fail loudly ─────────────────────────
+//
+// Neither branch is a Tuple or TaggedUnion here, so there's no coercion path
+// codegen (or `kind::merge_if_branches`) can take — this used to fall through
+// silently and build a phi from two different LLVM types (i64 vs i1); it now
+// reports a compile error instead of producing invalid IR.
+
+#[test]
+fn cross_kind_int_vs_bool_branches_reports_compile_error() {
+    use cantor::{codegen::compile_file, parser::parse_file};
+    use inkwell::context::Context;
+
+    let src = "main : Nat -> Int\nmain(x) = if x > 0 then 1 else true";
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let ctx = Context::create();
+    let result = compile_file(&ctx, &items);
+    assert!(result.is_err(), "expected a compile error, got {result:?}");
+}
