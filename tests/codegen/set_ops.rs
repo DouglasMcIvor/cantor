@@ -262,6 +262,24 @@ fn cross_kind_nat_to_bool_or_nat_range() {
     assert_eq!(jit_src_tagged_range(src, 0), TaggedScalar { tag: 1, payload: 0 });
 }
 
+// Narrowing a mixed-Kind TaggedUnion (Bool | Nat) down to a single arm's Kind
+// is never sound — a Nat-arm payload is not a valid Bool (and vice versa), and
+// there's no runtime tag check in this path, unlike `x in Bool`-style
+// membership. This must be a compile error, not a silent payload truncation
+// (regression test for narrow_tagged_union, which used to `trunc` the raw i64
+// payload to i1 regardless of which arm it actually held).
+#[test]
+fn cross_kind_bool_or_nat_domain_narrowed_to_bool_reports_compile_error() {
+    use cantor::{codegen::compile_file, parser::parse_file};
+    use inkwell::context::Context;
+
+    let src = "bad : Bool | Nat -> Bool\nbad(x) = x";
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let ctx = Context::create();
+    let result = compile_file(&ctx, &items);
+    assert!(result.is_err(), "expected a compile error, got {result:?}");
+}
+
 // ── Cross-kind: tuples mixed with scalar sets ─────────────────────────────────
 // A * B is an {i64, i64} struct in LLVM IR; mixing it with Bool or Nat in a
 // union requires a tagged-union representation ({i1 tag, payload}).  The

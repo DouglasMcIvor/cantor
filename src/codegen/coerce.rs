@@ -273,9 +273,22 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Narrow a `TaggedUnion(arms)` value down to a plain scalar `expected`
     /// Kind by dropping the tag and reading the single i64 payload field.
-    /// Valid only when every arm is a single-leaf scalar (Int/Bool) — e.g.
-    /// unwrapping a `+`-typed value (forced-disjoint, same payload shape per
-    /// arm) back into a non-disjoint context.
+    ///
+    /// Valid *only* when every arm already has the exact same Kind as
+    /// `expected` — e.g. unwrapping a `+`-typed value like `{0} + NatPos`
+    /// (forced-disjoint, but every arm is `Kind::Int`) back into a
+    /// non-disjoint `Int` context. Dropping the tag is sound here because no
+    /// information about *which value space* the payload belongs to is lost —
+    /// every arm was already that value space.
+    ///
+    /// Rejects (rather than narrowing) a union with a *mixed* Kind arm, e.g.
+    /// `Bool | Nat` (`TaggedUnion([Bool, Int])`) narrowed to `Bool`: Bool and
+    /// Int are disjoint in Cantor's value model, so an Int-arm payload is not
+    /// a valid boolean and must not be silently truncated into one. There is
+    /// no language construct yet to inspect which arm a mixed-Kind
+    /// `TaggedUnion` value actually holds at runtime, so narrowing one down
+    /// to a single arm's Kind can only be done when it's unconditionally true
+    /// of every arm.
     fn narrow_tagged_union(
         &self,
         val: BasicValueEnum<'ctx>,
@@ -283,10 +296,13 @@ impl<'ctx> Compiler<'ctx> {
         expected: &Kind,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let supported = matches!(expected, Kind::Int | Kind::Bool)
-            && val_arms.iter().all(|k| matches!(k, Kind::Int | Kind::Bool));
+            && val_arms.iter().all(|k| k == expected);
         if !supported {
             return Err(CompileError::Internal(format!(
-                "narrow_tagged_union: not yet implemented for arms {val_arms:?} -> {expected:?}"
+                "narrow_tagged_union: cannot narrow a TaggedUnion with arms {val_arms:?} down to \
+                 {expected:?} — every arm must already be {expected:?} for this to be sound \
+                 (e.g. `{{0}} + NatPos -> Int` is fine; `Bool | Nat -> Bool` is not, since a Nat \
+                 arm is not a valid Bool)"
             )));
         }
         let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());

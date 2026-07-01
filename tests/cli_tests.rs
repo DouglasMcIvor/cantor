@@ -395,6 +395,21 @@ fn llvm_ir_shows_tagged_union_wire_type_for_disjoint_union() {
 }
 
 #[test]
+fn llvm_ir_reports_compile_error_for_unsound_bool_int_narrowing() {
+    // Regression test: `Bool | Nat -> Bool; bad(x) = x` requires narrowing a
+    // mixed-Kind TaggedUnion down to Bool, which used to silently truncate the
+    // raw i64 payload (ignoring the tag) instead of failing. Bool and Int are
+    // disjoint in Cantor's value model, so this must be a clean compile error
+    // even under `llvm-ir`, which otherwise skips the solver entirely.
+    let out = run_llvm_ir("bool_nat_narrow_bad.cantor");
+    assert_eq!(out.code, 1, "expected exit 1\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stderr.contains("compile error"),
+        "expected a compile error on stderr:\n{}", out.stderr
+    );
+}
+
+#[test]
 fn llvm_ir_usage_shown_for_missing_arg() {
     let out = run(&["llvm-ir"]);
     assert_eq!(out.code, 2);
