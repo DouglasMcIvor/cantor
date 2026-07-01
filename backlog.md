@@ -30,7 +30,6 @@ You probably don't want to read this unless you're me.
   until linking is complete"
 - see if we can switch to proper ListArrays for nested vecs instead of using pointers? Or perhaps the current approach 
   is better for mutability etc?
-- CLI to output IR
 - more set comprehensions features
   - math syntax `{x*2 | x ∈ Nat, x > 0}` as sugar for the python form (deferred)
   - multi-binder `{x+y for x in A for y in B}` desugaring to Cartesian product (deferred)
@@ -189,18 +188,6 @@ Algorithm:
   )
   mut m1 : Measurement = Measurement.length(3m) -- requires namespaces to exist first
   mut m2 = Measurement.volume(4l) -- requires mutable range inference to exist first
-  ```
-  ChatGPT likes it:
-  > For named products, field names feel like named projection functions. p.x is shorthand for applying the projection corresponding to the x component.
-  >
-  > For named unions, constructor names feel like named injection functions. Result.Ok(3m) is shorthand for applying the canonical injection from Meter into the Result union.
-  >
-  > Those are exactly the two fundamental morphisms associated with products and coproducts in category theory:
-  >
-  > Products have projections.
-  > Coproducts (unions) have injections.
-  >
-  > You don't need to mention category theory anywhere in the language documentation, of course, but it's a reassuring sign. When the syntax naturally lines up with deep mathematical structures, it usually means you've found something that will remain coherent as the language grows. In Cantor, . naturally denotes projection (p.x), and Constructor(...) naturally denotes injection (Result.Ok(3m)). That symmetry feels remarkably elegant.
 - mutable range inference
 - pattern matching with `match x { a => ... , b => ...}`?
 - higher order functions: X -> Y is already the set of functions from X -> Y and we can use Haskell precedence rules for X -> Y -> Z.
@@ -285,13 +272,17 @@ Algorithm:
   what exactly is Functor then? A set of what?
   I suppose F is a compile time function! while A/B is a compile time set
   The syntax might just be 'open Functor' at the global scope (rather than _within_ the function def), so
+  ```
   open Functor 
   given A, B, F
   require F in Functor
   map : (A -> B) * F(A) -> F(B)
+  ```
   then instantiation will check that F is in Functor 
   We define values within Functor by declaring it to be true:
-  (*) in Functor 
+  ```
+  (*) in Functor
+  ```
   not sure how we interpret that to be the Kleene star?
   That should cover all of list, option and error tuples etc.
 - automatic multithreading for semi-pure core?
@@ -370,9 +361,9 @@ Algorithm:
 - SMT solvers are branch heavy so aren't very SIMD/multi-thread friendly. Implication, I guess, is that we can at least try and run multiple solvers in parallel while compiling to make use of multi-threading in a simple way. Shame we can't just throw the problem at some beefy GPUs.
 - How quickly the tree of language features to implement exploded! I seem to add about 5 new items into my to do list for every one I cross off!
 - As I've been working with the LLMs to come up with the language it has ended being a lot more consistent and succinct than I expected.
-- sonnet seems to get itself tripped up by making assumptions a lot more than opus,
+- sonnet 4.6 seems to get itself tripped up by making assumptions a lot more than opus,
   and unfortunately they tend to compound: in future rounds it will read previous code and assume the prior assumptions
-  to be valid
+  to be valid. I've seen sonnet 5 do this less often so far, it appears to be better at noticing and raising issues - and recommends fixing them straight away more often.
 
 # Open questions
 
