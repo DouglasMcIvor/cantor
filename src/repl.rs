@@ -7,7 +7,7 @@ use cantor::{
     error::CompileError,
     names::check_names,
     parser::{parse_expr, parse_file},
-    solver::{CheckResult, check_file},
+    solver::{CheckOutcome, CheckResult, check_file},
     span::{Span, Symbol},
 };
 
@@ -191,7 +191,16 @@ fn add_definitions(state: &mut ReplState, new_items: Vec<Item>, src: &str) {
     state.items.extend(new_items.clone());
 
     match check_file(&state.items, crate::DEFAULT_TIMEOUT_MS) {
-        Ok(results) => {
+        Ok(outcome) => {
+            // The REPL is deliberately lenient: a definition with a
+            // Counterexample/Unknown result is still kept and displayed,
+            // exactly as before this Kind existed — only a genuine
+            // CompileError (below) rolls a definition back. Display doesn't
+            // care whether the *whole* file ended up fully proved.
+            let results: &[(String, Vec<(String, CheckResult)>)] = match &outcome {
+                CheckOutcome::Proved(tree) => &tree.results,
+                CheckOutcome::NotProved(results) => results,
+            };
             let mut any_result = false;
             for new_item in &new_items {
                 let name = item_name(new_item);

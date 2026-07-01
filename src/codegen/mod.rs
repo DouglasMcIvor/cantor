@@ -30,7 +30,7 @@ pub mod wire;
 
 use wire::tagged_union_leaf_count;
 
-pub use jit::compile_file;
+pub use jit::{compile_constrained, compile_file};
 
 /// Sentinel used only at the JIT runner boundary (main.rs → __cantor_main_runner).
 /// Not part of general codegen; all internal functions use `{i1, i64}` structs.
@@ -531,11 +531,28 @@ fn eval_const(expr: &Expr, known: &HashMap<Symbol, i64>) -> Result<i64, CompileE
 }
 
 /// Compile every function in `items` into a single JIT module.
-/// Elaborates once up front, then does a two-pass compilation (declarations →
-/// bodies) into a `Compiler`. Both `compile_file` and `compile_to_ir` delegate here.
+/// Elaborates `items` up front, then delegates to `compile_elaborated`.
+/// Both `compile_file` and `compile_to_ir` use this — they don't require a
+/// proof, unlike `compile_constrained`.
 pub(super) fn compile_items<'ctx>(
     ctx: &'ctx Context,
     items: &[Item],
+) -> Result<Compiler<'ctx>, CompileError> {
+    let sem_items = elaborate(items)?;
+    compile_elaborated(ctx, items, &sem_items)
+}
+
+/// Compile an already-elaborated file — the shared core of `compile_items`
+/// and `compile_constrained`. Does a two-pass compilation (declarations →
+/// bodies) into a `Compiler`.
+///
+/// Takes `items` *and* `sem_items` because pass 0 (constant-folding) below
+/// deliberately walks the raw AST rather than the elaborated tree — see its
+/// comment for why.
+pub(super) fn compile_elaborated<'ctx>(
+    ctx: &'ctx Context,
+    items: &[Item],
+    sem_items: &[SemItem],
 ) -> Result<Compiler<'ctx>, CompileError> {
     let mut compiler = Compiler::new(ctx, "cantor");
     compiler.declare_runtime_functions();
@@ -594,8 +611,6 @@ pub(super) fn compile_items<'ctx>(
             (sym.clone(), (llvm_val.into(), Kind::Int))
         })
         .collect();
-
-    let sem_items = elaborate(items)?;
 
     // Pass 1 — declare all function signatures so forward calls resolve.
     // Param and return Kinds come from the elaborator's first-signature

@@ -7,12 +7,13 @@ use inkwell::context::Context;
 use std::collections::HashMap;
 
 use cantor::{
-    ast::{Item, NameDefs},
-    codegen::{compile_file, compile_to_ir, wire::range_kind},
+    ast::Item,
+    codegen::{compile_constrained, compile_to_ir},
     kind::Kind,
     names::check_names,
     parser::parse_file,
-    solver::{CheckResult, check_file},
+    semantics::tree::SemItem,
+    solver::{CheckOutcome, CheckResult, ConstrainedTree, check_file},
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -124,12 +125,19 @@ fn main() {
         }
     }
 
-    let all_results = match check_file(&items, timeout_ms) {
-        Ok(r) => r,
+    let outcome = match check_file(&items, timeout_ms) {
+        Ok(o) => o,
         Err(e) => {
             eprintln!("internal error: {e}");
             process::exit(1);
         }
+    };
+
+    // Display works identically whether or not the file was fully proved —
+    // only `do_run` below cares about which `CheckOutcome` arm this is.
+    let all_results: &[(String, Vec<(String, CheckResult)>)] = match &outcome {
+        CheckOutcome::Proved(tree) => &tree.results,
+        CheckOutcome::NotProved(results) => results,
     };
 
     let mut n_proved = 0usize;
@@ -147,7 +155,7 @@ fn main() {
         })
         .collect();
 
-    for (name, sig_results) in &all_results {
+    for (name, sig_results) in all_results {
         let item = item_by_name.get(name.as_str());
         for (i, (label, result)) in sig_results.iter().enumerate() {
             let sig_display = match item {
@@ -188,14 +196,23 @@ fn main() {
     );
 
     if do_run {
-        run_main(&items, n_counter, n_unknown, path);
+        match outcome {
+            CheckOutcome::Proved(tree) => run_main(tree, path),
+            CheckOutcome::NotProved(_) => {
+                eprintln!(
+                    "error: not running — {} counterexample(s), {} unknown result(s) found above",
+                    n_counter, n_unknown
+                );
+                process::exit(1);
+            }
+        }
     } else if n_counter > 0 || n_unknown > 0 {
         process::exit(1);
     }
 }
 
-fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
-    let has_main = items.iter().any(|item| match item {
+fn run_main(tree: ConstrainedTree, path: &str) {
+    let has_main = tree.items.iter().any(|item| match item {
         Item::FunctionDef(def) => def.name.0 == "main" && def.params.is_empty(),
         Item::NameDef(_) => false,
     });
@@ -205,23 +222,8 @@ fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
         process::exit(1);
     }
 
-    if n_counter > 0 {
-        eprintln!(
-            "error: not running — {} counterexample(s) found above",
-            n_counter
-        );
-        process::exit(1);
-    }
-
-    if n_unknown > 0 {
-        eprintln!(
-            "warning: {} signature(s) could not be fully verified — running anyway",
-            n_unknown
-        );
-    }
-
     let ctx = Context::create();
-    let engine = match compile_file(&ctx, items) {
+    let engine = match compile_constrained(&ctx, &tree) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("{path}: compile error: {e}");
@@ -229,17 +231,11 @@ fn run_main(items: &[Item], n_counter: usize, n_unknown: usize, path: &str) {
         }
     };
 
-    let name_defs: NameDefs = items.iter()
-        .filter_map(|item| match item {
-            Item::NameDef(def) => Some((def.name.clone(), def.clone())),
-            _ => None,
-        })
-        .collect();
-
-    // Determine main's return Kind from the first signature.
-    let main_return_kind = items.iter().find_map(|item| match item {
-        Item::FunctionDef(def) if def.name.0 == "main" && def.params.is_empty() => {
-            def.sigs.first().map(|s| range_kind(&s.range, &name_defs))
+    // Determine main's return Kind from the already-elaborated tree — no need
+    // to recompute it from the raw ast via `wire::range_kind` a second time.
+    let main_return_kind = tree.sem_items.iter().find_map(|item| match item {
+        SemItem::FunctionDef(def) if def.name.0 == "main" && def.params.is_empty() => {
+            Some(def.return_kind.clone())
         }
         _ => None,
     }).unwrap_or(Kind::Int);

@@ -19,10 +19,13 @@
 //! - Only integer-sorted parameters and return values.
 
 mod blocks;
+mod constrained;
 mod encode;
 mod loops;
 mod membership;
 mod sort;
+
+pub use constrained::ConstrainedTree;
 
 use std::collections::{HashMap, HashSet};
 
@@ -67,6 +70,20 @@ pub enum CheckResult {
 
 type FunctionEnv<'a> = HashMap<Symbol, &'a SemFunctionDef>;
 
+/// Result of checking a whole file: either every obligation was proved
+/// (yielding a [`ConstrainedTree`] — see there for why that's the only way
+/// to construct one), or at least one signature has a `Counterexample` or
+/// `Unknown` result somewhere, in which case the full per-signature report
+/// is returned unchanged so callers can still display it.
+///
+/// This is distinct from `check_file`'s outer `Result`'s `Err` arm, which is
+/// reserved for a hard `CompileError` (elaboration/internal failure) —
+/// "not every obligation proved" is not a failure of `check_file` itself.
+pub enum CheckOutcome {
+    Proved(ConstrainedTree),
+    NotProved(Vec<(String, Vec<(String, CheckResult)>)>),
+}
+
 // ── Distinct predicate builder ────────────────────────────────────────────────
 
 /// For each `D = distinct B` in `name_defs`, create a CVC5 uninterpreted sort plus
@@ -106,7 +123,12 @@ fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs) -> Dist
 ///
 /// `timeout_ms` is applied as the `tlimit` option on every fresh solver
 /// instance.  Pass `0` to disable the limit entirely.
-pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<Vec<(String, Vec<(String, CheckResult)>)>, crate::error::CompileError> {
+///
+/// Returns `Ok(CheckOutcome::Proved(tree))` only when every signature in the
+/// file resolved to `CheckResult::Proved` — that `ConstrainedTree` is the
+/// only handle `codegen::compile_constrained` accepts, so a program can only
+/// be compiled once this function has verified it in full.
+pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<CheckOutcome, crate::error::CompileError> {
     let sem_items = elaborate(items)?;
 
     let fn_env: FunctionEnv<'_> = sem_items
@@ -125,7 +147,7 @@ pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<Vec<(String, Vec<(S
         })
         .collect();
 
-    sem_items
+    let results: Vec<(String, Vec<(String, CheckResult)>)> = sem_items
         .iter()
         .filter_map(|item| match item {
             SemItem::FunctionDef(def) => {
@@ -140,7 +162,17 @@ pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<Vec<(String, Vec<(S
                 Some(Ok((def.name.0.clone(), vec![(label, result)])))
             }
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+
+    let all_proved = results
+        .iter()
+        .all(|(_, sig_results)| sig_results.iter().all(|(_, r)| *r == CheckResult::Proved));
+
+    if all_proved {
+        Ok(CheckOutcome::Proved(ConstrainedTree { items: items.to_vec(), sem_items, results }))
+    } else {
+        Ok(CheckOutcome::NotProved(results))
+    }
 }
 
 /// Check one function definition against its signatures.

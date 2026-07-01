@@ -1,8 +1,8 @@
 use inkwell::{OptimizationLevel, context::Context, execution_engine::ExecutionEngine, values::FunctionValue};
 
-use crate::{ast::Item, error::CompileError};
+use crate::{ast::Item, error::CompileError, solver::ConstrainedTree};
 
-use super::{Compiler, compile_items};
+use super::{Compiler, compile_elaborated, compile_items};
 
 impl<'ctx> Compiler<'ctx> {
     /// Consume the compiler and hand the module to a JIT engine.
@@ -96,6 +96,19 @@ pub fn compile_file<'ctx>(
     items: &[Item],
 ) -> Result<ExecutionEngine<'ctx>, CompileError> {
     compile_items(ctx, items)?
+        .into_jit_engine()
+        .map_err(CompileError::Internal)
+}
+
+/// Compile an already fully-proved file to a JIT execution engine, without
+/// re-running `elaborate()` — the `solver`-verified counterpart to
+/// `compile_file`. Only reachable once `solver::check_file` has returned a
+/// `ConstrainedTree`, so this is the entry point `cantor run` should use.
+pub fn compile_constrained<'ctx>(
+    ctx: &'ctx Context,
+    tree: &ConstrainedTree,
+) -> Result<ExecutionEngine<'ctx>, CompileError> {
+    compile_elaborated(ctx, &tree.items, &tree.sem_items)?
         .into_jit_engine()
         .map_err(CompileError::Internal)
 }

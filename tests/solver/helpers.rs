@@ -1,15 +1,20 @@
 use cantor::{
     parser::parse_file,
-    solver::check_file,
+    solver::{CheckOutcome, check_file},
 };
 
 pub use cantor::solver::CheckResult;
 
 /// Parse `src`, build the full function environment, and return the results
-/// for every function in the file.
+/// for every function in the file — regardless of whether the file as a
+/// whole was fully proved (tests want the per-signature `CheckResult`
+/// either way, not the `ConstrainedTree` gate).
 pub fn check_all(src: &str) -> Vec<(String, Vec<(String, CheckResult)>)> {
     let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
-    check_file(&items, 60_000).unwrap_or_else(|e| panic!("check error: {e}"))
+    match check_file(&items, 60_000).unwrap_or_else(|e| panic!("check error: {e}")) {
+        CheckOutcome::Proved(tree) => tree.results,
+        CheckOutcome::NotProved(results) => results,
+    }
 }
 
 /// Parse a single-function source, check it, and return its signature results.
