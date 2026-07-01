@@ -486,6 +486,14 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
 
         ExprKind::If { cond, then_expr, else_expr } => {
             let c = elaborate_expr(cond, Position::Value, ctx, env)?;
+            if c.kind_of != Kind::Bool {
+                return Err(CompileError::Internal(format!(
+                    "if-condition must be Bool, got {:?} — Bool and Int are disjoint in \
+                     Cantor's value model, so a value from e.g. a `Bool | Int`-family union \
+                     cannot be used as a condition without narrowing it explicitly first",
+                    c.kind_of
+                )));
+            }
             let t = elaborate_expr(then_expr, pos, ctx, env)?;
             let e = elaborate_expr(else_expr, pos, ctx, env)?;
             let kind_of = match pos {

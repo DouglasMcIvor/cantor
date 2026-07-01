@@ -254,9 +254,10 @@ pub(crate) fn set_sort<'tm>(
             );
         }
         // Union (`|`) and disjoint union (`+`).
-        // Cross-kind (tuple arm ∪ scalar, sequence arm ∪ non-same-sequence, or
-        // distinct-sort ∪ anything different) → CVC5 algebraic datatype.
-        // Same-kind scalar unions (Bool | Nat, Int | NatPos, Nat* | Int*) → no DT.
+        // Cross-kind (tuple arm ∪ scalar, sequence arm ∪ non-same-sequence,
+        // distinct-sort ∪ anything different, or Bool ∪ Int-family) → CVC5
+        // algebraic datatype. Same-kind scalar unions (Int | NatPos, Nat* |
+        // Int*) → no DT.
         SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } | SemExprKind::DisjointUnion(lhs, rhs) => {
             let ls = set_sort(tm, lhs, distinct_preds, name_defs)?;
             let rs = set_sort(tm, rhs, distinct_preds, name_defs)?;
@@ -265,17 +266,21 @@ pub(crate) fn set_sort<'tm>(
             // give Seq<Int>); sequences with different element sorts, or one sequence and
             // one non-sequence, are cross-kind and need a DT.
             let seq_is_cross_kind = (ls.is_sequence() || rs.is_sequence()) && ls != rs;
+            // Bool and Int are disjoint value domains in Cantor (no implicit 0/1
+            // conversion) — one boolean arm and one non-boolean arm always needs a
+            // real tagged wrapper, the same as a tuple/scalar mix.
+            let bool_is_cross_kind = ls.is_boolean() != rs.is_boolean();
             if ls.is_tuple() || rs.is_tuple() || ls.is_dt() || rs.is_dt()
                 || is_distinct_sort(&ls) || is_distinct_sort(&rs)
-                || seq_is_cross_kind
+                || seq_is_cross_kind || bool_is_cross_kind
             {
                 // Cross-kind: build a CVC5 algebraic datatype with one constructor per arm.
                 let arms = flatten_any_union(set_expr);
                 return Some(build_union_datatype_sort(tm, &arms, distinct_preds, name_defs));
             }
-            // Both arms are plain scalar (Int-family) or same-sort sequences;
-            // integer sort covers the scalar case, and the sequence case uses OR of constraints.
-            if ls.is_sequence() { ls } else { tm.integer_sort() }
+            // Both arms are the same underlying sort (Int-family scalars, matching
+            // sequences, or both boolean) — no wrapper needed.
+            ls
         }
         // `X*` — Kleene star: variable-length sequence of X.
         // Encoded as the CVC5 sequence sort `(Seq elem)` via the theory of sequences.

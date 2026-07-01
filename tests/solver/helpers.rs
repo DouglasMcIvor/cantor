@@ -55,3 +55,11 @@ pub fn unknown(src: &str) {
         "expected Unknown for `{label}`, got {result:?}"
     );
 }
+
+/// Assert that `src` fails to elaborate/check at all (a whole-file `CompileError`,
+/// not a per-signature `Counterexample`/`Unknown`) — e.g. a Kind mismatch the
+/// elaborator rejects loudly rather than silently coercing.
+pub fn rejected(src: &str) {
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    assert!(check_file(&items, 60_000).is_err(), "expected `{src}` to fail elaboration/checking");
+}

@@ -66,9 +66,10 @@ fn if_bare_bool_int_branches_rejected_at_elaboration() {
     // No Tuple/TaggedUnion side and no explicit conversion — merge_if_branches
     // has no coercion for this, so the whole file fails to elaborate rather
     // than silently treating `false` as 0.
-    let items = cantor::parser::parse_file("f : Nat -> Int\nf(n) = if n > 0 then n else false")
-        .unwrap_or_else(|e| panic!("parse error: {e}"));
-    assert!(cantor::solver::check_file(&items, 60_000).is_err());
+    rejected("
+f : Nat -> Int
+f(n) = if n > 0 then n else false
+");
 }
 
 // ── Bool branch + fail branch ─────────────────────────────────────────────────

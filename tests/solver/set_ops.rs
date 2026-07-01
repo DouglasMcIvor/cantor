@@ -390,8 +390,13 @@ f(x) = x
 //                                                        Int has length 1 ≠ 2, so disjoint
 //                     = length-2 sequences with Nat elements
 //
-//   Bool ^ Nat = (Bool - Nat) ∪ (Nat - Bool) -- Bool ⊆ Nat (0/1), so Bool - Nat = ∅
-//              = Nat - Bool = Nat - {0,1} = {2, 3, 4, ...}
+//   Bool ^ Nat = (Bool - Nat) ∪ (Nat - Bool) -- Bool and Nat are disjoint (no
+//              implicit 0/1 conversion), so Bool - Nat = Bool and Nat - Bool = Nat
+//              = Bool | Nat (a tagged union, same as `+`)
+//   NOTE: the two tests below (`cross_sort_sym_diff_bool_nat_*`) predate this
+//   correction and still assume the old "Bool ⊆ Nat" semantics in their bodies
+//   (`x + 1` on a possibly-Bool-sorted `x`) — they'll need rewriting, not just
+//   un-ignoring, once cross-sort SymDiff is implemented.
 
 // Nat* ^ Int = sequences of length ≠ 1.
 // xs[0] + xs[1] is safe because domain guarantees length ≥ 2 (combining with non-empty).
@@ -518,14 +523,11 @@ f(x) = x
 }
 
 // ── Cross-kind: Bool ∪ integer-valued sets ────────────────────────────────────
-// These tests document the intended behaviour.  They are currently `#[ignore]`
-// because `Bool | <integer-set>` triggers a fatal CVC5 sort error
-// ("expecting a Boolean subexpression") that aborts the entire test process.
-// Un-ignore once the solver encodes Bool as an integer constraint rather than
-// the CVC5 boolean sort, or switches to a tagged-union datatype sort.
+// Bool and Int are disjoint (no implicit 0/1 conversion), so `Bool | Nat` is a
+// genuine cross-kind union — represented as a CVC5 tagged datatype, the same
+// as `(Nat * Nat) | Nat`, not collapsed into plain integer sort.
 
-// Bool ⊆ Nat (false=0, true=1), so Bool | Nat = Nat.
-// Returning a Nat value should be proved.
+// A Nat value is wrapped into the Nat arm of the tagged union; proved.
 #[test]
 fn cross_kind_bool_or_nat_range_from_nat_proved() {
     proved("
@@ -534,7 +536,7 @@ f(x) = x
 ");
 }
 
-// Bool ⊆ Bool | Nat; returning Bool values into that range is proved.
+// A Bool value is wrapped into the Bool arm of the tagged union; proved.
 #[test]
 fn cross_kind_bool_or_nat_range_from_bool_proved() {
     proved("
@@ -543,10 +545,13 @@ f(x) = x
 ");
 }
 
-// Bool | Nat = Nat as a domain; identity into Nat is proved.
+// A `Bool | Nat`-domain value is a tagged union, not a plain boolean — using
+// it directly as an `if` condition needs narrowing that doesn't exist yet, so
+// this is rejected at elaboration rather than silently treating the tag/payload
+// as a boolean (which is exactly the "Bool ⊆ Int" bug this union sort fixes).
 #[test]
-fn cross_kind_bool_or_nat_domain_to_nat_proved() {
-    proved("
+fn cross_kind_bool_or_nat_domain_used_as_condition_rejected() {
+    rejected("
 f : Bool | Nat -> Nat
 f(x) = if x then 1 else 0
 ");
