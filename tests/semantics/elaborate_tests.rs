@@ -216,3 +216,55 @@ fn indexing_vector_of_tagged_unions_yields_the_union_kind_unchanged() {
     };
     assert_eq!(e.kind_of, Kind::TaggedUnion(vec![Kind::Int, Kind::Tuple(vec![Kind::Int, Kind::Bool])]));
 }
+
+// ── Prerequisites found while planning Stage 2b ─────────────────────────────
+
+#[test]
+fn fallible_range_return_kind_is_the_fail_struct_not_the_bare_union() {
+    // `Nat -> Nat !! HTTPError` desugars to a range whose Kind must be the
+    // {Fail, payload} wrapper (mirrors codegen's `wire::range_kind`, now
+    // shared via `kind::range_kind`) — plain `set_kind` would ignore the
+    // Fail arm and give just the payload's Kind.
+    let items = parse_file(
+        "HTTPError = {400, 503}\nfetch : Nat -> Nat !! HTTPError\nfetch(x) = x"
+    ).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let items = elaborate(&items).unwrap_or_else(|e| panic!("elaborate error: {e}"));
+    let def = items.into_iter().find_map(|item| match item {
+        SemItem::FunctionDef(def) if def.name.0 == "fetch" => Some(def),
+        _ => None,
+    }).expect("no function named `fetch`");
+    assert_eq!(def.return_kind, Kind::Tuple(vec![Kind::Fail, Kind::Int]));
+    assert_eq!(def.sigs[0].return_kind, Kind::Tuple(vec![Kind::Fail, Kind::Int]));
+}
+
+#[test]
+fn for_in_over_runtime_set_variable_does_not_treat_it_as_a_set_description() {
+    // `s` here is a local variable of Kind::Set(Int), not a named set — the
+    // ForIn iterable must be elaborated as a value (a variable lookup), not
+    // as a set-position expression (which would try `set_kind` on a local
+    // name and panic with "unknown set name").
+    let def = only_function(
+        "f : -> Int\nf() {\n mut s : Set(Int) = {1, 2, 3}\n mut acc : Int = 0\n for x in s {\n acc := acc + x\n }\n acc\n}"
+    );
+    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let cantor::semantics::tree::SemStmt::ForIn { set, .. } = &stmts[2] else {
+        panic!("expected a ForIn statement, got {:?}", stmts[2])
+    };
+    assert!(matches!(set.kind, SemExprKind::Var(_)), "expected a Var node, got {:?}", set.kind);
+    assert_eq!(set.kind_of, Kind::Set(cantor::kind::SetElemKind::Int));
+}
+
+#[test]
+fn for_in_over_set_literal_elaborates_elements_as_arithmetic_not_disjoint_union() {
+    // The literal's elements must stay ordinary value-position arithmetic
+    // (`n + 1` as Add) rather than becoming a set-position DisjointUnion —
+    // `compile_for_in` compiles each element with `compile_expr` (value
+    // semantics) regardless of how the literal itself is classified.
+    let def = only_function("f : Int -> Int\nf(n) {\n for x in {n, n + 1} {\n }\n 0\n}");
+    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let cantor::semantics::tree::SemStmt::ForIn { set, .. } = &stmts[0] else {
+        panic!("expected a ForIn statement, got {:?}", stmts[0])
+    };
+    let SemExprKind::SetLit(elements) = &set.kind else { panic!("expected a SetLit, got {:?}", set.kind) };
+    assert!(matches!(elements[1].kind, SemExprKind::Add(_, _)), "expected Add, got {:?}", elements[1].kind);
+}

@@ -72,7 +72,7 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
     for item in items {
         if let Item::FunctionDef(def) = item {
             if let Some(sig) = def.sigs.first() {
-                fn_sigs.insert(def.name.clone(), FnSig { return_kind: set_kind(&sig.range, &name_defs) });
+                fn_sigs.insert(def.name.clone(), FnSig { return_kind: crate::kind::range_kind(&sig.range, &name_defs) });
             }
         }
     }
@@ -134,7 +134,7 @@ fn elaborate_sig(sig: &ast::FunctionSig, n_params: usize, ctx: &Ctx) -> Result<S
         .transpose()?;
     let range = elaborate_expr(&sig.range, Position::Set, ctx, &mut env)?;
     let param_kinds = function_param_kinds(sig, n_params, ctx.name_defs)?;
-    let return_kind = set_kind(&sig.range, ctx.name_defs);
+    let return_kind = crate::kind::range_kind(&sig.range, ctx.name_defs);
     Ok(SemFunctionSig { domain, range, param_kinds, return_kind, span: sig.span })
 }
 
@@ -208,8 +208,22 @@ fn elaborate_stmt(stmt: &Stmt, ctx: &Ctx, env: &mut Env) -> Result<SemStmt, Comp
             SemStmt::While { cond: c, body: b, span: *span }
         }
         Stmt::ForIn { var, set, body, span } => {
-            let s = elaborate_expr(set, Position::Set, ctx, env)?;
-            let elem_kind = s.kind_of.clone();
+            // Unlike domain/range/`let`-constraint positions, `for`'s iterable
+            // is never a compile-time set *description* except when it's a
+            // comprehension (which `codegen::compile_for_in` unrolls specially
+            // and which elaborate_expr already restricts to Position::Set).
+            // A set literal `{1, 2, 3}` is unrolled element-by-element, each
+            // element compiled as an ordinary value expression (e.g. `n + 1`
+            // must stay arithmetic, not become a disjoint union); a bare
+            // variable is a runtime `Kind::Set(_)` value looked up like any
+            // other local. Both need Position::Value.
+            let is_comprehension = matches!(set.kind, ExprKind::Comprehension { .. });
+            let s = elaborate_expr(set, if is_comprehension { Position::Set } else { Position::Value }, ctx, env)?;
+            let elem_kind = match &s.kind_of {
+                Kind::Set(crate::kind::SetElemKind::Int) => Kind::Int,
+                Kind::Set(crate::kind::SetElemKind::Bool) => Kind::Bool,
+                other => other.clone(),
+            };
             env.insert(var.clone(), elem_kind);
             let b = elaborate_stmts(body, ctx, env)?;
             env.remove(var);

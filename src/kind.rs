@@ -186,6 +186,52 @@ fn unop_kind(un_op: &UnOp, expr: &Box<Expr>, name_defs: &NameDefs) -> Kind {
     }
 }
 
+/// The runtime Kind of a function's return value, given its range expression.
+///
+/// `Fail` is the out-of-band failure sentinel and does not change the Kind of
+/// the successful return values; it is stripped before inspecting the union.
+/// The result drives the LLVM return-struct shape: a range of `Int | Fail`
+/// compiles to `{ i1 flag, i64 value }` with `flag == 1` indicating failure.
+/// Unlike plain `set_kind`, this is range-specific — a parameter can't be
+/// "fallible" the same way, so `set_kind` alone is correct for domains.
+pub fn range_kind(range: &Expr, name_defs: &NameDefs) -> Kind {
+    match &range.kind {
+        ExprKind::Var(sym) => {
+            // Bare `Fail` has its own Kind; it becomes the flag field of {Fail, Int} structs.
+            if sym.0 == "Fail" { Kind::Fail } else { set_kind(range, name_defs) }
+        }
+        // `A | B` — any union with a fail arm produces the fallible struct wire type {i1, i64}.
+        ExprKind::BinOp { op: BinOp::Union, lhs, rhs, .. } => {
+            range_fail_kind(range, lhs, rhs, name_defs)
+        }
+        // `A + B + C` — disjoint union; each arm retains its own kind.
+        ExprKind::BinOp { op: BinOp::Add, lhs, rhs, .. } => {
+            range_fail_kind(range, lhs, rhs, name_defs)
+        }
+        _ => set_kind(range, name_defs),
+    }
+}
+
+fn is_fail_arm(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Var(sym) if sym.0 == "Fail" => true,
+        ExprKind::BinOp { op: BinOp::Mul, lhs, .. } => {
+            matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
+        }
+        _ => false,
+    }
+}
+
+fn range_fail_kind(range: &Expr, lhs: &Expr, rhs: &Expr, name_defs: &NameDefs) -> Kind {
+    if is_fail_arm(lhs) {
+        Kind::Tuple(vec![Kind::Fail, set_kind(rhs, name_defs)])
+    } else if is_fail_arm(rhs) {
+        Kind::Tuple(vec![Kind::Fail, set_kind(lhs, name_defs)])
+    } else {
+        set_kind(range, name_defs)
+    }
+}
+
 
 /// Merge two Kinds into an atomic Kind or a Union
 fn merge_into_union(lk: Kind, rk: Kind) -> Kind {
