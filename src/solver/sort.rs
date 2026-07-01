@@ -11,29 +11,13 @@
 use cvc5::{DatatypeConstructorDecl, Kind, Sort, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, NameDefs, flatten_domain},
-    kind::{Kind as ValKind, set_kind as val_set_kind},
-    semantics::builtins,
+    ast::BinOp,
+    kind::Kind as ValKind,
+    semantics::tree::{SemExpr, SemExprKind, flatten_any_union, flatten_cartesian_product},
 };
 
 use super::membership::DistinctPreds;
-
-// ── AST flattening ────────────────────────────────────────────────────────────
-
-/// Flatten a left-associative `A | B | C` or `A + B + C` into `[A, B, C]`.
-///
-/// Used when building a CVC5 algebraic datatype for a cross-kind union so that
-/// `(A | B) | C` gives `[A, B, C]` rather than `[[A, B], C]`.
-pub(crate) fn flatten_any_union(expr: &Expr) -> Vec<&Expr> {
-    match &expr.kind {
-        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
-            let mut arms = flatten_any_union(lhs);
-            arms.push(rhs);
-            arms
-        }
-        _ => vec![expr],
-    }
-}
+use super::NameDefs;
 
 // ── Cross-kind union datatype naming ─────────────────────────────────────────
 
@@ -65,23 +49,23 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
 ///
 /// Distinct-set arms get `"ck_D_{Name}"` so they never collide with `"ck_Int"`
 /// from scalar arms — even though both would produce `ValKind::Int` via
-/// `val_set_kind`.  All other arms delegate to `arm_ctor_name`.
+/// `Kind` alone. All other arms delegate to `arm_ctor_name` using the arm's
+/// already-elaborated `kind_of`.
 ///
 /// This must be used wherever `arm_ctor_name` was previously used for
 /// individual arms in the union-datatype pipeline (creation in
 /// `build_union_datatype_sort` and lookup in `membership_constraint_for_dt`)
 /// so the names always match.
 pub(crate) fn arm_ctor_name_for_arm<'tm>(
-    arm_expr: &Expr,
+    arm_expr: &SemExpr,
     distinct_preds: &DistinctPreds<'tm>,
-    name_defs: &NameDefs,
 ) -> String {
-    if let ExprKind::Var(sym) = &arm_expr.kind {
+    if let SemExprKind::Var(sym) = &arm_expr.kind {
         if distinct_preds.contains_key(sym) {
             return format!("ck_D_{}", sym.0);
         }
     }
-    arm_ctor_name(&val_set_kind(arm_expr, name_defs))
+    arm_ctor_name(&arm_expr.kind_of)
 }
 
 // ── Cross-kind union datatype construction ───────────────────────────────────
@@ -108,17 +92,17 @@ pub(crate) fn arm_ctor_name_for_arm<'tm>(
 /// Arms are listed in the order determined by `flatten_any_union`.
 fn build_union_datatype_sort<'tm>(
     tm: &'tm TermManager,
-    arms: &[&Expr],
+    arms: &[&SemExpr],
     distinct_preds: &DistinctPreds<'tm>,
     name_defs: &NameDefs,
 ) -> Sort<'tm> {
     let arm_infos: Vec<(String, Sort<'_>)> = arms.iter().map(|arm_expr| {
-        if let ExprKind::Var(sym) = &arm_expr.kind {
+        if let SemExprKind::Var(sym) = &arm_expr.kind {
             if let Some(info) = distinct_preds.get(sym) {
                 return (format!("ck_D_{}", sym.0), info.sort.clone());
             }
         }
-        let ctor_name = arm_ctor_name(&val_set_kind(arm_expr, name_defs));
+        let ctor_name = arm_ctor_name(&arm_expr.kind_of);
         let sort = set_sort(tm, arm_expr, distinct_preds, name_defs)
             .expect("build_union_datatype_sort: arm has no representable CVC5 sort");
         (ctor_name, sort)
@@ -208,23 +192,21 @@ pub(crate) fn maybe_coerce<'tm>(
 /// ```
 /// with `t ∈ (Nat * Nat) | Nat ↔ (is_ck_T(t) ∧ f0(t) ≥ 0 ∧ f1(t) ≥ 0) ∨ (is_ck_Int(t) ∧ f0(t) ≥ 0)`.
 ///
-/// Every `ExprKind` variant that can appear in set-expression position is listed
-/// explicitly.  Adding a new `ExprKind` to the AST will cause a compile error
-/// here, forcing a conscious decision about its CVC5 sort rather than silently
-/// falling through to integer sort.
+/// Every `SemExprKind` variant that can appear in set-expression position is
+/// listed explicitly. Adding a new variant to the AST/SemanticTree will cause
+/// a compile error here, forcing a conscious decision about its CVC5 sort
+/// rather than silently falling through to integer sort.
 pub(crate) fn set_sort<'tm>(
     tm: &'tm TermManager,
-    set_expr: &Expr,
+    set_expr: &SemExpr,
     distinct_preds: &DistinctPreds<'tm>,
     name_defs: &NameDefs,
 ) -> Option<Sort<'tm>> {
     Some(match &set_expr.kind {
         // Bool has its own CVC5 boolean sort.
-        ExprKind::Var(sym) if matches!(builtins::lookup(&sym.0), Some(b) if b.kind == ValKind::Bool) => {
-            tm.boolean_sort()
-        }
+        SemExprKind::Var(_) if set_expr.kind_of == ValKind::Bool => tm.boolean_sort(),
         // Distinct sets each have their own CVC5 uninterpreted sort.
-        ExprKind::Var(sym) => {
+        SemExprKind::Var(sym) => {
             if let Some(info) = distinct_preds.get(sym) {
                 info.sort.clone()
             } else {
@@ -233,14 +215,14 @@ pub(crate) fn set_sort<'tm>(
             }
         }
         // Set literals {0}, {1, 2, 3} — elements are integers.
-        ExprKind::SetLit(_) => tm.integer_sort(),
+        SemExprKind::SetLit(_) => tm.integer_sort(),
         // Comprehensions {x for x in S} — elements are integers.
-        ExprKind::Comprehension { .. } => tm.integer_sort(),
+        SemExprKind::Comprehension { .. } => tm.integer_sort(),
         // Built-in set constructors Set(Int), Set(Bool) — variable holds an i64 pointer.
-        ExprKind::Call { .. } => tm.integer_sort(),
+        SemExprKind::Call { .. } => tm.integer_sort(),
         // `A * B * C` — Cartesian product → CVC5 tuple sort.
-        ExprKind::BinOp { op: BinOp::Mul, .. } => {
-            let parts = flatten_domain(set_expr);
+        SemExprKind::CartesianProduct(..) => {
+            let parts = flatten_cartesian_product(set_expr);
             let sorts: Vec<Sort<'_>> = parts.iter()
                 .map(|p| set_sort(tm, p, distinct_preds, name_defs))
                 .collect::<Option<Vec<_>>>()?;
@@ -248,7 +230,10 @@ pub(crate) fn set_sort<'tm>(
         }
         // Set diff (`-`) and intersection (`&`): the result is a subset of A, so its
         // CVC5 sort is the LHS sort (e.g. `Nat* - {}` is still a set of sequences).
-        ExprKind::BinOp { op: BinOp::Sub | BinOp::Intersect, lhs, .. } => {
+        SemExprKind::SetDifference(lhs, _) => {
+            return set_sort(tm, lhs, distinct_preds, name_defs);
+        }
+        SemExprKind::BinOp { op: BinOp::Intersect, lhs, .. } => {
             return set_sort(tm, lhs, distinct_preds, name_defs);
         }
         // Symmetric diff (`^`): the result contains elements from EITHER side.
@@ -256,7 +241,7 @@ pub(crate) fn set_sort<'tm>(
         // When they differ (e.g. `Nat* ^ Int` mixes sequences and integers), building
         // the correct cross-kind sort requires a datatype — not yet implemented.
         // TODO: support cross-sort SymDiff (requires same DT machinery as cross-kind Union).
-        ExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
+        SemExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
             let lhs_sort = set_sort(tm, lhs, distinct_preds, name_defs)?;
             let rhs_sort = set_sort(tm, rhs, distinct_preds, name_defs)?;
             if lhs_sort == rhs_sort {
@@ -272,7 +257,7 @@ pub(crate) fn set_sort<'tm>(
         // Cross-kind (tuple arm ∪ scalar, sequence arm ∪ non-same-sequence, or
         // distinct-sort ∪ anything different) → CVC5 algebraic datatype.
         // Same-kind scalar unions (Bool | Nat, Int | NatPos, Nat* | Int*) → no DT.
-        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
+        SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } | SemExprKind::DisjointUnion(lhs, rhs) => {
             let ls = set_sort(tm, lhs, distinct_preds, name_defs)?;
             let rs = set_sort(tm, rhs, distinct_preds, name_defs)?;
             let is_distinct_sort = |s: &Sort<'_>| distinct_preds.values().any(|i| &i.sort == s);
@@ -292,30 +277,23 @@ pub(crate) fn set_sort<'tm>(
             // integer sort covers the scalar case, and the sequence case uses OR of constraints.
             if ls.is_sequence() { ls } else { tm.integer_sort() }
         }
-        // Value-position BinOp operators must not appear in set-expression context.
-        ExprKind::BinOp {
-            op: BinOp::Div | BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le
-                | BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or
-                | BinOp::In | BinOp::NotIn | BinOp::Concat,
-            ..
-        } => unreachable!(
-            "set_sort: value-position BinOp in set-expression context: {:?}",
-            set_expr.kind
-        ),
         // `X*` — Kleene star: variable-length sequence of X.
         // Encoded as the CVC5 sequence sort `(Seq elem)` via the theory of sequences.
         // The element sort is derived recursively; if the element set has no
         // representable CVC5 sort we propagate None so callers surface Unknown.
-        ExprKind::KleeneStar(inner) => {
+        SemExprKind::KleeneStar(inner) => {
             let elem = set_sort(tm, inner, distinct_preds, name_defs)?;
             tm.mk_sequence_sort(elem)
         }
-        // Value-position ExprKind variants must never appear as set expressions.
-        // Listed explicitly so adding a new ExprKind causes a compile error here.
-        ExprKind::IntLit(_) | ExprKind::BoolLit(_) | ExprKind::UnOp { .. }
-        | ExprKind::If { .. } | ExprKind::Tuple(_) | ExprKind::Proj { .. }
-        | ExprKind::Index { .. }
-        | ExprKind::Try(_) | ExprKind::FailLit | ExprKind::FailWith(_) => unreachable!(
+        // Value-position-only variants must never appear in set-expression context.
+        // Listed explicitly so adding a new SemExprKind causes a compile error here.
+        SemExprKind::IntLit(_) | SemExprKind::BoolLit(_)
+        | SemExprKind::Add(..) | SemExprKind::Sub(..) | SemExprKind::Mul(..) | SemExprKind::Div(..)
+        | SemExprKind::SetQuotient(..)
+        | SemExprKind::BinOp { .. }
+        | SemExprKind::UnOp { .. } | SemExprKind::If { .. } | SemExprKind::Tuple(_)
+        | SemExprKind::Proj { .. } | SemExprKind::Index { .. }
+        | SemExprKind::Try(_) | SemExprKind::FailLit | SemExprKind::FailWith(_) => unreachable!(
             "set_sort: value-position expression in set-expression context: {:?}",
             set_expr.kind
         ),
@@ -335,17 +313,17 @@ pub(crate) fn set_sort<'tm>(
 ///   `Nat | (Fail * Y)`        → `Some(Nat)`
 ///   `Nat | Fail | (Fail * Y)` → `Some(Nat)`
 ///   `Fail`                    → `None`
-pub(crate) fn success_arm_of_range(range: &Expr) -> Option<&Expr> {
-    fn is_fail_arm(e: &Expr) -> bool {
-        matches!(&e.kind, ExprKind::Var(sym) if sym.0 == "Fail")
+pub(crate) fn success_arm_of_range(range: &SemExpr) -> Option<&SemExpr> {
+    fn is_fail_arm(e: &SemExpr) -> bool {
+        matches!(&e.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
             || matches!(
                 &e.kind,
-                ExprKind::BinOp { op: BinOp::Mul, lhs, .. }
-                    if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
+                SemExprKind::CartesianProduct(lhs, _)
+                    if matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
             )
     }
     if is_fail_arm(range) { return None; }
-    if let ExprKind::BinOp { op: BinOp::Union, lhs, rhs } = &range.kind {
+    if let SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } = &range.kind {
         if is_fail_arm(rhs) { return success_arm_of_range(lhs); }
         if is_fail_arm(lhs) { return success_arm_of_range(rhs); }
     }
@@ -358,18 +336,18 @@ pub(crate) fn success_arm_of_range(range: &Expr) -> Option<&Expr> {
 /// to `set_sort` (which handles cross-kind unions via datatypes).
 pub(crate) fn set_sort_for_range<'tm>(
     tm: &'tm TermManager,
-    range: &Expr,
+    range: &SemExpr,
     distinct_preds: &DistinctPreds<'tm>,
     name_defs: &NameDefs,
 ) -> Option<Sort<'tm>> {
+    let is_fail_product = |e: &SemExpr| matches!(
+        &e.kind,
+        SemExprKind::CartesianProduct(lhs, _)
+            if matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
+    );
     match &range.kind {
-        ExprKind::Var(sym) if sym.0 == "Fail" => Some(tm.integer_sort()),
-        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
-            let is_fail_product = |e: &Expr| matches!(
-                &e.kind,
-                ExprKind::BinOp { op: BinOp::Mul, lhs, .. }
-                    if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
-            );
+        SemExprKind::Var(sym) if sym.0 == "Fail" => Some(tm.integer_sort()),
+        SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } | SemExprKind::DisjointUnion(lhs, rhs) => {
             if is_fail_product(rhs) { return set_sort_for_range(tm, lhs, distinct_preds, name_defs); }
             if is_fail_product(lhs) { return set_sort_for_range(tm, rhs, distinct_preds, name_defs); }
             set_sort(tm, range, distinct_preds, name_defs)
@@ -379,15 +357,15 @@ pub(crate) fn set_sort_for_range<'tm>(
 }
 
 /// True if the range (after stripping Fail/Union wrappers) is a product set.
-pub(crate) fn is_product_range(range: &Expr) -> bool {
+pub(crate) fn is_product_range(range: &SemExpr) -> bool {
+    let is_fail_product = |e: &SemExpr| matches!(
+        &e.kind,
+        SemExprKind::CartesianProduct(lhs, _)
+            if matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
+    );
     match &range.kind {
-        ExprKind::BinOp { op: BinOp::Mul, .. } => true,
-        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
-            let is_fail_product = |e: &Expr| matches!(
-                &e.kind,
-                ExprKind::BinOp { op: BinOp::Mul, lhs, .. }
-                    if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
-            );
+        SemExprKind::CartesianProduct(..) => true,
+        SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } | SemExprKind::DisjointUnion(lhs, rhs) => {
             if is_fail_product(rhs) { return is_product_range(lhs); }
             if is_fail_product(lhs) { return is_product_range(rhs); }
             // Non-fail union: no single arm defines the product structure.
@@ -395,8 +373,7 @@ pub(crate) fn is_product_range(range: &Expr) -> bool {
             // (Nat * Nat) | Nat to be treated as a product range even though it isn't.
             false
         }
-        ExprKind::Var(sym) if sym.0 == "Fail" => false,
+        SemExprKind::Var(sym) if sym.0 == "Fail" => false,
         _ => false,
     }
 }
-

@@ -29,12 +29,21 @@ use std::collections::{HashMap, HashSet};
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef, param_set_exprs},
+    ast::{DefKind, Item},
+    semantics::{
+        elaborate::elaborate,
+        tree::{sem_param_set_exprs, SemExpr, SemFunctionBody, SemFunctionDef, SemFunctionSig, SemItem, SemNameDef},
+    },
     span::Symbol,
 };
-pub(crate) use crate::ast::NameDefs;
 
-use crate::kind::{Kind as ValKind, set_kind};
+/// Map from name to its elaborated `SemNameDef` — built once per `check_file`
+/// call from `elaborate()`'s output. Unlike codegen, the solver needs the
+/// full elaborated value (not just `Kind`) for expanding aliases and
+/// evaluating annotated constants during encoding.
+pub(crate) type NameDefs = HashMap<Symbol, SemNameDef>;
+
+use crate::kind::Kind as ValKind;
 
 use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, mk_decomposed_tuple};
 use self::sort::{set_sort, set_sort_for_range};
@@ -56,7 +65,7 @@ pub enum CheckResult {
     Unknown(String),
 }
 
-type FunctionEnv<'a> = HashMap<Symbol, &'a FunctionDef>;
+type FunctionEnv<'a> = HashMap<Symbol, &'a SemFunctionDef>;
 
 // ── Distinct predicate builder ────────────────────────────────────────────────
 
@@ -98,30 +107,32 @@ fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs) -> Dist
 /// `timeout_ms` is applied as the `tlimit` option on every fresh solver
 /// instance.  Pass `0` to disable the limit entirely.
 pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<Vec<(String, Vec<(String, CheckResult)>)>, crate::error::CompileError> {
-    let fn_env: FunctionEnv<'_> = items
+    let sem_items = elaborate(items)?;
+
+    let fn_env: FunctionEnv<'_> = sem_items
         .iter()
         .filter_map(|item| match item {
-            Item::FunctionDef(def) => Some((def.name.clone(), def)),
+            SemItem::FunctionDef(def) => Some((def.name.clone(), def)),
             _ => None,
         })
         .collect();
 
-    let name_defs: NameDefs = items
+    let name_defs: NameDefs = sem_items
         .iter()
         .filter_map(|item| match item {
-            Item::NameDef(def) => Some((def.name.clone(), def.clone())),
+            SemItem::NameDef(def) => Some((def.name.clone(), def.clone())),
             _ => None,
         })
         .collect();
 
-    items
+    sem_items
         .iter()
         .filter_map(|item| match item {
-            Item::FunctionDef(def) => {
+            SemItem::FunctionDef(def) => {
                 let results = check_function(def, &fn_env, &name_defs, timeout_ms);
                 Some(results.map(|r| (def.name.0.clone(), r)))
             }
-            Item::NameDef(def) => {
+            SemItem::NameDef(def) => {
                 // Only annotated defs (`name : Set = value`) produce a check result.
                 let ty = def.ty.as_ref()?;
                 let result = check_name_def(def, ty, &fn_env, &name_defs, timeout_ms);
@@ -137,7 +148,7 @@ pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<Vec<(String, Vec<(S
 /// `fn_env` provides the contracts of all other (and the same) functions
 /// reachable from this function's body.
 pub fn check_function(
-    def: &FunctionDef,
+    def: &SemFunctionDef,
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs,
     timeout_ms: u64,
@@ -151,8 +162,8 @@ pub fn check_function(
         .map(|(i, sig)| {
             let label = sig_label(&def.name.0, i, def.sigs.len());
             let result = match &def.body {
-                FunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env, name_defs, timeout_ms),
-                FunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env, name_defs, timeout_ms),
+                SemFunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env, name_defs, timeout_ms),
+                SemFunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env, name_defs, timeout_ms),
             };
             (label, result)
         })
@@ -167,7 +178,7 @@ fn sig_label(name: &str, idx: usize, total: usize) -> String {
     }
 }
 
-fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs: &NameDefs, timeout_ms: u64) -> CheckResult {
+fn check_name_def(def: &SemNameDef, ty: &SemExpr, fn_env: &FunctionEnv<'_>, name_defs: &NameDefs, timeout_ms: u64) -> CheckResult {
     if let Some(result) = validate_disjoint_unions(ty, name_defs, timeout_ms) { return result; }
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
@@ -214,29 +225,16 @@ fn check_name_def(def: &NameDef, ty: &Expr, fn_env: &FunctionEnv<'_>, name_defs:
     }
 }
 
-fn range_contains_fail(range: &Expr) -> bool {
-    match &range.kind {
-        ExprKind::Var(sym) => sym.0 == "Fail",
-        ExprKind::BinOp { op: BinOp::Union | BinOp::Add, lhs, rhs } => {
-            range_contains_fail(lhs) || range_contains_fail(rhs)
-        }
-        // `Fail * Y` — desugared from `!! Y`; always a failure arm.
-        ExprKind::BinOp { op: BinOp::Mul, lhs, .. } => {
-            matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
-        }
-        _ => false,
-    }
-}
-
 /// Verify that every `+` (disjoint union) in `set_expr` has genuinely disjoint operands.
 ///
 /// Returns `Some(CheckResult)` on failure or `None` if all `+` nodes are proved disjoint.
 /// Uses a fresh SMT solver per `+` node to avoid polluting the main check's solver state.
 ///
 /// TODO: also validate `+` that appears inside function bodies (e.g. in `in` expressions).
-fn validate_disjoint_unions(set_expr: &Expr, name_defs: &NameDefs, timeout_ms: u64) -> Option<CheckResult> {
+fn validate_disjoint_unions(set_expr: &SemExpr, name_defs: &NameDefs, timeout_ms: u64) -> Option<CheckResult> {
+    use crate::semantics::tree::SemExprKind;
     match &set_expr.kind {
-        ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
+        SemExprKind::DisjointUnion(lhs, rhs) => {
             if let Some(err) = validate_disjoint_unions(lhs, name_defs, timeout_ms) { return Some(err); }
             if let Some(err) = validate_disjoint_unions(rhs, name_defs, timeout_ms) { return Some(err); }
 
@@ -276,11 +274,12 @@ fn validate_disjoint_unions(set_expr: &Expr, name_defs: &NameDefs, timeout_ms: u
                 }
             }
         }
-        ExprKind::BinOp { lhs, rhs, .. } => {
+        SemExprKind::SetDifference(lhs, rhs) | SemExprKind::CartesianProduct(lhs, rhs)
+        | SemExprKind::SetQuotient(lhs, rhs) | SemExprKind::BinOp { lhs, rhs, .. } => {
             if let Some(err) = validate_disjoint_unions(lhs, name_defs, timeout_ms) { return Some(err); }
             validate_disjoint_unions(rhs, name_defs, timeout_ms)
         }
-        ExprKind::Call { args, .. } => {
+        SemExprKind::Call { args, .. } => {
             for arg in args {
                 if let Some(err) = validate_disjoint_unions(arg, name_defs, timeout_ms) { return Some(err); }
             }
@@ -293,9 +292,9 @@ fn validate_disjoint_unions(set_expr: &Expr, name_defs: &NameDefs, timeout_ms: u
 // ── Block body checker ────────────────────────────────────────────────────────
 
 fn check_block_sig(
-    sig: &FunctionSig,
+    sig: &SemFunctionSig,
     param_names: &[Symbol],
-    stmts: &[crate::ast::Stmt],
+    stmts: &[crate::semantics::tree::SemStmt],
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs,
     timeout_ms: u64,
@@ -317,7 +316,7 @@ fn check_block_sig(
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
-    let domain_parts: Vec<&Expr> = match param_set_exprs(sig.domain.as_ref(), param_names.len()) {
+    let domain_parts: Vec<&SemExpr> = match sem_param_set_exprs(sig.domain.as_ref(), param_names.len()) {
         Ok(parts) => parts,
         Err(msg) => return CheckResult::Unknown(msg),
     };
@@ -327,7 +326,7 @@ fn check_block_sig(
     // Same decomposition as check_sig: tuple params → leaf constants + mk_tuple.
     let mut param_terms: Vec<Term<'_>> = Vec::new();
     for (n, part) in param_names.iter().zip(domain_parts.iter()) {
-        let k = set_kind(part, &name_defs);
+        let k = part.kind_of.clone();
         if matches!(k, ValKind::Tuple(_)) {
             let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part, &distinct_preds, &name_defs);
             for (leaf, leaf_set) in leaves {
@@ -377,7 +376,7 @@ fn check_block_sig(
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
     let mut ssa_counter = 0usize;
-    let mut constraint_env: HashMap<Symbol, Expr> = HashMap::new();
+    let mut constraint_env: HashMap<Symbol, SemExpr> = HashMap::new();
     let mut has_runtime_assert = false;
     let mut immutable_names: HashSet<Symbol> = HashSet::new();
 
@@ -408,7 +407,7 @@ fn check_block_sig(
         Err(early) => return early,
     };
 
-    if has_runtime_assert && !range_contains_fail(&sig.range) {
+    if has_runtime_assert && !crate::semantics::tree::range_contains_fail(&sig.range) {
         return CheckResult::Counterexample {
             params: HashMap::new(),
             output: 0,
@@ -470,7 +469,7 @@ fn check_block_sig(
             .map(|((n, t), p)| (n, t, p))
         {
             let val = solver.get_value(term.clone());
-            let k = set_kind(part, &name_defs);
+            let k = part.kind_of.clone();
             let n = if k == ValKind::Bool {
                 boolean_value(&val) as i64
             } else if matches!(k, ValKind::Tuple(_)) {
@@ -511,9 +510,9 @@ fn check_block_sig(
 // ── Pure expression body checker ──────────────────────────────────────────────
 
 fn check_sig(
-    sig: &FunctionSig,
+    sig: &SemFunctionSig,
     param_names: &[Symbol],
-    body: &Expr,
+    body: &SemExpr,
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs,
     timeout_ms: u64,
@@ -538,8 +537,8 @@ fn check_sig(
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
-    // param_set_exprs guarantees domain_parts.len() == param_names.len() on Ok.
-    let domain_parts: Vec<&Expr> = match param_set_exprs(sig.domain.as_ref(), param_names.len()) {
+    // sem_param_set_exprs guarantees domain_parts.len() == param_names.len() on Ok.
+    let domain_parts: Vec<&SemExpr> = match sem_param_set_exprs(sig.domain.as_ref(), param_names.len()) {
         Ok(parts) => parts,
         Err(msg) => return CheckResult::Unknown(msg),
     };
@@ -550,7 +549,7 @@ fn check_sig(
     // which is required for cvc5's arithmetic beta-reduction to apply.
     let mut param_terms: Vec<Term<'_>> = Vec::new();
     for (n, part) in param_names.iter().zip(domain_parts.iter()) {
-        let k = set_kind(part, &name_defs);
+        let k = part.kind_of.clone();
         if matches!(k, ValKind::Tuple(_)) {
             let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part, &distinct_preds, &name_defs);
             for (leaf, leaf_set) in leaves {
@@ -648,7 +647,7 @@ fn check_sig(
             .map(|((n, t), p)| (n, t, p))
         {
             let val = solver.get_value(term.clone());
-            let k = set_kind(part, &name_defs);
+            let k = part.kind_of.clone();
             let n = if k == ValKind::Bool {
                 boolean_value(&val) as i64
             } else if matches!(k, ValKind::Tuple(_)) {

@@ -498,10 +498,11 @@ f(x) = x
 ");
 }
 
-// Bool & Nat = Bool; returning from Bool domain into Bool & Nat range is proved.
+// Bool and Nat are disjoint (no implicit 0/1 conversion), so Bool & Nat is
+// empty — a Bool-domain value can never satisfy it; counterexample.
 #[test]
-fn cross_kind_bool_to_bool_and_nat_proved() {
-    proved("
+fn cross_kind_bool_to_bool_and_nat_counterexample() {
+    counterexample("
 f : Bool -> Bool & Nat
 f(x) = x
 ");

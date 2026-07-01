@@ -18,49 +18,57 @@ f(b) = if b then true else false
 ");
 }
 
-// ── Bool / Int branch unification ────────────────────────────────────────────
-// `false` = 0 and `true` = 1 in Cantor's value model (Bool ⊆ Int).
-// When one branch encodes to boolean-sort and the other to integer-sort,
-// the solver should coerce the boolean to 0/1 rather than erroring.
+// ── Bool / Int branches require explicit conversion ──────────────────────────
+// Bool and Int are disjoint in Cantor's value model — `true`/`false` are not
+// silently 1/0. A bare `if` with one Int branch and one Bool branch (neither
+// a Tuple nor a TaggedUnion) cannot be merged at all; `merge_if_branches`
+// rejects it and the whole file fails to elaborate. Converting explicitly
+// (`if b then 1 else 0`) makes both branches Int and works normally.
 
 #[test]
-fn if_int_then_bool_else_proved() {
-    // false encodes as boolean-sort; n as integer-sort.  After coercion false → 0.
+fn if_int_then_explicit_bool_conversion_else_proved() {
+    // `false` converted explicitly to 0 — both branches are now plain Int.
     proved("
 f : Nat -> Int
-f(n) = if n > 0 then n else false
+f(n) = if n > 0 then n else 0
 ");
 }
 
 #[test]
-fn if_bool_then_int_else_proved() {
-    // true encodes as boolean-sort; n as integer-sort.  After coercion true → 1.
+fn if_explicit_bool_conversion_then_int_else_proved() {
+    // `true` converted explicitly to 1 — both branches are now plain Int.
     proved("
 f : Nat -> Int
-f(n) = if n > 0 then true else n
+f(n) = if n > 0 then 1 else n
 ");
 }
 
 #[test]
-fn if_bool_param_then_int_else_bool_proved() {
+fn if_bool_param_then_int_else_explicit_conversion_proved() {
     proved("
 f : Bool -> Int
-f(b) = if b then 1 else false
+f(b) = if b then 1 else 0
 ");
 }
 
 // Bool/Int mismatch where range catches a violation (the result must still be checked).
 #[test]
-fn if_bool_int_branches_range_counterexample() {
-    // true → 1, n ∈ Nat so n ≥ 0; result is always ≥ 0. But range is NatPos (> 0).
-    // When n = 0, result = 1 ∈ NatPos; when n > 0, result = n ∈ NatPos.  Proved!
-    // No — let's pick a case that actually counterexamples:
-    // f : Nat -> NatPos; f(n) = if n > 0 then n else false
-    // else-branch = false → 0, but 0 ∉ NatPos → counterexample
+fn if_int_branches_range_counterexample() {
+    // else-branch = 0, but 0 ∉ NatPos → counterexample.
     counterexample("
 f : Nat -> NatPos
-f(n) = if n > 0 then n else false
+f(n) = if n > 0 then n else 0
 ");
+}
+
+#[test]
+fn if_bare_bool_int_branches_rejected_at_elaboration() {
+    // No Tuple/TaggedUnion side and no explicit conversion — merge_if_branches
+    // has no coercion for this, so the whole file fails to elaborate rather
+    // than silently treating `false` as 0.
+    let items = cantor::parser::parse_file("f : Nat -> Int\nf(n) = if n > 0 then n else false")
+        .unwrap_or_else(|e| panic!("parse error: {e}"));
+    assert!(cantor::solver::check_file(&items, 60_000).is_err());
 }
 
 // ── Bool branch + fail branch ─────────────────────────────────────────────────

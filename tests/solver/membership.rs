@@ -128,6 +128,19 @@ to_nat(b) = if b then 1 else 0
 ");
 }
 
+// Bool and Int are disjoint in Cantor's value model — a Bool value is never
+// a member of Nat/NonZeroInt/any bounded integer subset without an explicit
+// `if b then 1 else 0` conversion (regression test for a bug where a
+// boolean-sorted term was silently coerced to 0/1 for bounded-set membership
+// checks, making e.g. `some_bool in Nat` wrongly prove true).
+#[test]
+fn bool_domain_directly_returned_into_nat_is_counterexample() {
+    counterexample("
+f : Bool -> Nat
+f(b) = b
+");
+}
+
 #[test]
 fn bool_domain_to_nat_range_excludes_negative() {
     proved("

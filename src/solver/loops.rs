@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    ast::{Expr, ExprKind, FunctionDef, Stmt},
+    semantics::tree::{SemExpr, SemExprKind, SemFunctionDef, SemStmt},
     span::Symbol,
 };
 
@@ -24,13 +24,13 @@ use super::membership::{DistinctPreds, Membership, membership_constraint};
 ///
 /// Returns `None` when UNSAT (step proved); `Some(result)` otherwise.
 fn check_loop_inductive_step<'tm, F>(
-    body: &[Stmt],
+    body: &[SemStmt],
     modified: &HashSet<Symbol>,
-    constraint_env: &HashMap<Symbol, Expr>,
+    constraint_env: &HashMap<Symbol, SemExpr>,
     env: &Env<'tm>,
     accumulated_facts: &[Term<'tm>],
     name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &FunctionDef>,
+    fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
     ssa_counter: &mut usize,
     param_names: &[Symbol],
@@ -90,7 +90,7 @@ where
     // the invariants, not assuming them.  Carry over immutable names from the
     // outer scope so the body can't reassign them.
     let mut body_env = ind_env;
-    let mut empty_cenv: HashMap<Symbol, Expr> = HashMap::new();
+    let mut empty_cenv: HashMap<Symbol, SemExpr> = HashMap::new();
     let mut step_imm: HashSet<Symbol> = outer_immutable_names.clone();
     let mut cc = 0usize;
     let mut obligs: Vec<BuiltinObligation<'tm>> = Vec::new();
@@ -165,14 +165,14 @@ where
 }
 
 pub(super) fn check_inductive_step<'tm>(
-    cond: &Expr,
-    body: &[Stmt],
+    cond: &SemExpr,
+    body: &[SemStmt],
     modified: &HashSet<Symbol>,
-    constraint_env: &HashMap<Symbol, Expr>,
+    constraint_env: &HashMap<Symbol, SemExpr>,
     env: &Env<'tm>,
     accumulated_facts: &[Term<'tm>],
     name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &FunctionDef>,
+    fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
     ssa_counter: &mut usize,
     param_names: &[Symbol],
@@ -201,14 +201,14 @@ pub(super) fn check_inductive_step<'tm>(
 
 pub(super) fn check_for_inductive_step<'tm>(
     var: &Symbol,
-    set: &Expr,
-    body: &[Stmt],
+    set: &SemExpr,
+    body: &[SemStmt],
     modified: &HashSet<Symbol>,
-    constraint_env: &HashMap<Symbol, Expr>,
+    constraint_env: &HashMap<Symbol, SemExpr>,
     env: &Env<'tm>,
     accumulated_facts: &[Term<'tm>],
     name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &FunctionDef>,
+    fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
     ssa_counter: &mut usize,
     param_names: &[Symbol],
@@ -219,9 +219,9 @@ pub(super) fn check_for_inductive_step<'tm>(
     // If `set` is a runtime set variable, extract its element-kind expression
     // from the Set(ElemKind) constraint (e.g. Set(Nat) → Nat, Set(Int-{0}) →
     // Int-{0}).  The clone is cheap — we just need the Expr for membership_constraint.
-    let runtime_elem_constraint: Option<Expr> = if let ExprKind::Var(sym) = &set.kind {
+    let runtime_elem_constraint: Option<SemExpr> = if let SemExprKind::Var(sym) = &set.kind {
         constraint_env.get(sym).and_then(|c| {
-            if let ExprKind::Call { callee, args } = &c.kind {
+            if let SemExprKind::Call { callee, args } = &c.kind {
                 if callee.0 == "Set" && args.len() == 1 {
                     return Some(args[0].clone());
                 }

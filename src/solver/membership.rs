@@ -4,12 +4,13 @@ use std::collections::HashMap;
 
 use cvc5::{Kind, Sort, Term, TermManager};
 
-use crate::ast::{BinOp, DefKind, Expr, ExprKind, UnOp, flatten_domain};
+use crate::ast::{BinOp, DefKind, UnOp};
 use crate::kind::Kind as ValKind;
 use crate::semantics::builtins::{self, IntBound};
+use crate::semantics::tree::{flatten_any_union, flatten_cartesian_product, SemExpr, SemExprKind};
 use crate::span::Symbol;
 
-use super::sort::{arm_ctor_name_for_arm, flatten_any_union};
+use super::sort::arm_ctor_name_for_arm;
 use super::NameDefs;
 
 /// Per-distinct-set CVC5 artefacts created when `D = distinct B` is declared.
@@ -44,27 +45,24 @@ pub(crate) enum Membership<'tm> {
 /// the expression is not a compile-time constant.  Handles `IntLit` and
 /// `UnOp::Neg` so that set literals like `{-1}` work correctly (the parser
 /// emits `-1` as `Neg(IntLit(1))`, not as `IntLit(-1)`).
-fn eval_const_int(expr: &Expr) -> Option<i64> {
+fn eval_const_int(expr: &SemExpr) -> Option<i64> {
     match &expr.kind {
-        ExprKind::IntLit(n) => Some(*n),
-        ExprKind::UnOp { op: UnOp::Neg, expr: inner } => eval_const_int(inner).map(|n| -n),
+        SemExprKind::IntLit(n) => Some(*n),
+        SemExprKind::UnOp { op: UnOp::Neg, expr: inner } => eval_const_int(inner).map(|n| -n),
         _ => None,
     }
 }
 
-/// Coerce a cvc5 term to integer sort for use in arithmetic membership constraints.
+/// Pass through a cvc5 term only if it's already integer-sorted, for use in
+/// arithmetic membership constraints against scalar (integer-valued) sets.
 ///
-/// In Cantor's model every value has an integer representation: integers pass
-/// through unchanged; booleans are encoded as 0 (false) or 1 (true).  Any
-/// other sort (e.g. a CVC5 tuple sort) cannot be represented as an integer —
-/// such a term can never be a member of any scalar (integer-valued) set, so
-/// callers should return `Constrained(false)` when this returns `None`.
-fn to_integer_term<'tm>(tm: &'tm TermManager, t: Term<'tm>) -> Option<Term<'tm>> {
+/// Bool and Int are disjoint in Cantor's value model — a boolean-sorted term
+/// is never a member of `Int`/`Nat`/`NonZeroInt`/etc., the same as a tuple or
+/// any other non-integer sort. Callers should return `Constrained(false)`
+/// when this returns `None`.
+fn to_integer_term<'tm>(t: Term<'tm>) -> Option<Term<'tm>> {
     if t.sort().is_integer() {
         Some(t)
-    } else if t.sort().is_boolean() {
-        // Bool = {false=0, true=1}: represent as the integer 0 or 1.
-        Some(tm.mk_term(Kind::Ite, &[t, tm.mk_integer(1), tm.mk_integer(0)]))
     } else {
         None
     }
@@ -81,7 +79,7 @@ fn to_integer_term<'tm>(tm: &'tm TermManager, t: Term<'tm>) -> Option<Term<'tm>>
 fn membership_constraint_for_dt<'tm>(
     tm: &'tm TermManager,
     t: Term<'tm>,
-    set_expr: &Expr,
+    set_expr: &SemExpr,
     name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
@@ -90,7 +88,7 @@ fn membership_constraint_for_dt<'tm>(
 
     let mut disjuncts: Vec<Term<'_>> = Vec::new();
     for arm_expr in arm_exprs {
-        let ctor_name = arm_ctor_name_for_arm(arm_expr, distinct_preds, name_defs);
+        let ctor_name = arm_ctor_name_for_arm(arm_expr, distinct_preds);
 
         // Find the constructor by name — if not present, this arm can't match.
         let ctor = (0..dt.num_constructors())
@@ -141,11 +139,11 @@ fn membership_constraint_for_dt<'tm>(
 /// are NOT atomic (they contain elements of varying length or unknown structure).
 /// User-defined aliases fall through to their own `Var` arm, which recurses
 /// into the alias body — they may end up atomic or not depending on that body.
-fn is_atomic_set(set_expr: &Expr) -> bool {
+fn is_atomic_set(set_expr: &SemExpr) -> bool {
     match &set_expr.kind {
-        ExprKind::Var(sym) => builtins::lookup(&sym.0).is_some(),
-        ExprKind::SetLit(_) => true,
-        ExprKind::BinOp { op: BinOp::Mul, .. } => true,
+        SemExprKind::Var(sym) => builtins::lookup(&sym.0).is_some(),
+        SemExprKind::SetLit(_) => true,
+        SemExprKind::CartesianProduct(..) => true,
         _ => false,
     }
 }
@@ -161,14 +159,14 @@ fn is_atomic_set(set_expr: &Expr) -> bool {
 fn lift_sequence_into_atomic<'tm>(
     tm: &'tm TermManager,
     t: Term<'tm>,
-    set_expr: &Expr,
+    set_expr: &SemExpr,
     name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
     match &set_expr.kind {
         // Product A*B*C: t ∈ A*B*C ⟺ len(t)==N ∧ nth(t,0)∈A ∧ nth(t,1)∈B ∧ …
-        ExprKind::BinOp { op: BinOp::Mul, .. } => {
-            let parts = flatten_domain(set_expr);
+        SemExprKind::CartesianProduct(..) => {
+            let parts = flatten_cartesian_product(set_expr);
             let n = parts.len() as i64;
             let len_term = tm.mk_term(Kind::SeqLength, &[t.clone()]);
             let len_eq = tm.mk_term(Kind::Equal, &[len_term, tm.mk_integer(n)]);
@@ -191,7 +189,7 @@ fn lift_sequence_into_atomic<'tm>(
         // SetLit: handle the empty-sequence element `[]` (Tuple([])) and integer
         // constants.  Non-empty-tuple elements (like `[1,2]`) are deferred.
         // TODO: support general sequence-literal set elements like `{[1,2], [3]}`
-        ExprKind::SetLit(elements) => {
+        SemExprKind::SetLit(elements) => {
             if elements.is_empty() {
                 return Membership::Constrained(tm.mk_boolean(false));
             }
@@ -200,7 +198,7 @@ fn lift_sequence_into_atomic<'tm>(
             for elem in elements {
                 match &elem.kind {
                     // `[]` — the empty sequence; t ∈ {[]} ⟺ len(t) == 0
-                    ExprKind::Tuple(parts) if parts.is_empty() => {
+                    SemExprKind::Tuple(parts) if parts.is_empty() => {
                         disjuncts.push(tm.mk_term(
                             Kind::Equal,
                             &[len_term.clone(), tm.mk_integer(0)],
@@ -251,14 +249,14 @@ fn lift_sequence_into_atomic<'tm>(
 pub(crate) fn membership_constraint<'tm>(
     tm: &'tm TermManager,
     t: Term<'tm>,
-    set_expr: &Expr,
+    set_expr: &SemExpr,
     name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
     // Fast path: datatype-sorted terms (cross-kind union values) use
     // ApplyTester / ApplySelector rather than arithmetic comparisons.
     // Tuple sorts in CVC5 are a special case of datatypes but are handled
-    // by the existing `BinOp::Mul` arm below via `child()` extraction.
+    // by the existing `CartesianProduct` arm below via `child()` extraction.
     if t.sort().is_dt() && !t.sort().is_tuple() {
         return membership_constraint_for_dt(tm, t, set_expr, name_defs, distinct_preds);
     }
@@ -270,12 +268,12 @@ pub(crate) fn membership_constraint<'tm>(
         return lift_sequence_into_atomic(tm, t, set_expr, name_defs, distinct_preds);
     }
     match &set_expr.kind {
-        ExprKind::Var(sym) => match builtins::lookup(&sym.0) {
+        SemExprKind::Var(sym) => match builtins::lookup(&sym.0) {
             // Fail is the failure singleton.  In the solver's integer model it is
             // encoded as i64::MIN so that `Nat | Fail` correctly accepts the
             // fail sentinel while rejecting all integers below zero.
             Some(b) if b.kind == ValKind::Fail => {
-                let Some(t) = to_integer_term(tm, t) else {
+                let Some(t) = to_integer_term(t) else {
                     return Membership::Constrained(tm.mk_boolean(false));
                 };
                 let sentinel = tm.mk_integer(i64::MIN);
@@ -292,7 +290,7 @@ pub(crate) fn membership_constraint<'tm>(
                 } else {
                     // Use to_integer_term so that tuple-sort terms correctly
                     // resolve to Constrained(false) — a tuple is never in Bool.
-                    match to_integer_term(tm, t) {
+                    match to_integer_term(t) {
                         None => Membership::Constrained(tm.mk_boolean(false)),
                         Some(t_int) => {
                             let eq0 = tm.mk_term(Kind::Equal, &[t_int.clone(), tm.mk_integer(0)]);
@@ -316,7 +314,7 @@ pub(crate) fn membership_constraint<'tm>(
                         Membership::Constrained(tm.mk_boolean(false))
                     }
                 } else {
-                    let Some(t) = to_integer_term(tm, t) else {
+                    let Some(t) = to_integer_term(t) else {
                         return Membership::Constrained(tm.mk_boolean(false));
                     };
                     let zero = tm.mk_integer(0);
@@ -357,7 +355,7 @@ pub(crate) fn membership_constraint<'tm>(
             }
         },
 
-        ExprKind::SetLit(elements) => {
+        SemExprKind::SetLit(elements) => {
             if elements.is_empty() {
                 // ∅ has no members: t ∈ {} is always false.
                 // Returning Constrained(false) rather than Unsupported lets
@@ -366,7 +364,7 @@ pub(crate) fn membership_constraint<'tm>(
             }
             // t ∈ {v₁, v₂, …}  ↔  t == v₁  ∨  t == v₂  ∨  …
             // Constant-fold integer expressions (including negation like `-1`).
-            let Some(t_int) = to_integer_term(tm, t) else {
+            let Some(t_int) = to_integer_term(t) else {
                 return Membership::Constrained(tm.mk_boolean(false));
             };
             // Build equality terms for each element.  `[]` (empty tuple = empty
@@ -374,7 +372,7 @@ pub(crate) fn membership_constraint<'tm>(
             // disjunction and is simply skipped.  Unknown elements return Unsupported.
             let mut eqs: Vec<Term<'_>> = Vec::new();
             for e in elements {
-                if matches!(&e.kind, ExprKind::Tuple(parts) if parts.is_empty()) {
+                if matches!(&e.kind, SemExprKind::Tuple(parts) if parts.is_empty()) {
                     // Scalar ≠ empty sequence — skip (contributes false).
                     continue;
                 }
@@ -394,7 +392,7 @@ pub(crate) fn membership_constraint<'tm>(
         }
 
         // `-` in signature position means set difference (A ∖ B).
-        ExprKind::BinOp { op: BinOp::Sub, lhs, rhs } => {
+        SemExprKind::SetDifference(lhs, rhs) => {
             // t ∈ A - B  ↔  (t ∈ A) ∧ ¬(t ∈ B)
             let not_in_b = match membership_constraint(tm, t.clone(), rhs, name_defs, distinct_preds) {
                 Membership::Unsupported => return Membership::Unsupported,
@@ -421,10 +419,10 @@ pub(crate) fn membership_constraint<'tm>(
         //
         // We fall back to Unconstrained when B is unsupported so that an opaque
         // error set never causes a valid `!!` range to be rejected.
-        ExprKind::BinOp { op: BinOp::Mul, lhs, rhs }
-            if matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail") =>
+        SemExprKind::CartesianProduct(lhs, rhs)
+            if matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail") =>
         {
-            let Some(t) = to_integer_term(tm, t) else {
+            let Some(t) = to_integer_term(t) else {
                 return Membership::Constrained(tm.mk_boolean(false));
             };
             let sentinel_base = tm.mk_integer(i64::MIN.wrapping_add(1));
@@ -436,7 +434,7 @@ pub(crate) fn membership_constraint<'tm>(
         }
 
         // `|` in signature position means set union.
-        ExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+        SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
             // t ∈ A | B  ↔  (t ∈ A) ∨ (t ∈ B)
             // Short-circuit: evaluate lhs first; if already Unconstrained the union
             // is trivially Unconstrained and we avoid constructing the rhs term
@@ -457,7 +455,7 @@ pub(crate) fn membership_constraint<'tm>(
         }
 
         // `&` in signature position means set intersection.
-        ExprKind::BinOp { op: BinOp::Intersect, lhs, rhs } => {
+        SemExprKind::BinOp { op: BinOp::Intersect, lhs, rhs } => {
             // t ∈ A & B  ↔  (t ∈ A) ∧ (t ∈ B)
             let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
             let in_b = membership_constraint(tm, t, rhs, name_defs, distinct_preds);
@@ -474,7 +472,7 @@ pub(crate) fn membership_constraint<'tm>(
         // `+` in set position means disjoint union.  Membership is identical to plain
         // union — the disjointness constraint is verified separately at signature
         // check time via `validate_disjoint_unions`.
-        ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
+        SemExprKind::DisjointUnion(lhs, rhs) => {
             let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
             if matches!(in_a, Membership::Unconstrained) {
                 return Membership::Unconstrained;
@@ -490,7 +488,7 @@ pub(crate) fn membership_constraint<'tm>(
         }
 
         // `^` means set symmetric difference: t ∈ A ^ B ↔ (t ∈ A) XOR (t ∈ B).
-        ExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
+        SemExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
             let in_a = membership_constraint(tm, t.clone(), lhs, name_defs, distinct_preds);
             let in_b = membership_constraint(tm, t, rhs, name_defs, distinct_preds);
             match (in_a, in_b) {
@@ -517,7 +515,7 @@ pub(crate) fn membership_constraint<'tm>(
             }
         }
 
-        ExprKind::Comprehension { output, var, source, filter } => {
+        SemExprKind::Comprehension { output, var, source, filter } => {
             comprehension_membership(tm, t, output, var, source, filter.as_deref(), name_defs, distinct_preds)
         }
 
@@ -541,7 +539,7 @@ pub(crate) fn membership_constraint<'tm>(
         //     sequence `[t]`, so `t ∈ X*`  ⟺  `t ∈ X`.  This lets `foo() = 5`
         //     prove against a range of `Nat*`, and lets `bar(5)` pass a scalar to a
         //     `Nat*` parameter (the codegen boxes it at the call boundary).
-        ExprKind::KleeneStar(inner) => {
+        SemExprKind::KleeneStar(inner) => {
             if t.sort().is_sequence() {
                 // Build a bound variable `i` for the universal quantifier.
                 let i = tm.mk_var(tm.integer_sort(), "i");
@@ -592,11 +590,11 @@ pub(crate) fn membership_constraint<'tm>(
         // tuple-sorted term — including SeqNth results (which are NOT
         // APPLY_CONSTRUCTOR terms; child() would give the wrong children).
         // A non-tuple term (integer, boolean) can never be a product-set member.
-        ExprKind::BinOp { op: BinOp::Mul, .. } => {
+        SemExprKind::CartesianProduct(..) => {
             if !t.sort().is_tuple() {
                 return Membership::Constrained(tm.mk_boolean(false));
             }
-            let parts = flatten_domain(set_expr);
+            let parts = flatten_cartesian_product(set_expr);
             let dt = t.sort().datatype();
             let ctor = dt.constructor(0); // tuples have exactly one constructor
             let mut constraints: Vec<Term<'_>> = Vec::new();
@@ -629,21 +627,21 @@ pub(crate) fn membership_constraint<'tm>(
 fn comprehension_membership<'tm>(
     tm: &'tm TermManager,
     t: Term<'tm>,
-    output: &Expr,
+    output: &SemExpr,
     var: &Symbol,
-    source: &Expr,
-    filter: Option<&Expr>,
+    source: &SemExpr,
+    filter: Option<&SemExpr>,
     name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
     // Case 1: source is a finite set literal — unroll.
-    if let ExprKind::SetLit(elements) = &source.kind {
+    if let SemExprKind::SetLit(elements) = &source.kind {
         if elements.is_empty() {
             return Membership::Constrained(tm.mk_boolean(false));
         }
         let mut disjuncts: Vec<Term<'_>> = Vec::new();
         for elem in elements {
-            let ExprKind::IntLit(n) = &elem.kind else { return Membership::Unsupported; };
+            let SemExprKind::IntLit(n) = &elem.kind else { return Membership::Unsupported; };
             let elem_term = tm.mk_integer(*n);
             let Some(out_term) = encode_comp_expr(output, var, elem_term.clone(), tm, name_defs, distinct_preds) else {
                 return Membership::Unsupported;
@@ -668,7 +666,7 @@ fn comprehension_membership<'tm>(
 
     // Case 2: output is the identity (just the bound variable).
     // t ∈ {x for x in S if P(x)}  →  t ∈ S  ∧  P(t)
-    if let ExprKind::Var(sym) = &output.kind {
+    if let SemExprKind::Var(sym) = &output.kind {
         if sym == var {
             let source_mem = membership_constraint(tm, t.clone(), source, name_defs, distinct_preds);
             let filter_mem = match filter {
@@ -697,7 +695,7 @@ fn comprehension_membership<'tm>(
 /// comprehension output expressions and filter predicates.  Returns `None` for
 /// anything more complex (calls, if-then-else, etc.).
 fn encode_comp_expr<'tm>(
-    expr: &Expr,
+    expr: &SemExpr,
     var: &Symbol,
     var_term: Term<'tm>,
     tm: &'tm TermManager,
@@ -705,18 +703,25 @@ fn encode_comp_expr<'tm>(
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Option<Term<'tm>> {
     match &expr.kind {
-        ExprKind::IntLit(n)  => Some(tm.mk_integer(*n)),
-        ExprKind::BoolLit(b) => Some(tm.mk_boolean(*b)),
-        ExprKind::Var(sym) if sym == var => Some(var_term),
-        ExprKind::Var(_) => None, // free variable — not the bound var; unsupported
-        ExprKind::UnOp { op, expr: inner } => {
+        SemExprKind::IntLit(n)  => Some(tm.mk_integer(*n)),
+        SemExprKind::BoolLit(b) => Some(tm.mk_boolean(*b)),
+        SemExprKind::Var(sym) if sym == var => Some(var_term),
+        SemExprKind::Var(_) => None, // free variable — not the bound var; unsupported
+        SemExprKind::UnOp { op, expr: inner } => {
             let t = encode_comp_expr(inner, var, var_term, tm, name_defs, distinct_preds)?;
             match op {
                 UnOp::Neg => Some(tm.mk_term(Kind::Neg, &[t])),
                 UnOp::Not => Some(tm.mk_term(Kind::Not, &[t])),
             }
         }
-        ExprKind::BinOp { op, lhs, rhs } => {
+        // `output`/`filter` are value-position (elaborate_expr elaborates a
+        // comprehension's output/filter under Position::Value), so `+ - * /`
+        // are the dedicated arithmetic variants here, never DisjointUnion/etc.
+        SemExprKind::Add(lhs, rhs) => encode_comp_arith(Kind::Add, lhs, rhs, var, var_term, tm, name_defs, distinct_preds),
+        SemExprKind::Sub(lhs, rhs) => encode_comp_arith(Kind::Sub, lhs, rhs, var, var_term, tm, name_defs, distinct_preds),
+        SemExprKind::Mul(lhs, rhs) => encode_comp_arith(Kind::Mult, lhs, rhs, var, var_term, tm, name_defs, distinct_preds),
+        SemExprKind::Div(lhs, rhs) => encode_comp_arith(Kind::IntsDivision, lhs, rhs, var, var_term, tm, name_defs, distinct_preds),
+        SemExprKind::BinOp { op, lhs, rhs } => {
             match op {
                 BinOp::In | BinOp::NotIn => {
                     let l = encode_comp_expr(lhs, var, var_term.clone(), tm, name_defs, distinct_preds)?;
@@ -734,10 +739,6 @@ fn encode_comp_expr<'tm>(
             let l = encode_comp_expr(lhs, var, var_term.clone(), tm, name_defs, distinct_preds)?;
             let r = encode_comp_expr(rhs, var, var_term, tm, name_defs, distinct_preds)?;
             let kind = match op {
-                BinOp::Add => Kind::Add,
-                BinOp::Sub => Kind::Sub,
-                BinOp::Mul => Kind::Mult,
-                BinOp::Div => Kind::IntsDivision,
                 BinOp::Eq  => Kind::Equal,
                 BinOp::Ne  => Kind::Distinct,
                 BinOp::Lt  => Kind::Lt,
@@ -747,6 +748,9 @@ fn encode_comp_expr<'tm>(
                 BinOp::And => Kind::And,
                 BinOp::Or  => Kind::Or,
                 BinOp::In | BinOp::NotIn => unreachable!("handled above"),
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => unreachable!(
+                    "Add/Sub/Mul/Div are dedicated SemExprKind variants, never wrapped in BinOp"
+                ),
                 BinOp::Union | BinOp::Intersect | BinOp::SymDiff | BinOp::Concat => return None,
             };
             Some(tm.mk_term(kind, &[l, r]))
@@ -755,8 +759,23 @@ fn encode_comp_expr<'tm>(
     }
 }
 
+fn encode_comp_arith<'tm>(
+    kind: Kind,
+    lhs: &SemExpr,
+    rhs: &SemExpr,
+    var: &Symbol,
+    var_term: Term<'tm>,
+    tm: &'tm TermManager,
+    name_defs: &NameDefs,
+    distinct_preds: &DistinctPreds<'tm>,
+) -> Option<Term<'tm>> {
+    let l = encode_comp_expr(lhs, var, var_term.clone(), tm, name_defs, distinct_preds)?;
+    let r = encode_comp_expr(rhs, var, var_term, tm, name_defs, distinct_preds)?;
+    Some(tm.mk_term(kind, &[l, r]))
+}
+
 pub(crate) fn bounded<'tm>(tm: &'tm TermManager, t: Term<'tm>, min: i64, max: i64) -> Membership<'tm> {
-    let Some(t) = to_integer_term(tm, t) else {
+    let Some(t) = to_integer_term(t) else {
         return Membership::Constrained(tm.mk_boolean(false));
     };
     let lo  = tm.mk_integer(min);

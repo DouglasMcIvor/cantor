@@ -184,6 +184,28 @@ pub fn flatten_disjoint_union(expr: &SemExpr) -> Vec<&SemExpr> {
     }
 }
 
+/// Flatten a left-associative `A | B | C` or `A + B + C` into `[A, B, C]`.
+/// Mirrors `solver::sort::flatten_any_union`, treating `|` (`BinOp::Union`,
+/// unaffected variant) and `+` (`DisjointUnion`, disambiguated variant) the
+/// same way — both need one arm per constructor in a cross-kind union
+/// datatype, regardless of the `|`-collapses-same-kind vs.
+/// `+`-always-tags distinction that matters for `Kind` computation.
+pub fn flatten_any_union(expr: &SemExpr) -> Vec<&SemExpr> {
+    match &expr.kind {
+        SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+            let mut arms = flatten_any_union(lhs);
+            arms.push(rhs);
+            arms
+        }
+        SemExprKind::DisjointUnion(lhs, rhs) => {
+            let mut arms = flatten_any_union(lhs);
+            arms.push(rhs);
+            arms
+        }
+        _ => vec![expr],
+    }
+}
+
 /// Map each function parameter to its (already-elaborated) domain set
 /// expression. Mirrors `ast::param_set_exprs`'s arity disambiguation exactly,
 /// operating on `CartesianProduct` (the disambiguated variant) instead of
@@ -302,5 +324,118 @@ impl SemExpr {
 
     pub fn call(callee: &str, args: Vec<SemExpr>, return_kind: Kind) -> Self {
         Self::new(SemExprKind::Call { callee: Symbol::new(callee), args }, return_kind, Span::dummy())
+    }
+}
+
+// ── Display ──────────────────────────────────────────────────────────────────
+//
+// Mirrors `ast::Expr`'s Display exactly (used in solver counterexample/error
+// messages, e.g. "not in {constraint}"), so a printed SemExpr looks identical
+// to the Cantor source it was elaborated from — regardless of which
+// `SemExprKind` variant resolved `+ - * /` for it.
+
+impl std::fmt::Display for SemExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+/// Precedence tier — higher number binds tighter. Mirrors `ast::binop_prec`;
+/// `DisjointUnion`/`SetDifference`/`CartesianProduct`/`SetQuotient` use the
+/// same tier as `+`/`-`/`*`/`/` since they're the same source operator.
+fn sem_binop_prec(op: &BinOp) -> u8 {
+    match op {
+        BinOp::Or => 1,
+        BinOp::And => 2,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::In | BinOp::NotIn => 3,
+        BinOp::Union => 4,
+        BinOp::SymDiff => 5,
+        BinOp::Intersect => 6,
+        BinOp::Add | BinOp::Sub | BinOp::Concat => 7,
+        BinOp::Mul | BinOp::Div => 8,
+    }
+}
+
+/// If `kind` is (or resolves to) a binary operator node, return the `BinOp`
+/// to use for its display symbol/precedence, plus its two operands.
+fn as_binop(kind: &SemExprKind) -> Option<(BinOp, &SemExpr, &SemExpr)> {
+    match kind {
+        SemExprKind::Add(l, r) | SemExprKind::DisjointUnion(l, r) => Some((BinOp::Add, l, r)),
+        SemExprKind::Sub(l, r) | SemExprKind::SetDifference(l, r) => Some((BinOp::Sub, l, r)),
+        SemExprKind::Mul(l, r) | SemExprKind::CartesianProduct(l, r) => Some((BinOp::Mul, l, r)),
+        SemExprKind::Div(l, r) | SemExprKind::SetQuotient(l, r) => Some((BinOp::Div, l, r)),
+        SemExprKind::BinOp { op, lhs, rhs } => Some((*op, lhs, rhs)),
+        _ => None,
+    }
+}
+
+impl std::fmt::Display for SemExprKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some((op, lhs, rhs)) = as_binop(self) {
+            let lhs_needs_parens = as_binop(&lhs.kind)
+                .is_some_and(|(child_op, ..)| sem_binop_prec(&child_op) < sem_binop_prec(&op));
+            let rhs_needs_parens = as_binop(&rhs.kind)
+                .is_some_and(|(child_op, ..)| sem_binop_prec(&child_op) <= sem_binop_prec(&op));
+            let lhs_str = if lhs_needs_parens { format!("({lhs})") } else { format!("{lhs}") };
+            let rhs_str = if rhs_needs_parens { format!("({rhs})") } else { format!("{rhs}") };
+            return write!(f, "{lhs_str} {op} {rhs_str}");
+        }
+        match self {
+            SemExprKind::IntLit(n) => write!(f, "{n}"),
+            SemExprKind::BoolLit(b) => write!(f, "{b}"),
+            SemExprKind::Var(sym) => write!(f, "{sym}"),
+            SemExprKind::UnOp { op, expr } => match op {
+                UnOp::Neg => write!(f, "-{expr}"),
+                UnOp::Not => write!(f, "not {expr}"),
+            },
+            SemExprKind::Call { callee, args } => {
+                write!(f, "{callee}(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{arg}")?;
+                }
+                write!(f, ")")
+            }
+            SemExprKind::If { cond, then_expr, else_expr } => {
+                write!(f, "if {cond} then {then_expr} else {else_expr}")
+            }
+            SemExprKind::SetLit(elements) => {
+                write!(f, "{{")?;
+                for (i, e) in elements.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{e}")?;
+                }
+                write!(f, "}}")
+            }
+            SemExprKind::Try(inner) => write!(f, "{inner}?"),
+            SemExprKind::FailLit => f.write_str("fail"),
+            SemExprKind::FailWith(expr) => write!(f, "fail {expr}"),
+            SemExprKind::Comprehension { output, var, source, filter } => {
+                write!(f, "{{{output} for {var} in {source}")?;
+                if let Some(pred) = filter {
+                    write!(f, " if {pred}")?;
+                }
+                write!(f, "}}")
+            }
+            SemExprKind::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{e}")?;
+                }
+                write!(f, ")")
+            }
+            SemExprKind::Proj { base, index } => write!(f, "{base}.{index}"),
+            SemExprKind::Index { base, index } => write!(f, "{base}[{index}]"),
+            SemExprKind::KleeneStar(inner) => match &inner.kind {
+                SemExprKind::Var(_) => write!(f, "{inner}*"),
+                _ => write!(f, "({inner})*"),
+            },
+            // Handled by the `as_binop` early-return above.
+            SemExprKind::Add(..) | SemExprKind::Sub(..) | SemExprKind::Mul(..) | SemExprKind::Div(..)
+            | SemExprKind::DisjointUnion(..) | SemExprKind::SetDifference(..)
+            | SemExprKind::CartesianProduct(..) | SemExprKind::SetQuotient(..)
+            | SemExprKind::BinOp { .. } => unreachable!("handled by as_binop above"),
+        }
     }
 }

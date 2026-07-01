@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use cvc5::{Kind, Solver, Sort, Term, TermManager};
 
 use crate::{
-    ast::{BinOp, Expr, ExprKind, FunctionDef, FunctionSig, UnOp, flatten_domain},
-    span::{Span, Symbol},
+    ast::{BinOp, UnOp},
+    semantics::tree::{flatten_cartesian_product, SemExpr, SemExprKind, SemFunctionDef, SemFunctionSig},
+    span::Symbol,
 };
 
 use super::membership::{DistinctPreds, Membership, membership_constraint};
@@ -42,7 +43,7 @@ pub(crate) struct BuiltinObligation<'tm> {
 ///
 /// `In`/`NotIn` are handled by early-return paths before this is called —
 /// passing either here is a programming error and will panic.
-pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(Expr, &'static str)> {
+pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(SemExpr, &'static str)> {
     match (op, arg_idx) {
         // ── Arithmetic ────────────────────────────────────────────────────────
         // Div arg 1: divisor must be a plain Int AND non-zero.
@@ -74,7 +75,7 @@ pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(Expr, &'
 /// Domain constraints for the operand of a unary built-in.
 ///
 /// Returns a list of `(set, reason)` pairs; empty means unconstrained.
-pub(crate) fn unary_builtin_domain(op: &UnOp) -> Vec<(Expr, &'static str)> {
+pub(crate) fn unary_builtin_domain(op: &UnOp) -> Vec<(SemExpr, &'static str)> {
     match op {
         // Negation is defined on Int only — distinct sets cannot be negated.
         UnOp::Neg => vec![(named_set("Int"), "operand of negation must be Int, not a member of a distinct set")],
@@ -84,8 +85,9 @@ pub(crate) fn unary_builtin_domain(op: &UnOp) -> Vec<(Expr, &'static str)> {
 }
 
 /// Build a `Var` expression that refers to a named built-in set.
-pub(crate) fn named_set(name: &'static str) -> Expr {
-    Expr::new(ExprKind::Var(Symbol::new(name)), Span::dummy())
+pub(crate) fn named_set(name: &'static str) -> SemExpr {
+    let kind = crate::semantics::builtins::lookup(name).map(|b| b.kind).unwrap_or(crate::kind::Kind::Int);
+    SemExpr::var(name, kind)
 }
 
 // ── Expression encoder (compact router) ──────────────────────────────────────
@@ -105,10 +107,10 @@ pub(crate) fn named_set(name: &'static str) -> Expr {
 /// to that union datatype sort.  Used to unify cross-kind union if/else branches
 /// so both arms have the same CVC5 sort before `Ite` is applied.
 pub(crate) fn encode_expr<'tm>(
-    expr: &Expr,
+    expr: &SemExpr,
     env: &Env<'tm>,
     name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &FunctionDef>,
+    fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
@@ -126,7 +128,7 @@ pub(crate) fn encode_expr<'tm>(
 
     // `size()`, `from()`, and `len()` are built-in call builtins that bypass the
     // final maybe_coerce (they return predicates / unwrapped scalars, not union values).
-    if let ExprKind::Call { callee, args } = &expr.kind {
+    if let SemExprKind::Call { callee, args } = &expr.kind {
         // `len(xs)` — the number of elements in a vector (X* value).
         // Encoded as `seq.len(xs)` in the cvc5 sequence theory.
         if callee.0 == "len" && args.len() == 1 {
@@ -167,16 +169,16 @@ pub(crate) fn encode_expr<'tm>(
     }
 
     let term = match &expr.kind {
-        ExprKind::IntLit(n)  => Ok(tm.mk_integer(*n)),
-        ExprKind::BoolLit(b) => Ok(tm.mk_boolean(*b)),
-        ExprKind::FailLit    => Ok(tm.mk_integer(i64::MIN)),
+        SemExprKind::IntLit(n)  => Ok(tm.mk_integer(*n)),
+        SemExprKind::BoolLit(b) => Ok(tm.mk_boolean(*b)),
+        SemExprKind::FailLit    => Ok(tm.mk_integer(i64::MIN)),
 
-        ExprKind::FailWith(inner) => {
+        SemExprKind::FailWith(inner) => {
             let n = enc!(inner)?;
             Ok(tm.mk_term(Kind::Add, &[tm.mk_integer(i64::MIN.wrapping_add(1)), n]))
         }
 
-        ExprKind::Var(sym) => {
+        SemExprKind::Var(sym) => {
             if let Some(term) = env.get(sym) {
                 Ok(term.clone())
             } else if let Some(def) = name_defs.get(sym) {
@@ -187,32 +189,46 @@ pub(crate) fn encode_expr<'tm>(
             }
         }
 
-        ExprKind::Tuple(elems) => {
+        SemExprKind::Tuple(elems) => {
             let terms = elems.iter().map(|e| enc!(e)).collect::<Result<Vec<_>, _>>()?;
             Ok(tm.mk_tuple(&terms))
         }
 
-        ExprKind::UnOp { op, expr: inner } =>
+        SemExprKind::UnOp { op, expr: inner } =>
             encode_unop(op, inner, env, name_defs, fn_env, tm, solver,
                         call_counter, builtin_obligs, path_cond.clone(), distinct_preds),
 
-        ExprKind::BinOp { op, lhs, rhs } =>
+        // `+ - * /` are dedicated SemExprKind variants (never wrapped in
+        // BinOp — see tree.rs's module doc); route them through the same
+        // `encode_binop` that handles the remaining operators, so the
+        // domain-obligation logic (Int-only, non-zero divisor, …) isn't
+        // duplicated between an arithmetic-only path and the generic one.
+        SemExprKind::Add(lhs, rhs) => encode_binop(&BinOp::Add, lhs, rhs, env, name_defs, fn_env, tm, solver,
+                                                    call_counter, builtin_obligs, path_cond.clone(), distinct_preds),
+        SemExprKind::Sub(lhs, rhs) => encode_binop(&BinOp::Sub, lhs, rhs, env, name_defs, fn_env, tm, solver,
+                                                    call_counter, builtin_obligs, path_cond.clone(), distinct_preds),
+        SemExprKind::Mul(lhs, rhs) => encode_binop(&BinOp::Mul, lhs, rhs, env, name_defs, fn_env, tm, solver,
+                                                    call_counter, builtin_obligs, path_cond.clone(), distinct_preds),
+        SemExprKind::Div(lhs, rhs) => encode_binop(&BinOp::Div, lhs, rhs, env, name_defs, fn_env, tm, solver,
+                                                    call_counter, builtin_obligs, path_cond.clone(), distinct_preds),
+
+        SemExprKind::BinOp { op, lhs, rhs } =>
             encode_binop(op, lhs, rhs, env, name_defs, fn_env, tm, solver,
                          call_counter, builtin_obligs, path_cond.clone(), distinct_preds),
 
-        ExprKind::If { cond, then_expr, else_expr } =>
+        SemExprKind::If { cond, then_expr, else_expr } =>
             encode_if(cond, then_expr, else_expr, env, name_defs, fn_env, tm, solver,
                       call_counter, builtin_obligs, path_cond.clone(), distinct_preds,
                       coerce_to.clone()),
 
-        ExprKind::Call { callee, args } =>
+        SemExprKind::Call { callee, args } =>
             encode_call(callee, args, env, name_defs, fn_env, tm, solver,
                         call_counter, builtin_obligs, path_cond.clone(), distinct_preds,
                         coerce_to.clone()),
 
-        ExprKind::Try(inner) => {
+        SemExprKind::Try(inner) => {
             let result = enc!(inner)?;
-            if let ExprKind::Call { callee, .. } = &inner.kind {
+            if let SemExprKind::Call { callee, .. } = &inner.kind {
                 if let Some(callee_def) = fn_env.get(callee) {
                     if let Some(sig) = callee_def.sigs.first() {
                         if let Some(success_type) = success_arm_of_range(&sig.range) {
@@ -228,11 +244,11 @@ pub(crate) fn encode_expr<'tm>(
             Ok(result)
         }
 
-        ExprKind::Proj { base, index } =>
+        SemExprKind::Proj { base, index } =>
             encode_proj(base, *index, env, name_defs, fn_env, tm, solver,
                         call_counter, builtin_obligs, path_cond.clone(), distinct_preds),
 
-        ExprKind::Index { base, index } => {
+        SemExprKind::Index { base, index } => {
             let base_term = enc!(base)?;
             let idx_term  = enc!(index)?;
             if !base_term.sort().is_sequence() {
@@ -256,9 +272,19 @@ pub(crate) fn encode_expr<'tm>(
             Ok(tm.mk_term(Kind::SeqNth, &[base_term, idx_term]))
         }
 
-        ExprKind::SetLit(_) | ExprKind::Comprehension { .. } | ExprKind::KleeneStar(_) =>
+        SemExprKind::SetLit(_) | SemExprKind::Comprehension { .. } | SemExprKind::KleeneStar(_) =>
             Err("set expressions cannot appear in value position \
                  (only in domain/range/`in`/`for` positions)".into()),
+
+        // Set-position-only variants: elaboration never threads these into a
+        // value-position tree (see `semantics::elaborate`'s module doc), so
+        // reaching them here means an elaborator invariant broke.
+        SemExprKind::DisjointUnion(..) | SemExprKind::SetDifference(..)
+        | SemExprKind::CartesianProduct(..) | SemExprKind::SetQuotient(..) =>
+            Err(format!(
+                "elaborator invariant broken: set-position node {:?} reached encode_expr \
+                 (value position)", expr.kind
+            )),
     }?;
 
     maybe_coerce(tm, term, &coerce_to)
@@ -268,10 +294,10 @@ pub(crate) fn encode_expr<'tm>(
 
 fn encode_unop<'tm>(
     op: &UnOp,
-    inner: &Expr,
+    inner: &SemExpr,
     env: &Env<'tm>,
     name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &FunctionDef>,
+    fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
@@ -317,7 +343,6 @@ fn encode_unop<'tm>(
 fn coerce_to_sequence<'tm>(
     tm: &'tm TermManager,
     term: Term<'tm>,
-    original_expr: &Expr,
 ) -> Result<Term<'tm>, String> {
     if term.sort().is_sequence() {
         return Ok(term);
@@ -344,17 +369,16 @@ fn coerce_to_sequence<'tm>(
         }
         return Ok(seq);
     }
-    let _ = original_expr;
     Err("`++` requires vector (X*) operands; operand is not a sequence or array literal".into())
 }
 
 fn encode_binop<'tm>(
     op: &BinOp,
-    lhs: &Expr,
-    rhs: &Expr,
+    lhs: &SemExpr,
+    rhs: &SemExpr,
     env: &Env<'tm>,
     name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &FunctionDef>,
+    fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
@@ -376,7 +400,7 @@ fn encode_binop<'tm>(
         BinOp::In => {
             // If the set RHS is a variable bound in the solver env it's a
             // runtime set value — membership can't be decided at proof time.
-            if let ExprKind::Var(sym) = &rhs.kind {
+            if let SemExprKind::Var(sym) = &rhs.kind {
                 if env.contains_key(sym) {
                     let fresh = format!("_in_{}", *call_counter);
                     *call_counter += 1;
@@ -391,7 +415,7 @@ fn encode_binop<'tm>(
             };
         }
         BinOp::NotIn => {
-            if let ExprKind::Var(sym) = &rhs.kind {
+            if let SemExprKind::Var(sym) = &rhs.kind {
                 if env.contains_key(sym) {
                     let fresh = format!("_in_{}", *call_counter);
                     *call_counter += 1;
@@ -429,8 +453,8 @@ fn encode_binop<'tm>(
     // `xs ++ ys` — vector concatenation.  Both operands must be sequence-sorted.
     // If either is a tuple (from an array literal), coerce it to a sequence first.
     if *op == BinOp::Concat {
-        let l_seq = coerce_to_sequence(tm, l.clone(), lhs)?;
-        let r_seq = coerce_to_sequence(tm, r.clone(), rhs)?;
+        let l_seq = coerce_to_sequence(tm, l.clone())?;
+        let r_seq = coerce_to_sequence(tm, r.clone())?;
         return Ok(tm.mk_term(Kind::SeqConcat, &[l_seq, r_seq]));
     }
 
@@ -472,12 +496,12 @@ fn encode_binop<'tm>(
 }
 
 fn encode_if<'tm>(
-    cond: &Expr,
-    then_expr: &Expr,
-    else_expr: &Expr,
+    cond: &SemExpr,
+    then_expr: &SemExpr,
+    else_expr: &SemExpr,
     env: &Env<'tm>,
     name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &FunctionDef>,
+    fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
@@ -514,35 +538,42 @@ fn encode_if<'tm>(
     // Unify sorts before calling mk_term(Ite, …).
     let (t, e) = if t.sort() == e.sort() {
         (t, e)
-    } else if (t.sort().is_boolean() && e.sort().is_integer())
-        || (t.sort().is_integer() && e.sort().is_boolean())
-    {
-        // Bool ↔ Int unification: false = 0, true = 1 in Cantor's value model.
-        // One branch is boolean-sort (a literal or Bool param), the other is
-        // integer-sort.  Coerce the boolean to 0/1 so Ite gets matching sorts.
-        let bool_to_int = |b: Term<'tm>| {
+    } else if matches!(
+        crate::kind::merge_if_branches(&then_expr.kind_of, &else_expr.kind_of),
+        Ok(crate::kind::IfMerge::CoerceToFailStruct)
+    ) {
+        // One branch is the fallible `{Fail, Int}` wrapper (`fail`/`fail n`,
+        // encoded as the sentinel integer i64::MIN(+payload)); the other is
+        // a plain success value that must be widened into the same wire
+        // shape. Only the payload's *representation* changes (Bool's slot
+        // is i64, matching `codegen::coerce_to_fail_struct` exactly) — this
+        // is narrower than the general Bool≈Int coercion removed below, and
+        // shares the same decision (`kind::merge_if_branches`) codegen uses.
+        let widen_success_payload = |b: Term<'tm>| {
             if b.sort().is_boolean() {
                 tm.mk_term(Kind::Ite, &[b, tm.mk_integer(1), tm.mk_integer(0)])
             } else {
                 b
             }
         };
-        (bool_to_int(t), bool_to_int(e))
+        (widen_success_payload(t), widen_success_payload(e))
     } else {
-        // One or both branches have a sort that doesn't match the target and
-        // can't be trivially unified.  For each such branch:
-        // - integer-sort → pass through
-        // - boolean-sort → coerce to 0/1
-        // - anything else (distinct sort, tuple, future Float32, …) → the value
-        //   can never satisfy an integer-sort range; push a path-conditioned
-        //   `false` obligation so the solver finds a counterexample when execution
-        //   steers into that branch, and use a dummy integer so the Ite stays
-        //   well-sorted.
+        // Branches have genuinely different sorts and cannot be unified —
+        // Bool and Int are disjoint in Cantor's value model (no implicit
+        // 0/1 coercion; write `if b then 1 else 0` to convert explicitly),
+        // and anything else (distinct sort, tuple, future Float32, …) is no
+        // more compatible. In practice `elaborate()` already rejects
+        // mismatched non-Tuple/TaggedUnion branch Kinds for a legitimate
+        // program (see `kind::merge_if_branches`), so reaching this arm at
+        // all would mean an elaborator gap — this is a defensive fallback,
+        // not a supported path: for whichever branch isn't integer-sorted,
+        // push a path-conditioned `false` obligation (that branch's value
+        // can never satisfy an integer-shaped range) and substitute a dummy
+        // integer so `Ite` stays well-sorted — a sound under-approximation,
+        // never a silent pass.
         let mut to_int_or_dummy = |b: Term<'tm>, path: Term<'tm>| {
             if b.sort().is_integer() {
                 b
-            } else if b.sort().is_boolean() {
-                tm.mk_term(Kind::Ite, &[b, tm.mk_integer(1), tm.mk_integer(0)])
             } else {
                 builtin_obligs.push(BuiltinObligation {
                     path_cond: path,
@@ -563,10 +594,10 @@ fn encode_if<'tm>(
 
 fn encode_call<'tm>(
     callee: &Symbol,
-    args: &[Expr],
+    args: &[SemExpr],
     env: &Env<'tm>,
     name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &FunctionDef>,
+    fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
@@ -652,11 +683,11 @@ fn encode_call<'tm>(
 }
 
 fn encode_proj<'tm>(
-    base: &Expr,
+    base: &SemExpr,
     index: usize,
     env: &Env<'tm>,
     name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &FunctionDef>,
+    fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
@@ -738,7 +769,7 @@ fn encode_proj<'tm>(
 /// If any part of the domain or range is unsupported, the implication is
 /// silently skipped — the solver has less information but never incorrect info.
 pub(crate) fn assert_call_contract<'tm>(
-    sig: &FunctionSig,
+    sig: &SemFunctionSig,
     arg_terms: &[Term<'tm>],
     result: Term<'tm>,
     tm: &'tm TermManager,
@@ -750,7 +781,7 @@ pub(crate) fn assert_call_contract<'tm>(
     match &sig.domain {
         None => {}
         Some(domain_expr) => {
-            let parts = flatten_domain(domain_expr);
+            let parts = flatten_cartesian_product(domain_expr);
             if parts.len() != arg_terms.len() {
                 return;
             }
@@ -826,11 +857,11 @@ fn proj_from_tuple<'tm>(tm: &'tm TermManager, base: Term<'tm>, index: usize) -> 
 pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
     tm: &'tm TermManager,
     name: &str,
-    set_expr: &'e Expr,
+    set_expr: &'e SemExpr,
     distinct_preds: &DistinctPreds<'tm>,
     name_defs: &NameDefs,
-) -> (Term<'tm>, Vec<(Term<'tm>, &'e Expr)>) {
-    let parts = flatten_domain(set_expr);
+) -> (Term<'tm>, Vec<(Term<'tm>, &'e SemExpr)>) {
+    let parts = flatten_cartesian_product(set_expr);
     if parts.len() <= 1 {
         let sort = set_sort(tm, set_expr, distinct_preds, name_defs)
             .expect("mk_decomposed_tuple: leaf set expression has no representable CVC5 sort");
@@ -856,7 +887,7 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
 pub(crate) fn distinct_def_for_constructor<'a>(
     callee: &Symbol,
     name_defs: &'a NameDefs,
-) -> Option<&'a crate::ast::NameDef> {
+) -> Option<&'a crate::semantics::tree::SemNameDef> {
     use crate::ast::DefKind;
     let mut chars = callee.0.chars();
     let first = chars.next()?;

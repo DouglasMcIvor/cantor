@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use cvc5::{Kind, Solver, Sort, Term, TermManager};
 
 use crate::{
-    ast::{Expr, ExprKind, FunctionDef, Stmt, collect_loop_modified},
-    kind::{Kind as ValKind, set_kind},
+    kind::Kind as ValKind,
+    semantics::tree::{collect_loop_modified, SemExpr, SemExprKind, SemFunctionDef, SemStmt},
     span::Symbol,
 };
 
@@ -25,14 +25,14 @@ use super::membership::{DistinctPreds, Membership, membership_constraint};
 /// binding constraint, so a SAT result from the post-loop check is a genuine
 /// counterexample rather than a spurious one caused by a free SMT variable.
 pub(crate) fn body_has_unconstrained_loop_var<'tm>(
-    stmts: &[Stmt],
-    constraint_env: &HashMap<Symbol, Expr>,
+    stmts: &[SemStmt],
+    constraint_env: &HashMap<Symbol, SemExpr>,
     tm: &'tm TermManager,
     name_defs: &NameDefs,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> bool {
     stmts.iter().any(|s| match s {
-        Stmt::While { body, .. } | Stmt::ForIn { body, .. } => {
+        SemStmt::While { body, .. } | SemStmt::ForIn { body, .. } => {
             let modified = collect_loop_modified(body);
             modified.iter().any(|n| {
                 match constraint_env.get(n) {
@@ -47,7 +47,7 @@ pub(crate) fn body_has_unconstrained_loop_var<'tm>(
                 }
             })
         }
-        Stmt::Block(inner) => body_has_unconstrained_loop_var(inner, constraint_env, tm, name_defs, distinct_preds),
+        SemStmt::Block(inner) => body_has_unconstrained_loop_var(inner, constraint_env, tm, name_defs, distinct_preds),
         _ => false,
     })
 }
@@ -56,14 +56,14 @@ pub(crate) fn body_has_unconstrained_loop_var<'tm>(
 
 /// Process a sequence of statements, threading the SSA environment.
 ///
-/// Returns `Ok(Some(term))` where `term` is the last `Stmt::Expr` value,
+/// Returns `Ok(Some(term))` where `term` is the last `SemStmt::Expr` value,
 /// `Ok(None)` if there was no return expression, or `Err(result)` for an
 /// early exit (require failure, unsupported construct, etc.).
 pub(crate) fn encode_block<'tm>(
-    stmts: &[Stmt],
+    stmts: &[SemStmt],
     env: &mut Env<'tm>,
     name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &FunctionDef>,
+    fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
@@ -72,12 +72,12 @@ pub(crate) fn encode_block<'tm>(
     accumulated_facts: &mut Vec<Term<'tm>>,
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
-    constraint_env: &mut HashMap<Symbol, Expr>,
+    constraint_env: &mut HashMap<Symbol, SemExpr>,
     has_runtime_assert: &mut bool,
     immutable_names: &mut HashSet<Symbol>,
     distinct_preds: &DistinctPreds<'tm>,
     // Expected sort for the block's result expression.  Passed to `encode_expr`
-    // for `Stmt::Expr` so cross-kind union if/else bodies can be coerced.
+    // for `SemStmt::Expr` so cross-kind union if/else bodies can be coerced.
     result_sort: Option<Sort<'tm>>,
 ) -> Result<Option<Term<'tm>>, CheckResult> {
     let top_guard = tm.mk_boolean(true);
@@ -86,8 +86,8 @@ pub(crate) fn encode_block<'tm>(
     for stmt in stmts {
         last_expr = None; // only the last Expr stmt is the return value
         match stmt {
-            Stmt::Let { name, constraint, value: _, .. }
-                if matches!(set_kind(constraint, name_defs), ValKind::Set(_)) =>
+            SemStmt::Let { name, constraint, value: _, .. }
+                if matches!(constraint.kind_of, ValKind::Set(_)) =>
             {
                 // Immutable runtime set: opaque integer (heap pointer), no value encoding.
                 let fresh_name = format!("{}_{}", name.0, ssa_counter);
@@ -97,8 +97,8 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            Stmt::Let { name, constraint, value: _, .. }
-                if matches!(set_kind(constraint, name_defs), ValKind::Vector(_)) =>
+            SemStmt::Let { name, constraint, value: _, .. }
+                if matches!(constraint.kind_of, ValKind::Vector(_)) =>
             {
                 // Immutable runtime vector (X*): opaque integer (Arrow array pointer).
                 // Vector literals can't be represented in the QF sequence theory
@@ -112,7 +112,7 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            Stmt::Let { name, constraint, value, .. } => {
+            SemStmt::Let { name, constraint, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
@@ -142,8 +142,8 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            Stmt::MutLet { name, constraint, value: _, .. }
-                if matches!(set_kind(constraint, name_defs), ValKind::Set(_)) =>
+            SemStmt::MutLet { name, constraint, value: _, .. }
+                if matches!(constraint.kind_of, ValKind::Set(_)) =>
             {
                 // Runtime set values (Set(Int), Set(Bool)) can't be encoded in
                 // QF_NIA. Represent the binding as an opaque integer (the heap
@@ -155,8 +155,8 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            Stmt::MutLet { name, constraint, value: _, .. }
-                if matches!(set_kind(constraint, name_defs), ValKind::Vector(_)) =>
+            SemStmt::MutLet { name, constraint, value: _, .. }
+                if matches!(constraint.kind_of, ValKind::Vector(_)) =>
             {
                 // Mutable runtime vector (X*): opaque integer (Arrow array pointer).
                 let fresh_name = format!("{}_{}", name.0, ssa_counter);
@@ -166,7 +166,7 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            Stmt::MutLet { name, constraint, value, .. } => {
+            SemStmt::MutLet { name, constraint, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
@@ -196,9 +196,9 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            Stmt::DestructLet { bindings, tuple_constraint, value, .. }
-            | Stmt::DestructMutLet { bindings, tuple_constraint, value, .. } => {
-                let is_mut = matches!(stmt, Stmt::DestructMutLet { .. });
+            SemStmt::DestructLet { bindings, tuple_constraint, value, .. }
+            | SemStmt::DestructMutLet { bindings, tuple_constraint, value, .. } => {
+                let is_mut = matches!(stmt, SemStmt::DestructMutLet { .. });
 
                 let rhs_term = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
@@ -284,7 +284,7 @@ pub(crate) fn encode_block<'tm>(
                 }
             }
 
-            Stmt::DestructAssign { names: dest_names, value, .. } => {
+            SemStmt::DestructAssign { names: dest_names, value, .. } => {
                 for name in dest_names.iter() {
                     if immutable_names.contains(name) {
                         return Err(CheckResult::Counterexample {
@@ -380,7 +380,7 @@ pub(crate) fn encode_block<'tm>(
                 }
             }
 
-            Stmt::Assign { name, .. } if immutable_names.contains(name) => {
+            SemStmt::Assign { name, .. } if immutable_names.contains(name) => {
                 return Err(CheckResult::Counterexample {
                     params: HashMap::new(),
                     output: 0,
@@ -392,7 +392,7 @@ pub(crate) fn encode_block<'tm>(
                 });
             }
 
-            Stmt::Assign { name, value, .. } => {
+            SemStmt::Assign { name, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
@@ -432,7 +432,7 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            Stmt::Assume { predicate, .. } => {
+            SemStmt::Assume { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
@@ -442,7 +442,7 @@ pub(crate) fn encode_block<'tm>(
                 accumulated_facts.push(pred);
             }
 
-            Stmt::Require { predicate, .. } => {
+            SemStmt::Require { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
@@ -458,7 +458,7 @@ pub(crate) fn encode_block<'tm>(
                 }
             }
 
-            Stmt::Assert { predicate, .. } => {
+            SemStmt::Assert { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
@@ -500,7 +500,7 @@ pub(crate) fn encode_block<'tm>(
                 }
             }
 
-            Stmt::Return { .. } => {
+            SemStmt::Return { .. } => {
                 // Early returns cannot yet be modelled in the linear-block SMT
                 // encoding.  Report Unknown so the solver never silently passes.
                 return Err(CheckResult::Unknown(
@@ -508,7 +508,7 @@ pub(crate) fn encode_block<'tm>(
                 ));
             }
 
-            Stmt::Expr(e) => {
+            SemStmt::Expr(e) => {
                 let t = encode_expr(
                     e, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
@@ -518,7 +518,7 @@ pub(crate) fn encode_block<'tm>(
                 last_expr = Some(t);
             }
 
-            Stmt::Block(inner) => {
+            SemStmt::Block(inner) => {
                 last_expr = encode_block(
                     inner, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, ssa_counter,
@@ -528,7 +528,7 @@ pub(crate) fn encode_block<'tm>(
                 )?;
             }
 
-            Stmt::While { cond, body, .. } => {
+            SemStmt::While { cond, body, .. } => {
                 let modified = collect_loop_modified(body);
                 if let Some(step_err) = check_inductive_step(
                     cond, body, &modified, constraint_env,
@@ -573,9 +573,9 @@ pub(crate) fn encode_block<'tm>(
                 last_expr = None;
             }
 
-            Stmt::ForIn { var, set, body, .. } => {
+            SemStmt::ForIn { var, set, body, .. } => {
                 // Empty set literal: body never executes, vars are unchanged.
-                let is_empty_lit = matches!(&set.kind, ExprKind::SetLit(e) if e.is_empty());
+                let is_empty_lit = matches!(&set.kind, SemExprKind::SetLit(e) if e.is_empty());
                 if is_empty_lit {
                     last_expr = None;
                     continue;
