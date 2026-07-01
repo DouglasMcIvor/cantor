@@ -227,7 +227,15 @@ Algorithm:
     I think the first is slightly less ugly until we get automatic inference
   - closures capture everything used within the body of the lambda. They capture mutables by reference, _unless_ they escape via the funcion return in which case they take ownership of the captured variables and copies of the constants.
 - dynamic dispatch? - this is just overloading a function to get a union domain and the compiler outputting a switch or a jump table!
-- macros. what is a natural Cantor way of doing code generation? functions that manipulate ASTs?
+- macros. what is a natural Cantor way of doing code generation? functions that manipulate ASTs? yes! we can make them work on the `SemanticTree`! post elaboration, but before constraint checking.
+  > Compilation itself becomes a computation over ordinary values.
+  > A semantic tree is just another value. A compile-time transformation is just another function. The compiler is simply evaluating functions whose domains happen to be compiler data structures.
+  So for example:
+  ```
+  double: Expression -> Expression
+  double(x) = x * 2
+  ```
+  where the overloads of a function must be either all compile-time, or all runtime. This is so that `double(a + b)` is unambigous.
 - generics. do we need mechanisms to help define functions that work on lots of different sets? seems like it should work alongside overloading.
   Went through this with ChatGPT and ended up with something quite elegant:
   ```
