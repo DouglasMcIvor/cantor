@@ -547,10 +547,23 @@ with the element appended (old array is preserved).  This is O(n) per call — a
 for Cantor's functional style.  Cantor source code cannot yet call push directly; it is
 an internal runtime primitive used by the builder path.
 
-*Block body and early `return`*: Functions with explicit `return` statements compile
-correctly.  The solver currently reports such functions as Unknown (the SMT block encoder
-does not yet support early `return` — it is aware of the limitation and will not produce
-false proofs).
+*Block body and early `return`* (COMPLETE for flat blocks): `return expr` exits the
+function immediately — codegen emits a real `ret` (anything textually after it is dead
+code), and the solver now models this exactly: encode `expr` and stop processing the rest
+of the statement sequence, at any position, not just the last statement. This is sound
+because the current grammar has no statement-level branching in a flat block (`if` is
+value-position only, so it can't embed a nested `return`), so a `return` reached in a flat
+sequence is unconditionally reached.
+
+Remaining known gap: a `return` inside a `while`/`for` loop body is still reported as
+`Unknown`, never a false proof. Loop bodies are checked by a separate induction-based path
+(`loops.rs`) that has no notion of "this iteration might exit the whole function early" —
+naively treating an early exit there the same as in a flat block would make the value
+returned from inside the loop invisible to the checked function result, silently proving
+properties about whatever code follows the loop even though the function might never reach
+it at runtime. (A `return` inside a loop whose body is *provably* never entered — e.g.
+`for x in {}` — is still fine and proves normally, since the loop contributes no behavior
+at all in that case.)
 
 *Nested vectors (`Nat**`, `Nat***`, `Bool**`, …)* (COMPLETE):
 

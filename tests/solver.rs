@@ -28,3 +28,5 @@ mod cross_kind_unions;
 mod bool_ops;
 #[path = "solver/if_else.rs"]
 mod if_else;
+#[path = "solver/blocks.rs"]
+mod blocks;

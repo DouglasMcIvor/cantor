@@ -77,15 +77,22 @@ fn run_llvm_ir(name: &str) -> Output {
     run(&["llvm-ir", path.to_str().unwrap()])
 }
 
-/// Assert that `cantor run` refused to execute because at least one signature
-/// was `Unknown` — the `ConstrainedTree` proof gate means this is no longer
-/// the "warning: ... running anyway" case it used to be.
-fn assert_run_refused_due_to_unknown(out: &Output) {
-    assert_ne!(out.code, 0, "should refuse to run with an unknown result\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+/// Assert that `cantor run` refused to execute (the `ConstrainedTree` proof
+/// gate — not every signature was `Proved`), regardless of whether the
+/// culprit is a `Counterexample` or an `Unknown`.
+fn assert_run_refused(out: &Output) {
+    assert_ne!(out.code, 0, "should refuse to run\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
     assert!(
         out.stderr.contains("not running"),
         "expected refusal message on stderr:\n{}", out.stderr
     );
+}
+
+/// Assert that `cantor run` refused to execute because at least one signature
+/// was `Unknown` — the `ConstrainedTree` proof gate means this is no longer
+/// the "warning: ... running anyway" case it used to be.
+fn assert_run_refused_due_to_unknown(out: &Output) {
+    assert_run_refused(out);
     assert!(
         out.stdout.contains("  unknown  "),
         "expected an `unknown` line in the check report:\n{}", out.stdout
@@ -910,13 +917,15 @@ fn vectors_runtime_run_returns_len_of_composed_vector() {
 #[test]
 fn vectors_nested_pure_fns_proved() {
     // Pure-expression-body functions on Nat** must be fully proved by the solver.
+    // (inner_len/get_elem, this fixture's block-body functions, are NOT checked
+    // here — they index a fixed position into an unconstrained Nat**/Nat*
+    // parameter with no minimum-length guarantee, which the solver now
+    // correctly reports as a Counterexample now that `return` is checked at
+    // all, rather than masking it behind a blanket Unknown. That's a genuine,
+    // known gap in these fixtures' signatures, deliberately left as-is.)
     let out = run_file("vectors_nested.cantor");
-    assert!(
-        !out.stdout.contains("  counterexample  "),
-        "unexpected counterexample:\n{}", out.stdout
-    );
-    // make_nested, identity_nested, outer_len, main must all be proved.
     assert!(out.stdout.contains("proved          make_nested"), "make_nested not proved:\n{}", out.stdout);
+    assert!(out.stdout.contains("proved          identity_nested"), "identity_nested not proved:\n{}", out.stdout);
     assert!(out.stdout.contains("proved          outer_len"),   "outer_len not proved:\n{}",  out.stdout);
 }
 
@@ -997,13 +1006,25 @@ fn vectors_struct_block_index_and_concat() {
 
 #[test]
 fn vectors_extended_no_counterexamples() {
-    // Block-body functions with early `return` are correctly Unknown (solver limitation),
-    // but there must be no counterexamples.
+    // Block-body functions using `return` on `let`-bound vector locals
+    // (block_coerce_len, concat_lit, bool_concat_len) are correctly Unknown —
+    // the solver can't yet reason about len()/++ on an opaque runtime vector
+    // binding, a separate, known gap from `return` itself.
+    //
+    // get_second is a genuine, expected exception: it indexes a fixed
+    // position into an unconstrained `Nat*` parameter with no minimum-length
+    // guarantee, which the solver now correctly reports as a Counterexample
+    // now that `return` is checked at all (previously masked behind the
+    // blanket "early return unsupported" Unknown). This is deliberately left
+    // as-is rather than tightening the fixture's signature.
     let out = run_file("vectors_extended.cantor");
     assert!(
-        !out.stdout.contains("  counterexample  "),
-        "expected no counterexamples:\n{}", out.stdout
+        out.stdout.contains("counterexample  get_second"),
+        "expected get_second's known counterexample:\n{}", out.stdout
     );
+    let unexpected_counterexample = out.stdout.lines()
+        .any(|l| l.contains("  counterexample  ") && !l.contains("get_second"));
+    assert!(!unexpected_counterexample, "unexpected counterexample:\n{}", out.stdout);
 }
 
 #[test]
@@ -1017,10 +1038,17 @@ fn vectors_extended_concat_coerce_block_len() {
 
 #[test]
 fn vectors_extended_index_elem() {
-    // get_elem uses an early `return` — Unknown (solver limitation), so
-    // `cantor run` refuses even though main()/make_vec are both proved.
+    // get_elem indexes a fixed position into an unconstrained `Nat*`
+    // parameter with no minimum-length guarantee — a genuine, known
+    // Counterexample now that `return` is checked at all (previously masked
+    // behind a blanket Unknown), not a Class of bug this fix addresses.
+    // `cantor run` correctly refuses even though main()/make_vec are proved.
     let out = run_subcommand("vectors_extended_index.cantor");
-    assert_run_refused_due_to_unknown(&out);
+    assert_run_refused(&out);
+    assert!(
+        out.stdout.contains("counterexample  get_elem"),
+        "expected get_elem's known counterexample:\n{}", out.stdout
+    );
 }
 
 #[test]

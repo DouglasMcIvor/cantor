@@ -51,7 +51,6 @@ pub fn counterexample(src: &str) {
 }
 
 /// Assert that the single-function source produces at least one Unknown.
-#[allow(dead_code)]
 pub fn unknown(src: &str) {
     let results = check(src);
     let (label, result) = results.into_iter().next().unwrap();

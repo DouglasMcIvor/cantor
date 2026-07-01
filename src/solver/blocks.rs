@@ -52,6 +52,28 @@ pub(crate) fn body_has_unconstrained_loop_var<'tm>(
     })
 }
 
+/// Returns `true` if `stmts` contains a `return` anywhere, at any nesting
+/// depth (including inside nested `{ }` blocks and further-nested loops).
+///
+/// `While`/`ForIn` bodies are never processed by `encode_block`'s own
+/// statement loop — they go through the separate induction-based reasoning
+/// in `loops.rs`, which has no notion of "this loop iteration might exit the
+/// whole function early." A `return` inside a loop body is therefore invisible
+/// to the top-level function-return value that gets checked, silently
+/// dropping the early-exit value entirely — proving properties about
+/// whatever comes *after* the loop, even though the function may never reach
+/// that code at runtime. Used to gate loop encoding: a loop whose body
+/// contains a `return` must report `Unknown` rather than risk this false
+/// proof, until the induction machinery can account for early exits.
+fn stmts_contain_return(stmts: &[SemStmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        SemStmt::Return { .. } => true,
+        SemStmt::Block(inner) => stmts_contain_return(inner),
+        SemStmt::While { body, .. } | SemStmt::ForIn { body, .. } => stmts_contain_return(body),
+        _ => false,
+    })
+}
+
 // ── Block encoder ─────────────────────────────────────────────────────────────
 
 /// Process a sequence of statements, threading the SSA environment.
@@ -500,12 +522,23 @@ pub(crate) fn encode_block<'tm>(
                 }
             }
 
-            SemStmt::Return { .. } => {
-                // Early returns cannot yet be modelled in the linear-block SMT
-                // encoding.  Report Unknown so the solver never silently passes.
-                return Err(CheckResult::Unknown(
-                    "early `return` not yet supported in the SMT block encoder".into(),
-                ));
+            SemStmt::Return { value, .. } => {
+                // `return` exits the function immediately — everything after it
+                // in this statement sequence is unreachable, exactly like
+                // codegen's `compile_return_stmt` (which emits a real `ret` and
+                // never compiles what follows into a live block). The current
+                // grammar has no statement-level branching in a flat `stmts`
+                // sequence (`if` is value-position only; `while`/`for` bodies are
+                // handled by the separate induction path in `loops.rs`, never by
+                // this function), so a `return` reached here is unconditionally
+                // reached — returning right away is sound, not an approximation.
+                let t = encode_expr(
+                    value, env, name_defs, fn_env, tm, solver,
+                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    result_sort.clone(),
+                )
+                .map_err(CheckResult::Unknown)?;
+                return Ok(Some(t));
             }
 
             SemStmt::Expr(e) => {
@@ -529,6 +562,12 @@ pub(crate) fn encode_block<'tm>(
             }
 
             SemStmt::While { cond, body, .. } => {
+                if stmts_contain_return(body) {
+                    return Err(CheckResult::Unknown(
+                        "early `return` inside a `while` loop body is not yet \
+                         supported in the SMT block encoder".into(),
+                    ));
+                }
                 let modified = collect_loop_modified(body);
                 if let Some(step_err) = check_inductive_step(
                     cond, body, &modified, constraint_env,
@@ -579,6 +618,12 @@ pub(crate) fn encode_block<'tm>(
                 if is_empty_lit {
                     last_expr = None;
                     continue;
+                }
+                if stmts_contain_return(body) {
+                    return Err(CheckResult::Unknown(
+                        "early `return` inside a `for` loop body is not yet \
+                         supported in the SMT block encoder".into(),
+                    ));
                 }
 
                 let modified = collect_loop_modified(body);
