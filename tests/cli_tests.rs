@@ -1258,3 +1258,20 @@ fn call_domain_violation_callee_still_proved() {
         "expected safe_div proved:\n{}", out.stdout
     );
 }
+
+#[test]
+fn loop_body_obligation_counterexample() {
+    // Division by zero inside a while body, feeding a variable whose `Int`
+    // invariant imposes no constraint — previously proved, then SIGFPE'd
+    // under `cantor run`.
+    let out = run_file("loop_body_obligation.cantor");
+    assert_ne!(out.code, 0, "loop_body_obligation.cantor should exit non-zero:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("counterexample  h"),
+        "expected counterexample for h:\n{}", out.stdout
+    );
+    assert!(
+        out.stdout.contains("division by zero"),
+        "expected division-by-zero reason:\n{}", out.stdout
+    );
+}

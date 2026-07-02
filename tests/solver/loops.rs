@@ -528,3 +528,180 @@ f(n) {
     acc
 }"#);
 }
+
+// ── Loop-body built-in obligations ────────────────────────────────────────────
+//
+// Obligations produced while encoding a loop body (division domains, call-site
+// domains, unproved asserts, …) are checked under the induction hypothesis —
+// previously they were collected and dropped, so a proved function could
+// divide by zero at runtime.
+
+#[test]
+fn loop_body_division_by_zero_counterexample() {
+    let results = check(r#"
+f : Nat -> Nat
+f(n) {
+    mut i: Nat = 0
+    while i < n {
+        i := i + 10 / i
+    }
+    i
+}"#);
+    let (_, result) = results.into_iter().next().unwrap();
+    let CheckResult::Counterexample { reason, .. } = result else {
+        panic!("expected counterexample, got {result:?}");
+    };
+    assert_eq!(reason, "division by zero");
+}
+
+#[test]
+fn loop_body_division_feeding_unconstrained_var_counterexample() {
+    // The obligation must be checked even when the divided value only feeds a
+    // variable whose invariant (`Int`) imposes no constraint — nothing else
+    // in the query would surface it.
+    let results = check(r#"
+h : Nat -> Nat
+h(n) {
+    mut i: Nat = 0
+    mut junk: Int = 0
+    while i < n {
+        junk := 10 / (n - n)
+        i := i + 1
+    }
+    i
+}"#);
+    let (_, result) = results.into_iter().next().unwrap();
+    let CheckResult::Counterexample { reason, .. } = result else {
+        panic!("expected counterexample, got {result:?}");
+    };
+    assert_eq!(reason, "division by zero");
+}
+
+#[test]
+fn loop_body_division_safe_from_invariant_proved() {
+    // The obligation is discharged using the hypothesis: i ∈ Nat → i + 1 ≠ 0.
+    proved(r#"
+f : Nat -> Nat
+f(n) {
+    mut i: Nat = 0
+    mut acc: Nat = 0
+    while i < n {
+        acc := acc + 10 / (i + 1)
+        i := i + 1
+    }
+    acc
+}"#);
+}
+
+#[test]
+fn loop_body_call_domain_violation_counterexample() {
+    let results = check_all(r#"
+half : Nat -> Nat
+half(x) = x / 2
+
+f : Nat -> Nat
+f(n) {
+    mut i: Nat = 0
+    mut acc: Nat = 0
+    while i < n {
+        acc := acc + half(i - 1)
+        i := i + 1
+    }
+    acc
+}"#);
+    let CheckResult::Counterexample { reason, .. } = result_for(&results, "f") else {
+        panic!("expected counterexample for f");
+    };
+    assert!(
+        reason.contains("not in its declared domain"),
+        "reason should name the call-site domain violation: {reason}"
+    );
+}
+
+#[test]
+fn loop_body_call_in_domain_proved() {
+    proved_all(r#"
+half : Nat -> Nat
+half(x) = x / 2
+
+f : Nat -> Nat
+f(n) {
+    mut i: Nat = 0
+    mut acc: Nat = 0
+    while i < n {
+        acc := acc + half(i)
+        i := i + 1
+    }
+    acc
+}"#);
+}
+
+#[test]
+fn loop_body_runtime_assert_needs_fail_counterexample() {
+    // An unproved assert inside a loop body compiles to a runtime check, so
+    // the range must declare `| Fail` — the flag must not be lost in the
+    // induction path.
+    let results = check(r#"
+f : Int -> Int
+f(x) {
+    mut i: Int = 0
+    while i < x {
+        assert i < 1000
+        i := i + 1
+    }
+    i
+}"#);
+    let (_, result) = results.into_iter().next().unwrap();
+    let CheckResult::Counterexample { reason, .. } = result else {
+        panic!("expected counterexample, got {result:?}");
+    };
+    assert!(
+        reason.contains("does not include `Fail`"),
+        "reason should demand | Fail: {reason}"
+    );
+}
+
+#[test]
+fn loop_body_runtime_assert_with_fail_range_proved() {
+    proved(r#"
+f : Int -> Int | Fail
+f(x) {
+    mut i: Int = 0
+    while i < x {
+        assert i < 1000
+        i := i + 1
+    }
+    i
+}"#);
+}
+
+#[test]
+fn for_in_body_division_by_zero_counterexample() {
+    let results = check(r#"
+f : -> Nat
+f() {
+    mut acc: Nat = 0
+    for x in {0, 1, 2} {
+        acc := acc + 10 / x
+    }
+    acc
+}"#);
+    let (_, result) = results.into_iter().next().unwrap();
+    let CheckResult::Counterexample { reason, .. } = result else {
+        panic!("expected counterexample, got {result:?}");
+    };
+    assert_eq!(reason, "division by zero");
+}
+
+#[test]
+fn for_in_body_division_nonzero_elements_proved() {
+    proved(r#"
+f : -> Nat
+f() {
+    mut acc: Nat = 0
+    for x in {1, 2, 5} {
+        acc := acc + 10 / x
+    }
+    acc
+}"#);
+}

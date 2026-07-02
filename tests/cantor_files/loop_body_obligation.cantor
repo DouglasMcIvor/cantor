@@ -1,0 +1,10 @@
+h : Nat -> Nat
+h(n) {
+    mut i: Nat = 0
+    mut junk: Int = 0
+    while i < n {
+        junk := 10 / (n - n)
+        i := i + 1
+    }
+    i + junk - junk
+}

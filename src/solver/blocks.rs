@@ -573,6 +573,7 @@ pub(crate) fn encode_block<'tm>(
                     cond, body, &modified, constraint_env,
                     env, accumulated_facts, name_defs, fn_env, tm,
                     ssa_counter, param_names, param_terms, immutable_names, distinct_preds,
+                    has_runtime_assert,
                 ) {
                     return Err(step_err);
                 }
@@ -631,6 +632,7 @@ pub(crate) fn encode_block<'tm>(
                     var, set, body, &modified, constraint_env,
                     env, accumulated_facts, name_defs, fn_env, tm,
                     ssa_counter, param_names, param_terms, immutable_names, distinct_preds,
+                    has_runtime_assert,
                 ) {
                     return Err(step_err);
                 }

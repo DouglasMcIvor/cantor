@@ -255,6 +255,7 @@ The declared constraint is used in three places: the initial value is checked ag
 
 **The compiler verifies the inductive step.**
 Before trusting the invariant for post-loop reasoning, the solver checks that one body iteration actually maintains it: given `acc ∈ Nat` and the loop condition, does `acc := acc + i` leave `acc` still in `Nat`?
+The same check discharges every built-in obligation the body produces — division domains, vector bounds, call-site domains, unproved `assert`s — under the induction hypothesis, so `i := i + 10 / i` is a counterexample (`i` starts at 0), not a proved crash.
 If the step cannot be proved — for example, `mut acc: Int16 = 0` with `acc := acc + 1` in an unbounded loop — the compiler reports a counterexample immediately rather than a false `proved`.
 Loop variables declared as `mut name: Int` carry no effective constraint (Int = all integers) and behave conservatively: if the range obligation depends on such a variable, the result is `unknown` rather than a potentially spurious counterexample.
 

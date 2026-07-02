@@ -20,7 +20,12 @@ use super::membership::{DistinctPreds, Membership, membership_constraint};
 ///
 /// Introduces fresh hypothesis variables for every modified binding, invokes
 /// `add_loop_entry` for loop-specific setup (assert condition / bind loop var),
-/// encodes one body iteration, then checks that every invariant still holds.
+/// encodes one body iteration, then checks — under the same hypothesis — that
+/// every invariant still holds AND that every built-in obligation the body
+/// produced (division domains, vector bounds, call-site domains, …) is met.
+/// The hypothesis (invariants + loop condition + outer facts) over-approximates
+/// every reachable iteration, so obligations proved here hold on all of them;
+/// dropping them instead was a false-proof hole.
 ///
 /// Returns `None` when UNSAT (step proved); `Some(result)` otherwise.
 fn check_loop_inductive_step<'tm, F>(
@@ -38,6 +43,7 @@ fn check_loop_inductive_step<'tm, F>(
     inv_label: &str,
     outer_immutable_names: &HashSet<Symbol>,
     distinct_preds: &DistinctPreds<'tm>,
+    has_runtime_assert: &mut bool,
     add_loop_entry: F,
 ) -> Option<CheckResult>
 where
@@ -48,13 +54,12 @@ where
         &mut usize,
     ) -> Option<CheckResult>,
 {
+    // Even when no modified variable carries an invariant, the body must still
+    // be encoded: its built-in obligations need discharging regardless.
     let constrained: Vec<&Symbol> = modified
         .iter()
         .filter(|n| constraint_env.contains_key(*n))
         .collect();
-    if constrained.is_empty() {
-        return None;
-    }
 
     let mut tmp = Solver::new(tm);
     tmp.set_logic("ALL");
@@ -95,11 +100,12 @@ where
     let mut cc = 0usize;
     let mut obligs: Vec<BuiltinObligation<'tm>> = Vec::new();
     let mut step_ssa = *ssa_counter;
-    let mut _dummy_runtime_assert = false;
+    // An unproved `assert` inside the body needs `| Fail` on the range exactly
+    // like one in a flat block — the flag must reach the function-level check.
     match encode_block(
         body, &mut body_env, name_defs, fn_env, tm, &mut tmp,
         &mut cc, &mut obligs, &mut step_ssa, &mut tmp_facts,
-        param_names, param_terms, &mut empty_cenv, &mut _dummy_runtime_assert,
+        param_names, param_terms, &mut empty_cenv, has_runtime_assert,
         &mut step_imm, distinct_preds, None,
     ) {
         Ok(_) => {}
@@ -117,14 +123,27 @@ where
         }
     }
 
-    if step_obligs.is_empty() {
+    // Body built-in obligations, path-conditioned like the function-level check.
+    let mut all_obligs: Vec<Term<'tm>> = obligs
+        .iter()
+        .map(|o| {
+            if o.path_cond.to_string().trim() == "true" {
+                o.obligation.clone()
+            } else {
+                tm.mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
+            }
+        })
+        .collect();
+    all_obligs.extend(step_obligs);
+
+    if all_obligs.is_empty() {
         return None;
     }
 
-    let combined = if step_obligs.len() == 1 {
-        step_obligs.remove(0)
+    let combined = if all_obligs.len() == 1 {
+        all_obligs.remove(0)
     } else {
-        tm.mk_term(Kind::And, &step_obligs)
+        tm.mk_term(Kind::And, &all_obligs)
     };
     tmp.assert_formula(tm.mk_term(Kind::Not, &[combined]));
 
@@ -138,22 +157,37 @@ where
             cex_params.insert(name.0.clone(), integer_value(&val));
         }
         let mut output_val = 0i64;
-        let mut reason = format!("{inv_label} not maintained");
-        for name in &constrained {
-            if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name)) {
-                if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint, name_defs, distinct_preds) {
-                    if !boolean_value(&tmp.get_value(c)) {
-                        output_val = integer_value(&tmp.get_value(post.clone()));
-                        reason = format!(
-                            "{inv_label} not maintained: `{}` ∉ {} (value {})",
-                            name.0, constraint, output_val
-                        );
-                        break;
+        // A violated built-in obligation is the root cause — the invariant
+        // break (if any) is usually downstream of it, so it wins the reason.
+        let mut reason = obligs
+            .iter()
+            .find(|o| {
+                boolean_value(&tmp.get_value(o.path_cond.clone()))
+                    && !boolean_value(&tmp.get_value(o.obligation.clone()))
+            })
+            .map(|o| o.violated_reason.to_string());
+        if reason.is_none() {
+            for name in &constrained {
+                if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name)) {
+                    if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint, name_defs, distinct_preds) {
+                        if !boolean_value(&tmp.get_value(c)) {
+                            output_val = integer_value(&tmp.get_value(post.clone()));
+                            reason = Some(format!(
+                                "{inv_label} not maintained: `{}` ∉ {} (value {})",
+                                name.0, constraint, output_val
+                            ));
+                            break;
+                        }
                     }
                 }
             }
         }
+        let reason = reason.unwrap_or_else(|| format!("{inv_label} not maintained"));
         Some(CheckResult::Counterexample { params: cex_params, output: output_val, reason })
+    } else if constrained.is_empty() {
+        Some(CheckResult::Unknown(format!(
+            "cannot verify built-in obligations inside the {inv_label} body",
+        )))
     } else {
         let names: Vec<&str> = constrained.iter().map(|n| n.0.as_str()).collect();
         Some(CheckResult::Unknown(format!(
@@ -179,11 +213,12 @@ pub(super) fn check_inductive_step<'tm>(
     param_terms: &[Term<'tm>],
     immutable_names: &HashSet<Symbol>,
     distinct_preds: &DistinctPreds<'tm>,
+    has_runtime_assert: &mut bool,
 ) -> Option<CheckResult> {
     check_loop_inductive_step(
         body, modified, constraint_env, env, accumulated_facts,
         name_defs, fn_env, tm, ssa_counter, param_names, param_terms,
-        "loop invariant", immutable_names, distinct_preds,
+        "loop invariant", immutable_names, distinct_preds, has_runtime_assert,
         |tmp, ind_env, tmp_facts, _ssa| {
             let mut cc = 0usize;
             let mut obligs = Vec::new();
@@ -215,6 +250,7 @@ pub(super) fn check_for_inductive_step<'tm>(
     param_terms: &[Term<'tm>],
     immutable_names: &HashSet<Symbol>,
     distinct_preds: &DistinctPreds<'tm>,
+    has_runtime_assert: &mut bool,
 ) -> Option<CheckResult> {
     // If `set` is a runtime set variable, extract its element-kind expression
     // from the Set(ElemKind) constraint (e.g. Set(Nat) → Nat, Set(Int-{0}) →
@@ -235,7 +271,7 @@ pub(super) fn check_for_inductive_step<'tm>(
     check_loop_inductive_step(
         body, modified, constraint_env, env, accumulated_facts,
         name_defs, fn_env, tm, ssa_counter, param_names, param_terms,
-        "for-loop invariant", immutable_names, distinct_preds,
+        "for-loop invariant", immutable_names, distinct_preds, has_runtime_assert,
         |tmp, ind_env, tmp_facts, ssa| {
             let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
             *ssa += 1;

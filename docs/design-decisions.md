@@ -1146,7 +1146,11 @@ annotation is used in three places: the initial value is checked against it,
 each reassignment is checked, and after the loop the post-loop variable
 inherits the invariant as a known solver fact. The compiler verifies the
 inductive step (given the invariant and the loop condition, does one body
-iteration maintain the invariant?).
+iteration maintain the invariant?). The same induction query also discharges
+every built-in obligation the body produces (division domains, vector bounds,
+call-site domains, unproved `assert`s — the latter forcing `| Fail` on the
+range exactly as in a flat block); the hypothesis over-approximates every
+reachable iteration, so obligations proved there hold on all of them.
 
 ```
 while cond { stmts }
