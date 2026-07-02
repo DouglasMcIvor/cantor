@@ -23,7 +23,6 @@ You probably don't want to read this unless you're me.
     -  `cargo llvm-cov` for coverage
     -  `cargo +nightly miri test` for UB, aliasing, invalid references
   - "giving every stage a `validate()` method"
-- should `len` be replaced with just `size`? any other built in functions I need?
 - `none` value and `None` set, currently missing
 - function overloads, or as ChatGPT suggests "the language should officially define an overloaded
   function as *the union of compatible partial functions*". In my own words "all functions are partial
@@ -43,14 +42,13 @@ You probably don't want to read this unless you're me.
 - immutable set constants like `s = {1, 2, 3}`, need to be baked in as statics
 - value literals desugaring in compile time set positions and support for sequences of literal values.
   E.g.
-  - `Nat* - {}` (prefer over the empty set interpretation as that's _useless_)
   - `Nat* - {[]}`
-  - more ambitiously `Nat* - {4}`/`Nat* - {[4]}`/`Nat* - {(4)}` as all equivalent!
+  - more ambitiously `Nat* - {4}`/`Nat* - {[4]}`/`Nat* - {(4)}` as all coercing to the same thing
     "My vector can be anything except a length 1 list containing a 4".
     I don't expect the solver to work very well in the last case, but we should at least
     let the user try and write it.
 - more basic values:
-  - `Int32`, `Int(32)` and their Nat cousins as LLVM iN values, right now all are i64. Rely on the optimizer to pack or not etc.
+  - `Int32`, `Int(32)` and their Nat cousins as LLVM iN values, right now all are i64.
   - `Float32` and `Float64` as distinct sets, `FiniteFloat32` and explicit `posZero`, `negZero`, `nan` values
   - `Signed32`, `Unsigned32` etc for wrapping arithmetic distinct from `Int` and `Nat`
   - `Char` (unicode), our string type is `Char*` which is just too perfect to be true.
@@ -227,7 +225,7 @@ Algorithm:
     I think the first is slightly less ugly until we get automatic inference
   - closures capture everything used within the body of the lambda. They capture mutables by reference, _unless_ they escape via the funcion return in which case they take ownership of the captured variables and copies of the constants.
 - dynamic dispatch? - this is just overloading a function to get a union domain and the compiler outputting a switch or a jump table!
-- macros. what is a natural Cantor way of doing code generation? functions that manipulate ASTs? yes! we can make them work on the `SemanticTree`! post elaboration, but before constraint checking.
+- ~macros~ - "compiler functions". what is a natural Cantor way of doing code generation? functions that manipulate ASTs? yes! we can make them work on the `SemanticTree`! post elaboration, but before constraint checking.
   > Compilation itself becomes a computation over ordinary values.
   > A semantic tree is just another value. A compile-time transformation is just another function. The compiler is simply evaluating functions whose domains happen to be compiler data structures.
   So for example:
@@ -236,6 +234,7 @@ Algorithm:
   double(x) = x * 2
   ```
   where the overloads of a function must be either all compile-time, or all runtime. This is so that `double(a + b)` is unambigous.
+  We call them "compiler functions" because they are just functions run in the compiler :-)
 - generics. do we need mechanisms to help define functions that work on lots of different sets? seems like it should work alongside overloading.
   Went through this with ChatGPT and ended up with something quite elegant:
   ```
