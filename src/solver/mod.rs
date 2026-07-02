@@ -236,24 +236,57 @@ fn check_name_def(def: &SemNameDef, ty: &SemExpr, fn_env: &FunctionEnv<'_>, name
         Err(msg) => return CheckResult::Unknown(msg),
     };
 
-    match membership_constraint(&tm, value_term, ty, name_defs, &distinct_preds) {
-        Membership::Unconstrained => CheckResult::Proved,
-        Membership::Constrained(c) => {
-            solver.assert_formula(tm.mk_term(Kind::Not, &[c]));
-            let sat = solver.check_sat();
-            if sat.is_unsat() {
-                CheckResult::Proved
-            } else if sat.is_sat() {
-                CheckResult::Counterexample {
-                    params: HashMap::new(),
-                    output: 0,
-                    reason: format!("constant value not in {}", ty),
-                }
+    let range_obligation = match membership_constraint(&tm, value_term, ty, name_defs, &distinct_preds) {
+        Membership::Unconstrained => None,
+        Membership::Constrained(c) => Some(c),
+        Membership::Unsupported => return CheckResult::Unknown("unsupported set annotation".into()),
+    };
+
+    // Constant values can contain built-in obligations too (`/` divisor,
+    // call-site domains, …) — they must be discharged, not dropped.
+    let mut all_obligations: Vec<Term<'_>> = builtin_obligs
+        .iter()
+        .map(|o| {
+            if o.path_cond.to_string().trim() == "true" {
+                o.obligation.clone()
             } else {
-                CheckResult::Unknown("solver returned unknown".into())
+                tm.mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
             }
+        })
+        .collect();
+    if let Some(rc) = range_obligation {
+        all_obligations.push(rc);
+    }
+    if all_obligations.is_empty() {
+        return CheckResult::Proved;
+    }
+
+    let combined = if all_obligations.len() == 1 {
+        all_obligations.remove(0)
+    } else {
+        tm.mk_term(Kind::And, &all_obligations)
+    };
+    solver.assert_formula(tm.mk_term(Kind::Not, &[combined]));
+
+    let sat = solver.check_sat();
+    if sat.is_unsat() {
+        CheckResult::Proved
+    } else if sat.is_sat() {
+        let reason = builtin_obligs
+            .iter()
+            .find(|o| {
+                boolean_value(&solver.get_value(o.path_cond.clone()))
+                    && !boolean_value(&solver.get_value(o.obligation.clone()))
+            })
+            .map(|o| o.violated_reason.to_string())
+            .unwrap_or_else(|| format!("constant value not in {}", ty));
+        CheckResult::Counterexample {
+            params: HashMap::new(),
+            output: 0,
+            reason,
         }
-        Membership::Unsupported => CheckResult::Unknown("unsupported type annotation".into()),
+    } else {
+        CheckResult::Unknown("solver returned unknown".into())
     }
 }
 

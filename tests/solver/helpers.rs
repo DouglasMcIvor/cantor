@@ -40,6 +40,18 @@ pub fn proved_all(src: &str) {
     }
 }
 
+/// Look up one function's first-signature result in a `check_all` report.
+pub fn result_for<'a>(
+    results: &'a [(String, Vec<(String, CheckResult)>)],
+    name: &str,
+) -> &'a CheckResult {
+    let (_, sig_results) = results
+        .iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| panic!("no function `{name}` in results"));
+    &sig_results[0].1
+}
+
 /// Assert that the single-function source produces at least one Counterexample.
 pub fn counterexample(src: &str) {
     let results = check(src);

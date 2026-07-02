@@ -299,6 +299,137 @@ tau : Nat = 2 * pi
 }
 
 #[test]
+fn constant_division_by_zero_counterexample() {
+    // Built-in obligations inside constant values must be discharged, not
+    // dropped — 1/0 is undefined even though the result "is an Int".
+    let results = check_all("badconst : Int = 1 / 0");
+    let CheckResult::Counterexample { reason, .. } = result_for(&results, "badconst") else {
+        panic!("expected counterexample for badconst");
+    };
+    assert_eq!(reason, "division by zero");
+}
+
+// ── Call-site domain obligations ──────────────────────────────────────────────
+//
+// Every call site must PROVE its arguments lie in the callee's declared domain
+// (for overloads: in at least one). Without this, the callee's contracts are
+// vacuous implications and an out-of-domain call re-exposes whatever the
+// callee's domain was protecting against (e.g. division by zero).
+
+const SAFE_DIV: &str = "
+safe_div : Int * (Int - {0}) -> Int
+safe_div(x, y) = x / y
+";
+
+#[test]
+fn call_site_domain_violation_counterexample() {
+    let results = check_all(&format!("{SAFE_DIV}
+bad : Int -> Int
+bad(x) = safe_div(x, 0)
+"));
+    let CheckResult::Counterexample { reason, .. } = result_for(&results, "bad") else {
+        panic!("expected counterexample for bad");
+    };
+    assert!(
+        reason.contains("not in its declared domain"),
+        "reason should name the domain violation: {reason}"
+    );
+}
+
+#[test]
+fn call_site_domain_satisfied_proved() {
+    proved_all(&format!("{SAFE_DIV}
+good : Int -> Int
+good(x) = safe_div(x, 2)
+"));
+}
+
+#[test]
+fn call_site_domain_from_caller_domain_proved() {
+    // The caller's own domain supplies the proof that the argument is non-zero.
+    proved_all(&format!("{SAFE_DIV}
+forward : Int * (Int - {{0}}) -> Int
+forward(a, b) = safe_div(a, b)
+"));
+}
+
+#[test]
+fn call_site_domain_path_condition_proved() {
+    // The obligation is path-sensitive: the call only happens when x != 0.
+    proved_all(&format!("{SAFE_DIV}
+guarded : Int -> Int
+guarded(x) = if x == 0 then 0 else safe_div(10, x)
+"));
+}
+
+#[test]
+fn call_site_recursive_in_domain_proved() {
+    proved("
+count_down : Nat -> Nat
+count_down(n) = if n == 0 then 0 else count_down(n - 1)
+");
+}
+
+#[test]
+fn call_site_recursive_out_of_domain_counterexample() {
+    // n = 2 recurses with n - 2 = 0 ∉ NatPos — the induction hypothesis only
+    // covers in-domain arguments, so this must be rejected.
+    let results = check_all("
+shrink : NatPos -> Nat
+shrink(n) = if n == 1 then 1 else shrink(n - 2)
+");
+    assert!(
+        matches!(result_for(&results, "shrink"), CheckResult::Counterexample { .. }),
+        "expected counterexample for shrink"
+    );
+}
+
+#[test]
+fn call_site_overload_union_domain_proved() {
+    // Args need only lie in the union of the overloads' domains.
+    proved_all("
+pick : Nat -> Nat
+pick : (Int - Nat) -> Nat
+pick(x) = if x >= 0 then x else -x
+
+any_int : Int -> Nat
+any_int(x) = pick(x)
+");
+}
+
+// ── `?` success-narrowing is guarded per-signature ────────────────────────────
+
+const OVERLOADED_FALLIBLE: &str = "
+f : Nat -> Nat | Fail
+f : (Int - Nat) -> (Int - Nat) | Fail
+f(x) = x
+";
+
+#[test]
+fn try_narrowing_other_overload_counterexample() {
+    // g(-5) resolves to the (Int - Nat) overload, whose success arm is NOT
+    // Nat — narrowing via the first signature alone would falsely prove this.
+    let results = check_all(&format!("{OVERLOADED_FALLIBLE}
+g : Int -> Nat | Fail
+g(n) = f(n)?
+"));
+    assert!(
+        matches!(result_for(&results, "g"), CheckResult::Counterexample { .. }),
+        "expected counterexample for g"
+    );
+}
+
+#[test]
+fn try_narrowing_domain_restricted_proved() {
+    // With the caller restricted to Nat, only the Nat overload applies and
+    // its success arm proves the range.
+    proved_all(&format!("{OVERLOADED_FALLIBLE}
+g : Nat -> Nat | Fail
+g(n) = f(n)?
+"));
+}
+
+#[test]
 fn const_literal_proved() {
     proved_all("
 answer : Nat = 42

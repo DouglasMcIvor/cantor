@@ -1230,3 +1230,31 @@ fn vec_length_narrowing_control_counterexample() {
         "expected h_no_empty_guard counterexample:\n{}", out.stdout
     );
 }
+
+// ── Call-site domain obligations (end-to-end) ─────────────────────────────────
+
+#[test]
+fn call_domain_violation_counterexample() {
+    // `bad(x) = safe_div(x, 0)` violates safe_div's `Int - {0}` domain: the
+    // call site must fail to prove, or a proved program divides by zero.
+    let out = run_file("call_domain_violation.cantor");
+    assert_ne!(out.code, 0, "call_domain_violation.cantor should exit non-zero:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("counterexample  bad"),
+        "expected counterexample for bad:\n{}", out.stdout
+    );
+    assert!(
+        out.stdout.contains("not in its declared domain"),
+        "expected call-site domain reason:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn call_domain_violation_callee_still_proved() {
+    // safe_div itself is fine — only the caller is at fault.
+    let out = run_file("call_domain_violation.cantor");
+    assert!(
+        out.stdout.contains("proved          safe_div"),
+        "expected safe_div proved:\n{}", out.stdout
+    );
+}
