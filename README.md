@@ -67,7 +67,8 @@ While Lisp is homoiconic, Cantor is _homovalent_ - same valued.
 
 ## How it works
 
-Every function signature is a mathematical claim: *for all inputs in the domain, the output is in the range.*
+Every function signature is a mathematical claim: *for every input in the domain, whenever the function returns, its output is in the range.*
+The "whenever it returns" matters: Cantor proves *partial* correctness — a function that never terminates satisfies any range vacuously, and termination checking is a separate (deferred) feature.
 The compiler encodes this as a constraint-satisfaction problem and hands it to [cvc5](https://cvc5.github.io/), a state-of-the-art SMT solver.
 Every check has one of three outcomes:
 
@@ -80,6 +81,14 @@ Every check has one of three outcomes:
 `proved` is the goal.
 `counterexample` is a bug report with a witness.
 `unknown` is honest: the compiler tells you what it couldn't verify, and gives you the option of letting the program still run with a runtime guard in place.
+
+> **Known unsoundness (v0):** the solver reasons in unbounded ℤ, but the runtime
+> currently stores every integer in a 64-bit machine word. A claim like
+> `f : Int * Int -> Int` with `f(x, y) = x * y` is proved mathematically, yet the
+> JIT wraps silently past ±2⁶³ — so a proved theorem can be visibly false at
+> runtime near the i64 boundary. This gap closes when BigInt support lands (see
+> roadmap); until then it is the one place the compiler silently assumes
+> something it hasn't proved.
 
 ## Examples
 
@@ -192,17 +201,29 @@ The compiler proves that when neither `safe_to_nat` call fails, `a + b` is in `N
 ### Helping the compiler out (or lying to it): `assert`, `require` and `assume`
 
 ```haskell
-clamp : Int * Nat * NatPos -> Nat
+clamp : Int * Nat * NatPos -> Nat | Fail
 clamp(x, lo, hi) {
-    assert lo < hi        -- runtime check: caller's responsibility
-    assume x >= 0         -- escape hatch: "trust me, I know the caller"
+    assert lo < hi        -- not provable from the domain (lo=5, hi=3 fits it),
+                          -- so this becomes a runtime check — hence `| Fail`
     if x < lo then lo else if x > hi then hi else x
+}
+
+to_nat : Int -> Nat
+to_nat(x) {
+    assume x >= 0         -- escape hatch: "honest guv! the solver can't see it,
+                          -- but I just KNOW the caller only passes x >= 0"
+    x                     -- proved (from the assume); unsound if the caller lies
 }
 ```
 
 `require` is a compile-time proof obligation — a hard error if it can't be proved.
-`assert` graduates: if provable, it's elided; if always false, it's a compile error; if unknown, it becomes a runtime check.
-`assume` is an escape hatch: "honest guv! the solver can't see this but I just know it's true!"
+`assert` graduates: if provable, it's elided; if always false, it's a compile error; if unknown, it becomes a runtime check — which is why a function containing an unproved `assert` must declare `| Fail` in its range.
+`assume` is an escape hatch: no check, no proof — the compiler simply believes you, and every proof downstream is worthless if you lied.
+
+The better fix for `clamp` is no runtime check at all: put the relationship in the
+domain — `{(x, lo, hi) ∈ Int × Nat × NatPos | lo < hi}` — so every *caller* must
+prove it, which is the whole point of the language. Compound relational domains
+are part of the design (see `docs/design-decisions.md` §10) but not implemented yet.
 
 ### Mutables, mutation invariants and loops
 
@@ -356,6 +377,18 @@ Accidentally passing a plain `Nat` where a `Litre` is expected, or forgetting th
 
 Functions can take and return elements of product sets (aka tuples) using `*` in signatures and `(e1, e2)` syntax in bodies. Positional projection uses `.0`, `.1`, etc.
 
+**Nesting and associativity.** `*` is a flat n-ary product at each
+parenthesization level, mirroring tuple-literal syntax: `Int * Int * Int` is the
+set of flat triples like `(1, 2, 3)`, while `(Int * Int) * Int` is the set of
+*pairs* whose first element is a pair, like `((1, 2), 3)`. So `A * B * C`,
+`(A * B) * C`, and `A * (B * C)` are three different sets — parentheses nest,
+exactly as they do in value literals. A named set substitutes as-if-parenthesized:
+given `Pair = Int * Int`, the set `Pair * Int` means `(Int * Int) * Int`
+(pairs-of-pair-and-int), *not* flat triples — otherwise expanding a transparent
+alias would change the set it denotes.
+(Implementation note: the parser currently flattens `*`-chains through
+parentheses, so parenthesized nesting is not yet honoured — TODO.)
+
 ```haskell
 swap : Int * Int -> Int * Int
 swap(t) = (t.1, t.0)
@@ -475,15 +508,20 @@ Vectors of tuples (`(Nat * Nat)*`) and nested vectors (`Nat**`) work the same wa
 Vectors are resticted to have a length representable by a single machine word. If you are writing for a system with segmented memory then you'll need to split your incredibly long vectors into segments!
 Hopefully that will help you feel right at home.
 
-#### Scalars and tuples are sequences too
+#### Scalars and tuples coerce to sequences
 
-Every scalar `n` and every tuple `(a, b, c)` is a length-1 and length-3 sequence respectively.
-This follows from the fact that `(5) == 5` — parentheses are overloaded for grouping and tupling, so there is no distinct "1-tuple"; the length-1 sequence **is** the scalar.
+Every scalar `n` may be used where a length-1 sequence is expected, and every tuple
+`(a, b, c)` where a length-3 sequence is expected. This is a **membership-level
+coercion, not an identity**: `5 ∈ Nat*` holds (as the length-1 sequence `[5]`),
+but `5 == [5]` is a domain error, and `len` is only defined on genuine sequence
+values. The coercion exists because `(5) == 5` — parentheses are overloaded for
+grouping and tupling, so there is no distinct "1-tuple" sitting between a scalar
+and a singleton sequence.
 The compiler automatically boxes a scalar or tuple into an Arrow vector when crossing a `X*` function boundary:
 
 ```haskell
 foo : -> Nat*
-foo() = 5            -- proved: 5 is the length-1 sequence [5]
+foo() = 5            -- proved: 5 coerces to the length-1 sequence [5]
 
 get : (Nat* - {[]}) -> Nat
 get(xs) = xs[0]
@@ -497,7 +535,7 @@ val() = get(5)       -- proved: 5 is boxed to [5] before the call
 
 #### Length-narrowing with set difference
 
-Because scalars identify with length-1 sequences and tuples with length-N sequences, set difference narrows the _length_ of a domain:
+Because scalars coerce to length-1 sequences and tuples to length-N sequences, set difference narrows the _length_ of a domain:
 
 | Domain expression | Meaning |
 |-------------------|---------|
@@ -506,7 +544,8 @@ Because scalars identify with length-1 sequences and tuples with length-N sequen
 | `Nat* - Nat`        | Nat sequences of length ≠ 1 |
 | `Nat* - Nat - {[]}` | Nat sequences of length ≥ 2 |
 
-The special literal `{[]}` is the set containing the empty sequence.
+The special literal `{[]}` is the set containing the empty sequence
+(`{}` itself is always the ordinary empty set — the two are not interchangeable).
 Combined, these let the compiler prove that multi-element access is safe:
 
 ```haskell
@@ -562,7 +601,7 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` in domain/range/`in`/`for` positions; finite literal sources unrolled statically; infinite named sources encoded as SMT predicates
 - **Product Set values (aka tuples)** — `f : Int * Int -> Int * Int`; tuple literals `(e1, e2)`; positional projection `t.0`, `t.1`; tuples as parameters and return values; the compiler proves tuple domain and range claims end-to-end; `cantor run` prints tuple results as `(a, b)`. Disambiguation: `f(x, y)` with two params = two scalars; `f(t)` with one param = single tuple.
 - **Fixed-length arrays** — `X * N` in a signature desugars to the N-fold Cartesian product `X * X * … * X`; array literals `[e1, e2, e3]` are syntactic sugar for tuple literals `(e1, e2, e3)`; bracket indexing `t[N]` is an alias for `t.N`
-- **Variable-length vectors** — `X*` (Kleene star) for runtime-variable-length sequences; `len(xs)` for cardinality; `xs[i]` with a runtime index; `xs ++ ys` concatenation; vectors of tuples `(A * B)*` (columnar Arrow backing) and nested vectors `X**` (ListArray backing). Scalars and tuples are sequences (every scalar `n` is the length-1 sequence `[n]`; every N-tuple is the length-N sequence), so `foo() = 5 : Nat*` is valid and the compiler boxes the scalar automatically at function boundaries. Length-narrowing set difference: `Nat* - Nat` restricts to length ≠ 1, `Nat* - Nat - {[]}` to length ≥ 2. Bounds safety: literal-length vectors with literal indices are proved statically; runtime-length or runtime-index access generates a bounds obligation — a counterexample is reported unless the compiler can prove the index is always valid, otherwise an `assert` inserts a runtime guard
+- **Variable-length vectors** — `X*` (Kleene star) for runtime-variable-length sequences; `len(xs)` for cardinality; `xs[i]` with a runtime index; `xs ++ ys` concatenation; vectors of tuples `(A * B)*` (columnar Arrow backing) and nested vectors `X**` (ListArray backing). Scalars and tuples coerce to sequences at membership level (a scalar `n` may stand in for the length-1 sequence `[n]`, an N-tuple for the length-N sequence — a coercion, not an identity), so `foo() = 5 : Nat*` is valid and the compiler boxes the scalar automatically at function boundaries. Length-narrowing set difference: `Nat* - Nat` restricts to length ≠ 1, `Nat* - Nat - {[]}` to length ≥ 2. Bounds safety: literal-length vectors with literal indices are proved statically; runtime-length or runtime-index access generates a bounds obligation — a counterexample is reported unless the compiler can prove the index is always valid, otherwise an `assert` inserts a runtime guard
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis
 - **Unified named definitions** — constants (`pi : Nat = 314`) and compile-time set definitions (`Colour = {1, 2, 3}`) share the same one-line syntax and the same AST node; both are auto-inlined at compile time; constants are checked against their range annotation
@@ -572,13 +611,13 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 - **`Fail` and `?`** — monadic error propagation; fallible functions declare `| Fail` in their range; `?` short-circuits on failure
 - **`fail` and `fail expr`** — `fail` produces the bare failure sentinel; `fail 400` constructs a tagged failure with integer payload (used with `!!`)
 - **Named error sets and error-union** — `HTTPError = {400, 503}` defines an error set; two ways to use it in a range:
-  - `fetch : NatPos -> Nat | HTTPError` — plain set union; safe when the **success type and error codes are disjoint** (e.g. `NatPos` doesn't contain 400 or 503); `?` propagates the error code as-is; **no `| Fail` needed** in the caller's range
-  - `fetch : Int -> Int !! HTTPError` — error-union operator; use when success values and error codes may overlap (any `Int` could legitimately be 400); `fail 400` encodes as `i64::MIN + 401` so `?` always distinguishes `fail 400` from success `400`; **caller must declare `| Fail` or `!!` in its own range**
-- **`return expr`** — early return from a block body; the solver reports `unknown` for block bodies containing `return` (early exits can't yet be modelled in the linear SMT encoder)
+  - `fetch : NatPos -> Nat | HTTPError` — plain set union; valid as a range when the **success set and error codes are disjoint** (e.g. `NatPos` doesn't contain 400 or 503); the value carries no runtime tag, so distinguishing success from error is the caller's job via set membership. `?` is **not** available on plain unions — propagation requires the fallible `{i1, i64}` wire of `| Fail` / `!!`
+  - `fetch : Int -> Int !! HTTPError` — error-union operator; use when success values and error codes may overlap (any `Int` could legitimately be 400); `fail 400` builds the `{i1=1, i64=400}` failure struct, so `?` always distinguishes `fail 400` from success `400` by the flag bit, never by the value; **caller must declare `| Fail` or `!!` in its own range**
+- **`return expr`** — early return from a block body; the solver models `return` in flat blocks exactly (at any statement position); a `return` inside a `while`/`for` body is still reported `unknown` — never a false proof
 - **`assert … else fail/return`** — `assert pred else fail 400` returns the offset-encoded failure when the predicate is false; `assert pred else return expr` returns `expr` directly as an early success exit
 - **Named set naming convention** — uppercase names are compile-time set names (`Nat`, `HTTPError`); lowercase names are values (`pi`, `abs`, `collected_primes`); enforced by the compiler
 - **`alias` and `distinct` set modifiers** — `Colour = {1, 2, 3}` and `Animal = alias Cat | Dog` declare transparent aliases (the solver expands membership inline); `Litre = distinct Nat` declares a new solver-opaque set disjoint from `Nat` with full SMT-backed value proofs (see below)
-- **`distinct` value proofs** — `Litre = distinct Nat` automatically provides the constructor `litre : Nat -> Litre` and the built-in destructor `from(x)` which returns the basis-type value. The solver uses an uninterpreted predicate `is_Litre : Int -> Bool` (via `QF_UFNIA`) to reason about membership: `litre(n)` asserts `n ∈ Nat → is_Litre(result)`; `from(x)` asserts `is_Litre(x) → result ∈ Nat`; identity functions (`volume : Litre -> Litre`) are proved directly. Plain integer literals not wrapped in a constructor are correctly rejected with a counterexample. Both `litre` and `from` are identity operations at runtime. `from` and `size` are reserved keywords.
+- **`distinct` value proofs** — `Litre = distinct Nat` automatically provides the constructor `litre : Nat -> Litre` and the built-in destructor `from(x)` which returns the basis-type value. The solver gives each distinct set its own uninterpreted CVC5 sort plus uninterpreted constructor/destructor functions (`mk_Litre : Int -> Litre`, `from_Litre : Litre -> Int`); basis-set constraints are emitted on demand at each `litre(n)` / `from(x)` site (no global axioms; logic `ALL`); identity functions (`volume : Litre -> Litre`) are proved directly. Plain integer literals not wrapped in a constructor are correctly rejected with a counterexample. Both `litre` and `from` are identity operations at runtime. `from` and `size` are reserved keywords.
 - **JIT execution** — `cantor run <file>` checks proofs then JIT-compiles and runs `main` via LLVM
 - **LLVM IR dump** — `cantor llvm-ir <file>` skips the SMT solver and prints the compiled LLVM IR to stdout, for debugging codegen without JIT-running anything
 
@@ -602,7 +641,9 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 
 - **More built-in values and collections** — floats, rationals, characters, bytes, ordered sets, maps.
 
-- **Generics** — a single new keyword `given` introduces a compile-time variable into scope; `require` states constraints on it; instantiation asks the solver to discharge them. Reduces to an overload generator with no other new machinery: `given A; require A <= Countable; population : Habitat(A) -> Nat`.
+- **Generics** — a single new keyword `given` introduces a compile-time variable into scope; `require` states constraints on it. The generic body is checked once at *definition* time against the `require` facts alone (the Rust-trait model, not the C++-template model), so instantiation can never fail post-hoc — it only proves the concrete set satisfies the stated constraints. Reduces to an overload generator with no other new machinery: `given A; require A <= Countable; population : Habitat(A) -> Nat`.
+
+- **Dependent ranges** — let a range reference named domain binders, e.g. `div : {(x, y) ∈ Int × NonZeroInt} -> {q ∈ Int | q * y <= x}`, so callers learn more than bare set membership from a signature. A deliberately reserved design opening: the comprehension machinery (captures, membership encoding) already covers the semantics.
 
 - **Smarter diagnostics** — when the solver can't prove a claim, it extracts an unsat core and suggests the minimal constraints that would close the proof gap. Also: automatic inference of the range annotation on `mut` locals so you don't have to write it by hand.
 

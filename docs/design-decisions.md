@@ -375,6 +375,10 @@ implementation detail the developer should not rely on.
 - `a < b < c` is a domain violation, not Python-style chained comparison.
   It parses as `(a < b) < c`, where `a < b : Bool` and `Bool` is disjoint
   from the domain of `<`. The intended idiom is `a < b and b < c`.
+- A scalar or tuple standing in for a sequence is a **coercion, not an
+  identity**: `5` may be passed where `Nat*` is expected, but `5 == [5]` is a
+  domain error and `len(5)` is invalid — `len` is defined only on genuine
+  sequence values.
 
 ### Set operators (Unicode primary, ASCII equivalent required for all)
 | Concept | Unicode | ASCII |
@@ -404,6 +408,22 @@ stay distinguishable.
 Anonymous product values are fully supported. The `*` operator in a signature
 denotes a product set (same as Cartesian product); at the value level, `(e1, e2)`
 is a tuple literal and `t.0`, `t.1` are positional projections.
+
+**Nesting and associativity (DECIDED)**: `*` is a flat n-ary product at each
+parenthesization level, mirroring tuple-literal syntax. `A * B * C` is the set of
+flat triples (values `(a, b, c)`); `(A * B) * C` is the set of pairs whose first
+element is a pair (values `((a, b), c)`); `A * (B * C)` is different again.
+Parentheses demarcate levels exactly as they do in value literals — associativity
+holds trivially *within* a level and deliberately fails *across* levels.
+Alias substitution is as-if-parenthesized: `Pair = A * B` makes `Pair * C` mean
+`(A * B) * C`, never flat `A * B * C` — otherwise expanding a transparent alias
+would change the set it denotes.
+Consequence for the arity rule below: `flatten_product` flattens the top-level
+`*`-chain only; it must not flatten through parens or named sets (so
+`g : (Int * Int) * (Int * Int) -> Int` with `g(s, t)` binds two pair parameters).
+*Implementation status*: the parser currently builds one `BinOp::Mul` chain
+regardless of parens, so parenthesized nesting is not yet honoured — TODO;
+until fixed, nested products are inexpressible rather than silently wrong.
 
 ```
 fst : Int * Int -> Int
@@ -716,10 +736,16 @@ future `Float32 | Int` all representable without touching the core DT builder.  
 
 **Sequence unification** (COMPLETE — solver and codegen):
 
-Scalars and tuples are identified with fixed-length sequences.  A scalar `n` is the
-length-1 sequence `[n]`; a tuple `(a, b)` is the length-2 sequence `[a, b]`.  This is
-forced by `(5) == 5` — parentheses are overloaded for grouping and tupling, so there is
-no distinct "1-tuple".
+Scalars and tuples **coerce to** fixed-length sequences at membership level — a
+coercion, not an identity (DECIDED 2026-07): a scalar `n` may stand in for the
+length-1 sequence `[n]`, and a tuple `(a, b)` for `[a, b]`, wherever sequence
+membership is required; but `5 == [5]` is a domain error, and `len` is defined
+only on genuine sequence values.  Treating the identification as *equality* would
+make `len` ill-defined — `(1, 2)` would be a length-2 element of `Nat*` and
+simultaneously a length-1 element of `(Nat * Nat)*`, so `len` would depend on the
+annotation a value arrived through rather than on the value.  The no-1-tuple
+motivation stands: `(5) == 5` because parentheses are overloaded for grouping and
+tupling.
 
 *Implementation*: the unification is *semantic* (membership only), not *representational*
 (sort).  Scalars stay integer-sorted in the solver and `i64` in codegen; we do NOT rewrite
@@ -760,7 +786,8 @@ h(xs) = xs[0] + xs[1]   -- proved: solver sees len ≥ 2
 *`{[]}` syntax*: the set containing the empty sequence.  `[]` already parses to
 `ExprKind::Tuple(vec![])` (same as the empty tuple — they are identical).  No parser
 change was needed; `{[]}` just needs membership-encoding support (the SetLit handler was
-extended to recognise the empty-tuple element).
+extended to recognise the empty-tuple element).  `{}` itself is always the
+ordinary empty set — it is never reinterpreted as `{[]}`.
 
 *Codegen — boxing at boundaries* (option 3 / always-box):
 
@@ -898,8 +925,8 @@ top level.
 double : Int -> Int
 double(x) = x * 2
 
--- Point-free is valid in `= expr` position (see §11 for composition
--- operator, which is still OPEN)
+-- Point-free is valid in `= expr` position (composition is `>>` —
+-- see "Function composition operator" below)
 double = scale(2)   -- if scale(n)(x) = n * x
 
 -- Imperative body: block of statements in `{ }`
@@ -992,10 +1019,13 @@ and the same AST node; both are auto-inlined at compile time. Constants
 are checked against their set annotation at compile time.
 
 **Zero-argument functions** — a function callable at runtime; the `->` is
-present but nothing precedes it (empty domain):
+present but nothing precedes it. The domain is implicitly `Single` — *not* the
+empty set: a function on the empty set has an empty graph and could never be
+called.
 
 ```
--- Signature: empty domain, explicit `->` distinguishes from a constant.
+-- Signature: implicit Single domain; the explicit `->` distinguishes
+-- this from a constant.
 timestamp : -> Int
 timestamp() = ...
 ```
@@ -1061,11 +1091,12 @@ are sure it is true.
 Examples:
 
 ```
-clamp : Int * Nat * NatPos -> Nat
+clamp : Int * Nat * NatPos -> Nat | Fail
 clamp(x, lo, hi) {
     assert lo < hi         -- NOT statically provable: lo=5, hi=3 satisfies the
                            -- domain but violates the ordering. Runtime check;
-                           -- returns a Class 1 error if the caller passes lo >= hi.
+                           -- returns a Class 1 error if the caller passes lo >= hi
+                           -- — which is why the range must declare `| Fail`.
     result = if x < lo then lo else if x > hi then hi else x
     require result >= lo   -- static: solver can prove this from the if-chain
     require result <= hi   -- static: solver can prove this from the if-chain
@@ -1085,6 +1116,13 @@ caller(n) {
     x + 1
 }
 ```
+
+The unproved `assert` in `clamp` is what forces `| Fail` into its range — an
+unknown `assert` compiles to a runtime check that fails monadically. The
+check-free alternative is a compound relational domain,
+`{(x, lo, hi) ∈ Int × Nat × NatPos | lo < hi}`, which pushes the proof
+obligation to every caller instead; compound domains are accepted design
+syntax (see "Function definition syntax" above) but not yet implemented.
 
 `require`/`assert`/`assume` are not functions because they produce no
 output value — their effect is on the proof state (and optionally the
@@ -1160,21 +1198,27 @@ Litre = distinct Nat
 ```
 
 `alias` is the right keyword (over `typedef`) as a deliberate signal to
-reach for it less. `distinct` sets are currently phantom at the proof
-level: the solver returns `unknown` for any signature involving one,
-including the trivial identity `volume : Litre -> Litre`. Making them
-useful requires uninterpreted SMT sorts and a constructor mechanism — see
-the roadmap in §1/README.
+reach for it less. `distinct` sets are fully proof-capable (IMPLEMENTED):
+each `D = distinct B` gets its own uninterpreted CVC5 sort plus
+uninterpreted constructor/destructor functions `mk_D : Int -> D` and
+`from_D : D -> Int`; basis-set constraints are emitted on demand at each
+constructor / `from` site (no global axioms; logic `ALL`). The
+auto-provided constructor (`litre : Nat -> Litre`) and the built-in
+destructor `from` are identity operations at runtime.
+
+### Function composition operator (DECIDED)
+
+`>>` — left-to-right composition: `f >> g` means `x -> g(f(x))`, reading in
+the same direction as application. `∘` / `.`-composition is rejected: `.` is
+already committed to positional projection (`t.0`), field access (`p.x`,
+future), and namespace injections (`Shape.Circle`, future); module paths use
+`::` (§7). Not yet implemented — lands with higher-order functions. Whether
+partial application is needed to make point-free style practical remains
+open (§11).
 
 ## 11. Open questions
 
 Syntax (next to design — treat as a group, not piecemeal):
-- **Function composition operator** — `>>` (left-to-right, ASCII) and `∘`
-  (right-to-left, Unicode) are the leading candidates. `>>` reads in the
-  same direction as `f(x, y)` application. Choosing either frees `.` from
-  namespace duty (module paths use `::` per §7). OPEN: confirm operator
-  and decide whether partial application is needed to make point-free
-  useful in practice.
 - `raise` / `emits` statement syntax (incl. whether `emits` is one channel
   or several, and what the channel set is)
 - Library interface declaration syntax (separate interface file vs inline
@@ -1189,12 +1233,20 @@ Other open items (lower priority, not blocking):
 - Concurrency/async event handling model
 - Library interface versioning story (out of scope for now)
 - Solver-capability versioning (deferred, nice-to-have)
-- **Early `return` statement** — implemented (v0): `return expr` in a block
-  body causes an immediate early exit with value `expr`. The SMT solver
-  returns `Unknown` for any function body containing `return` (the linear
-  block encoder cannot yet model control-flow that bypasses the tail position).
-  Interaction with `?`/`Fail`: the returned value is used as-is; the caller
-  applies its `?` checks to it normally.
+- **Dependent ranges (reserved opening)** — ranges that reference named
+  domain binders, e.g.
+  `div : {(x, y) ∈ Int × NonZeroInt} -> {q ∈ Int | q*y <= x and x < (q+1)*y}`.
+  Not scheduled, but the design space is deliberately kept open: domain
+  binders may one day be nameable in signatures, and a range is a set
+  expression that may capture those names. Comprehension capture +
+  membership encoding already cover the semantics. Do not assign
+  binder-naming syntax in signatures to anything else.
+- **Early `return` statement** — implemented (v0), including solver support
+  for flat blocks: a `return` at any statement position in a flat block body
+  is modelled exactly (see the Kleene-star section for why this is sound).
+  A `return` inside a `while`/`for` body is still reported `Unknown` — never
+  a false proof. Interaction with `?`/`Fail`: the returned value is used
+  as-is; the caller applies its `?` checks to it normally.
 - **Memory model direction** — leading candidate: persistent data structures
   → structural sharing → cheap diffing → easy reclamation; tracing GC
   during the diff phase (runs concurrently with IO). Mutable arena for
@@ -1238,13 +1290,17 @@ Other open items (lower priority, not blocking):
   `for i, x in collection` falls out as sugar over destructuring + for-in (deferred).
 - **Generics via `given`** — `given A; require A <= Countable; f(x: A) -> Nat`.
   Introduce a compile-time variable into scope; obligations stated with
-  `require`; instantiation substitutes concrete values and asks the solver
-  to discharge them. Reduces to an overload generator with no new semantic
+  `require`. The generic *body* is checked once at **definition time**
+  against the `require` facts alone (the Rust-trait model, not the
+  C++-template model), so instantiation can never fail post-hoc —
+  instantiation only proves the concrete set satisfies the stated
+  constraints. Reduces to an overload generator with no new semantic
   machinery. Single new keyword: `given`. (Design explored but not finalised.)
 - **Pattern matching** — see above.
-- **Early `return` extended solver modelling** — `return` is implemented at the
-  codegen level but the solver reports `Unknown` for block bodies containing it.
-  Full solver support requires modelling early exits as SSA phi-merge paths.
+- **Early `return` extended solver modelling** — flat blocks are fully
+  modelled; the remaining gap is `return` inside `while`/`for` bodies
+  (reported `Unknown`). Full support requires modelling loop-body early
+  exits as SSA phi-merge paths.
 - **`raise` / `emits` syntax** — see §11.
 - Float, char/string, byte primitive values.
 - BigInt runtime support for unbounded `Int` / `Nat`.
@@ -1336,6 +1392,14 @@ No implicit coercion between `Bool` and any integer kind exists at any layer.
   mathematical fallback. Same cap applies to the other arithmetic operators.
 - `/` is integer division (truncates toward zero). Domain excludes zero in
   the denominator — standard domain-check machinery handles this.
+- **KNOWN UNSOUNDNESS (v0)**: the runtime stores every integer in an `i64`
+  while the solver reasons in unbounded ℤ, so proved arithmetic can wrap
+  silently at runtime past ±2⁶³ (e.g. `f : Int * Int -> Int` with
+  `f(x, y) = x * y` is proved, yet the JIT can return a negative product of
+  two positive inputs). This is the one standing violation of the "never
+  silently assume" principle; it closes when BigInt lands. Interim
+  mitigations under consideration: trapping arithmetic, or bounding what
+  ranges are provable.
 
 ### Narrowing back to IntN
 
