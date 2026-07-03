@@ -33,7 +33,7 @@ fn check_loop_inductive_step<'tm, F>(
     modified: &HashSet<Symbol>,
     constraint_env: &HashMap<Symbol, SemExpr>,
     env: &Env<'tm>,
-    accumulated_facts: &[Term<'tm>],
+    outer_solver: &Solver<'tm>,
     name_defs: &NameDefs,
     fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
@@ -50,7 +50,6 @@ where
     F: FnOnce(
         &mut Solver<'tm>,
         &mut Env<'tm>,
-        &mut Vec<Term<'tm>>,
         &mut usize,
     ) -> Option<CheckResult>,
 {
@@ -65,10 +64,12 @@ where
     tmp.set_logic("ALL");
     tmp.set_option("produce-models", "true");
 
-    let mut tmp_facts: Vec<Term<'tm>> = Vec::new();
-    for fact in accumulated_facts {
-        tmp.assert_formula(fact.clone());
-        tmp_facts.push(fact.clone());
+    // Seed from everything asserted on the enclosing solver so far — not just
+    // a separately-threaded fact list — so call contracts established before
+    // the loop (asserted straight onto `outer_solver` by `assert_call_contract`)
+    // are visible here too. Same fix as `check_require`'s in blocks.rs.
+    for fact in outer_solver.get_assertions() {
+        tmp.assert_formula(fact);
     }
 
     // Fresh inductive-hypothesis variable for each loop-modified binding.
@@ -84,14 +85,13 @@ where
         if let Some(constraint) = constraint_env.get(name) {
             if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                 tmp.assert_formula(c.clone());
-                tmp_facts.push(c);
             }
         }
         ind_env.insert(name.clone(), fresh);
     }
 
     // Loop-specific setup: assert the condition / introduce the loop variable.
-    if let Some(err) = add_loop_entry(&mut tmp, &mut ind_env, &mut tmp_facts, ssa_counter) {
+    if let Some(err) = add_loop_entry(&mut tmp, &mut ind_env, ssa_counter) {
         return Some(err);
     }
 
@@ -108,7 +108,7 @@ where
     // like one in a flat block — the flag must reach the function-level check.
     match encode_block(
         body, &mut body_env, name_defs, fn_env, tm, &mut tmp,
-        &mut cc, &mut obligs, &mut step_ssa, &mut tmp_facts,
+        &mut cc, &mut obligs, &mut step_ssa,
         param_names, param_terms, &mut empty_cenv, has_runtime_assert,
         &mut step_imm, distinct_preds, None,
     ) {
@@ -208,7 +208,7 @@ pub(super) fn check_inductive_step<'tm>(
     modified: &HashSet<Symbol>,
     constraint_env: &HashMap<Symbol, SemExpr>,
     env: &Env<'tm>,
-    accumulated_facts: &[Term<'tm>],
+    outer_solver: &Solver<'tm>,
     name_defs: &NameDefs,
     fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
@@ -220,15 +220,15 @@ pub(super) fn check_inductive_step<'tm>(
     has_runtime_assert: &mut bool,
 ) -> Option<CheckResult> {
     check_loop_inductive_step(
-        body, modified, constraint_env, env, accumulated_facts,
+        body, modified, constraint_env, env, outer_solver,
         name_defs, fn_env, tm, ssa_counter, param_names, param_terms,
         "loop invariant", immutable_names, distinct_preds, has_runtime_assert,
-        |tmp, ind_env, tmp_facts, _ssa| {
+        |tmp, ind_env, _ssa| {
             let mut cc = 0usize;
             let mut obligs = Vec::new();
             match encode_expr(cond, ind_env, name_defs, fn_env, tm, tmp,
                               &mut cc, &mut obligs, tm.mk_boolean(true), distinct_preds, None) {
-                Ok(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); None }
+                Ok(c) => { tmp.assert_formula(c.clone()); None }
                 Err(_) => Some(CheckResult::Unknown(
                     "cannot verify inductive step: loop condition uses syntax not yet \
                      supported in the SMT encoding".into()
@@ -245,7 +245,7 @@ pub(super) fn check_for_inductive_step<'tm>(
     modified: &HashSet<Symbol>,
     constraint_env: &HashMap<Symbol, SemExpr>,
     env: &Env<'tm>,
-    accumulated_facts: &[Term<'tm>],
+    outer_solver: &Solver<'tm>,
     name_defs: &NameDefs,
     fn_env: &HashMap<Symbol, &SemFunctionDef>,
     tm: &'tm TermManager,
@@ -273,10 +273,10 @@ pub(super) fn check_for_inductive_step<'tm>(
     };
 
     check_loop_inductive_step(
-        body, modified, constraint_env, env, accumulated_facts,
+        body, modified, constraint_env, env, outer_solver,
         name_defs, fn_env, tm, ssa_counter, param_names, param_terms,
         "for-loop invariant", immutable_names, distinct_preds, has_runtime_assert,
-        |tmp, ind_env, tmp_facts, ssa| {
+        |tmp, ind_env, ssa| {
             let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
             *ssa += 1;
             let var_fresh = tm.mk_const(tm.integer_sort(), &var_fresh_name);
@@ -286,13 +286,13 @@ pub(super) fn check_for_inductive_step<'tm>(
                 // rather than aborting — we'll just be less precise.
                 match membership_constraint(tm, var_fresh.clone(), elem_c, name_defs, distinct_preds) {
                     Membership::Unconstrained => {}
-                    Membership::Constrained(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); }
+                    Membership::Constrained(c) => { tmp.assert_formula(c.clone()); }
                     Membership::Unsupported => {}
                 }
             } else {
                 match membership_constraint(tm, var_fresh.clone(), set, name_defs, distinct_preds) {
                     Membership::Unconstrained => {}
-                    Membership::Constrained(c) => { tmp.assert_formula(c.clone()); tmp_facts.push(c); }
+                    Membership::Constrained(c) => { tmp.assert_formula(c.clone()); }
                     Membership::Unsupported => return Some(CheckResult::Unknown(
                         "for loop: cannot verify inductive step — iterable set uses syntax \
                          not yet supported in the SMT encoding".into()

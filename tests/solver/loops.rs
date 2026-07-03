@@ -233,6 +233,46 @@ bad_recip(x) {
     );
 }
 
+#[test]
+fn require_after_call_uses_callee_contract_proved() {
+    // check_require used to run in a fresh solver seeded only from a
+    // separately-threaded fact vector, which never saw call contracts —
+    // those are asserted straight onto the main solver by
+    // `assert_call_contract`. A `require` depending on a prior call's
+    // result used to get a spurious counterexample; now check_require
+    // seeds from the main solver's own assertions and sees it.
+    proved_all("
+non_neg : Int -> Nat
+non_neg(x) = if x >= 0 then x else -x
+
+after_call : Int -> Nat
+after_call(x) {
+    y : Nat = non_neg(x)
+    require y in Nat
+    y
+}
+");
+}
+
+#[test]
+fn require_after_call_domain_gated_proved() {
+    // Same bug, but with a genuinely implication-form contract:
+    // `n ∈ Nat → m ∈ NatPos` only fires given the antecedent, which is
+    // itself supplied by the caller's own domain — so the require can only
+    // be proved by combining both the call's contract *and* the domain fact.
+    proved_all("
+classify : Nat -> NatPos
+classify(n) = n + 1
+
+after_call_range : Nat -> NatPos
+after_call_range(n) {
+    m : NatPos = classify(n)
+    require m in NatPos
+    m
+}
+");
+}
+
 // ── Block body: assert ────────────────────────────────────────────────────────
 
 #[test]
@@ -633,6 +673,30 @@ f(n) {
         i := i + 1
     }
     acc
+}"#);
+}
+
+#[test]
+fn loop_body_require_uses_pre_loop_call_contract_proved() {
+    // Same root cause as `require_after_call_uses_callee_contract_proved`,
+    // but for the loop inductive-step checker: the call happens *before* the
+    // loop, so its contract lives only on the outer solver. The inductive
+    // step used to build its own fresh solver seeded from a separately
+    // threaded fact vector that never saw it, so `require y in Nat` inside
+    // the body would get a spurious counterexample.
+    proved_all(r#"
+non_neg : Int -> Nat
+non_neg(x) = if x >= 0 then x else -x
+
+f : Int -> Nat
+f(x) {
+    y : Nat = non_neg(x)
+    mut i: Nat = 0
+    while i < 3 {
+        require y in Nat
+        i := i + 1
+    }
+    y
 }"#);
 }
 

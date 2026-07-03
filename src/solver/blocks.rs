@@ -91,7 +91,6 @@ pub(crate) fn encode_block<'tm>(
     call_counter: &mut usize,
     builtin_obligs: &mut Vec<BuiltinObligation<'tm>>,
     ssa_counter: &mut usize,
-    accumulated_facts: &mut Vec<Term<'tm>>,
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
     constraint_env: &mut HashMap<Symbol, SemExpr>,
@@ -148,11 +147,10 @@ pub(crate) fn encode_block<'tm>(
                 let fresh = tm.mk_const(val.sort(), &ssa_name);
                 let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
                 solver.assert_formula(eq.clone());
-                accumulated_facts.push(eq);
-                // Defer constraint verification to the function-exit check.
-                // check_require uses a fresh solver seeded only from accumulated_facts
-                // and would miss call contracts added to the main solver — deferring
-                // lets the final negation+SAT check use the full solver context.
+                // Deferred to the function-exit check (rather than checked here via
+                // check_require) simply to keep this statement's handling uniform
+                // with the other binder forms below — check_require itself is sound
+                // either way since it now reads facts straight from `solver`.
                 if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: top_guard.clone(),
@@ -205,11 +203,8 @@ pub(crate) fn encode_block<'tm>(
                 let fresh = tm.mk_const(val.sort(), &ssa_name);
                 let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
                 solver.assert_formula(eq.clone());
-                accumulated_facts.push(eq);
-                // Defer constraint verification to the function-exit check.
-                // check_require uses a fresh solver seeded only from accumulated_facts
-                // and would miss call contracts added to the main solver — deferring
-                // lets the final negation+SAT check use the full solver context.
+                // Deferred to the function-exit check — see the comment on the
+                // `Let` case above.
                 if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: top_guard.clone(),
@@ -285,7 +280,6 @@ pub(crate) fn encode_block<'tm>(
                         let fresh = tm.mk_const(proj.sort(), &ssa_name);
                         let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
                         solver.assert_formula(eq.clone());
-                        accumulated_facts.push(eq);
 
                         if let Some(constraint) = &binding.constraint {
                             if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
@@ -352,10 +346,9 @@ pub(crate) fn encode_block<'tm>(
                         let sub_tuple = tm.mk_tuple(&tail);
                         if let Some(constraint) = constraint_env.get(name).cloned() {
                             if let Membership::Constrained(c) = membership_constraint(tm, sub_tuple.clone(), &constraint, name_defs, distinct_preds) {
-                                match check_require(c.clone(), tm, accumulated_facts, param_names, param_terms) {
+                                match check_require(c.clone(), tm, solver, param_names, param_terms) {
                                     CheckResult::Proved => {
                                         solver.assert_formula(c.clone());
-                                        accumulated_facts.push(c);
                                     }
                                     CheckResult::Counterexample { params, output, .. } => {
                                         return Err(CheckResult::Counterexample {
@@ -379,14 +372,12 @@ pub(crate) fn encode_block<'tm>(
                         let fresh = tm.mk_const(proj.sort(), &ssa_name);
                         let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
                         solver.assert_formula(eq.clone());
-                        accumulated_facts.push(eq);
 
                         if let Some(constraint) = constraint_env.get(name).cloned() {
                             if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), &constraint, name_defs, distinct_preds) {
-                                match check_require(c.clone(), tm, accumulated_facts, param_names, param_terms) {
+                                match check_require(c.clone(), tm, solver, param_names, param_terms) {
                                     CheckResult::Proved => {
                                         solver.assert_formula(c.clone());
-                                        accumulated_facts.push(c);
                                     }
                                     CheckResult::Counterexample { params, output, .. } => {
                                         return Err(CheckResult::Counterexample {
@@ -434,17 +425,15 @@ pub(crate) fn encode_block<'tm>(
                 let fresh = tm.mk_const(val.sort(), &ssa_name);
                 let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
                 solver.assert_formula(eq.clone());
-                accumulated_facts.push(eq);
                 // Verify (not just trust) that the new value satisfies the declared
                 // constraint. Inside loop bodies constraint_env is empty — the
                 // inductive step checker handles loop invariants separately — so
                 // this check only fires for non-loop reassignments.
                 if let Some(constraint) = constraint_env.get(name).cloned() {
                     if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), &constraint, name_defs, distinct_preds) {
-                        match check_require(c.clone(), tm, accumulated_facts, param_names, param_terms) {
+                        match check_require(c.clone(), tm, solver, param_names, param_terms) {
                             CheckResult::Proved => {
                                 solver.assert_formula(c.clone());
-                                accumulated_facts.push(c);
                             }
                             CheckResult::Counterexample { params, output, .. } => {
                                 return Err(CheckResult::Counterexample {
@@ -470,7 +459,6 @@ pub(crate) fn encode_block<'tm>(
                 )
                 .map_err(CheckResult::Unknown)?;
                 solver.assert_formula(pred.clone());
-                accumulated_facts.push(pred);
             }
 
             SemStmt::Require { predicate, .. } => {
@@ -480,10 +468,9 @@ pub(crate) fn encode_block<'tm>(
                 )
                 .map_err(CheckResult::Unknown)?;
 
-                match check_require(pred.clone(), tm, accumulated_facts, param_names, param_terms) {
+                match check_require(pred.clone(), tm, solver, param_names, param_terms) {
                     CheckResult::Proved => {
                         solver.assert_formula(pred.clone());
-                        accumulated_facts.push(pred);
                     }
                     other => return Err(other),
                 }
@@ -496,18 +483,17 @@ pub(crate) fn encode_block<'tm>(
                 )
                 .map_err(CheckResult::Unknown)?;
 
-                match check_require(pred.clone(), tm, accumulated_facts, param_names, param_terms) {
+                match check_require(pred.clone(), tm, solver, param_names, param_terms) {
                     CheckResult::Proved => {
                         // Statically proved — no runtime check needed.
                         solver.assert_formula(pred.clone());
-                        accumulated_facts.push(pred);
                     }
                     CheckResult::Counterexample { params, output, .. } => {
                         // pred is not always true.  Check whether NOT(pred) is always
                         // true — if so, pred never holds → compile error.
                         // Otherwise pred is sometimes true → runtime check needed.
                         let not_pred = tm.mk_term(Kind::Not, &[pred.clone()]);
-                        match check_require(not_pred, tm, accumulated_facts, param_names, param_terms) {
+                        match check_require(not_pred, tm, solver, param_names, param_terms) {
                             CheckResult::Proved => {
                                 return Err(CheckResult::Counterexample {
                                     params,
@@ -519,14 +505,12 @@ pub(crate) fn encode_block<'tm>(
                                 // pred is sometimes true — codegen emits a runtime check.
                                 *has_runtime_assert = true;
                                 solver.assert_formula(pred.clone());
-                                accumulated_facts.push(pred);
                             }
                         }
                     }
                     CheckResult::Unknown(_) => {
                         *has_runtime_assert = true;
                         solver.assert_formula(pred.clone());
-                        accumulated_facts.push(pred);
                     }
                 }
             }
@@ -564,7 +548,7 @@ pub(crate) fn encode_block<'tm>(
                 last_expr = encode_block(
                     inner, env, name_defs, fn_env, tm, solver,
                     call_counter, builtin_obligs, ssa_counter,
-                    accumulated_facts, param_names, param_terms,
+                    param_names, param_terms,
                     constraint_env, has_runtime_assert, immutable_names, distinct_preds,
                     result_sort.clone(),
                 )?;
@@ -580,7 +564,7 @@ pub(crate) fn encode_block<'tm>(
                 let modified = collect_loop_modified(body);
                 if let Some(step_err) = check_inductive_step(
                     cond, body, &modified, constraint_env,
-                    env, accumulated_facts, name_defs, fn_env, tm,
+                    env, solver, name_defs, fn_env, tm,
                     ssa_counter, param_names, param_terms, immutable_names, distinct_preds,
                     has_runtime_assert,
                 ) {
@@ -602,7 +586,6 @@ pub(crate) fn encode_block<'tm>(
                         if let Some(constraint) = constraint_env.get(name) {
                             if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                                 solver.assert_formula(c.clone());
-                                accumulated_facts.push(c);
                             }
                         }
                         env.insert(name.clone(), fresh);
@@ -614,7 +597,6 @@ pub(crate) fn encode_block<'tm>(
                     Ok(cond_term) => {
                         let not_cond = tm.mk_term(Kind::Not, &[cond_term]);
                         solver.assert_formula(not_cond.clone());
-                        accumulated_facts.push(not_cond);
                     }
                     Err(_) => {} // cond uses unsupported constructs — skip the fact
                 }
@@ -639,7 +621,7 @@ pub(crate) fn encode_block<'tm>(
                 let modified = collect_loop_modified(body);
                 if let Some(step_err) = check_for_inductive_step(
                     var, set, body, &modified, constraint_env,
-                    env, accumulated_facts, name_defs, fn_env, tm,
+                    env, solver, name_defs, fn_env, tm,
                     ssa_counter, param_names, param_terms, immutable_names, distinct_preds,
                     has_runtime_assert,
                 ) {
@@ -657,7 +639,6 @@ pub(crate) fn encode_block<'tm>(
                         if let Some(constraint) = constraint_env.get(name) {
                             if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                                 solver.assert_formula(c.clone());
-                                accumulated_facts.push(c);
                             }
                         }
                         env.insert(name.clone(), fresh);
@@ -675,12 +656,19 @@ pub(crate) fn encode_block<'tm>(
 // ── Require / assert helper ───────────────────────────────────────────────────
 
 /// Run a temporary solver query to check whether `obligation` is provable
-/// under `accumulated_facts`.  Returns `Proved`, a `Counterexample`, or
-/// `Unknown` — never silently passes an unverified claim.
+/// under everything asserted on `solver` so far. Returns `Proved`, a
+/// `Counterexample`, or `Unknown` — never silently passes an unverified claim.
+///
+/// Seeding from `solver.get_assertions()` (rather than a separately-threaded
+/// fact list) is load-bearing: call contracts (`args ∈ A → result ∈ B`) are
+/// asserted straight onto `solver` by `assert_call_contract` and were never
+/// mirrored into any parallel fact vector, so a `require`/`assert` after a
+/// call used to see none of the callee's contract and could report a spurious
+/// counterexample.
 pub(crate) fn check_require<'tm>(
     obligation: Term<'tm>,
     tm: &'tm TermManager,
-    accumulated_facts: &[Term<'tm>],
+    solver: &Solver<'tm>,
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
 ) -> CheckResult {
@@ -688,8 +676,8 @@ pub(crate) fn check_require<'tm>(
     tmp.set_logic("ALL");
     tmp.set_option("produce-models", "true");
 
-    for fact in accumulated_facts {
-        tmp.assert_formula(fact.clone());
+    for fact in solver.get_assertions() {
+        tmp.assert_formula(fact);
     }
     tmp.assert_formula(tm.mk_term(Kind::Not, &[obligation]));
 

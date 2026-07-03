@@ -386,8 +386,6 @@ fn check_block_sig(
         Err(msg) => return CheckResult::Unknown(msg),
     };
 
-    let mut accumulated_facts: Vec<Term<'_>> = Vec::new();
-
     // Same decomposition as check_sig: tuple params → leaf constants + mk_tuple.
     let mut param_terms: Vec<Term<'_>> = Vec::new();
     for (n, part) in param_names.iter().zip(domain_parts.iter()) {
@@ -399,7 +397,6 @@ fn check_block_sig(
                     Membership::Unconstrained => {}
                     Membership::Constrained(c) => {
                         solver.assert_formula(c.clone());
-                        accumulated_facts.push(c);
                     }
                     Membership::Unsupported => {
                         return CheckResult::Unknown("unsupported domain set expression".into());
@@ -421,7 +418,6 @@ fn check_block_sig(
                     Membership::Unconstrained => {}
                     Membership::Constrained(c) => {
                         solver.assert_formula(c.clone());
-                        accumulated_facts.push(c);
                     }
                     Membership::Unsupported => {
                         return CheckResult::Unknown("unsupported domain set expression".into());
@@ -456,7 +452,6 @@ fn check_block_sig(
         &mut call_counter,
         &mut builtin_obligs,
         &mut ssa_counter,
-        &mut accumulated_facts,
         param_names,
         &param_terms,
         &mut constraint_env,

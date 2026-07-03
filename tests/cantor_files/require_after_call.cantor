@@ -1,0 +1,9 @@
+non_neg : Int -> Nat
+non_neg(x) = if x >= 0 then x else -x
+
+after_call : Int -> Nat
+after_call(x) {
+    y : Nat = non_neg(x)
+    require y in Nat
+    y
+}

@@ -1260,6 +1260,21 @@ fn call_domain_violation_callee_still_proved() {
 }
 
 #[test]
+fn require_after_call_proved() {
+    // `require y in Nat` depends on non_neg's own contract (result ∈ Nat).
+    // check_require used to run in a solver seeded only from a separately
+    // threaded fact list that never saw call contracts (those are asserted
+    // straight onto the main solver) — so this used to report a spurious
+    // counterexample.
+    let out = run_file("require_after_call.cantor");
+    assert_eq!(out.code, 0, "expected exit 0:\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("proved          after_call"),
+        "expected after_call proved:\n{}", out.stdout
+    );
+}
+
+#[test]
 fn loop_body_obligation_counterexample() {
     // Division by zero inside a while body, feeding a variable whose `Int`
     // invariant imposes no constraint — previously proved, then SIGFPE'd
