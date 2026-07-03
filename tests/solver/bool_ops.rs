@@ -81,3 +81,35 @@ f : Colour -> Bool
 f(x) = not x
 ");
 }
+
+// ── Cross-kind comparisons are rejected at elaboration ───────────────────────
+//
+// Bool and Int are disjoint value families (`true` is not `1`). Before the
+// elaborate-level check these reached cvc5 as ill-sorted terms and aborted
+// the whole process with a raw C++ error.
+
+#[test]
+fn eq_bool_int_rejected() {
+    rejected("
+f : Int -> Bool
+f(x) = x == true
+");
+}
+
+#[test]
+fn ordering_bool_operand_rejected() {
+    rejected("
+f : Int * Bool -> Bool
+f(x, b) = x < b
+");
+}
+
+// `a < b < c` parses as `(a < b) < c`, so the second `<` sees a Bool operand —
+// rejected with a hint to write `a < b and b < c`.
+#[test]
+fn chained_comparison_rejected() {
+    rejected("
+f : Int * Int * Int -> Bool
+f(a, b, c) = a < b < c
+");
+}

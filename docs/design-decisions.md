@@ -1475,8 +1475,9 @@ produces `Bool`, which is disjoint from all numeric sets (above). The
 domain checker rejects this as a domain violation — there is no implicit
 `Bool → Int` coercion to rescue it. The intended idiom is
 `a < b and b < c`.
-Future diagnostic (not v0): detect the chained-comparison pattern and
-suggest the `and` form explicitly.
+*Implementation status*: implemented — elaboration rejects any comparison
+with a non-`Int` operand, and when the left operand is `Bool` the error
+suggests the `a < b and b < c` form explicitly.
 
 ## 14. REPL (DECIDED)
 

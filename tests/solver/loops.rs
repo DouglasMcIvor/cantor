@@ -705,3 +705,25 @@ f() {
     acc
 }"#);
 }
+
+// ── Non-integer mutables crossing a loop ──────────────────────────────────────
+//
+// Post-loop havoc constants and induction-hypothesis variables take the sort
+// of the value they shadow; a mutable Bool crossing a `while` used to become
+// an integer-sorted fresh constant and abort cvc5.
+
+#[test]
+fn while_loop_mut_bool_proved() {
+    proved("
+f : Nat -> Bool
+f(n) {
+    mut flag: Bool = true
+    mut i: Nat = 0
+    while i < n {
+        flag := not flag
+        i := i + 1
+    }
+    flag
+}
+");
+}

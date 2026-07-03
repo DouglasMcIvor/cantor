@@ -120,3 +120,15 @@ add_volumes : Litre * Litre -> Int
 add_volumes(x, y) = x + y
 ");
 }
+
+// A distinct-set value and its basis share a Rust-side Kind but live in
+// different solver sorts, so `==` between them cannot be encoded — the honest
+// verdict is Unknown (previously an ill-sorted term aborted cvc5).
+#[test]
+fn distinct_vs_basis_equality_unknown() {
+    unknown("
+Litre = distinct Int
+f : Litre -> Bool
+f(x) = x == 3
+");
+}

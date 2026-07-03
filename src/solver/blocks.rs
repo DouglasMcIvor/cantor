@@ -142,7 +142,10 @@ pub(crate) fn encode_block<'tm>(
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
                 *ssa_counter += 1;
-                let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                // The fresh SSA constant must carry the value's own sort —
+                // a hardcoded integer sort makes `Equal` ill-sorted for Bool
+                // and tuple bindings, which aborts cvc5 outright.
+                let fresh = tm.mk_const(val.sort(), &ssa_name);
                 let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
                 solver.assert_formula(eq.clone());
                 accumulated_facts.push(eq);
@@ -196,7 +199,10 @@ pub(crate) fn encode_block<'tm>(
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
                 *ssa_counter += 1;
-                let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                // The fresh SSA constant must carry the value's own sort —
+                // a hardcoded integer sort makes `Equal` ill-sorted for Bool
+                // and tuple bindings, which aborts cvc5 outright.
+                let fresh = tm.mk_const(val.sort(), &ssa_name);
                 let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
                 solver.assert_formula(eq.clone());
                 accumulated_facts.push(eq);
@@ -276,7 +282,7 @@ pub(crate) fn encode_block<'tm>(
                         let proj = rhs_term.child(i + 1);
                         let ssa_name = format!("{}_{}", binding.name.0, ssa_counter);
                         *ssa_counter += 1;
-                        let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                        let fresh = tm.mk_const(proj.sort(), &ssa_name);
                         let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
                         solver.assert_formula(eq.clone());
                         accumulated_facts.push(eq);
@@ -370,7 +376,7 @@ pub(crate) fn encode_block<'tm>(
                         let proj = rhs_term.child(i + 1);
                         let ssa_name = format!("{}_{}", name.0, ssa_counter);
                         *ssa_counter += 1;
-                        let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                        let fresh = tm.mk_const(proj.sort(), &ssa_name);
                         let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
                         solver.assert_formula(eq.clone());
                         accumulated_facts.push(eq);
@@ -422,7 +428,10 @@ pub(crate) fn encode_block<'tm>(
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
                 *ssa_counter += 1;
-                let fresh = tm.mk_const(tm.integer_sort(), &ssa_name);
+                // The fresh SSA constant must carry the value's own sort —
+                // a hardcoded integer sort makes `Equal` ill-sorted for Bool
+                // and tuple bindings, which aborts cvc5 outright.
+                let fresh = tm.mk_const(val.sort(), &ssa_name);
                 let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
                 solver.assert_formula(eq.clone());
                 accumulated_facts.push(eq);
@@ -586,10 +595,10 @@ pub(crate) fn encode_block<'tm>(
                 // reported — skip them here.
                 for name in &modified {
                     if immutable_names.contains(name) { continue; }
-                    if env.contains_key(name) {
+                    if let Some(cur_sort) = env.get(name).map(|t| t.sort()) {
                         let fresh_name = format!("{}_{}", name.0, ssa_counter);
                         *ssa_counter += 1;
-                        let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
+                        let fresh = tm.mk_const(cur_sort, &fresh_name);
                         if let Some(constraint) = constraint_env.get(name) {
                             if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                                 solver.assert_formula(c.clone());
@@ -641,10 +650,10 @@ pub(crate) fn encode_block<'tm>(
                 // carrying its declared invariant (justified by the proved step).
                 for name in &modified {
                     if immutable_names.contains(name) { continue; }
-                    if env.contains_key(name) {
+                    if let Some(cur_sort) = env.get(name).map(|t| t.sort()) {
                         let fresh_name = format!("{}_{}", name.0, ssa_counter);
                         *ssa_counter += 1;
-                        let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
+                        let fresh = tm.mk_const(cur_sort, &fresh_name);
                         if let Some(constraint) = constraint_env.get(name) {
                             if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                                 solver.assert_formula(c.clone());

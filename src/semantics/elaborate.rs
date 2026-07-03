@@ -444,6 +444,40 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
             // meaning (Bool) regardless of position.
             let l = elaborate_expr(lhs, pos, ctx, env)?;
             let r = elaborate_expr(rhs, pos, ctx, env)?;
+            // Operand-kind agreement, value position only (in set position the
+            // operands are set descriptions, reserved for subset comparisons).
+            // Without this check the mismatch reaches cvc5 as an ill-sorted
+            // term and aborts the whole process with a raw C++ error.
+            if pos == Position::Value {
+                match op {
+                    BinOp::Eq | BinOp::Ne if l.kind_of != r.kind_of => {
+                        return Err(CompileError::Internal(format!(
+                            "`{op}` requires both operands from the same value family, \
+                             got {:?} and {:?} — e.g. Bool and Int are disjoint in \
+                             Cantor's value model (`true` is not `1`); convert \
+                             explicitly with `if b then 1 else 0` if that is what \
+                             you meant",
+                            l.kind_of, r.kind_of
+                        )));
+                    }
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                        if l.kind_of != Kind::Int || r.kind_of != Kind::Int =>
+                    {
+                        let chained_hint = if l.kind_of == Kind::Bool {
+                            " (a chain like `a < b < c` parses as `(a < b) < c`; \
+                             write `a < b and b < c` instead)"
+                        } else {
+                            ""
+                        };
+                        return Err(CompileError::Internal(format!(
+                            "`{op}` compares integers, got {:?} and {:?} — Bool is \
+                             not ordered{chained_hint}",
+                            l.kind_of, r.kind_of
+                        )));
+                    }
+                    _ => {}
+                }
+            }
             Ok(SemExpr { kind: SemExprKind::BinOp { op: *op, lhs: Box::new(l), rhs: Box::new(r) }, kind_of: Kind::Bool, span })
         }
 

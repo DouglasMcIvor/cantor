@@ -1,0 +1,2 @@
+beq : Int -> Bool
+beq(x) = x == true

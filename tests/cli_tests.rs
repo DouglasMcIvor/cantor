@@ -1275,3 +1275,39 @@ fn loop_body_obligation_counterexample() {
         "expected division-by-zero reason:\n{}", out.stdout
     );
 }
+
+// ── Non-integer block locals (end-to-end) ──────────────────────────────────────
+
+#[test]
+fn bool_tuple_lets_prove_and_run() {
+    // Bool and tuple `let`s in block bodies used to abort the cvc5 process
+    // (integer-sorted SSA constants); now they prove and execute.
+    let out = run_subcommand("bool_tuple_lets.cantor");
+    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("3 proved"),
+        "expected '3 proved' in summary:\n{}", out.stdout
+    );
+    assert!(
+        out.stdout.contains("main() = 42"),
+        "expected 'main() = 42' in output:\n{}", out.stdout
+    );
+}
+
+// ── Cross-kind comparison diagnostics (end-to-end) ─────────────────────────────
+
+#[test]
+fn kind_mismatch_eq_clean_error() {
+    // `x == true` with x : Int used to reach cvc5 as an ill-sorted term and
+    // abort with a raw C++ error; now it's a Cantor diagnostic.
+    let out = run_file("kind_mismatch_eq.cantor");
+    assert_ne!(out.code, 0, "kind_mismatch_eq.cantor should exit non-zero:\n{}", out.stdout);
+    assert!(
+        out.stderr.contains("same value family"),
+        "expected operand-family diagnostic on stderr:\n{}", out.stderr
+    );
+    assert!(
+        !out.stderr.contains("cvc5"),
+        "must not leak a raw cvc5 abort:\n{}", out.stderr
+    );
+}

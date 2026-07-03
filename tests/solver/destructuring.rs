@@ -146,3 +146,19 @@ f(p) {
 }
 ");
 }
+
+// ── Non-integer components ────────────────────────────────────────────────────
+//
+// Destructure SSA constants take each projection's own sort; Bool components
+// used to be bound to integer-sorted constants, aborting cvc5.
+
+#[test]
+fn destruct_let_bool_components_proved() {
+    proved("
+f : Bool * Bool -> Bool
+f(p) {
+    x, y = (p.0, p.1)
+    x and y
+}
+");
+}

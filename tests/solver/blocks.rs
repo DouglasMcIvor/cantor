@@ -129,3 +129,43 @@ f(n) {
 }
 ");
 }
+
+// ── SSA constants carry the value's own solver sort ──────────────────────────
+//
+// Fresh SSA constants used to be hardcoded to the integer sort, so a Bool or
+// tuple `let` in a block produced an ill-sorted `Equal` and aborted the cvc5
+// process outright — the solver could never even reach a verdict.
+
+#[test]
+fn bool_let_in_block_proved() {
+    proved("
+f : Bool -> Bool
+f(b) {
+    x : Bool = not b
+    x
+}
+");
+}
+
+#[test]
+fn tuple_let_in_block_proved() {
+    proved("
+f : -> Int
+f() {
+    p : Int * Int = (1, 2)
+    p.0 + p.1
+}
+");
+}
+
+#[test]
+fn mut_bool_reassign_in_block_proved() {
+    proved("
+f : Bool -> Bool
+f(b) {
+    mut x : Bool = b
+    x := not x
+    x
+}
+");
+}

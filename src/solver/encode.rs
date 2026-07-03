@@ -476,6 +476,19 @@ fn encode_binop<'tm>(
         }
     };
 
+    // `==`/`!=` between different solver sorts would be an ill-sorted CVC5
+    // term (process abort). Elaboration already rejects cross-kind operands;
+    // what reaches here is same-Kind-different-sort — e.g. a distinct-set
+    // value against its basis (`litre(3) == 3`), where the honest answer is
+    // Unknown until distinct equality is modelled explicitly.
+    if matches!(op, BinOp::Eq | BinOp::Ne) && l.sort() != r.sort() {
+        return Err(format!(
+            "cannot encode `{op:?}` between values with different solver \
+             representations (e.g. a distinct-set value and its basis) — \
+             unwrap with from() first"
+        ));
+    }
+
     // Guard: bail out with a sort-safe dummy when operands have the wrong sort.
     // The domain checks above push Constrained(false) obligations that cause
     // a counterexample; the dummy prevents a CVC5 sort panic.

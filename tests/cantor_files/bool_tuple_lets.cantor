@@ -1,0 +1,16 @@
+flip : Bool -> Bool
+flip(b) {
+    x : Bool = not b
+    y : Bool = x and true
+    y
+}
+
+pick : -> Int
+pick() {
+    p : Int * Int = (41, 1)
+    q : Int = p.0 + p.1
+    q
+}
+
+main : -> Int
+main() = if flip(false) then pick() else 0

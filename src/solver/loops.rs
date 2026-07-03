@@ -76,7 +76,11 @@ where
     for name in modified {
         let fresh_name = format!("{}_step_{}", name.0, ssa_counter);
         *ssa_counter += 1;
-        let fresh = tm.mk_const(tm.integer_sort(), &fresh_name);
+        // The hypothesis variable carries the binding's actual solver sort
+        // (Bool muts are boolean-sorted, tuple muts tuple-sorted); a name not
+        // in the outer env is declared inside the body and will be shadowed.
+        let sort = env.get(name).map(|t| t.sort()).unwrap_or_else(|| tm.integer_sort());
+        let fresh = tm.mk_const(sort, &fresh_name);
         if let Some(constraint) = constraint_env.get(name) {
             if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
                 tmp.assert_formula(c.clone());
