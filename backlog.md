@@ -23,6 +23,8 @@ You probably don't want to read this unless you're me.
     -  `cargo llvm-cov` for coverage
     -  `cargo +nightly miri test` for UB, aliasing, invalid references
   - "giving every stage a `validate()` method"
+- termination checking on recursion and loops with a 'decreases n' annotation to declare a ranking function.
+  automatic inference of the ranking function structurally where possible 
 - `none` value and `None` set, currently missing
 - function overloads, or as ChatGPT suggests "the language should officially define an overloaded
   function as *the union of compatible partial functions*". In my own words "all functions are partial
