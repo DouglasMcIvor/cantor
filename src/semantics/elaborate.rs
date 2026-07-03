@@ -284,6 +284,16 @@ fn elaborate_destruct_bindings(
     let tc = tuple_constraint.as_ref().map(|t| elaborate_expr(t, Position::Set, ctx, env)).transpose()?;
     let elem_kinds = match value_kind {
         Kind::Tuple(ek) => ek,
+        // The README documents `h, t = v` for a vector `v` (head elements plus
+        // a vector tail, proof-gated on `v` having enough elements) — that is
+        // not yet implemented in any of elaborate/solver/codegen. Reported as
+        // an explicit not-yet-implemented error rather than a generic
+        // "wrong shape" one, since it's a real (if unimplemented) construct,
+        // not a type error.
+        Kind::Vector(_) => return Err(CompileError::Internal(
+            "not yet implemented: destructuring a vector (`X*`) — only tuple \
+             right-hand sides are currently supported".into()
+        )),
         other => return Err(CompileError::Internal(format!(
             "destructuring requires a tuple on the right-hand side, got {other:?}"
         ))),

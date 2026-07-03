@@ -84,6 +84,13 @@ impl<'ctx> Compiler<'ctx> {
                     let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
                     let elem_kinds = match rhs_kind {
                         Kind::Tuple(ek) => ek,
+                        // See the matching guard in `elaborate_destruct_bindings` —
+                        // elaboration should already reject this before codegen
+                        // ever sees it; kept here as defense in depth.
+                        Kind::Vector(_) => return Err(CompileError::Internal(
+                            "not yet implemented: destructuring a vector (`X*`) — \
+                             only tuple right-hand sides are currently supported".into(),
+                        )),
                         _ => return Err(CompileError::Internal(
                             "destructuring `=` requires a tuple on the right-hand side".into(),
                         )),
@@ -130,6 +137,13 @@ impl<'ctx> Compiler<'ctx> {
                     let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
                     let elem_kinds = match rhs_kind {
                         Kind::Tuple(ek) => ek,
+                        // See the matching guard in `elaborate_destruct_bindings` —
+                        // elaboration should already reject this before codegen
+                        // ever sees it; kept here as defense in depth.
+                        Kind::Vector(_) => return Err(CompileError::Internal(
+                            "not yet implemented: destructuring a vector (`X*`) — \
+                             only tuple right-hand sides are currently supported".into(),
+                        )),
                         _ => return Err(CompileError::Internal(
                             "destructuring `=` requires a tuple on the right-hand side".into(),
                         )),
@@ -197,6 +211,13 @@ impl<'ctx> Compiler<'ctx> {
                     let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
                     let elem_kinds = match rhs_kind {
                         Kind::Tuple(ek) => ek,
+                        // See the matching guard in `elaborate_destruct_bindings` —
+                        // elaboration should already reject this before codegen
+                        // ever sees it; kept here as defense in depth.
+                        Kind::Vector(_) => return Err(CompileError::Internal(
+                            "not yet implemented: destructuring a vector (`X*`) — \
+                             only tuple right-hand sides are currently supported".into(),
+                        )),
                         _ => return Err(CompileError::Internal(
                             "destructuring `:=` requires a tuple on the right-hand side".into(),
                         )),

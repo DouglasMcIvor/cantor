@@ -162,3 +162,52 @@ f(p) {
 }
 ");
 }
+
+// ── Vector destructuring: not yet implemented ────────────────────────────────
+//
+// The README documents `h, t = v` for a vector `v` (head elements plus a
+// vector tail, proof-gated on `v` having enough elements) — none of
+// elaborate/solver/codegen support this yet. Both statement forms must
+// report it clearly (a "not yet implemented" `CompileError`/`Unknown`) —
+// never a raw cvc5 abort or a misleading generic "wrong shape" message.
+
+#[test]
+fn destruct_let_vector_rhs_rejected() {
+    rejected("
+f : Nat* -> Nat
+f(xs) {
+    h, t = xs
+    h
+}
+");
+}
+
+#[test]
+fn vector_param_destructure_rejected() {
+    // The README documents `foo(x, y)` on a `Nat* - {[]}` domain (proof-gated
+    // non-empty vector) as binding `x` to the head and `y` to the tail — this
+    // reuses the same tuple-arity-disambiguation path as `f(x, y)` on an
+    // `Int * Int` domain, and isn't implemented for a vector domain.
+    rejected("
+foo : (Nat* - {[]}) -> Nat
+foo(x, y) = x
+");
+}
+
+#[test]
+fn destruct_assign_vector_rhs_unknown() {
+    // `:=` isn't gated at elaboration time (it reuses existing mutable
+    // bindings' Kind rather than computing new ones), so this is caught in
+    // the solver instead — previously a raw `cvc5: error: index out of
+    // bound` abort (the vector RHS is an opaque integer term with no
+    // children, and the destructuring code unconditionally called `child()`).
+    unknown("
+f : Nat* -> Nat
+f(xs) {
+    mut h : Nat = 0
+    mut t : Nat* = []
+    h, t := xs
+    h
+}
+");
+}

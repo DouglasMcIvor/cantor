@@ -1,0 +1,7 @@
+f : Nat* -> Nat
+f(xs) {
+    mut h : Nat = 0
+    mut t : Nat* = []
+    h, t := xs
+    h
+}

@@ -1,0 +1,2 @@
+foo : (Nat* - {[]}) -> Nat
+foo(x, y) = x

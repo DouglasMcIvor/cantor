@@ -1343,6 +1343,50 @@ fn bool_tuple_lets_prove_and_run() {
     );
 }
 
+// ── Vector destructuring: not yet implemented (end-to-end) ────────────────────
+//
+// The README documents `h, t = v` for a vector `v`; none of elaborate/solver/
+// codegen support it yet. Must fail loudly with a clear diagnostic — never a
+// raw cvc5 abort or a silent wrong answer.
+
+#[test]
+fn vector_destructure_let_clean_error() {
+    let out = run_file("vector_destructure_let.cantor");
+    assert_ne!(out.code, 0, "vector_destructure_let.cantor should exit non-zero:\n{}", out.stdout);
+    assert!(
+        out.stderr.contains("not yet implemented") && out.stderr.contains("vector"),
+        "expected a 'not yet implemented' vector-destructuring diagnostic on stderr:\n{}", out.stderr
+    );
+}
+
+#[test]
+fn vector_param_destructure_clean_error() {
+    // `foo(x, y)` on a `Nat* - {[]}` domain — same underlying gap, reached via
+    // function-parameter arity disambiguation instead of a `let`/`:=` statement.
+    let out = run_file("vector_param_destructure.cantor");
+    assert_ne!(out.code, 0, "vector_param_destructure.cantor should exit non-zero:\n{}", out.stdout);
+    assert!(
+        out.stderr.contains("isn't supported yet") && out.stderr.contains("vector"),
+        "expected a vector-destructuring hint on stderr:\n{}", out.stderr
+    );
+}
+
+#[test]
+fn vector_destructure_assign_clean_error() {
+    // Previously a raw `cvc5: error: index out of bound` process abort — the
+    // vector RHS is an opaque integer term with no children in the solver,
+    // and `DestructAssign` unconditionally called `child()` on it.
+    let out = run_file("vector_destructure_assign.cantor");
+    assert!(
+        out.stdout.contains("unknown         f"),
+        "expected an Unknown result for f, not a crash:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("cvc5") && !out.stderr.contains("cvc5"),
+        "must not leak a raw cvc5 abort:\nstdout: {}\nstderr: {}", out.stdout, out.stderr
+    );
+}
+
 // ── Cross-kind comparison diagnostics (end-to-end) ─────────────────────────────
 
 #[test]

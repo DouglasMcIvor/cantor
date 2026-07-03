@@ -430,25 +430,35 @@ $ cantor overflow.cantor
 
 `f : Int * Int -> Int` with `f(x, y)` means two separate scalar parameters; `f : Int * Int -> Int * Int` with `f(t)` means a single tuple parameter. The number of declared parameters determines which reading applies — no extra syntax needed.
 
-Destructing assignment works as you would expect, and supports both tuples and vectors.
-The only requirement is that the compiler can statically prove that your tuple/vector has at least as many elements as binders that you request.
+Destructuring assignment works as you would expect for tuples.
+The only requirement is that the compiler can statically prove that your tuple has at least as many elements as binders that you request — trivially true, since a tuple's arity is fixed at compile time.
 
 ```haskell
 x, y = (a, b) -- alias constants x=a, y=b by constructing and destructuring a tuple
 
-v = (1, 2, 3)
-x, y, z = v -- pattern match on a tuple passed in
+f : Int * Int * Int -> Int
+f(p) {
+    x, y, z = p        -- pattern match on a tuple parameter directly
+    x + y + z
+}
 
-v = [1, 2, 3, 4, 5]
-h, t = v -- h == 1 and t == [2, 3, 4, 5]
-         -- with fewer binders than elements the tail is placed into the last element
-
-foo : Nat* -> Nat
-foo(x, y) = x  -- Error: Nat* may be empty
-
-foo : Nat* - {[]} -> Nat
-foo(x, y) = x  -- Okay! Nat is known to be non-empty
+h, t = (1, 2, 3, 4, 5) -- h == 1 and t == (2, 3, 4, 5)
+                       -- with fewer binders than elements the tail is placed into the last element
 ```
+
+> **Known limitations:**
+> - Destructuring a *vector* (`X*`) is not yet implemented, whether as a
+>   `let`/`:=` statement (`h, t = v` for `v : Nat*`) or as function parameters
+>   (`foo(x, y)` on a single vector-typed domain), so that `h`/`x` binds the
+>   head element(s) and `t`/`y` binds the remaining elements as a vector tail.
+>   This would need a solver-proved length obligation (the vector must have at
+>   least as many elements as binders requested) and new codegen support for
+>   slicing an Arrow vector — currently rejected at compile time with a clear
+>   error rather than silently doing the wrong thing.
+> - Destructuring a *locally `let`-bound tuple variable* (`v : Int * Int = (1, 2); x, y = v`)
+>   currently crashes the solver — tuple destructuring only works directly on
+>   a tuple literal or a tuple-typed function parameter (both shown above).
+>   Tracked as a compiler bug, not a design limitation.
 
 ### Vectors and bounds safety
 

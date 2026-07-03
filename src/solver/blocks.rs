@@ -332,6 +332,21 @@ pub(crate) fn encode_block<'tm>(
                     call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
                 ).map_err(CheckResult::Unknown)?;
 
+                // `DestructAssign` only understands a tuple-shaped RHS (the same
+                // limitation as `DestructLet`/`DestructMutLet` — see the matching
+                // guard in `elaborate_destruct_bindings`). Elaboration doesn't gate
+                // this statement form at all (`:=` reuses names' existing Kind
+                // rather than computing new ones), so a vector RHS (an opaque
+                // integer term in the solver) would otherwise reach `child()` with
+                // zero children and abort cvc5 outright.
+                if !rhs_term.sort().is_tuple() {
+                    return Err(CheckResult::Unknown(
+                        "destructuring assignment (`:=`) only supports a tuple \
+                         right-hand side (a vector `X*` right-hand side is not \
+                         yet implemented)".into()
+                    ));
+                }
+
                 let tuple_arity = rhs_term.num_children().saturating_sub(1);
                 let last_i = dest_names.len() - 1;
 

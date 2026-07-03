@@ -222,7 +222,11 @@ pub fn sem_param_set_exprs(domain: Option<&SemExpr>, n_params: usize) -> Result<
                 Ok(vec![domain_expr])
             } else {
                 Err(format!(
-                    "domain arity {} doesn't match parameter count {}",
+                    "domain arity {} doesn't match parameter count {} \
+                     (if you're trying to destructure a vector `X*` into per-element \
+                     parameters, e.g. `foo(x, y)` on a `Nat*` domain, that isn't \
+                     supported yet — only a Cartesian-product tuple domain can bind \
+                     multiple parameters)",
                     parts.len(), n_params
                 ))
             }

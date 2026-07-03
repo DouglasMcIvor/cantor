@@ -1,0 +1,5 @@
+f : Nat* -> Nat
+f(xs) {
+    h, t = xs
+    h
+}
