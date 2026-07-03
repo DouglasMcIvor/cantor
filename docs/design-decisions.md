@@ -1266,6 +1266,16 @@ Other open items (lower priority, not blocking):
   are deterministic (unaffected by system load) but harder to reason about.
 - **`emits` and multithreading** — if concurrent IO threads share `emits`
   channels, synchronisation is needed. Defer until threading model is decided.
+- **Codegen/solver representation parity for `Fail`** — the solver now
+  models `Fail` as a builtin distinct sort flowing through the same
+  cross-kind union datatype machinery as any other tagged union arm (§13);
+  codegen still uses a bespoke `{i1, i64}` struct entirely separate from the
+  general `Kind::TaggedUnion` (`{i32 tag, ...}`) scheme used for every other
+  cross-kind union. Whether to fold `Fail` into that generic codegen scheme
+  too (dropping the bespoke struct), or keep `{i1, i64}` as a deliberately
+  special fast path, is open — solver and codegen already don't share
+  bit-level representations for any other union, so there is no soundness
+  reason to unify, only a simplicity/consistency one.
 
 ## 12. Explicitly deferred future features (not in scope, do not implement
     speculatively)
@@ -1453,6 +1463,44 @@ Three mechanisms in order of increasing programmer responsibility:
   `T | HTTPError` is plain set union (success values may overlap error codes
   numerically, distinguished only by the flag). `T !! HTTPError` desugars to
   `T | (Fail * HTTPError)` and has the same wire format.
+
+### Solver representation of `Fail` (DECIDED)
+
+The wire format above is a codegen/runtime concern only. Internally, the
+solver previously modelled `Fail` as an ad hoc sentinel integer (`i64::MIN`
+for bare `fail`, `i64::MIN + 1 + payload` for `fail expr`) — found, via
+code review, to bypass the general cross-kind union datatype machinery
+entirely for the common case (`Int | Fail`, `Nat | Fail`: `Fail`'s sentinel
+happened to compute to the same plain-Integer CVC5 sort as the success arm,
+so the union detector never built a tagged datatype at all), and to produce
+two real soundness bugs where it *did* get swept in by accident: a `!!`/
+`| Fail` contract with an `Int`-family success arm was vacuous (the sentinel
+occupies the same integer space as "any integer", so `Membership::Unconstrained`
+for the success arm short-circuited the whole union check before `Fail`'s own
+predicate was ever built), and payload arms like `Fail * Nat` admitted false
+proofs (the decode predicate `t - (i64::MIN + 1) ∈ Nat` holds for every
+representable machine `i64`, not just genuine `fail`-tagged values).
+
+Fixed by giving `Fail` a genuine builtin **distinct sort** — reusing the
+exact `DistinctPreds`/`mk_D`/`from_D` machinery built for user `distinct`
+definitions (previous section). `Fail` gets its own uninterpreted CVC5 sort
+with a single canonical witness value; `fail` encodes as `mk_Fail(0)`,
+`fail expr` as the genuine tuple `(mk_Fail(0), expr)`. Because `Fail`'s CVC5
+sort now genuinely differs from `Int`/`Nat`/etc., the *existing*, fully
+generic cross-kind-union detector and datatype-constructor builder already
+handle every `Fail` / `Fail * Y` arm with no changes — the union detector's
+`is_distinct_sort(...)` check fires for `Int | Fail` the same way it already
+does for `Int | Litre`, and `Fail * Y`'s tuple shape trips the existing
+`is_tuple()` check the same way `(Nat * Nat) | Nat` already does. No
+`Fail`-specific branch remains in `build_union_datatype_sort`,
+`membership_constraint`, or the union-coercion path — the only `Fail`-specific
+code is registering it as a builtin distinct sort and picking its witness
+value, exactly the "only special logic is how to encode the sentinel itself"
+target this was designed against.
+
+This is a solver-internal representation change only; it does not alter the
+LLVM wire format above (`{i1, i64}`), which remains untouched (see the open
+question below on whether to unify the two).
 
 ### Natural numbers and other named subsets
 
