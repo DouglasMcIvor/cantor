@@ -13,7 +13,7 @@ use crate::{
 
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 use super::sort::{
-    is_product_range, maybe_coerce, set_sort, set_sort_for_range,
+    extract_success_value, is_product_range, maybe_coerce, set_sort,
     success_arm_of_range,
 };
 use super::NameDefs;
@@ -153,6 +153,14 @@ pub(crate) fn encode_expr<'tm>(
         if callee.0 == "from" && args.len() == 1 {
             let arg_term = enc!(&args[0])?;
             for (sym, info) in distinct_preds {
+                // `Fail` is registered as a distinct sort purely so the
+                // cross-kind union machinery treats it like any other arm —
+                // it has no user-facing basis value to extract, so `from()`
+                // (which unwraps a real `distinct B` back to its `B` basis)
+                // must not match it.
+                if sym.0 == "Fail" {
+                    continue;
+                }
                 if arg_term.sort() == info.sort {
                     let result = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), arg_term]);
                     if let Some(def) = name_defs.get(sym) {
@@ -172,11 +180,27 @@ pub(crate) fn encode_expr<'tm>(
     let term = match &expr.kind {
         SemExprKind::IntLit(n)  => Ok(tm.mk_integer(*n)),
         SemExprKind::BoolLit(b) => Ok(tm.mk_boolean(*b)),
-        SemExprKind::FailLit    => Ok(tm.mk_integer(i64::MIN)),
+
+        // `Fail` is a builtin distinct sort (registered in `build_distinct_preds`)
+        // with one canonical witness value — the witness is never observed (see
+        // the `from()` guard below), so any fixed integer works. `fail` applies
+        // the `mk_Fail` constructor directly; `fail expr` pairs it with the
+        // payload as a genuine tuple, exactly like any other cross-kind union's
+        // payload-carrying arm. The surrounding `coerce_to`/`maybe_coerce`
+        // machinery (end of this function) then wraps either shape into the
+        // enclosing union datatype with no Fail-specific coercion code at all.
+        SemExprKind::FailLit => {
+            let info = distinct_preds.get(&Symbol::new("Fail"))
+                .expect("Fail must be registered as a builtin distinct sort");
+            Ok(tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), tm.mk_integer(0)]))
+        }
 
         SemExprKind::FailWith(inner) => {
             let n = enc!(inner)?;
-            Ok(tm.mk_term(Kind::Add, &[tm.mk_integer(i64::MIN.wrapping_add(1)), n]))
+            let info = distinct_preds.get(&Symbol::new("Fail"))
+                .expect("Fail must be registered as a builtin distinct sort");
+            let tag = tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), tm.mk_integer(0)]);
+            Ok(tm.mk_tuple(&[tag, n]))
         }
 
         SemExprKind::Var(sym) => {
@@ -547,27 +571,17 @@ fn encode_if<'tm>(
 
     // CVC5 requires both branches to have the same sort.
     // Unify sorts before calling mk_term(Ite, …).
+    //
+    // The common case where branches differ only because one is `fail`/
+    // `fail n` (e.g. `if cond then 5 else fail` with range `Nat | Fail`) is
+    // already handled above: `coerce_to` is propagated into both branches,
+    // and each one's own `maybe_coerce` independently wraps it into the
+    // enclosing union datatype (`Fail` is just another arm — see
+    // docs/design-decisions.md §13), so `t.sort() == e.sort()` already holds
+    // by the time we get here. There is no Fail-specific coercion left to do
+    // in this function at all.
     let (t, e) = if t.sort() == e.sort() {
         (t, e)
-    } else if matches!(
-        crate::kind::merge_if_branches(&then_expr.kind_of, &else_expr.kind_of),
-        Ok(crate::kind::IfMerge::CoerceToFailStruct)
-    ) {
-        // One branch is the fallible `{Fail, Int}` wrapper (`fail`/`fail n`,
-        // encoded as the sentinel integer i64::MIN(+payload)); the other is
-        // a plain success value that must be widened into the same wire
-        // shape. Only the payload's *representation* changes (Bool's slot
-        // is i64, matching `codegen::coerce_to_fail_struct` exactly) — this
-        // is narrower than the general Bool≈Int coercion removed below, and
-        // shares the same decision (`kind::merge_if_branches`) codegen uses.
-        let widen_success_payload = |b: Term<'tm>| {
-            if b.sort().is_boolean() {
-                tm.mk_term(Kind::Ite, &[b, tm.mk_integer(1), tm.mk_integer(0)])
-            } else {
-                b
-            }
-        };
-        (widen_success_payload(t), widen_success_payload(e))
     } else {
         // Branches have genuinely different sorts and cannot be unified —
         // Bool and Int are disjoint in Cantor's value model (no implicit
@@ -575,13 +589,16 @@ fn encode_if<'tm>(
         // and anything else (distinct sort, tuple, future Float32, …) is no
         // more compatible. In practice `elaborate()` already rejects
         // mismatched non-Tuple/TaggedUnion branch Kinds for a legitimate
-        // program (see `kind::merge_if_branches`), so reaching this arm at
-        // all would mean an elaborator gap — this is a defensive fallback,
-        // not a supported path: for whichever branch isn't integer-sorted,
-        // push a path-conditioned `false` obligation (that branch's value
-        // can never satisfy an integer-shaped range) and substitute a dummy
-        // integer so `Ite` stays well-sorted — a sound under-approximation,
-        // never a silent pass.
+        // program (see `kind::merge_if_branches`), and any Fail-vs-success
+        // mismatch should already have been unified via `coerce_to` above —
+        // so reaching this arm at all means either an elaborator gap or a
+        // missing `coerce_to` (e.g. a `let`/`:=` RHS, which doesn't thread
+        // one through today). This is a defensive fallback, not a supported
+        // path: for whichever branch isn't integer-sorted, push a
+        // path-conditioned `false` obligation (that branch's value can never
+        // satisfy an integer-shaped range) and substitute a dummy integer so
+        // `Ite` stays well-sorted — a sound under-approximation, never a
+        // silent pass.
         let mut to_int_or_dummy = |b: Term<'tm>, path: Term<'tm>| {
             if b.sort().is_integer() {
                 b
@@ -682,7 +699,7 @@ fn encode_call<'tm>(
             }
             assembled
         } else {
-            match set_sort_for_range(tm, &first_sig.range, distinct_preds, name_defs) {
+            match set_sort(tm, &first_sig.range, distinct_preds, name_defs) {
                 Some(sort) => tm.mk_const(sort, &fresh),
                 None => return Err(format!(
                     "call to `{}` has an unsupported range sort (internal error)",
@@ -703,6 +720,27 @@ fn encode_call<'tm>(
                 );
             }
         }
+    }
+
+    if narrow_try {
+        // `result_var` is sorted as the *whole* range (a cross-kind datatype
+        // whenever the range has a Fail-shaped arm — always, now that `Fail`
+        // is a distinct sort). `?` must yield just the success value, not the
+        // tagged wrapper — callers immediately use it as a plain Int/Bool/
+        // tuple value (e.g. `y : Nat = f(x)?; y - 1`), which would otherwise
+        // build an ill-sorted term against `result_var`'s DT sort.
+        let first_sig = callee_def.sigs.first().ok_or_else(|| {
+            format!("call to `{}` under `?` has no signature (internal error)", callee.0)
+        })?;
+        let success = success_arm_of_range(&first_sig.range).ok_or_else(|| format!(
+            "`?` used on a call to `{}`, whose range has no success arm to narrow to",
+            callee.0
+        ))?;
+        return extract_success_value(tm, result_var, success, distinct_preds, name_defs).ok_or_else(|| format!(
+            "cannot narrow `?` on call to `{}`: the success arm's shape doesn't \
+             resolve to a single extraction from its range's datatype",
+            callee.0
+        ));
     }
 
     Ok(result_var)

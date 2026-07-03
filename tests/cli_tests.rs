@@ -622,6 +622,40 @@ fn error_union_run_success_path_returns_value() {
 }
 
 #[test]
+fn sentinel_collision_rejected() {
+    // `Fail` used to be encoded as a sentinel integer, so `Nat | (Fail * Int)`'s
+    // membership check collapsed to Unconstrained (the unbounded `Int` payload's
+    // decode predicate holds for nearly every representable value) — this
+    // program used to falsely prove despite always returning `-1 ∉ Nat`.
+    let out = run_file("sentinel_collision.cantor");
+    assert_ne!(out.code, 0, "sentinel_collision.cantor should exit non-zero:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("counterexample  buggy"),
+        "expected counterexample for buggy:\n{}", out.stdout
+    );
+}
+
+#[test]
+fn try_extraction_arithmetic_runs_end_to_end() {
+    // `Fail` used to be a sentinel integer, so a `?`-unwrapped value already
+    // happened to be plain-integer-sorted; now that `Fail` is a distinct
+    // sort routed through the cross-kind union datatype machinery, `?` must
+    // explicitly extract the success value before arithmetic (`y - 1`) can
+    // be applied to it. This exercises that end-to-end, not just in the
+    // solver: fetch(10) succeeds with 10, so main() should compute 10-1=9.
+    let out = run_subcommand("try_extraction_arithmetic.cantor");
+    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("2 proved"),
+        "expected '2 proved' in summary:\n{}", out.stdout
+    );
+    assert!(
+        out.stdout.contains("main() = 9"),
+        "expected 'main() = 9' in output:\n{}", out.stdout
+    );
+}
+
+#[test]
 fn error_union_propagate_proves_all_sigs() {
     let out = run_subcommand("error_union_propagate.cantor");
     assert!(

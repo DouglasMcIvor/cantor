@@ -269,15 +269,22 @@ pub(crate) fn membership_constraint<'tm>(
     }
     match &set_expr.kind {
         SemExprKind::Var(sym) => match builtins::lookup(&sym.0) {
-            // Fail is the failure singleton.  In the solver's integer model it is
-            // encoded as i64::MIN so that `Nat | Fail` correctly accepts the
-            // fail sentinel while rejecting all integers below zero.
+            // `Fail` is registered as a builtin distinct sort (`build_distinct_preds`)
+            // with a single witness value — a term of exactly that sort is
+            // trivially a member; anything else (integer, boolean, another
+            // distinct sort, tuple, …) is definitely not `Fail`. Same rule as
+            // any user `distinct` set (the `DefKind::Distinct` arm below);
+            // `Fail` is just resolved via `builtins::lookup` instead of
+            // `name_defs` since it's a language builtin, not a user definition.
             Some(b) if b.kind == ValKind::Fail => {
-                let Some(t) = to_integer_term(t) else {
-                    return Membership::Constrained(tm.mk_boolean(false));
-                };
-                let sentinel = tm.mk_integer(i64::MIN);
-                Membership::Constrained(tm.mk_term(Kind::Equal, &[t, sentinel]))
+                let fail_sort = distinct_preds.get(&Symbol::new("Fail"))
+                    .expect("Fail must be registered as a builtin distinct sort")
+                    .sort.clone();
+                if t.sort() == fail_sort {
+                    Membership::Unconstrained
+                } else {
+                    Membership::Constrained(tm.mk_boolean(false))
+                }
             }
             // Bool = {0, 1} (false = 0, true = 1).
             // • boolean-sort terms are trivially in Bool — no constraint needed.
@@ -408,28 +415,6 @@ pub(crate) fn membership_constraint<'tm>(
                 Membership::Constrained(c) => {
                     Membership::Constrained(tm.mk_term(Kind::And, &[c, not_in_b]))
                 }
-            }
-        }
-
-        // `Fail * B` — desugared from `!! B`.
-        //
-        // In the solver's integer model, `fail n` is encoded as i64::MIN + n + 1,
-        // so t ∈ Fail * B  ↔  (t − (i64::MIN + 1)) ∈ B.
-        // Bare `fail` (i64::MIN) is NOT in `Fail * B`; it belongs to bare `Fail`.
-        //
-        // We fall back to Unconstrained when B is unsupported so that an opaque
-        // error set never causes a valid `!!` range to be rejected.
-        SemExprKind::CartesianProduct(lhs, rhs)
-            if matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail") =>
-        {
-            let Some(t) = to_integer_term(t) else {
-                return Membership::Constrained(tm.mk_boolean(false));
-            };
-            let sentinel_base = tm.mk_integer(i64::MIN.wrapping_add(1));
-            let decoded = tm.mk_term(Kind::Sub, &[t, sentinel_base]);
-            match membership_constraint(tm, decoded, rhs, name_defs, distinct_preds) {
-                Membership::Unsupported => Membership::Unconstrained,
-                other => other,
             }
         }
 

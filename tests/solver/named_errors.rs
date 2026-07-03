@@ -36,8 +36,6 @@ fetch(x) = if x > 0 then x else fail 400
 #[test]
 fn bang_bang_success_path_counterexample() {
     // `x` can be negative or zero: not in Nat and not an error value.
-    // Expected: counterexample.
-    // NOTE: currently proves because `!!` ranges are Unconstrained in the solver.
     counterexample("
 HTTPError = {400, 503}
 bad_fetch : Int -> Nat !! HTTPError
@@ -48,8 +46,6 @@ bad_fetch(x) = x
 #[test]
 fn bang_bang_invalid_error_code_counterexample() {
     // Failure path returns `fail 200`, but 200 ∉ HTTPError = {400, 503}.
-    // Expected: counterexample.
-    // NOTE: currently proves because `!!` ranges are Unconstrained in the solver.
     counterexample("
 HTTPError = {400, 503}
 bad_error_code : Int -> Nat !! HTTPError
@@ -84,8 +80,6 @@ fn bang_bang_try_propagation_proved() {
     // On the failure path `?` propagates the error to `caller`, which also
     // declares `Nat !! HTTPError` so it may return errors.
     // Expected: both functions proved.
-    // NOTE: `result : Nat` currently counterexamples because the solver does not
-    // yet extract the success-range from a `!!` callee contract.
     proved_all("
 HTTPError = {400, 503}
 
@@ -105,7 +99,6 @@ fn bang_bang_two_callers_proved() {
     // Two sequential `?` calls — if either fails the error propagates.
     // On the success path both `a` and `b` are in Nat, so `a + b` is in Nat.
     // Expected: both functions proved.
-    // NOTE: same limitation as bang_bang_try_propagation_proved.
     proved_all("
 HTTPError = {400, 503}
 
@@ -119,4 +112,79 @@ double_fetch(x) {
     a + b
 }
 ");
+}
+
+// ── `Fail` sentinel-collision and extraction correctness ─────────────────────
+//
+// `Fail` used to be encoded as a sentinel integer (`i64::MIN`, `i64::MIN+1+n`),
+// which bypassed the cross-kind union datatype machinery for the common case
+// and produced false proofs whenever the error payload's own set was
+// unbounded (its "decode" predicate `t - (i64::MIN+1) ∈ B` holds for nearly
+// every representable machine integer). `Fail` is now a builtin distinct
+// sort, routed through the exact same datatype machinery as any other union
+// arm — see docs/design-decisions.md §13.
+
+#[test]
+fn sentinel_collision_unbounded_payload_counterexample() {
+    // Previously falsely `Proved`: under the old sentinel scheme, `Nat |
+    // (Fail * Int)`'s membership check collapsed to `Unconstrained` because
+    // the unbounded `Int` payload's decode predicate is satisfiable for
+    // every representable value, discarding the `Nat` obligation entirely.
+    // The body always returns `-1`, which is a genuine success value (no
+    // `fail` in sight) and isn't in `Nat`.
+    counterexample("
+buggy : Int -> Nat | (Fail * Int)
+buggy(x) = -1
+");
+}
+
+#[test]
+fn sentinel_collision_unbounded_payload_valid_success_proved() {
+    // Same range as above, but the body is a genuine, valid success value —
+    // confirms the fix doesn't just reject everything.
+    proved("
+ok : Int -> Nat | (Fail * Int)
+ok(x) = if x >= 0 then x else fail x
+");
+}
+
+#[test]
+fn try_extraction_arithmetic_proved() {
+    // `?` must narrow to the *success value itself* (Nat), not the whole
+    // tagged `Nat | Fail` wrapper — otherwise `y - 1` would be arithmetic on
+    // a non-integer-sorted term. The guard against `y == 0` is required for
+    // this to actually be in range; a matching counterexample test below
+    // confirms the guard is load-bearing, not just accepted regardless.
+    proved_all("
+fetch : Int -> Nat | Fail
+fetch(x) = if x > 0 then x else fail
+
+caller : Int -> Nat | Fail
+caller(x) {
+    y : Nat = fetch(x)?
+    if y == 0 then 0 else y - 1
+}
+");
+}
+
+#[test]
+fn try_extraction_arithmetic_unguarded_counterexample() {
+    // Same as above but without the `y == 0` guard: `y - 1` is `-1` when
+    // `y == 0`, which is out of `Nat`. If `?` extraction were broken (e.g.
+    // silently degrading `y - 1` to a dummy value instead of doing real
+    // arithmetic on the extracted success value), this would falsely prove.
+    let results = check_all("
+fetch : Int -> Nat | Fail
+fetch(x) = if x > 0 then x else fail
+
+caller : Int -> Nat | Fail
+caller(x) {
+    y : Nat = fetch(x)?
+    y - 1
+}
+");
+    assert!(
+        matches!(result_for(&results, "caller"), CheckResult::Counterexample { .. }),
+        "expected counterexample for caller, got {:?}", result_for(&results, "caller")
+    );
 }

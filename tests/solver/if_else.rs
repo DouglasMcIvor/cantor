@@ -73,8 +73,8 @@ f(n) = if n > 0 then n else false
 }
 
 // ── Bool branch + fail branch ─────────────────────────────────────────────────
-// `fail` encodes as the integer sentinel i64::MIN.
-// `false` and `true` encode as boolean-sort; they should be coerced to 0 and 1.
+// `Fail` is a builtin distinct sort; `Bool | Fail` is a cross-kind union datatype,
+// and both branches are independently coerced into it via `coerce_to`.
 
 #[test]
 fn if_bool_or_fail_proved() {

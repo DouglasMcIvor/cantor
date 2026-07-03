@@ -49,7 +49,7 @@ pub(crate) type NameDefs = HashMap<Symbol, SemNameDef>;
 use crate::kind::Kind as ValKind;
 
 use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, mk_decomposed_tuple};
-use self::sort::{set_sort, set_sort_for_range};
+use self::sort::set_sort;
 use self::blocks::{encode_block, body_has_unconstrained_loop_var};
 use self::membership::{DistinctInfo, DistinctPreds, Membership, membership_constraint};
 
@@ -94,10 +94,25 @@ pub enum CheckOutcome {
 ///
 /// No global axioms are needed; basis constraints are emitted on-demand when
 /// `litre(n)` or `from(x)` is encoded.
+///
+/// `Fail` is registered here too, as a builtin distinct sort — it never
+/// appears in `name_defs` (it's resolved via `builtins::lookup`, not a user
+/// definition), so it's added unconditionally alongside the user-defined
+/// ones. This is the only Fail-specific step in the whole cross-kind union
+/// pipeline: once `Fail` has its own uninterpreted CVC5 sort, every other
+/// piece (cross-kind detection in `set_sort`, datatype construction in
+/// `build_union_datatype_sort`, membership, coercion) already treats any
+/// distinct-sort arm generically, so `Int | Fail` / `Int | (Fail * Y)` need
+/// no Fail-specific code beyond this registration. See
+/// docs/design-decisions.md §13 ("Solver representation of `Fail`").
 fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs) -> DistinctPreds<'tm> {
-    name_defs.iter()
+    let user_defined = name_defs.iter()
         .filter(|(_, def)| def.kind == DefKind::Distinct)
-        .map(|(sym, _)| {
+        .map(|(sym, _)| sym.clone());
+    let with_fail = user_defined.chain(std::iter::once(Symbol::new("Fail")));
+
+    with_fail
+        .map(|sym| {
             let sort = tm.mk_uninterpreted_sort(&sym.0);
             let mk = tm.mk_const(
                 tm.mk_fun_sort(&[tm.integer_sort()], sort.clone()),
@@ -107,7 +122,7 @@ fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs) -> Dist
                 tm.mk_fun_sort(&[sort.clone()], tm.integer_sort()),
                 &format!("from_{}", sym.0),
             );
-            (sym.clone(), DistinctInfo { sort, mk, from })
+            (sym, DistinctInfo { sort, mk, from })
         })
         .collect()
 }
@@ -441,7 +456,7 @@ fn check_block_sig(
     let mut has_runtime_assert = false;
     let mut immutable_names: HashSet<Symbol> = HashSet::new();
 
-    let result_sort = set_sort_for_range(&tm, &sig.range, &distinct_preds, &name_defs);
+    let result_sort = set_sort(&tm, &sig.range, &distinct_preds, &name_defs);
     let body_term = match encode_block(
         stmts,
         &mut env,
@@ -655,7 +670,7 @@ fn check_sig(
     let top_guard = tm.mk_boolean(true);
     let body_term = match encode_expr(
         body, &env, name_defs, fn_env, &tm, &mut solver, &mut call_counter,
-        &mut builtin_obligs, top_guard, &distinct_preds, set_sort_for_range(&tm, &sig.range, &distinct_preds, &name_defs),
+        &mut builtin_obligs, top_guard, &distinct_preds, set_sort(&tm, &sig.range, &distinct_preds, &name_defs),
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),

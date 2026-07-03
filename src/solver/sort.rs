@@ -335,50 +335,70 @@ pub(crate) fn success_arm_of_range(range: &SemExpr) -> Option<&SemExpr> {
     Some(range)
 }
 
-/// SMT sort for a range expression.
+/// Narrow a `?`-ed call result down to just its success value.
 ///
-/// Strips `Fail * Y` union wrappers to find the success sort, then delegates
-/// to `set_sort` (which handles cross-kind unions via datatypes).
-pub(crate) fn set_sort_for_range<'tm>(
+/// `result_var` (from `encode_call`) is sorted as the *whole* callee range —
+/// a cross-kind datatype whenever the range has a `Fail`-shaped arm, which is
+/// always, now that `Fail` is a distinct sort like any other (see
+/// `build_distinct_preds`). The caller has already asserted, as a solver
+/// fact, that `result_var ∈ success` whenever the call's arguments are in
+/// domain (`assert_domain_implies_membership` with `narrow_try`) — so it's
+/// sound to unconditionally extract via the matching constructor's selector,
+/// the same "assert the tester, then select" pattern `encode_proj` uses for
+/// ordinary cross-kind union projections.
+///
+/// Returns `None` when extraction can't be resolved (constructor not found,
+/// or a success arm's own sort can't be coerced into the combined success
+/// sort) — the caller should report `Unknown`, never guess.
+pub(crate) fn extract_success_value<'tm>(
     tm: &'tm TermManager,
-    range: &SemExpr,
+    result_var: Term<'tm>,
+    success: &SemExpr,
     distinct_preds: &DistinctPreds<'tm>,
     name_defs: &NameDefs,
-) -> Option<Sort<'tm>> {
-    let is_fail_product = |e: &SemExpr| matches!(
-        &e.kind,
-        SemExprKind::CartesianProduct(lhs, _)
-            if matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
-    );
-    match &range.kind {
-        SemExprKind::Var(sym) if sym.0 == "Fail" => Some(tm.integer_sort()),
-        SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } | SemExprKind::DisjointUnion(lhs, rhs) => {
-            if is_fail_product(rhs) { return set_sort_for_range(tm, lhs, distinct_preds, name_defs); }
-            if is_fail_product(lhs) { return set_sort_for_range(tm, rhs, distinct_preds, name_defs); }
-            set_sort(tm, range, distinct_preds, name_defs)
-        }
-        _ => set_sort(tm, range, distinct_preds, name_defs),
+) -> Option<Term<'tm>> {
+    // Not cross-kind at all: nothing to extract, result_var already IS the
+    // success value (only possible if a future non-distinct-sort Fail
+    // representation existed; kept as a defensive no-op, not a live path).
+    if !result_var.sort().is_dt() {
+        return Some(result_var);
     }
+    let dt = result_var.sort().datatype();
+    let target_sort = set_sort(tm, success, distinct_preds, name_defs)?;
+
+    let mut extracted: Vec<(Term<'tm>, Term<'tm>)> = Vec::new();
+    for arm in flatten_any_union(success) {
+        let ctor_name = arm_ctor_name_for_arm(arm, distinct_preds);
+        let ctor = (0..dt.num_constructors())
+            .map(|i| dt.constructor(i))
+            .find(|c| c.name() == ctor_name)?;
+        let tester = tm.mk_term(Kind::ApplyTester, &[ctor.tester_term(), result_var.clone()]);
+        let value = tm.mk_term(Kind::ApplySelector, &[ctor.selector(0).term(), result_var.clone()]);
+        let value = if value.sort() == target_sort {
+            value
+        } else if target_sort.is_dt() && !target_sort.is_tuple() {
+            coerce_to_union_dt(tm, value, &target_sort).ok()?
+        } else {
+            return None;
+        };
+        extracted.push((tester, value));
+    }
+
+    let (_, last_value) = extracted.pop()?;
+    Some(extracted.into_iter().rev().fold(last_value, |acc, (tester, value)| {
+        tm.mk_term(Kind::Ite, &[tester, value, acc])
+    }))
 }
 
-/// True if the range (after stripping Fail/Union wrappers) is a product set.
+/// True if the range is *directly* a product set (not wrapped in any union).
+///
+/// A range that is a union — whether or not one arm is `Fail`/`Fail * Y` — has
+/// no single arm that defines "the" product structure, so it's handled by the
+/// general cross-kind datatype machinery in `set_sort` instead (the same as
+/// any other multi-arm union, e.g. `(Nat * Nat) | Nat`). `Fail` no longer
+/// needs special-casing here: it's a builtin distinct sort like any other, so
+/// a `Fail`/`Fail * Y` arm is just another datatype arm, not a shape this
+/// function needs to see through.
 pub(crate) fn is_product_range(range: &SemExpr) -> bool {
-    let is_fail_product = |e: &SemExpr| matches!(
-        &e.kind,
-        SemExprKind::CartesianProduct(lhs, _)
-            if matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
-    );
-    match &range.kind {
-        SemExprKind::CartesianProduct(..) => true,
-        SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } | SemExprKind::DisjointUnion(lhs, rhs) => {
-            if is_fail_product(rhs) { return is_product_range(lhs); }
-            if is_fail_product(lhs) { return is_product_range(rhs); }
-            // Non-fail union: no single arm defines the product structure.
-            // Previously this silently returned is_product_range(lhs), which caused
-            // (Nat * Nat) | Nat to be treated as a product range even though it isn't.
-            false
-        }
-        SemExprKind::Var(sym) if sym.0 == "Fail" => false,
-        _ => false,
-    }
+    matches!(range.kind, SemExprKind::CartesianProduct(..))
 }

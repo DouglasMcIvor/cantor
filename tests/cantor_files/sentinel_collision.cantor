@@ -1,0 +1,2 @@
+buggy : Int -> Nat | (Fail * Int)
+buggy(x) = -1
