@@ -21,6 +21,7 @@
 mod blocks;
 mod constrained;
 mod encode;
+mod encode_call;
 mod loops;
 mod membership;
 mod sort;
