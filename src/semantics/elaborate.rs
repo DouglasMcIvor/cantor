@@ -90,10 +90,53 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
         name_defs: &name_defs,
         fn_sigs,
     };
-    items
+    let sem_items: Vec<SemItem> = items
         .iter()
         .map(|item| elaborate_item(item, &ctx))
-        .collect()
+        .collect::<Result<_, _>>()?;
+    check_overload_kind_agreement(&sem_items)?;
+    Ok(sem_items)
+}
+
+/// int-soundness-plan phase 2: multiple `FunctionDef`s may share a name,
+/// forming an overload set — but only across definitions of the *same*
+/// arity (differing arity is itself a free, always-static dispatch key, so
+/// there's nothing to agree on there). Within a same-name-same-arity group,
+/// every member must still agree on the Kind of each parameter position and
+/// on the return Kind, exactly as today's multiple-signatures-one-body
+/// feature already requires within a single `FunctionDef` — relaxing
+/// per-overload Kinds is deliberately deferred (see design-decisions.md §7
+/// and docs/int-soundness-plan.md phase 3's `Int64`/`BigInt` split, the one
+/// place that will need it).
+fn check_overload_kind_agreement(sem_items: &[SemItem]) -> Result<(), CompileError> {
+    let mut groups: HashMap<(Symbol, usize), Vec<&SemFunctionDef>> = HashMap::new();
+    for item in sem_items {
+        if let SemItem::FunctionDef(def) = item {
+            groups
+                .entry((def.name.clone(), def.params.len()))
+                .or_default()
+                .push(def);
+        }
+    }
+    for defs in groups.values() {
+        let Some((first, rest)) = defs.split_first() else {
+            continue;
+        };
+        for other in rest {
+            if other.return_kind != first.return_kind || other.param_kinds != first.param_kinds {
+                return Err(CompileError::OverloadKindMismatch {
+                    name: other.name.0.clone(),
+                    detail: format!(
+                        "an earlier overload has param kinds {:?} and return kind {:?}, \
+                         but this one has {:?} and {:?}",
+                        first.param_kinds, first.return_kind, other.param_kinds, other.return_kind
+                    ),
+                    span: other.span,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `codegen::compile_call`'s built-in identity/cardinality calls — never

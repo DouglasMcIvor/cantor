@@ -53,6 +53,15 @@ pub enum CompileError {
         message: String,
         span: Span,
     },
+    /// Two `FunctionDef`s share a name and arity (an overload set, per
+    /// int-soundness-plan phase 2 / design-decisions.md §7) but disagree on
+    /// the Kind of a parameter or return position. `span` points at the
+    /// later-declared overload that broke agreement.
+    OverloadKindMismatch {
+        name: String,
+        detail: String,
+        span: Span,
+    },
     /// Valid Cantor the compiler doesn't implement yet.
     Unsupported {
         feature: String,
@@ -82,6 +91,9 @@ impl std::fmt::Display for CompileError {
                 write!(f, "invalid integer literal `{text}`")
             }
             Self::NamingConvention { message, .. } => write!(f, "naming: {message}"),
+            Self::OverloadKindMismatch { name, detail, .. } => {
+                write!(f, "overloads of `{name}` disagree: {detail}")
+            }
             Self::Unsupported { feature, .. } => write!(f, "not yet supported: {feature}"),
             Self::Ice {
                 detail,
@@ -130,6 +142,7 @@ impl CompileError {
             Self::UnexpectedToken { span, .. } => Some(*span),
             Self::InvalidIntLiteral { span, .. } => Some(*span),
             Self::NamingConvention { span, .. } => Some(*span),
+            Self::OverloadKindMismatch { span, .. } => Some(*span),
             Self::Unsupported { span, .. } => Some(*span),
             Self::Ice { .. } => None,
         }
