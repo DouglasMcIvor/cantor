@@ -41,24 +41,24 @@ impl<'ctx> Compiler<'ctx> {
                 let ptr = self
                     .builder
                     .build_alloca(i64_type, &name.0)
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 let val_i64: IntValue<'ctx> = if *ty == Kind::Bool {
                     self.builder
                         .build_int_z_extend(val.into_int_value(), i64_type, "bool_ext")
-                        .map_err(|e| CompileError::Internal(e.to_string()))?
+                        .map_err(|e| CompileError::ice(e.to_string()))?
                 } else {
                     val.into_int_value()
                 };
                 self.builder
                     .build_store(ptr, val_i64)
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 inner_alloca_map.insert(name.clone(), ptr);
             }
         }
 
         let function = self
             .current_fn
-            .ok_or_else(|| CompileError::Internal("while loop outside a function".into()))?;
+            .ok_or_else(|| CompileError::ice("while loop outside a function"))?;
 
         let cond_bb  = self.context.append_basic_block(function, "while_cond");
         let body_bb  = self.context.append_basic_block(function, "while_body");
@@ -66,7 +66,7 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder
             .build_unconditional_branch(cond_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         // ── Condition block ────────────────────────────────────────────────
         // Reload alloca'd variables so the condition sees the latest values.
@@ -76,12 +76,12 @@ impl<'ctx> Compiler<'ctx> {
             let val = self
                 .builder
                 .build_load(i64_type, ptr, &name.0)
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                .map_err(|e| CompileError::ice(e.to_string()))?;
             let original_kind = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
             let entry = if original_kind == Kind::Bool {
                 let i1 = self.builder
                     .build_int_truncate(val.into_int_value(), self.context.bool_type(), "reload_bool")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1.into(), Kind::Bool)
             } else {
                 (val.into(), original_kind)
@@ -91,7 +91,7 @@ impl<'ctx> Compiler<'ctx> {
         let (cond_val, _) = self.compile_expr(cond, &loop_env)?;
         self.builder
             .build_conditional_branch(cond_val.into_int_value(), body_bb, after_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         // ── Body block ─────────────────────────────────────────────────────
         self.builder.position_at_end(body_bb);
@@ -99,7 +99,7 @@ impl<'ctx> Compiler<'ctx> {
         self.compile_stmts(body, &mut body_env, &inner_alloca_map)?;
         self.builder
             .build_unconditional_branch(cond_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         // ── After block ────────────────────────────────────────────────────
         // Reload the final alloca values back into the caller's env so
@@ -109,12 +109,12 @@ impl<'ctx> Compiler<'ctx> {
             let val = self
                 .builder
                 .build_load(i64_type, ptr, &format!("{}_final", name.0))
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                .map_err(|e| CompileError::ice(e.to_string()))?;
             let original_kind = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
             let entry = if original_kind == Kind::Bool {
                 let i1 = self.builder
                     .build_int_truncate(val.into_int_value(), self.context.bool_type(), "final_bool")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1.into(), Kind::Bool)
             } else {
                 (val.into(), original_kind)
@@ -146,7 +146,7 @@ impl<'ctx> Compiler<'ctx> {
                     let val_i64: BasicValueEnum = if elem_ty == Kind::Bool {
                         self.builder
                             .build_int_z_extend(elem_val.into_int_value(), i64_type, "bool_ext")
-                            .map_err(|e| CompileError::Internal(e.to_string()))?
+                            .map_err(|e| CompileError::ice(e.to_string()))?
                             .into()
                     } else {
                         elem_val
@@ -172,10 +172,10 @@ impl<'ctx> Compiler<'ctx> {
                     Kind::Set(elem_kind) => {
                         self.compile_for_in_runtime_set(var, ptr, elem_kind, body, env, alloca_map)
                     }
-                    _ => Err(CompileError::Internal(
+                    _ => Err(CompileError::ice(
                         "for loop: iterable must be a set literal, comprehension, \
                          or a variable of `Set(…)` kind"
-                            .into(),
+                            ,
                     )),
                 }
             }
@@ -205,15 +205,15 @@ impl<'ctx> Compiler<'ctx> {
             if inner_alloca_map.contains_key(name) { continue; }
             if let Some(&(val, ref ty)) = env.get(name) {
                 let ptr = self.builder.build_alloca(i64t, &name.0)
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 let val_i64: IntValue<'ctx> = if *ty == Kind::Bool {
                     self.builder.build_int_z_extend(val.into_int_value(), i64t, "bool_ext")
-                        .map_err(|e| CompileError::Internal(e.to_string()))?
+                        .map_err(|e| CompileError::ice(e.to_string()))?
                 } else {
                     val.into_int_value()
                 };
                 self.builder.build_store(ptr, val_i64)
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 inner_alloca_map.insert(name.clone(), ptr);
             }
         }
@@ -224,41 +224,41 @@ impl<'ctx> Compiler<'ctx> {
             SetElemKind::Bool => "cantor_set_size_bool",
         };
         let size_fn = self.module.get_function(size_fn_name)
-            .ok_or_else(|| CompileError::Internal(format!("{size_fn_name} not declared")))?;
+            .ok_or_else(|| CompileError::ice(format!("{size_fn_name} not declared")))?;
         let n = self.builder
             .build_call(size_fn, &[set_ptr.into()], "set_n")
-            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .map_err(|e| CompileError::ice(e.to_string()))?
             .try_as_basic_value().left()
-            .ok_or_else(|| CompileError::Internal("size fn returned void".into()))?
+            .ok_or_else(|| CompileError::ice("size fn returned void"))?
             .into_int_value();
 
         // Alloca for the loop counter.
         let i_ptr = self.builder.build_alloca(i64t, "set_i")
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         self.builder.build_store(i_ptr, i64t.const_int(0, false))
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         let function = self.current_fn
-            .ok_or_else(|| CompileError::Internal("for-in loop outside a function".into()))?;
+            .ok_or_else(|| CompileError::ice("for-in loop outside a function"))?;
 
         let cond_bb  = self.context.append_basic_block(function, "for_set_cond");
         let body_bb  = self.context.append_basic_block(function, "for_set_body");
         let after_bb = self.context.append_basic_block(function, "for_set_after");
 
         self.builder.build_unconditional_branch(cond_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         // ── Condition block: reload alloca vars, test i < n ────────────────────
         self.builder.position_at_end(cond_bb);
         let mut loop_env = env.clone();
         for (name, &ptr) in &inner_alloca_map {
             let val = self.builder.build_load(i64t, ptr, &name.0)
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                .map_err(|e| CompileError::ice(e.to_string()))?;
             let original_kind = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
             let entry = if original_kind == Kind::Bool {
                 let i1 = self.builder
                     .build_int_truncate(val.into_int_value(), self.context.bool_type(), "reload_bool")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1.into(), Kind::Bool)
             } else {
                 (val.into(), original_kind)
@@ -266,12 +266,12 @@ impl<'ctx> Compiler<'ctx> {
             loop_env.insert(name.clone(), entry);
         }
         let i_val = self.builder.build_load(i64t, i_ptr, "i_val")
-            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .map_err(|e| CompileError::ice(e.to_string()))?
             .into_int_value();
         let cond = self.builder.build_int_compare(IntPredicate::SLT, i_val, n, "for_cond")
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         self.builder.build_conditional_branch(cond, body_bb, after_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         // ── Body block: fetch element, bind var, compile body, increment i ──────
         self.builder.position_at_end(body_bb);
@@ -280,18 +280,18 @@ impl<'ctx> Compiler<'ctx> {
             SetElemKind::Bool => "cantor_set_get_bool",
         };
         let get_fn = self.module.get_function(get_fn_name)
-            .ok_or_else(|| CompileError::Internal(format!("{get_fn_name} not declared")))?;
+            .ok_or_else(|| CompileError::ice(format!("{get_fn_name} not declared")))?;
         let elem_raw = self.builder
             .build_call(get_fn, &[set_ptr.into(), i_val.into()], "elem_raw")
-            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .map_err(|e| CompileError::ice(e.to_string()))?
             .try_as_basic_value().left()
-            .ok_or_else(|| CompileError::Internal("get fn returned void".into()))?;
+            .ok_or_else(|| CompileError::ice("get fn returned void"))?;
         let (elem_val, elem_k): (BasicValueEnum<'ctx>, Kind) = match elem_kind {
             SetElemKind::Int  => (elem_raw, Kind::Int),
             SetElemKind::Bool => {
                 let i1 = self.builder
                     .build_int_truncate(elem_raw.into_int_value(), self.context.bool_type(), "elem_bool")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1.into(), Kind::Bool)
             }
         };
@@ -302,26 +302,26 @@ impl<'ctx> Compiler<'ctx> {
 
         // Reload i from the alloca (safe after any inner loops the body may contain).
         let i_curr = self.builder.build_load(i64t, i_ptr, "i_curr")
-            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .map_err(|e| CompileError::ice(e.to_string()))?
             .into_int_value();
         let i_next = self.builder.build_int_add(i_curr, i64t.const_int(1, false), "i_next")
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         self.builder.build_store(i_ptr, i_next)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         self.builder.build_unconditional_branch(cond_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         // ── After block: propagate final alloca values back into caller's env ───
         self.builder.position_at_end(after_bb);
         for (name, &ptr) in &inner_alloca_map {
             let val = self.builder
                 .build_load(i64t, ptr, &format!("{}_final", name.0))
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                .map_err(|e| CompileError::ice(e.to_string()))?;
             let original_kind = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
             let entry = if original_kind == Kind::Bool {
                 let i1 = self.builder
                     .build_int_truncate(val.into_int_value(), self.context.bool_type(), "final_bool")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1.into(), Kind::Bool)
             } else {
                 (val.into(), original_kind)
@@ -355,16 +355,16 @@ impl<'ctx> Compiler<'ctx> {
         outer_alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
     ) -> Result<(), CompileError> {
         let SemExprKind::SetLit(elements) = &source.kind else {
-            return Err(CompileError::Internal(
+            return Err(CompileError::ice(
                 "comprehension in `for` source: only set literal sources are supported \
                  in this version"
-                    .into(),
+                    ,
             ));
         };
 
         let i64_type = self.context.i64_type();
         let function = self.current_fn.ok_or_else(|| {
-            CompileError::Internal("for-in comprehension outside a function".into())
+            CompileError::ice("for-in comprehension outside a function")
         })?;
 
         // When a filter is present we use an alloca-backed map for all body-modified
@@ -380,17 +380,17 @@ impl<'ctx> Compiler<'ctx> {
                     let ptr = self
                         .builder
                         .build_alloca(i64_type, &name.0)
-                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        .map_err(|e| CompileError::ice(e.to_string()))?;
                     let val_i64: IntValue<'ctx> = if *ty == Kind::Bool {
                         self.builder
                             .build_int_z_extend(val.into_int_value(), i64_type, "bool_ext")
-                            .map_err(|e| CompileError::Internal(e.to_string()))?
+                            .map_err(|e| CompileError::ice(e.to_string()))?
                     } else {
                         val.into_int_value()
                     };
                     self.builder
                         .build_store(ptr, val_i64)
-                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        .map_err(|e| CompileError::ice(e.to_string()))?;
                     amap.insert(name.clone(), ptr);
                 }
             }
@@ -412,12 +412,12 @@ impl<'ctx> Compiler<'ctx> {
                     let val = self
                         .builder
                         .build_load(i64_type, ptr, &name.0)
-                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        .map_err(|e| CompileError::ice(e.to_string()))?;
                     let k = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
                     let entry = if k == Kind::Bool {
                         let i1 = self.builder
                             .build_int_truncate(val.into_int_value(), self.context.bool_type(), "reload_bool")
-                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            .map_err(|e| CompileError::ice(e.to_string()))?;
                         (i1.into(), Kind::Bool)
                     } else {
                         (val.into(), k)
@@ -433,7 +433,7 @@ impl<'ctx> Compiler<'ctx> {
 
                 self.builder
                     .build_conditional_branch(cond_i1, body_bb, next_bb)
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
 
                 // ── Body (filter passed) ───────────────────────────────────────
                 self.builder.position_at_end(body_bb);
@@ -442,7 +442,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.compile_stmts(body, env, &alloca_map)?;
                 self.builder
                     .build_unconditional_branch(next_bb)
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
 
                 // ── After (both paths merge) ───────────────────────────────────
                 // Reload from allocas: authoritative value regardless of which path
@@ -453,12 +453,12 @@ impl<'ctx> Compiler<'ctx> {
                     let val = self
                         .builder
                         .build_load(i64_type, ptr, &format!("{}_after", name.0))
-                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        .map_err(|e| CompileError::ice(e.to_string()))?;
                     let k = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
                     let entry = if k == Kind::Bool {
                         let i1 = self.builder
                             .build_int_truncate(val.into_int_value(), self.context.bool_type(), "after_bool")
-                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            .map_err(|e| CompileError::ice(e.to_string()))?;
                         (i1.into(), Kind::Bool)
                     } else {
                         (val.into(), k)
@@ -481,12 +481,12 @@ impl<'ctx> Compiler<'ctx> {
                     let val = self
                         .builder
                         .build_load(i64_type, ptr, &format!("{}_final", name.0))
-                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        .map_err(|e| CompileError::ice(e.to_string()))?;
                     let k = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
                     let entry = if k == Kind::Bool {
                         let i1 = self.builder
                             .build_int_truncate(val.into_int_value(), self.context.bool_type(), "comp_final_bool")
-                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            .map_err(|e| CompileError::ice(e.to_string()))?;
                         (i1.into(), Kind::Bool)
                     } else {
                         (val.into(), k)

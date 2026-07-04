@@ -48,7 +48,7 @@ struct Ctx<'a> {
 type Env = HashMap<Symbol, Kind>;
 
 fn not_yet_implemented(what: &str) -> CompileError {
-    CompileError::Internal(format!(
+    CompileError::ice(format!(
         "not yet implemented in elaborator: {what} — Kind for this case is \
          currently only decided by codegen directly"
     ))
@@ -104,7 +104,7 @@ fn function_param_kinds(sig: &ast::FunctionSig, n_params: usize, name_defs: &Nam
     if n_params == 0 {
         return Ok(vec![]);
     }
-    let parts = ast::param_set_exprs(sig.domain.as_ref(), n_params).map_err(CompileError::Internal)?;
+    let parts = ast::param_set_exprs(sig.domain.as_ref(), n_params).map_err(|e| CompileError::ice(e))?;
     Ok(parts.into_iter().map(|p| set_kind(p, name_defs)).collect())
 }
 
@@ -290,16 +290,16 @@ fn elaborate_destruct_bindings(
         // an explicit not-yet-implemented error rather than a generic
         // "wrong shape" one, since it's a real (if unimplemented) construct,
         // not a type error.
-        Kind::Vector(_) => return Err(CompileError::Internal(
+        Kind::Vector(_) => return Err(CompileError::ice(
             "not yet implemented: destructuring a vector (`X*`) — only tuple \
-             right-hand sides are currently supported".into()
+             right-hand sides are currently supported"
         )),
-        other => return Err(CompileError::Internal(format!(
+        other => return Err(CompileError::ice(format!(
             "destructuring requires a tuple on the right-hand side, got {other:?}"
         ))),
     };
     if bindings.len() > elem_kinds.len() {
-        return Err(CompileError::Internal(format!(
+        return Err(CompileError::ice(format!(
             "destructuring arity mismatch: {} binding(s) but tuple has only {} element(s)",
             bindings.len(), elem_kinds.len()
         )));
@@ -367,7 +367,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
                             ast::DefKind::Alias => set_kind(&def.value, ctx.name_defs),
                             ast::DefKind::Distinct => Kind::Int,
                         })
-                        .ok_or_else(|| CompileError::Internal(
+                        .ok_or_else(|| CompileError::ice(
                             format!("elaborate: reference to undefined local `{}`", sym.0)
                         ))?,
                 },
@@ -445,7 +445,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
             let l = elaborate_expr(lhs, Position::Value, ctx, env)?;
             let r = elaborate_expr(rhs, Position::Value, ctx, env)?;
             let (_, kind_of) = crate::kind::merge_concat_kinds(&l.kind_of, &r.kind_of)
-                .map_err(CompileError::Internal)?;
+                .map_err(|e| CompileError::ice(e))?;
             Ok(SemExpr { kind: SemExprKind::BinOp { op: BinOp::Concat, lhs: Box::new(l), rhs: Box::new(r) }, kind_of, span })
         }
 
@@ -461,7 +461,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
             if pos == Position::Value {
                 match op {
                     BinOp::Eq | BinOp::Ne if l.kind_of != r.kind_of => {
-                        return Err(CompileError::Internal(format!(
+                        return Err(CompileError::ice(format!(
                             "`{op}` requires both operands from the same value family, \
                              got {:?} and {:?} — e.g. Bool and Int are disjoint in \
                              Cantor's value model (`true` is not `1`); convert \
@@ -479,7 +479,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
                         } else {
                             ""
                         };
-                        return Err(CompileError::Internal(format!(
+                        return Err(CompileError::ice(format!(
                             "`{op}` compares integers, got {:?} and {:?} — Bool is \
                              not ordered{chained_hint}",
                             l.kind_of, r.kind_of
@@ -523,7 +523,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
             } else {
                 ctx.fn_sigs.get(callee)
                     .map(|s| s.return_kind.clone())
-                    .ok_or_else(|| CompileError::Internal(format!("elaborate: call to undeclared function `{}`", callee.0)))?
+                    .ok_or_else(|| CompileError::ice(format!("elaborate: call to undeclared function `{}`", callee.0)))?
             };
             Ok(SemExpr { kind: SemExprKind::Call { callee: callee.clone(), args: sem_args }, kind_of, span })
         }
@@ -531,7 +531,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
         ExprKind::If { cond, then_expr, else_expr } => {
             let c = elaborate_expr(cond, Position::Value, ctx, env)?;
             if c.kind_of != Kind::Bool {
-                return Err(CompileError::Internal(format!(
+                return Err(CompileError::ice(format!(
                     "if-condition must be Bool, got {:?} — Bool and Int are disjoint in \
                      Cantor's value model, so a value from e.g. a `Bool | Int`-family union \
                      cannot be used as a condition without narrowing it explicitly first",
@@ -544,7 +544,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
                 Position::Set => kind_of_for_set(),
                 Position::Value => crate::kind::merge_if_branches(&t.kind_of, &e.kind_of)
                     .map(|merge| merge.result_kind())
-                    .map_err(CompileError::Internal)?,
+                    .map_err(|e| CompileError::ice(e))?,
             };
             Ok(SemExpr { kind: SemExprKind::If { cond: Box::new(c), then_expr: Box::new(t), else_expr: Box::new(e) }, kind_of, span })
         }
@@ -557,20 +557,20 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
                     // Matches compile_set_lit_value: a non-empty, homogeneous
                     // Int/Bool literal constructs a genuine runtime Set value.
                     let Some(first) = sem_elements.first() else {
-                        return Err(CompileError::Internal(
+                        return Err(CompileError::ice(
                             "empty set literal in value position — element kind cannot be \
-                             inferred; add an explicit annotation".into()
+                             inferred; add an explicit annotation"
                         ));
                     };
                     let elem_kind = match &first.kind_of {
                         Kind::Int => crate::kind::SetElemKind::Int,
                         Kind::Bool => crate::kind::SetElemKind::Bool,
-                        other => return Err(CompileError::Internal(format!(
+                        other => return Err(CompileError::ice(format!(
                             "sets of {other:?} not yet supported"
                         ))),
                     };
                     if sem_elements.iter().any(|e| e.kind_of != first.kind_of) {
-                        return Err(CompileError::Internal("mixed element kinds in set literal".into()));
+                        return Err(CompileError::ice("mixed element kinds in set literal"));
                     }
                     Kind::Set(elem_kind)
                 }
@@ -637,7 +637,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
             let i = elaborate_expr(index, Position::Value, ctx, env)?;
             let kind_of = match &b.kind_of {
                 Kind::Vector(ek) => vector_elem_kind(ek)?,
-                other => return Err(CompileError::Internal(format!("`[i]` requires a vector (X*) base, got {other:?}"))),
+                other => return Err(CompileError::ice(format!("`[i]` requires a vector (X*) base, got {other:?}"))),
             };
             Ok(SemExpr { kind: SemExprKind::Index { base: Box::new(b), index: Box::new(i) }, kind_of, span })
         }
@@ -646,7 +646,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
             if pos == Position::Value {
                 // codegen rejects this outright today ("X* is a set
                 // expression and cannot appear in value position").
-                return Err(CompileError::Internal("X* is a set expression and cannot appear in value position".into()));
+                return Err(CompileError::ice("X* is a set expression and cannot appear in value position"));
             }
             let e = elaborate_expr(inner, Position::Set, ctx, env)?;
             let kind_of = Kind::Vector(Box::new(e.kind_of.clone()));
@@ -660,13 +660,13 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
 /// real codegen capability not yet re-derived here (see module docs).
 fn proj_kind(base_kind: &Kind, index: usize) -> Result<Kind, CompileError> {
     match base_kind {
-        Kind::Tuple(elems) => elems.get(index).cloned().ok_or_else(|| CompileError::Internal(format!(
+        Kind::Tuple(elems) => elems.get(index).cloned().ok_or_else(|| CompileError::ice(format!(
             "tuple index {index} out of bounds (tuple has {} elements)", elems.len()
         ))),
         // TaggedUnion's raw LLVM leaves are always plain i64 (Kind::Int).
         Kind::TaggedUnion(_) => Ok(Kind::Int),
         Kind::Vector(ek) => vector_elem_kind(ek),
-        other => Err(CompileError::Internal(format!("projection `.{index}` applied to non-tuple value {other:?}"))),
+        other => Err(CompileError::ice(format!("projection `.{index}` applied to non-tuple value {other:?}"))),
     }
 }
 
@@ -678,6 +678,6 @@ fn proj_kind(base_kind: &Kind, index: usize) -> Result<Kind, CompileError> {
 fn vector_elem_kind(ek: &Kind) -> Result<Kind, CompileError> {
     match ek {
         Kind::Int | Kind::Bool | Kind::Vector(_) | Kind::Tuple(_) | Kind::TaggedUnion(_) => Ok(ek.clone()),
-        other => Err(CompileError::Internal(format!("indexing into Vector({other:?}) is not supported"))),
+        other => Err(CompileError::ice(format!("indexing into Vector({other:?}) is not supported"))),
     }
 }

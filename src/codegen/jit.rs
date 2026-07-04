@@ -97,7 +97,7 @@ pub fn compile_file<'ctx>(
 ) -> Result<ExecutionEngine<'ctx>, CompileError> {
     compile_items(ctx, items)?
         .into_jit_engine()
-        .map_err(CompileError::Internal)
+        .map_err(|e| CompileError::ice(e))
 }
 
 /// Compile an already fully-proved file to a JIT execution engine, without
@@ -110,5 +110,5 @@ pub fn compile_constrained<'ctx>(
 ) -> Result<ExecutionEngine<'ctx>, CompileError> {
     compile_elaborated(ctx, &tree.items, &tree.sem_items)?
         .into_jit_engine()
-        .map_err(CompileError::Internal)
+        .map_err(|e| CompileError::ice(e))
 }

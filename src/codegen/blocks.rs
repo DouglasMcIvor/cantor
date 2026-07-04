@@ -48,13 +48,13 @@ impl<'ctx> Compiler<'ctx> {
                         let val_i64: IntValue<'ctx> = if result.1 == Kind::Bool {
                             self.builder
                                 .build_int_z_extend(result.0.into_int_value(), i64_type, "bool_ext")
-                                .map_err(|e| CompileError::Internal(e.to_string()))?
+                                .map_err(|e| CompileError::ice(e.to_string()))?
                         } else {
                             result.0.into_int_value()
                         };
                         self.builder
                             .build_store(ptr, val_i64)
-                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            .map_err(|e| CompileError::ice(e.to_string()))?;
                     }
                     env.insert(name.clone(), result);
                 }
@@ -69,13 +69,13 @@ impl<'ctx> Compiler<'ctx> {
                         let val_i64: IntValue<'ctx> = if result.1 == Kind::Bool {
                             self.builder
                                 .build_int_z_extend(result.0.into_int_value(), i64_type, "bool_ext")
-                                .map_err(|e| CompileError::Internal(e.to_string()))?
+                                .map_err(|e| CompileError::ice(e.to_string()))?
                         } else {
                             result.0.into_int_value()
                         };
                         self.builder
                             .build_store(ptr, val_i64)
-                            .map_err(|e| CompileError::Internal(e.to_string()))?;
+                            .map_err(|e| CompileError::ice(e.to_string()))?;
                     }
                     env.insert(name.clone(), result);
                 }
@@ -87,16 +87,16 @@ impl<'ctx> Compiler<'ctx> {
                         // See the matching guard in `elaborate_destruct_bindings` —
                         // elaboration should already reject this before codegen
                         // ever sees it; kept here as defense in depth.
-                        Kind::Vector(_) => return Err(CompileError::Internal(
+                        Kind::Vector(_) => return Err(CompileError::ice(
                             "not yet implemented: destructuring a vector (`X*`) — \
-                             only tuple right-hand sides are currently supported".into(),
+                             only tuple right-hand sides are currently supported",
                         )),
-                        _ => return Err(CompileError::Internal(
-                            "destructuring `=` requires a tuple on the right-hand side".into(),
+                        _ => return Err(CompileError::ice(
+                            "destructuring `=` requires a tuple on the right-hand side",
                         )),
                     };
                     if bindings.len() > elem_kinds.len() {
-                        return Err(CompileError::Internal(format!(
+                        return Err(CompileError::ice(format!(
                             "destructuring arity mismatch: {} binding(s) but tuple has only {} element(s)",
                             bindings.len(), elem_kinds.len()
                         )));
@@ -108,7 +108,7 @@ impl<'ctx> Compiler<'ctx> {
                         let (elem, kind) = if i < last_i || tail_count == 1 {
                             let e = self.builder
                                 .build_extract_value(sv, i as u32, &binding.name.0)
-                                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                .map_err(|e| CompileError::ice(e.to_string()))?;
                             (e, elem_kinds[i].clone())
                         } else {
                             // Last binder receives the remaining elements as a sub-tuple.
@@ -122,10 +122,10 @@ impl<'ctx> Compiler<'ctx> {
                                 let e = self.builder
                                     .build_extract_value(sv, (i + j) as u32,
                                         &format!("{}_t{}", binding.name.0, j))
-                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                    .map_err(|e| CompileError::ice(e.to_string()))?;
                                 agg = self.builder
                                     .build_insert_value(agg, e, j as u32, "ts")
-                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                    .map_err(|e| CompileError::ice(e.to_string()))?;
                             }
                             (agg.into_struct_value().into(), Kind::Tuple(tail_kinds))
                         };
@@ -140,16 +140,16 @@ impl<'ctx> Compiler<'ctx> {
                         // See the matching guard in `elaborate_destruct_bindings` —
                         // elaboration should already reject this before codegen
                         // ever sees it; kept here as defense in depth.
-                        Kind::Vector(_) => return Err(CompileError::Internal(
+                        Kind::Vector(_) => return Err(CompileError::ice(
                             "not yet implemented: destructuring a vector (`X*`) — \
-                             only tuple right-hand sides are currently supported".into(),
+                             only tuple right-hand sides are currently supported",
                         )),
-                        _ => return Err(CompileError::Internal(
-                            "destructuring `=` requires a tuple on the right-hand side".into(),
+                        _ => return Err(CompileError::ice(
+                            "destructuring `=` requires a tuple on the right-hand side",
                         )),
                     };
                     if bindings.len() > elem_kinds.len() {
-                        return Err(CompileError::Internal(format!(
+                        return Err(CompileError::ice(format!(
                             "destructuring arity mismatch: {} binding(s) but tuple has only {} element(s)",
                             bindings.len(), elem_kinds.len()
                         )));
@@ -161,7 +161,7 @@ impl<'ctx> Compiler<'ctx> {
                         let (elem, kind) = if i < last_i || tail_count == 1 {
                             let e = self.builder
                                 .build_extract_value(sv, i as u32, &binding.name.0)
-                                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                .map_err(|e| CompileError::ice(e.to_string()))?;
                             (e, elem_kinds[i].clone())
                         } else {
                             // Last binder receives the remaining elements as a sub-tuple.
@@ -184,10 +184,10 @@ impl<'ctx> Compiler<'ctx> {
                                 let e = self.builder
                                     .build_extract_value(sv, (i + j) as u32,
                                         &format!("{}_t{}", binding.name.0, j))
-                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                    .map_err(|e| CompileError::ice(e.to_string()))?;
                                 agg = self.builder
                                     .build_insert_value(agg, e, j as u32, "ts")
-                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                    .map_err(|e| CompileError::ice(e.to_string()))?;
                             }
                             (agg.into_struct_value().into(), Kind::Tuple(tail_kinds))
                         };
@@ -196,12 +196,12 @@ impl<'ctx> Compiler<'ctx> {
                             let val_i64: IntValue<'ctx> = if kind == Kind::Bool {
                                 self.builder
                                     .build_int_z_extend(elem.into_int_value(), i64_type, "bool_ext")
-                                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                                    .map_err(|e| CompileError::ice(e.to_string()))?
                             } else {
                                 elem.into_int_value()
                             };
                             self.builder.build_store(ptr, val_i64)
-                                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                .map_err(|e| CompileError::ice(e.to_string()))?;
                         }
                         env.insert(binding.name.clone(), (elem, kind));
                     }
@@ -214,16 +214,16 @@ impl<'ctx> Compiler<'ctx> {
                         // See the matching guard in `elaborate_destruct_bindings` —
                         // elaboration should already reject this before codegen
                         // ever sees it; kept here as defense in depth.
-                        Kind::Vector(_) => return Err(CompileError::Internal(
+                        Kind::Vector(_) => return Err(CompileError::ice(
                             "not yet implemented: destructuring a vector (`X*`) — \
-                             only tuple right-hand sides are currently supported".into(),
+                             only tuple right-hand sides are currently supported",
                         )),
-                        _ => return Err(CompileError::Internal(
-                            "destructuring `:=` requires a tuple on the right-hand side".into(),
+                        _ => return Err(CompileError::ice(
+                            "destructuring `:=` requires a tuple on the right-hand side",
                         )),
                     };
                     if dest_names.len() > elem_kinds.len() {
-                        return Err(CompileError::Internal(format!(
+                        return Err(CompileError::ice(format!(
                             "destructuring arity mismatch: {} name(s) but tuple has only {} element(s)",
                             dest_names.len(), elem_kinds.len()
                         )));
@@ -235,7 +235,7 @@ impl<'ctx> Compiler<'ctx> {
                         let (elem, kind) = if i < last_i || tail_count == 1 {
                             let e = self.builder
                                 .build_extract_value(sv, i as u32, &name.0)
-                                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                .map_err(|e| CompileError::ice(e.to_string()))?;
                             (e, elem_kinds[i].clone())
                         } else {
                             // TODO: loop alloca write-through for tuple tail binders not yet supported.
@@ -256,10 +256,10 @@ impl<'ctx> Compiler<'ctx> {
                                 let e = self.builder
                                     .build_extract_value(sv, (i + j) as u32,
                                         &format!("{}_t{}", name.0, j))
-                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                    .map_err(|e| CompileError::ice(e.to_string()))?;
                                 agg = self.builder
                                     .build_insert_value(agg, e, j as u32, "ts")
-                                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                    .map_err(|e| CompileError::ice(e.to_string()))?;
                             }
                             (agg.into_struct_value().into(), Kind::Tuple(tail_kinds))
                         };
@@ -268,12 +268,12 @@ impl<'ctx> Compiler<'ctx> {
                             let val_i64: IntValue<'ctx> = if kind == Kind::Bool {
                                 self.builder
                                     .build_int_z_extend(elem.into_int_value(), i64_type, "bool_ext")
-                                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                                    .map_err(|e| CompileError::ice(e.to_string()))?
                             } else {
                                 elem.into_int_value()
                             };
                             self.builder.build_store(ptr, val_i64)
-                                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                                .map_err(|e| CompileError::ice(e.to_string()))?;
                         }
                         env.insert(name.clone(), (elem, kind));
                     }
@@ -325,17 +325,17 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
     ) -> Result<(), CompileError> {
         let Some(fail_bb) = self.fail_bb else {
-            return Err(CompileError::Internal(
+            return Err(CompileError::ice(
                 "assert in a function whose return type does not include `Fail` \
                  was not eliminated by the solver — add `| Fail` to the return type \
                  or prove the assertion statically"
-                    .into(),
+                    ,
             ));
         };
 
         let function = self
             .current_fn
-            .ok_or_else(|| CompileError::Internal("assert outside a function".into()))?;
+            .ok_or_else(|| CompileError::ice("assert outside a function"))?;
 
         let (cond_val, _) = self.compile_expr(predicate, env)?;
         let cond_i1 = cond_val.into_int_value();
@@ -343,7 +343,7 @@ impl<'ctx> Compiler<'ctx> {
         let pass_bb = self.context.append_basic_block(function, "assert_pass");
         self.builder
             .build_conditional_branch(cond_i1, pass_bb, fail_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         self.builder.position_at_end(pass_bb);
         Ok(())
@@ -363,7 +363,7 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CompileError> {
         let function = self
             .current_fn
-            .ok_or_else(|| CompileError::Internal("assert outside a function".into()))?;
+            .ok_or_else(|| CompileError::ice("assert outside a function"))?;
 
         let (cond_val, _) = self.compile_expr(predicate, env)?;
         let cond_i1 = cond_val.into_int_value();
@@ -373,7 +373,7 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder
             .build_conditional_branch(cond_i1, pass_bb, fail_out_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         // ── else branch: emit the value to return and exit early ──────────────
         self.builder.position_at_end(fail_out_bb);
@@ -391,7 +391,7 @@ impl<'ctx> Compiler<'ctx> {
         };
         self.builder
             .build_return(Some(&else_val))
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         // ── pass branch: normal continuation ──────────────────────────────────
         self.builder.position_at_end(pass_bb);
@@ -410,13 +410,13 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CompileError> {
         let function = self
             .current_fn
-            .ok_or_else(|| CompileError::Internal("`return` outside a function".into()))?;
+            .ok_or_else(|| CompileError::ice("`return` outside a function"))?;
 
         let (v, kind) = self.compile_expr(value, env)?;
         let ret_val = self.wrap_return_value(v, &kind)?;
         self.builder
             .build_return(Some(&ret_val))
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         // Dead block to satisfy inkwell's requirement for a current insert point.
         let dead = self.context.append_basic_block(function, "after_return");

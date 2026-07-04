@@ -46,7 +46,7 @@ impl<'ctx> Compiler<'ctx> {
         let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
         agg = self.builder
             .build_insert_value(agg, tag, 0, "tu_tag")
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         let mut field_idx = 1u32;
         self.insert_kind_leaves(&mut agg, arm_value, arm_kind, &mut field_idx)?;
         Ok(agg.into_struct_value().into())
@@ -69,7 +69,7 @@ impl<'ctx> Compiler<'ctx> {
             .into_struct_type();
         let old_struct = AggregateValueEnum::StructValue(val.into_struct_value());
         let mut agg: AggregateValueEnum<'ctx> = new_struct_ty.get_undef().into();
-        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         agg = self.builder.build_insert_value(agg, new_tag, 0, "tu_rw_t").map_err(err)?;
         for i in 0..old_leaf_count {
             let leaf = self.builder
@@ -94,7 +94,7 @@ impl<'ctx> Compiler<'ctx> {
         let old_struct = AggregateValueEnum::StructValue(val.into_struct_value());
         let tag = self.builder
             .build_extract_value(old_struct, 0, "tu_rw_tag")
-            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .map_err(|e| CompileError::ice(e.to_string()))?
             .into_int_value();
         self.rewrap_tagged_union_with_tag(val, old_arms, new_arms, tag)
     }
@@ -108,7 +108,7 @@ impl<'ctx> Compiler<'ctx> {
         mapping: &[usize],
     ) -> Result<inkwell::values::IntValue<'ctx>, CompileError> {
         let i32t = self.context.i32_type();
-        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         // Default: the last arm's new index (used when no earlier select fires).
         let mut current = i32t.const_int(*mapping.last().unwrap() as u64, false);
         // Build selects in reverse order so the chain evaluates correctly.
@@ -158,7 +158,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.compile_tuple_as_vector(val, &elems, &elem_kind)
             }
             Kind::Int | Kind::Bool => self.compile_scalar_as_singleton_vector(val, &val_kind, &elem_kind),
-            other => Err(CompileError::Internal(format!(
+            other => Err(CompileError::ice(format!(
                 "coerce_vector_return: cannot convert {other:?} to Vector"
             ))),
         }
@@ -231,7 +231,7 @@ impl<'ctx> Compiler<'ctx> {
             .map(|(i, _)| i)
             .collect();
         match candidates.as_slice() {
-            [] => Err(CompileError::Internal(format!(
+            [] => Err(CompileError::ice(format!(
                 "coerce_to_kind: value kind {val_kind:?} does not match any arm of {arms:?}"
             ))),
             [arm_idx] => {
@@ -239,7 +239,7 @@ impl<'ctx> Compiler<'ctx> {
                 Ok((wrapped, expected.clone()))
             }
             _ => {
-                let set_expr = set_expr.ok_or_else(|| CompileError::Internal(format!(
+                let set_expr = set_expr.ok_or_else(|| CompileError::ice(format!(
                     "coerce_to_kind: value kind {val_kind:?} matches multiple arms of {arms:?} \
                      but no set expression was recorded to disambiguate them"
                 )))?;
@@ -298,14 +298,14 @@ impl<'ctx> Compiler<'ctx> {
         let supported = matches!(expected, Kind::Int | Kind::Bool)
             && val_arms.iter().all(|k| k == expected);
         if !supported {
-            return Err(CompileError::Internal(format!(
+            return Err(CompileError::ice(format!(
                 "narrow_tagged_union: cannot narrow a TaggedUnion with arms {val_arms:?} down to \
                  {expected:?} — every arm must already be {expected:?} for this to be sound \
                  (e.g. `{{0}} + NatPos -> Int` is fine; `Bool | Nat -> Bool` is not, since a Nat \
                  arm is not a valid Bool)"
             )));
         }
-        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         let payload = self.builder
             .build_extract_value(val.into_struct_value(), 1, "tu_narrow_payload")
             .map_err(err)?
@@ -338,7 +338,7 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         let arm_exprs = flatten_disjoint_union(set_expr);
         if arm_exprs.len() != arms.len() {
-            return Err(CompileError::Internal(format!(
+            return Err(CompileError::ice(format!(
                 "select_disjoint_union_arm: not yet implemented for a Kind whose TaggedUnion \
                  arms ({}) don't align with a top-level `+` chain in the recorded set \
                  expression ({} parts) — only plain `A + B + …` domains/ranges are supported today",
@@ -347,11 +347,11 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let i32t = self.context.i32_type();
-        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         let val_int = val.into_int_value();
 
-        let (&last, rest) = candidates.split_last().ok_or_else(|| CompileError::Internal(
-            "select_disjoint_union_arm: called with no candidate arms".into()
+        let (&last, rest) = candidates.split_last().ok_or_else(|| CompileError::ice(
+            "select_disjoint_union_arm: called with no candidate arms"
         ))?;
         let mut tag = i32t.const_int(last as u64, false);
         for &candidate in rest.iter().rev() {

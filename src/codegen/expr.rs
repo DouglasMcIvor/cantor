@@ -49,7 +49,7 @@ impl<'ctx> Compiler<'ctx> {
             | SemExprKind::CartesianProduct(..)
             | SemExprKind::SetQuotient(..)
             | SemExprKind::Comprehension { .. }
-            | SemExprKind::KleeneStar(_) => Err(CompileError::Internal(format!(
+            | SemExprKind::KleeneStar(_) => Err(CompileError::ice(format!(
                 "elaborator invariant broken: set-position node {:?} reached compile_expr \
                  (value position)", expr.kind
             ))),
@@ -100,7 +100,7 @@ impl<'ctx> Compiler<'ctx> {
             BinOp::Div => b.build_int_signed_div(li, ri, "div"),
             _ => unreachable!("compile_arith is only called for Add/Sub/Mul/Div"),
         }
-        .map_err(|e| CompileError::Internal(e.to_string()))?;
+        .map_err(|e| CompileError::ice(e.to_string()))?;
         Ok((v.into(), Kind::Int))
     }
 
@@ -112,18 +112,18 @@ impl<'ctx> Compiler<'ctx> {
         let (val, _kind) = self.compile_expr(inner, env)?;
 
         if !val.is_struct_value() {
-            return Err(CompileError::Internal(
+            return Err(CompileError::ice(
                 "`?` applied to a non-fallible expression (expected `{i1, i64}` struct return)"
-                    .into(),
+                    ,
             ));
         }
 
         let function = self
             .current_fn
-            .ok_or_else(|| CompileError::Internal("`?` outside a function".into()))?;
+            .ok_or_else(|| CompileError::ice("`?` outside a function"))?;
 
         let struct_val = val.into_struct_value();
-        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
 
         // Extract the fail flag (field 0 = i1).
         let fail_flag = self.builder
@@ -159,7 +159,7 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let function = self
             .current_fn
-            .ok_or_else(|| CompileError::Internal("if-then-else outside a function".into()))?;
+            .ok_or_else(|| CompileError::ice("if-then-else outside a function"))?;
 
         let (cond_val, _) = self.compile_expr(cond, env)?;
         let cond_i1 = cond_val.into_int_value();
@@ -170,7 +170,7 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder
             .build_conditional_branch(cond_i1, then_bb, else_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         self.builder.position_at_end(then_bb);
         let (then_val_raw, then_ty) = self.compile_expr(then_expr, env)?;
@@ -185,7 +185,7 @@ impl<'ctx> Compiler<'ctx> {
         // `kind::merge_if_branches` so the two can't silently disagree; only
         // the LLVM value construction below is codegen-specific.
         let merge = crate::kind::merge_if_branches(&then_ty, &else_ty)
-            .map_err(CompileError::Internal)?;
+            .map_err(|e| CompileError::ice(e))?;
 
         let (then_val, else_val, result_ty) = match &merge {
             crate::kind::IfMerge::Same(_) => (then_val_raw, else_val_raw, then_ty),
@@ -218,7 +218,7 @@ impl<'ctx> Compiler<'ctx> {
                 let old_struct = AggregateValueEnum::StructValue(else_val_raw.into_struct_value());
                 let old_tag = self.builder
                     .build_extract_value(old_struct, 0, "tu_merge_tag")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                    .map_err(|e| CompileError::ice(e.to_string()))?
                     .into_int_value();
                 let new_tag = self.remap_tagged_union_tag(old_tag, else_remap)?;
                 let ev = self.rewrap_tagged_union_with_tag(else_val_raw, else_inner, merged_arms, new_tag)?;
@@ -253,20 +253,20 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.position_at_end(then_bb_cur);
         self.builder
             .build_unconditional_branch(merge_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         let then_bb_end = self.builder.get_insert_block().unwrap();
 
         self.builder.position_at_end(else_bb_cur);
         self.builder
             .build_unconditional_branch(merge_bb)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         let else_bb_end = self.builder.get_insert_block().unwrap();
 
         self.builder.position_at_end(merge_bb);
         let phi = self
             .builder
             .build_phi(then_val.get_type(), "iftmp")
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         phi.add_incoming(&[(&then_val, then_bb_end), (&else_val, else_bb_end)]);
 
         Ok((phi.as_basic_value(), result_ty))
@@ -286,7 +286,7 @@ impl<'ctx> Compiler<'ctx> {
                 let v = self
                     .builder
                     .build_int_neg(iv, "neg")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 Ok((v.into(), Kind::Int))
             }
             // build_not is bitwise NOT; on i1 this is logical NOT (0↔1).
@@ -294,7 +294,7 @@ impl<'ctx> Compiler<'ctx> {
                 let v = self
                     .builder
                     .build_not(iv, "not")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 Ok((v.into(), Kind::Bool))
             }
         }
@@ -331,7 +331,7 @@ impl<'ctx> Compiler<'ctx> {
                 };
                 if op == BinOp::NotIn {
                     let neg = self.builder.build_not(pred, "not_in")
-                        .map_err(|e| CompileError::Internal(e.to_string()))?;
+                        .map_err(|e| CompileError::ice(e.to_string()))?;
                     return Ok((neg.into(), Kind::Bool));
                 }
                 return Ok((pred.into(), Kind::Bool));
@@ -349,7 +349,7 @@ impl<'ctx> Compiler<'ctx> {
             ($pred:ident, $name:literal) => {{
                 let v = b
                     .build_int_compare(IntPredicate::$pred, li, ri, $name)
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 Ok((v.into(), Kind::Bool))
             }};
         }
@@ -357,7 +357,7 @@ impl<'ctx> Compiler<'ctx> {
             ($method:ident, $name:literal) => {{
                 let v = b
                     .$method(li, ri, $name)
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 Ok((v.into(), Kind::Bool))
             }};
         }
@@ -376,7 +376,7 @@ impl<'ctx> Compiler<'ctx> {
                 "Add/Sub/Mul/Div are dedicated SemExprKind variants, never wrapped in BinOp"
             ),
             BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
-                Err(CompileError::Internal("set operations not yet implemented".into()))
+                Err(CompileError::ice("set operations not yet implemented"))
             }
             BinOp::Concat => self.compile_vec_concat(lhs, rhs, env, _span),
         }
@@ -398,7 +398,7 @@ impl<'ctx> Compiler<'ctx> {
         // two can't silently disagree; only the LLVM value construction
         // below is codegen-specific.
         let (mode, result_kind) = crate::kind::merge_concat_kinds(&lk, &rk)
-            .map_err(|e| CompileError::Internal(format!("{e} at {_span:?}")))?;
+            .map_err(|e| CompileError::ice(format!("{e} at {_span:?}")))?;
         let elem_kind = match &result_kind {
             Kind::Vector(ek) => ek.as_ref().clone(),
             _ => unreachable!("merge_concat_kinds always returns a Vector result Kind"),
@@ -431,20 +431,20 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Vector(_) => "cantor_list_vec_concat",
             Kind::Tuple(_)  => "cantor_struct_vec_concat",
             Kind::TaggedUnion(_) => "cantor_union_vec_concat",
-            other => return Err(CompileError::Internal(format!(
+            other => return Err(CompileError::ice(format!(
                 "TODO: `++` not yet implemented for element kind {other:?}"
             ))),
         };
 
         let fn_val = self.module.get_function(concat_fn).ok_or_else(|| {
-            CompileError::Internal(format!("runtime function `{concat_fn}` not declared"))
+            CompileError::ice(format!("runtime function `{concat_fn}` not declared"))
         })?;
         let lv_i64 = lv.into_int_value();
         let rv_i64 = rv.into_int_value();
         let result = self.builder.build_call(fn_val, &[lv_i64.into(), rv_i64.into()], "concat")
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         let result_i64 = result.try_as_basic_value().left().ok_or_else(|| {
-            CompileError::Internal(format!("`{concat_fn}` returned void unexpectedly"))
+            CompileError::ice(format!("`{concat_fn}` returned void unexpectedly"))
         })?;
         Ok((result_i64, Kind::Vector(Box::new(elem_kind))))
     }
@@ -480,18 +480,18 @@ impl<'ctx> Compiler<'ctx> {
             let size_fn = match kind {
                 Kind::Set(SetElemKind::Int)  => "cantor_set_size_i64",
                 Kind::Set(SetElemKind::Bool) => "cantor_set_size_bool",
-                _ => return Err(CompileError::Internal(
-                    "size() requires a runtime set argument".into(),
+                _ => return Err(CompileError::ice(
+                    "size() requires a runtime set argument",
                 )),
             };
             let fn_val = self.module.get_function(size_fn)
-                .ok_or_else(|| CompileError::Internal(format!("{size_fn} not declared")))?;
+                .ok_or_else(|| CompileError::ice(format!("{size_fn} not declared")))?;
             let result = self.builder
                 .build_call(fn_val, &[ptr.into()], "size")
-                .map_err(|e| CompileError::Internal(e.to_string()))?
+                .map_err(|e| CompileError::ice(e.to_string()))?
                 .try_as_basic_value()
                 .left()
-                .ok_or_else(|| CompileError::Internal("size fn returned void".into()))?;
+                .ok_or_else(|| CompileError::ice("size fn returned void"))?;
             return Ok((result, Kind::Int));
         }
 
@@ -506,19 +506,19 @@ impl<'ctx> Compiler<'ctx> {
                         Kind::Vector(_) => "cantor_list_vec_len",
                         Kind::Tuple(_) => "cantor_struct_vec_len",
                         Kind::TaggedUnion(_) => "cantor_union_vec_len",
-                        other => return Err(CompileError::Internal(format!(
+                        other => return Err(CompileError::ice(format!(
                             "len() on Vector({other:?}) not yet supported"
                         ))),
                     };
 
                     let fn_val = self.module.get_function(len_fn)
-                        .ok_or_else(|| CompileError::Internal(format!("{len_fn} not declared")))?;
+                        .ok_or_else(|| CompileError::ice(format!("{len_fn} not declared")))?;
                     let result = self.builder
                         .build_call(fn_val, &[ptr.into()], "len")
-                        .map_err(|e| CompileError::Internal(e.to_string()))?
+                        .map_err(|e| CompileError::ice(e.to_string()))?
                         .try_as_basic_value()
                         .left()
-                        .ok_or_else(|| CompileError::Internal("len fn returned void".into()))?;
+                        .ok_or_else(|| CompileError::ice("len fn returned void"))?;
                     Ok((result, Kind::Int))
                 },
                 Kind::Tuple(inner_eks) => {
@@ -526,8 +526,8 @@ impl<'ctx> Compiler<'ctx> {
                     let v = self.context.i64_type().const_int(length as u64, true);
                     Ok((v.into(), Kind::Int))
                 },
-                _ => Err(CompileError::Internal(
-                    "len() requires a vector (X*) argument".into(),
+                _ => Err(CompileError::ice(
+                    "len() requires a vector (X*) argument",
                 )),
             };
         }
@@ -590,7 +590,7 @@ impl<'ctx> Compiler<'ctx> {
                         self.context.i64_type(),
                         "arg_bool_ext",
                     )
-                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                    .map_err(|e| CompileError::ice(e.to_string()))?
                     .into()
             } else {
                 v
@@ -601,12 +601,12 @@ impl<'ctx> Compiler<'ctx> {
         let call = self
             .builder
             .build_call(function, &compiled_args, "call")
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         let result_i64 = call
             .try_as_basic_value()
             .left()
-            .ok_or_else(|| CompileError::Internal("void return in expression position".into()))?;
+            .ok_or_else(|| CompileError::ice("void return in expression position"))?;
 
         // Restore the correct Kind after the call.
         let return_kind = self.fn_return_kinds.get(&callee.0).cloned().unwrap_or(Kind::Int);
@@ -619,7 +619,7 @@ impl<'ctx> Compiler<'ctx> {
                         self.context.bool_type(),
                         "call_bool",
                     )
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 Ok((i1_val.into(), Kind::Bool))
             }
             // Tuples and TaggedUnions are returned as struct values directly.
@@ -641,10 +641,10 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         if elements.is_empty() {
-            return Err(CompileError::Internal(
+            return Err(CompileError::ice(
                 "empty set literal in value position — element kind cannot be inferred; \
                  add an explicit annotation (e.g. `s : Set(Int) = {}`)"
-                    .into(),
+                    ,
             ));
         }
 
@@ -659,10 +659,10 @@ impl<'ctx> Compiler<'ctx> {
         let elem_kind = compiled[0].1.clone();
         for (_, k) in &compiled {
             if *k != elem_kind {
-                return Err(CompileError::Internal(
+                return Err(CompileError::ice(
                     "mixed element kinds in set literal — \
                      heterogeneous sets not yet supported"
-                        .into(),
+                        ,
                 ));
             }
         }
@@ -670,44 +670,44 @@ impl<'ctx> Compiler<'ctx> {
         let (set_elem_kind, new_fn, insert_fn) = match &elem_kind {
             Kind::Int  => (SetElemKind::Int,  "cantor_set_new_i64",  "cantor_set_insert_i64"),
             Kind::Bool => (SetElemKind::Bool, "cantor_set_new_bool", "cantor_set_insert_bool"),
-            Kind::Set(_) => return Err(CompileError::Internal(
-                "sets of sets not yet supported".into(),
+            Kind::Set(_) => return Err(CompileError::ice(
+                "sets of sets not yet supported",
             )),
-            Kind::Fail | Kind::Tuple(_) | Kind::TaggedUnion(_) => return Err(CompileError::Internal(
-                "sets of fail/tuples/unions not yet supported".into(),
+            Kind::Fail | Kind::Tuple(_) | Kind::TaggedUnion(_) => return Err(CompileError::ice(
+                "sets of fail/tuples/unions not yet supported",
             )),
             Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),
         };
 
         // Allocate an empty set.
         let new_fn_val = self.module.get_function(new_fn)
-            .ok_or_else(|| CompileError::Internal(
+            .ok_or_else(|| CompileError::ice(
                 format!("{new_fn} not declared — was declare_runtime_functions called?"),
             ))?;
         let ptr = self.builder
             .build_call(new_fn_val, &[], "new_set")
-            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .map_err(|e| CompileError::ice(e.to_string()))?
             .try_as_basic_value()
             .left()
-            .ok_or_else(|| CompileError::Internal("cantor_set_new returned void".into()))?;
+            .ok_or_else(|| CompileError::ice("cantor_set_new returned void"))?;
 
         // Insert each element (insert functions return void).
         let insert_fn_val = self.module.get_function(insert_fn)
-            .ok_or_else(|| CompileError::Internal(
+            .ok_or_else(|| CompileError::ice(
                 format!("{insert_fn} not declared — was declare_runtime_functions called?"),
             ))?;
         for (val, k) in compiled {
             let val_i64: BasicValueEnum = if k == Kind::Bool {
                 self.builder
                     .build_int_z_extend(val.into_int_value(), i64t, "elem_bool_ext")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                    .map_err(|e| CompileError::ice(e.to_string()))?
                     .into()
             } else {
                 val
             };
             self.builder
                 .build_call(insert_fn_val, &[ptr.into(), val_i64.into()], "insert")
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                .map_err(|e| CompileError::ice(e.to_string()))?;
         }
 
         Ok((ptr, Kind::Set(set_elem_kind)))
@@ -732,7 +732,7 @@ impl<'ctx> Compiler<'ctx> {
         for (i, (val, _)) in compiled.into_iter().enumerate() {
             agg = self.builder
                 .build_insert_value(agg, val, i as u32, "tf")
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                .map_err(|e| CompileError::ice(e.to_string()))?;
         }
 
         Ok((agg.into_struct_value().into(), Kind::Tuple(elem_kinds)))

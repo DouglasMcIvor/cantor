@@ -172,7 +172,7 @@ impl<'ctx> Compiler<'ctx> {
         field_idx: &mut u32,
     ) -> Result<(), CompileError> {
         let i64t = self.context.i64_type();
-        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match arm_kind {
             Kind::Int | Kind::Set(_) => {
                 *agg = self.builder
@@ -199,8 +199,8 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             Kind::TaggedUnion(_) => {
-                return Err(CompileError::Internal(
-                    "insert_kind_leaves: nested TaggedUnion not yet supported".into(),
+                return Err(CompileError::ice(
+                    "insert_kind_leaves: nested TaggedUnion not yet supported",
                 ));
             }
             // Vector is an i64 pointer — insert it like Int/Set.
@@ -223,11 +223,11 @@ impl<'ctx> Compiler<'ctx> {
         let s = self.fail_struct_type().get_undef();
         let s = self.builder
             .build_insert_value(s, zero_i1, 0, "sv_flag")
-            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .map_err(|e| CompileError::ice(e.to_string()))?
             .into_struct_value();
         let s = self.builder
             .build_insert_value(s, payload, 1, "sv_payload")
-            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .map_err(|e| CompileError::ice(e.to_string()))?
             .into_struct_value();
         Ok(s.into())
     }
@@ -241,11 +241,11 @@ impl<'ctx> Compiler<'ctx> {
         let s = self.fail_struct_type().get_undef();
         let s = self.builder
             .build_insert_value(s, one_i1, 0, "fv_flag")
-            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .map_err(|e| CompileError::ice(e.to_string()))?
             .into_struct_value();
         let s = self.builder
             .build_insert_value(s, payload, 1, "fv_payload")
-            .map_err(|e| CompileError::Internal(e.to_string()))?
+            .map_err(|e| CompileError::ice(e.to_string()))?
             .into_struct_value();
         Ok(s.into())
     }
@@ -264,11 +264,11 @@ impl<'ctx> Compiler<'ctx> {
         let payload = match kind {
             Kind::Bool => self.builder
                 .build_int_z_extend(val.into_int_value(), i64t, "coerce_bool")
-                .map_err(|e| CompileError::Internal(e.to_string()))?
+                .map_err(|e| CompileError::ice(e.to_string()))?
                 .into(),
             Kind::Int => val,
-            _ => return Err(CompileError::Internal(
-                "cannot coerce value to fail struct: unsupported kind".into(),
+            _ => return Err(CompileError::ice(
+                "cannot coerce value to fail struct: unsupported kind",
             )),
         };
         self.build_success_struct(payload)
@@ -290,7 +290,7 @@ impl<'ctx> Compiler<'ctx> {
             return Ok(if *kind == Kind::Bool {
                 self.builder
                     .build_int_z_extend(val.into_int_value(), self.context.i64_type(), "bool_ret")
-                    .map_err(|e| CompileError::Internal(e.to_string()))?
+                    .map_err(|e| CompileError::ice(e.to_string()))?
                     .into()
             } else {
                 val
@@ -304,7 +304,7 @@ impl<'ctx> Compiler<'ctx> {
         let payload = match kind {
             Kind::Bool => self.builder
                 .build_int_z_extend(val.into_int_value(), i64t, "bool_ret")
-                .map_err(|e| CompileError::Internal(e.to_string()))?
+                .map_err(|e| CompileError::ice(e.to_string()))?
                 .into(),
             _ => val,
         };
@@ -339,7 +339,7 @@ impl<'ctx> Compiler<'ctx> {
             ]);
             self.builder
                 .build_return(Some(&BasicValueEnum::StructValue(fail_struct)))
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                .map_err(|e| CompileError::ice(e.to_string()))?;
             Some(bb)
         } else {
             None
@@ -362,7 +362,7 @@ impl<'ctx> Compiler<'ctx> {
                         self.context.bool_type(),
                         "bool_param",
                     )
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1_val.into(), Kind::Bool)
             } else if matches!(kind, Kind::Tuple(_) | Kind::TaggedUnion(_)) {
                 (llvm_param, kind.clone())
@@ -381,7 +381,7 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder
             .build_return(Some(&ret_val))
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         Ok(function)
     }
@@ -410,7 +410,7 @@ impl<'ctx> Compiler<'ctx> {
             ]);
             self.builder
                 .build_return(Some(&BasicValueEnum::StructValue(fail_struct)))
-                .map_err(|e| CompileError::Internal(e.to_string()))?;
+                .map_err(|e| CompileError::ice(e.to_string()))?;
             Some(bb)
         } else {
             None
@@ -433,7 +433,7 @@ impl<'ctx> Compiler<'ctx> {
                         self.context.bool_type(),
                         "bool_param",
                     )
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1_val.into(), Kind::Bool)
             } else if matches!(kind, Kind::Tuple(_) | Kind::TaggedUnion(_)) {
                 (llvm_param, kind.clone())
@@ -454,7 +454,7 @@ impl<'ctx> Compiler<'ctx> {
                 let ret_val = self.wrap_return_value(val, &kind)?;
                 self.builder
                     .build_return(Some(&ret_val))
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
             }
             None => {
                 // An explicit `return` statement already emitted the LLVM ret and
@@ -462,7 +462,7 @@ impl<'ctx> Compiler<'ctx> {
                 // block to have a terminator, so emit `unreachable`.
                 self.builder
                     .build_unreachable()
-                    .map_err(|e| CompileError::Internal(e.to_string()))?;
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
             }
         }
 
@@ -499,7 +499,7 @@ fn eval_const(expr: &Expr, known: &HashMap<Symbol, i64>) -> Result<i64, CompileE
     match &expr.kind {
         ExprKind::IntLit(n) => Ok(*n),
         ExprKind::Var(sym) => known.get(sym).copied().ok_or_else(|| {
-            CompileError::Internal(format!(
+            CompileError::ice(format!(
                 "constant `{}` is undefined or not yet evaluated (constants must appear before use in file order)",
                 sym.0
             ))
@@ -514,18 +514,18 @@ fn eval_const(expr: &Expr, known: &HashMap<Symbol, i64>) -> Result<i64, CompileE
                 BinOp::Mul => Ok(l.wrapping_mul(r)),
                 BinOp::Div => {
                     if r == 0 {
-                        Err(CompileError::Internal("division by zero in constant expression".into()))
+                        Err(CompileError::ice("division by zero in constant expression"))
                     } else {
                         Ok(l / r)
                     }
                 }
-                _ => Err(CompileError::Internal(
-                    "only integer arithmetic is supported in constant expressions".into(),
+                _ => Err(CompileError::ice(
+                    "only integer arithmetic is supported in constant expressions",
                 )),
             }
         }
-        _ => Err(CompileError::Internal(
-            "only integer arithmetic is supported in constant expressions".into(),
+        _ => Err(CompileError::ice(
+            "only integer arithmetic is supported in constant expressions",
         )),
     }
 }

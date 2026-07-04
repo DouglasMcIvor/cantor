@@ -49,7 +49,7 @@ impl<'ctx> Compiler<'ctx> {
         let fail_bb  = self.context.append_basic_block(runner, "fail");
         let ok_bb    = self.context.append_basic_block(runner, "ok");
 
-        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
 
         self.builder.position_at_end(entry_bb);
         let call = self.builder
@@ -58,7 +58,7 @@ impl<'ctx> Compiler<'ctx> {
         let struct_val = call
             .try_as_basic_value()
             .left()
-            .ok_or_else(|| CompileError::Internal("main returned void in runner".into()))?
+            .ok_or_else(|| CompileError::ice("main returned void in runner"))?
             .into_struct_value();
         let flag = self.builder
             .build_extract_value(struct_val, 0, "runner_flag")
@@ -120,11 +120,11 @@ impl<'ctx> Compiler<'ctx> {
 
         let call = self.builder
             .build_call(main_fn, &[], "main_result")
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         let result = call
             .try_as_basic_value()
             .left()
-            .ok_or_else(|| CompileError::Internal("main returned void in trampoline".into()))?;
+            .ok_or_else(|| CompileError::ice("main returned void in trampoline"))?;
 
         let mut leaf_idx = 0usize;
         Self::trampoline_store_leaves(
@@ -133,7 +133,7 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder
             .build_return(None)
-            .map_err(|e| CompileError::Internal(e.to_string()))?;
+            .map_err(|e| CompileError::ice(e.to_string()))?;
         Ok(())
     }
 
@@ -146,7 +146,7 @@ impl<'ctx> Compiler<'ctx> {
         i64t: inkwell::types::IntType<'ctx>,
         leaf_idx: &mut usize,
     ) -> Result<(), CompileError> {
-        let err = |e: inkwell::builder::BuilderError| CompileError::Internal(e.to_string());
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match kind {
             Kind::Bool | Kind::Fail => {
                 let wide = builder.build_int_z_extend(val.into_int_value(), i64t, "bl").map_err(err)?;
@@ -182,8 +182,8 @@ impl<'ctx> Compiler<'ctx> {
             // TODO: tagged-union IR — emit the raw struct fields for now;
             // a proper trampoline would inspect the tag and decode each arm.
             Kind::TaggedUnion(_) => {
-                return Err(CompileError::Internal(
-                    "trampoline_store_leaves: TaggedUnion output not yet supported".into(),
+                return Err(CompileError::ice(
+                    "trampoline_store_leaves: TaggedUnion output not yet supported",
                 ));
             }
             // Vector is an i64 pointer — store it like any other i64 leaf.
