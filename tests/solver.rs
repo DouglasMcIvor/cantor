@@ -12,6 +12,8 @@ mod encode;
 mod helpers;
 #[path = "solver/if_else.rs"]
 mod if_else;
+#[path = "solver/int64_split.rs"]
+mod int64_split;
 #[path = "solver/let_bindings.rs"]
 mod let_bindings;
 #[path = "solver/loops.rs"]

@@ -23,6 +23,7 @@ mod constrained;
 mod disjointness;
 mod encode;
 mod encode_call;
+mod int64_split;
 mod loops;
 mod membership;
 mod obligations;
@@ -187,13 +188,6 @@ pub fn check_file(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let sem_items = elaborate(items)?;
 
-    let mut fn_env: FunctionEnv<'_> = FunctionEnv::new();
-    for item in &sem_items {
-        if let SemItem::FunctionDef(def) = item {
-            fn_env.entry(def.name.clone()).or_default().push(def);
-        }
-    }
-
     let name_defs: NameDefs = sem_items
         .iter()
         .filter_map(|item| match item {
@@ -201,6 +195,21 @@ pub fn check_file(
             _ => None,
         })
         .collect();
+
+    // int-soundness-plan phase 3 (step 4a): replaces an eligible `Int -> Int`
+    // `SemItem::FunctionDef` with its compiler-generated `Int64`/`BigInt`
+    // overload pair whenever the solver proves it's sound to (see
+    // `int64_split`'s module doc) — everything below this point sees the
+    // (possibly split) result and treats it exactly like an ordinary
+    // phase 2 overload set, unchanged.
+    let sem_items = int64_split::generate_int64_bigint_splits(sem_items, &name_defs, timeout_ms);
+
+    let mut fn_env: FunctionEnv<'_> = FunctionEnv::new();
+    for item in &sem_items {
+        if let SemItem::FunctionDef(def) = item {
+            fn_env.entry(def.name.clone()).or_default().push(def);
+        }
+    }
 
     // Overflow-check outcomes (int-soundness-plan phase 1) live entirely
     // outside `results`/`CheckResult`/`all_proved` below — an unproved one

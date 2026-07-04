@@ -30,11 +30,25 @@ pub fn check_all(src: &str) -> Vec<(String, Vec<(String, CheckResult)>)> {
     results_of(&outcome).to_vec()
 }
 
-/// Parse a single-function source, check it, and return its signature results.
+/// Parse a single-function-*name* source, check it, and return every
+/// signature result across every def sharing that name.
+///
+/// "Single function" means one unique *name*, not necessarily one
+/// `FunctionDef` item: int-soundness-plan phase 3 (step 4a) may
+/// transparently split an eligible `Int -> Int` function into a compiler-
+/// generated `Int64`/`BigInt` overload pair sharing the original name, and
+/// ordinary phase 2 user overloading has the same shape — both are legal
+/// reasons for `check_all` to return more than one entry here.
 pub fn check(src: &str) -> Vec<(String, CheckResult)> {
-    let mut all = check_all(src);
-    assert_eq!(all.len(), 1, "expected exactly one function");
-    all.remove(0).1
+    let all = check_all(src);
+    let names: std::collections::HashSet<&str> =
+        all.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names.len(),
+        1,
+        "expected exactly one function name, got {all:?}"
+    );
+    all.into_iter().flat_map(|(_, sig_results)| sig_results).collect()
 }
 
 /// Assert that the first (usually only) signature of a single-function source is Proved.

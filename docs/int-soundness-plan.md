@@ -15,8 +15,13 @@ found while implementing it (the original sketch assumed `Int64` already
 had a distinct `Kind`; it didn't). Step 3 (solver) DONE (2026-07-04) —
 confirmed no changes needed for the ℤ reasoning itself, plus one incidental
 latent-bug fix in the phase 2 disjointness machinery found while auditing
-(see that step's entry). Steps 4–5 (codegen, tests/docs) not started — no
-LLVM/codegen/JIT wiring exists yet.
+(see that step's entry). Step 4a (the solver-gated split-generation pass)
+DONE (2026-07-04) — the overload split itself was also corrected during
+this step (see "The overload split" section below); a pre-existing,
+unrelated cvc5 hang on self-multiplication (`x * x`) was found and logged
+as a known issue rather than fixed (see step 4a's entry). Steps 4b–5
+(tagged-value codegen, tests/docs) not started — no LLVM/codegen/JIT wiring
+for the tagged representation exists yet.
 **Executes in three phases; phase 1 alone closes the soundness gap**
 
 ---
@@ -489,23 +494,67 @@ independently unit-testable before any codegen exists)
    *whether* a split exists at all before any of 4b–4d's codegen work
    applies — but stays numbered under step 4 since it only matters once
    codegen is the consumer):
-   a. **Split-generation pass**, inserted between `elaborate()` and
-      `check_file`'s main per-function loop. For each user
-      `SemFunctionDef` whose declared domain and range are *both* the
-      unbounded `Int` (MVP scope: single parameter, single signature,
-      `Int -> Int` exactly — multi-param Cartesian domains and mixed
-      Int/non-Int positions are a fast-follow, not this first cut):
-      synthesize an `Int64 -> Int64` narrowed signature over the *same*
-      body and check it in isolation via the ordinary existing
-      signature/range-checker (no new proof machinery). If it proves:
-      replace the original item with **two** `SemFunctionDef`s, both
-      `compiler_generated_split = true` — the `Int64` one just checked,
-      and a `BigInt = Int - Int64`-domain-restricted copy of the
-      original — and let every downstream step (disjointness, per-function
-      checking, codegen dispatch) treat them as an ordinary phase 2
-      overload pair, unchanged. If it doesn't prove: leave the original
-      `SemFunctionDef` exactly as-is, untouched — no split, no
-      `compiler_generated_split` marker, single ordinary `Kind::Int` body.
+   a. **Split-generation pass — DONE (2026-07-04)**, in
+      `src/solver/int64_split.rs`, inserted in `check_file` between
+      `elaborate()` and the main per-function loop. For each user
+      `SemFunctionDef` whose declared domain and range are *both* the bare
+      unbounded `Int` (MVP scope: single parameter, single signature, no
+      pre-existing overload sibling of the same name, and — see "Known
+      issues" below — a body containing no `Mul`): synthesize an
+      `Int64 -> Int64` narrowed signature over the *same* body and check it
+      in isolation via the ordinary existing signature/range-checker
+      (`check_function`, already `pub`), with the candidate's own `fn_env`
+      entry overridden to the narrowed signature so a recursive self-call
+      uses it as its own induction hypothesis (confirmed necessary and
+      sufficient with a dedicated test — see below). If it proves: replace
+      the original item with **two** `SemFunctionDef`s, both
+      `compiler_generated_split = true` — the `Int64` one just checked, and
+      a `BigInt`-named overload whose *domain* is `Int - Int64` (for phase
+      2 disjointness) but whose *range* is the **original**, unrestricted
+      `Int` (not also narrowed to `Int - Int64` — that was a bug caught by
+      the test suite: narrowing the range too is false in general, e.g.
+      halving a value just outside `Int64` can land back inside it) — and
+      let every downstream step (disjointness, per-function checking,
+      codegen dispatch) treat them as an ordinary phase 2 overload pair,
+      unchanged. If it doesn't prove: leave the original `SemFunctionDef`
+      exactly as-is, untouched — no split, no `compiler_generated_split`
+      marker, single ordinary `Kind::Int` body. Tested in
+      `tests/solver/int64_split.rs`: the split firing and both overloads
+      proving; a genuinely non-Int64-preserving function *not* splitting
+      while the file still proves overall; non-bare-`Int` domains,
+      multi-signature functions, and names with a pre-existing user
+      overload all correctly left alone; the recursive induction-hypothesis
+      override actually being load-bearing (a converging recursive
+      function that provably stays in `Int64` only *because* the self-call
+      uses the narrowed contract); and the split pair dispatching through
+      phase 2's ordinary static-resolution machinery unchanged.
+
+      **Known issue found while implementing (pre-existing, not part of
+      this step, deliberately not fixed here):** bounding a `Mul` node to
+      `Int64` in the trial check was found to make cvc5 run for 90+ seconds
+      past even a 2000ms `tlimit` — investigating further showed this isn't
+      actually specific to `Int64` or to this step at all: `f : Nat -> Int;
+      f(x) = x * x` (no relation to this split — bare pre-existing phase 1
+      machinery, `Nat` domain, nothing here touches it) hangs the same way,
+      while `f(x) = x * y` (two independent variables, already covered by
+      existing tests) is fast. So cvc5 apparently struggles specifically
+      with a *self*-multiplication (`x * x`) under a bounded existential,
+      regardless of which bound. This is a real, shippable-today bug
+      (anyone writing `x * x` in a domain-bounded function can already hang
+      the compiler) that predates phase 3 entirely and was only surfaced
+      here by chance (no existing test happened to self-multiply a
+      variable). Mitigated *for this step only* by skipping the trial
+      check entirely whenever a candidate's body contains any `Mul` node
+      (`int64_split.rs`'s `body_contains_mul`) — a background-thread
+      watchdog was considered and rejected: cvc5 isn't thread-safe even
+      with per-thread `TermManager`/`Solver` instances (`CVC5_CALL_LOCK`'s
+      doc comment), so racing a second concurrent cvc5 call while
+      abandoning a hung one risks a segfault, not just wasted time. Logged
+      here rather than fixed now, per Doug — candidate next steps once
+      picked up: try cvc5's `--nl-ext`-family options, or encode `x * x` as
+      a fresh term with an asserted non-negativity fact rather than a raw
+      product. Whoever picks this up should also lift step 4a's `Mul`
+      restriction once it's resolved.
    b. tagged encode/decode at every unbounded-`Int` value's construction/
       consumption site (literals, arithmetic results, vector/struct/tuple
       element get/set, function parameters/returns, the `Fail` wire's payload
