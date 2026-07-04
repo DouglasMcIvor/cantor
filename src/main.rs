@@ -9,12 +9,29 @@ use std::collections::HashMap;
 use cantor::{
     ast::Item,
     codegen::{compile_constrained, compile_to_ir},
+    error::CompileError,
     kind::Kind,
     names::check_names,
     parser::parse_file,
     semantics::tree::SemItem,
     solver::{CheckOutcome, CheckResult, ConstrainedTree, check_file},
 };
+
+/// Single rendering path for every `CompileError` the CLI can hit, so ICEs
+/// (no Cantor source span — `e.location` is `None`) and ordinary
+/// diagnostics (undefined names, unsupported syntax, ...) are never
+/// printed the same way. A diagnostic points at the user's file; an ICE
+/// gets a "please report this" hint instead, since there's nothing in the
+/// user's source for them to fix.
+fn print_compile_error(path: &str, e: &CompileError, src: &str) {
+    match e.location(src) {
+        Some((line, col)) => eprintln!("{path}:{line}:{col}: {e}"),
+        None => eprintln!("{path}: {e}"),
+    }
+    if e.is_ice() {
+        eprintln!("note: this is a bug in the Cantor compiler itself, not your program — please file an issue");
+    }
+}
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_SECS * 1000;
@@ -85,10 +102,7 @@ fn main() {
     let items = match parse_file(&src) {
         Ok(items) => items,
         Err(e) => {
-            match e.location(&src) {
-                Some((line, col)) => eprintln!("{path}:{line}:{col}: {e}"),
-                None              => eprintln!("{path}: {e}"),
-            }
+            print_compile_error(path, &e, &src);
             process::exit(1);
         }
     };
@@ -101,10 +115,7 @@ fn main() {
     let naming_errors = check_names(&items);
     if !naming_errors.is_empty() {
         for e in &naming_errors {
-            match e.location(&src) {
-                Some((line, col)) => eprintln!("{path}:{line}:{col}: {e}"),
-                None              => eprintln!("{path}: {e}"),
-            }
+            print_compile_error(path, e, &src);
         }
         process::exit(1);
     }
@@ -119,7 +130,7 @@ fn main() {
                 return;
             }
             Err(e) => {
-                eprintln!("{path}: compile error: {e}");
+                print_compile_error(path, &e, &src);
                 process::exit(1);
             }
         }
@@ -128,7 +139,7 @@ fn main() {
     let outcome = match check_file(&items, timeout_ms) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("internal error: {e}");
+            print_compile_error(path, &e, &src);
             process::exit(1);
         }
     };
@@ -197,7 +208,7 @@ fn main() {
 
     if do_run {
         match outcome {
-            CheckOutcome::Proved(tree) => run_main(tree, path),
+            CheckOutcome::Proved(tree) => run_main(tree, path, &src),
             CheckOutcome::NotProved(_) => {
                 eprintln!(
                     "error: not running — {} counterexample(s), {} unknown result(s) found above",
@@ -211,7 +222,7 @@ fn main() {
     }
 }
 
-fn run_main(tree: ConstrainedTree, path: &str) {
+fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
     let has_main = tree.items.iter().any(|item| match item {
         Item::FunctionDef(def) => def.name.0 == "main" && def.params.is_empty(),
         Item::NameDef(_) => false,
@@ -226,7 +237,7 @@ fn run_main(tree: ConstrainedTree, path: &str) {
     let engine = match compile_constrained(&ctx, &tree) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("{path}: compile error: {e}");
+            print_compile_error(path, &e, src);
             process::exit(1);
         }
     };

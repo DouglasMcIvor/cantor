@@ -107,11 +107,16 @@ fn llvm_ir_reports_compile_error_for_unsound_bool_int_narrowing() {
     // raw i64 payload (ignoring the tag) instead of failing. Bool and Int are
     // disjoint in Cantor's value model, so this must be a clean compile error
     // even under `llvm-ir`, which otherwise skips the solver entirely.
+    //
+    // This currently surfaces as an `Ice` (codegen's `narrow_tagged_union`
+    // defense-in-depth check) rather than a `Diagnostic`, since elaboration
+    // is expected to reject this before codegen ever sees it — see
+    // CompileError's taxonomy in src/error.rs.
     let out = run_llvm_ir("bool_nat_narrow_bad.cantor");
     assert_eq!(out.code, 1, "expected exit 1\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
     assert!(
-        out.stderr.contains("compile error"),
-        "expected a compile error on stderr:\n{}", out.stderr
+        out.stderr.contains("internal compiler error"),
+        "expected an internal compiler error on stderr:\n{}", out.stderr
     );
 }
 

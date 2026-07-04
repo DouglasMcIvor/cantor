@@ -60,6 +60,17 @@ This codebase is growing! Which means our development requires a bit more care a
 4. All temporary short cuts or hacks need be marked clearly with a TODO comment so they are easy to discover in the future
 5. All code changes should be concluded with both new CLI end-to-end tests and documentation updates.
 6. Use TDD where sensible! If we are introducing new functionality and we are very confident on the interface it exposes then it makes sense to write the tests first and watch them go incrementally green over each step of the change.
+7. **Clean up `CompileError::Ice` sites as you go, don't bulk-migrate.** Most
+   `Ice` sites are genuine compiler bugs, but some are leftover from before
+   the `Diagnostic`/`Unsupported`/`Ice` split existed (see the taxonomy
+   doc comment on `CompileError` in src/error.rs) and are really a user
+   mistake or a known unimplemented feature wearing an "internal compiler
+   error" label. If you're touching code near one of these and can tell
+   which category it actually belongs to, pull it out into the right
+   variant (with a span, and a CLI test proving it's *not* reported as an
+   ICE) rather than leaving it. There's no standing task to fix the rest
+   in bulk — that's deliberately deferred until the richer-diagnostics work
+   (colored spans, suggested constraints from the solver) begins.
 
 ## Documentation updates
 

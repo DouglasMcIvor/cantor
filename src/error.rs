@@ -2,23 +2,29 @@ use std::panic::Location;
 
 use crate::span::{offset_to_line_col, Span};
 
-/// Two categories today, with a third planned, kept deliberately separate
-/// because each means something different to the person reading it and
-/// will eventually render differently:
+/// Three categories, kept deliberately separate because each means
+/// something different to the person reading it and will eventually
+/// render differently:
 ///
 /// - Diagnostic-shaped variants (`UndefinedVariable`, `UnexpectedToken`,
-///   ...): the user's program is invalid. Always has a Cantor source span.
+///   `UndefinedFunction`, ...): the user's program is invalid. Always has
+///   a Cantor source span.
+/// - `Unsupported`: valid Cantor the compiler doesn't implement yet, per
+///   the "unimplemented paths must fail loudly" rule in CLAUDE.md. Neither
+///   a user mistake nor a compiler bug — also has a Cantor source span.
 /// - `Ice`: a compiler invariant was violated. Points at the *Rust* source
 ///   (via `Location::caller()`), not the user's file — the user's span is
 ///   irrelevant to debugging a compiler bug.
-/// - PLANNED, not yet split out: `Unsupported`, for valid Cantor the
-///   compiler doesn't implement yet (per the "unimplemented paths must
-///   fail loudly" rule in CLAUDE.md — neither a user mistake nor a bug).
-///   Most `Ice` sites today are genuine invariant violations (LLVM builder
-///   failures, missing runtime declarations), but a few are really
-///   user-reachable errors or "not implemented yet" gaps that haven't been
-///   triaged out of `Ice` yet — that's ongoing follow-up work, not a
-///   promise that every `Ice` today is a real compiler bug.
+///
+/// Most `Ice` sites today are genuine invariant violations (LLVM builder
+/// failures, missing runtime declarations), but plenty are still
+/// untriaged leftovers from before this split existed — some are really
+/// user-reachable errors or "not implemented yet" gaps that haven't been
+/// pulled out into `Diagnostic`/`Unsupported` yet. Per CLAUDE.md's
+/// clean-as-you-go policy: when you're touching code near an `Ice` site
+/// and can tell it's actually reachable by a user or a known gap, pull it
+/// out into the right variant rather than leaving it; there's no plan to
+/// bulk-migrate the rest until the richer-diagnostics work begins.
 ///
 /// This is a different axis from the Class 1/2/3 taxonomy in
 /// docs/design-decisions.md §4 — that's about Cantor's own runtime
@@ -27,9 +33,12 @@ use crate::span::{offset_to_line_col, Span};
 #[derive(Debug, Clone)]
 pub enum CompileError {
     UndefinedVariable { name: String, span: Span },
+    UndefinedFunction { name: String, span: Span },
     UnexpectedToken { expected: String, found: String, span: Span },
     InvalidIntLiteral { text: String, span: Span },
     NamingConvention { message: String, span: Span },
+    /// Valid Cantor the compiler doesn't implement yet.
+    Unsupported { feature: String, span: Span },
     // Future: DomainViolation, RangeViolation (driven by cvc5 unsat core)
 
     /// A compiler invariant was violated — a bug in Cantor's compiler
@@ -42,6 +51,7 @@ impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UndefinedVariable { name, .. } => write!(f, "undefined variable `{name}`"),
+            Self::UndefinedFunction { name, .. } => write!(f, "undefined function `{name}`"),
             Self::UnexpectedToken { expected, found, .. } => {
                 write!(f, "expected {expected}, found {found}")
             }
@@ -49,6 +59,7 @@ impl std::fmt::Display for CompileError {
                 write!(f, "invalid integer literal `{text}`")
             }
             Self::NamingConvention { message, .. } => write!(f, "naming: {message}"),
+            Self::Unsupported { feature, .. } => write!(f, "not yet supported: {feature}"),
             Self::Ice { detail, rust_location } => {
                 write!(f, "internal compiler error ({rust_location}): {detail}")
             }
@@ -67,6 +78,14 @@ impl CompileError {
         Self::Ice { detail: detail.to_string(), rust_location: Location::caller() }
     }
 
+    /// Whether this is a compiler bug rather than something the developer
+    /// can fix by editing their program — the rendering layer uses this to
+    /// decide whether to point at the user's source or add a "please
+    /// report this" hint instead.
+    pub fn is_ice(&self) -> bool {
+        matches!(self, Self::Ice { .. })
+    }
+
     /// Return the 1-based (line, column) of this error's span within `src`,
     /// or `None` for ICEs, which carry a Rust location instead of a Cantor
     /// source span.
@@ -78,9 +97,11 @@ impl CompileError {
     fn span(&self) -> Option<Span> {
         match self {
             Self::UndefinedVariable  { span, .. } => Some(*span),
+            Self::UndefinedFunction  { span, .. } => Some(*span),
             Self::UnexpectedToken    { span, .. } => Some(*span),
             Self::InvalidIntLiteral  { span, .. } => Some(*span),
             Self::NamingConvention   { span, .. } => Some(*span),
+            Self::Unsupported        { span, .. } => Some(*span),
             Self::Ice { .. }                      => None,
         }
     }

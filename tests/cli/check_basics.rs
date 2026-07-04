@@ -26,6 +26,56 @@ fn parse_error_message_goes_to_stderr() {
     );
 }
 
+// ── Compile-time diagnostics (CompileError::Diagnostic/Unsupported) ──────────
+//
+// Regression tests for the error-taxonomy split (src/error.rs): these two
+// cases used to be indistinguishable `CompileError::Internal` ("internal
+// compiler error: ...") even though neither is a compiler bug — one is an
+// ordinary user mistake, the other a known unimplemented feature. Both must
+// now report their own Cantor source location and must NOT claim to be an
+// internal compiler error.
+
+#[test]
+fn undefined_function_call_reports_location_not_ice() {
+    // undefined_function_call.cantor: `f(x) = g(x)` where `g` is never
+    // declared — a `CompileError::UndefinedFunction`, not an ICE.
+    let out = run_file("undefined_function_call.cantor");
+    assert_ne!(out.code, 0, "expected non-zero exit\nstdout: {}", out.stdout);
+    assert!(
+        out.stderr.contains("undefined function `g`"),
+        "expected an undefined-function diagnostic on stderr:\n{}", out.stderr
+    );
+    assert!(
+        out.stderr.contains(":2:"),
+        "expected the diagnostic to point at line 2:\n{}", out.stderr
+    );
+    assert!(
+        !out.stderr.contains("internal compiler error"),
+        "a user's own mistake must never be reported as an ICE:\n{}", out.stderr
+    );
+}
+
+#[test]
+fn set_op_in_value_position_reports_location_not_ice() {
+    // set_op_value_position.cantor: `f(x) = x | 1` — `|`/`&`/`^` are only
+    // implemented in set-expression position today; using one as a value is
+    // a known gap (`CompileError::Unsupported`), not an ICE.
+    let out = run_file("set_op_value_position.cantor");
+    assert_ne!(out.code, 0, "expected non-zero exit\nstdout: {}", out.stdout);
+    assert!(
+        out.stderr.contains("not yet supported"),
+        "expected an 'unsupported' diagnostic on stderr:\n{}", out.stderr
+    );
+    assert!(
+        out.stderr.contains(":2:"),
+        "expected the diagnostic to point at line 2:\n{}", out.stderr
+    );
+    assert!(
+        !out.stderr.contains("internal compiler error"),
+        "a known unimplemented feature must never be reported as an ICE:\n{}", out.stderr
+    );
+}
+
 // ── Good file: all proved ─────────────────────────────────────────────────────
 
 #[test]

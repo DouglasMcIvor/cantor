@@ -165,6 +165,9 @@ fn print_error(e: &CompileError, src: &str) {
         Some((line, col)) => eprintln!("  error at {line}:{col}: {e}"),
         None => eprintln!("  error: {e}"),
     }
+    if e.is_ice() {
+        eprintln!("  note: this is a bug in the Cantor compiler itself, not your input — please file an issue");
+    }
 }
 
 fn add_definitions(state: &mut ReplState, new_items: Vec<Item>, src: &str) {
@@ -223,7 +226,7 @@ fn add_definitions(state: &mut ReplState, new_items: Vec<Item>, src: &str) {
             }
         }
         Err(e) => {
-            eprintln!("  solver error: {e}");
+            print_error(&e, src);
             // Roll back additions that couldn't be verified.
             for new_item in &new_items {
                 let name = item_name(new_item);
@@ -275,7 +278,14 @@ fn evaluate_expr(state: &ReplState, expr: cantor::ast::Expr) {
     let engine = match compile_file(&ctx, &all_items) {
         Ok(e) => e,
         Err(e) => {
+            // Not routed through `print_error`: `e`'s span (if any) may
+            // belong to an earlier `state.items` definition, not `input` —
+            // looking it up against the wrong source string would print a
+            // misleading line:col, so only the ICE hint is safe to add here.
             eprintln!("  error: {e}");
+            if e.is_ice() {
+                eprintln!("  note: this is a bug in the Cantor compiler itself, not your input — please file an issue");
+            }
             return;
         }
     };

@@ -24,7 +24,7 @@ use crate::ast::{self, BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef
 use crate::error::CompileError;
 use crate::kind::{Kind, set_kind};
 use crate::semantics::tree::*;
-use crate::span::Symbol;
+use crate::span::{Span, Symbol};
 
 /// Whether an expression describes a compile-time set (domain/range
 /// annotations, `let` constraints, the RHS of `in`, …) or a runtime value
@@ -47,11 +47,8 @@ struct Ctx<'a> {
 
 type Env = HashMap<Symbol, Kind>;
 
-fn not_yet_implemented(what: &str) -> CompileError {
-    CompileError::ice(format!(
-        "not yet implemented in elaborator: {what} — Kind for this case is \
-         currently only decided by codegen directly"
-    ))
+fn not_yet_implemented(what: &str, span: Span) -> CompileError {
+    CompileError::Unsupported { feature: what.to_string(), span }
 }
 
 /// Elaborate every item in a parsed file into its `SemItem`.
@@ -436,7 +433,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
                 Position::Set => kind_of_for_set(),
                 // codegen::compile_binop rejects these outright in value
                 // position today ("set operations not yet implemented").
-                Position::Value => return Err(not_yet_implemented(&format!("`{op}` in value position"))),
+                Position::Value => return Err(not_yet_implemented(&format!("`{op}` in value position"), span)),
             };
             Ok(SemExpr { kind: SemExprKind::BinOp { op: *op, lhs: Box::new(l), rhs: Box::new(r) }, kind_of, span })
         }
@@ -523,7 +520,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
             } else {
                 ctx.fn_sigs.get(callee)
                     .map(|s| s.return_kind.clone())
-                    .ok_or_else(|| CompileError::ice(format!("elaborate: call to undeclared function `{}`", callee.0)))?
+                    .ok_or_else(|| CompileError::UndefinedFunction { name: callee.0.clone(), span })?
             };
             Ok(SemExpr { kind: SemExprKind::Call { callee: callee.clone(), args: sem_args }, kind_of, span })
         }
@@ -604,7 +601,7 @@ fn elaborate_expr(expr: &Expr, pos: Position, ctx: &Ctx, env: &mut Env) -> Resul
                 // codegen rejects this outright today ("comprehension in
                 // value position not yet supported") — comprehensions are
                 // set-expression-position only per the v0 design.
-                return Err(not_yet_implemented("comprehension in value position"));
+                return Err(not_yet_implemented("comprehension in value position", span));
             }
             let src = elaborate_expr(source, Position::Set, ctx, env)?;
             env.insert(var.clone(), src.kind_of.clone());
