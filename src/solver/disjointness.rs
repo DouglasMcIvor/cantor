@@ -129,7 +129,14 @@ fn fresh_overload_param_terms<'tm>(
         .enumerate()
         .map(|(i, kind)| match kind {
             ValKind::Bool => Ok(tm.mk_const(tm.boolean_sort(), &format!("__ov_disjoint_{i}"))),
-            ValKind::Int => Ok(tm.mk_const(tm.integer_sort(), &format!("__ov_disjoint_{i}"))),
+            // Int64 reasons identically to Int here (int-soundness-plan
+            // phase 3): the solver reasons over unbounded ℤ regardless of
+            // raw-vs-tagged codegen representation, and the phase 3 split's
+            // own Int64/BigInt overload pair needs this disjointness check
+            // to work exactly like any other compiler-generated overload.
+            ValKind::Int | ValKind::Int64 => {
+                Ok(tm.mk_const(tm.integer_sort(), &format!("__ov_disjoint_{i}")))
+            }
             _ => Err(
                 "cannot verify overload disjointness: non-scalar parameter positions \
                  are not yet supported"

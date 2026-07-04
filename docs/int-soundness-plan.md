@@ -12,8 +12,11 @@ DONE (2026-07-04). Step 2 (semantics — `Kind::Int64` variant,
 `compiler_generated_split` marker, `check_overload_kind_agreement`
 exception) DONE (2026-07-04) — see that step's entry below for a correction
 found while implementing it (the original sketch assumed `Int64` already
-had a distinct `Kind`; it didn't). Steps 3–5 (solver, codegen, tests/docs)
-not started — no LLVM/codegen/JIT wiring exists yet.
+had a distinct `Kind`; it didn't). Step 3 (solver) DONE (2026-07-04) —
+confirmed no changes needed for the ℤ reasoning itself, plus one incidental
+latent-bug fix in the phase 2 disjointness machinery found while auditing
+(see that step's entry). Steps 4–5 (codegen, tests/docs) not started — no
+LLVM/codegen/JIT wiring exists yet.
 **Executes in three phases; phase 1 alone closes the soundness gap**
 
 ---
@@ -406,10 +409,37 @@ independently unit-testable before any codegen exists)
    sides marked, per-position mixing of the exception with ordinary exact
    agreement, and a regression guard that ordinary elaboration never sets
    the marker.
-3. **Solver** — none needed for the ℤ reasoning itself; only the recorded
-   per-node obligation (today `needs_overflow_check`) needs its consumer
-   (codegen) taught the new promotion behaviour — the obligation itself is
-   unchanged.
+3. **Solver — DONE (2026-07-04), confirmed no-op for the ℤ reasoning itself,
+   plus one incidental bug fix found while auditing.** The overflow
+   obligation (`OverflowObligation`, `solver/encode.rs`) is encoded purely
+   from the CVC5 *sort* (`term.sort().is_integer()`), never from `Kind` —
+   confirmed by reading `encode_unop`/`encode_binop` directly — so it already
+   generalizes to a future `Kind::Int64` position with zero changes, exactly
+   as the original sketch assumed.
+
+   Audited every other `Kind`/`ValKind` match in `src/solver/` for the same
+   "would this silently mishandle `Kind::Int64`" question the exhaustive-match
+   compiler errors already answered for step 2 (those only catch *missing*
+   arms, not a wildcard/deny-list arm that happens to be wrong). Found one:
+   `disjointness.rs`'s `fresh_overload_param_terms` used an explicit
+   **allow-list** (`ValKind::Bool`, `ValKind::Int`, else `Err("non-scalar
+   ... not yet supported")`) to build fresh comparison terms for the
+   phase 2 overload-disjointness proof — the one deny-list-shaped exception
+   among otherwise deny-list-style matches elsewhere (`mod.rs`,
+   `encode_call.rs`, `membership.rs`, `blocks.rs` all check for specific
+   *other* Kinds and fall through to integer treatment by default, already
+   correct). A future `Kind::Int64` parameter — exactly what the phase 3
+   split's fast overload will have — would have hit the `Err` arm and wrongly
+   reported "cannot verify overload disjointness: non-scalar parameter
+   positions are not yet supported", even though it's a plain scalar
+   integer. Fixed to `ValKind::Int | ValKind::Int64 => ...`, matching
+   `sort.rs`'s existing pattern. Left untested in isolation (deliberately):
+   nothing produces `Kind::Int64` anywhere yet, so this exact branch is
+   unreachable dead code until step 4 exists, and step 4's own end-to-end
+   CLI tests (a real `Int64`/`BigInt` split checked for disjointness through
+   the normal `check_file` pipeline) will be the first thing to actually
+   exercise it — building the fixture-based plumbing step 2 used, purely to
+   cover an unreachable branch in isolation, wasn't judged worth it here.
 4. **Codegen**:
    a. emit the compiler-generated `Int64`/`BigInt` overload pair for eligible
       signatures, reusing phase 2's static/runtime dispatch codegen unchanged;
