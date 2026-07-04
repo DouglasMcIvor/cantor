@@ -98,6 +98,9 @@ pub(crate) struct BlockCtx<'a, 'tm> {
     // *outer* solver) — `check_inductive_step`/`check_for_inductive_step`
     // decide and write directly into this map instead.
     pub(crate) overflow_checks: &'a mut HashMap<Span, bool>,
+    /// Same rationale as `overflow_checks`, for int-soundness-plan phase 2's
+    /// overload call-resolution side-channel.
+    pub(crate) overload_resolutions: &'a mut HashMap<Span, Option<usize>>,
 }
 
 /// Process a sequence of statements, threading the SSA environment.
@@ -738,6 +741,7 @@ pub(crate) fn encode_block<'tm>(
                     distinct_preds: ctx.encode.distinct_preds,
                     has_runtime_assert: ctx.has_runtime_assert,
                     overflow_checks: ctx.overflow_checks,
+                    overload_resolutions: ctx.overload_resolutions,
                 };
                 if let Some(step_err) =
                     check_inductive_step(cond, body, &modified, env, &mut loop_ctx)
@@ -814,6 +818,7 @@ pub(crate) fn encode_block<'tm>(
                     distinct_preds: ctx.encode.distinct_preds,
                     has_runtime_assert: ctx.has_runtime_assert,
                     overflow_checks: ctx.overflow_checks,
+                    overload_resolutions: ctx.overload_resolutions,
                 };
                 if let Some(step_err) =
                     check_for_inductive_step(var, set, body, &modified, env, &mut loop_ctx)

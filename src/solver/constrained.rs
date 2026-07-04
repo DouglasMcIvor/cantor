@@ -29,4 +29,13 @@ pub struct ConstrainedTree {
     /// the arithmetic expression's own span (`Add`/`Sub`/`Mul`/`Div`/unary
     /// `Neg`); consulted only by `codegen::compile_constrained`.
     pub overflow_checks: HashMap<Span, bool>,
+    /// int-soundness-plan phase 2: per-call-node-span statically-resolved
+    /// overload index, keyed the same way codegen's mangled-name table is
+    /// (position in file order within the whole same-name `Vec<SemFunctionDef>`).
+    /// Also *not* part of the proof this type represents — an absent entry
+    /// means codegen must emit a runtime membership-test dispatch chain
+    /// instead of a direct call; it's an optimization side-channel, never a
+    /// soundness requirement (the call's domain-membership obligation is
+    /// proved unconditionally, regardless of whether resolution succeeded).
+    pub overload_resolution: HashMap<Span, usize>,
 }

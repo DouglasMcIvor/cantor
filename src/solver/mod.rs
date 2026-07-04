@@ -80,7 +80,13 @@ pub enum CheckResult {
     Unknown(String),
 }
 
-type FunctionEnv<'a> = HashMap<Symbol, &'a SemFunctionDef>;
+/// int-soundness-plan phase 2: multiple `FunctionDef`s may share a name (an
+/// overload set), so every name maps to a `Vec` of definitions — in file
+/// order, since call-resolution indices (`ConstrainedTree::overload_resolution`)
+/// and codegen's mangled-name table both derive an overload's identity from
+/// its position in this same ordering. The overwhelmingly common case is a
+/// `Vec` of length 1.
+type FunctionEnv<'a> = HashMap<Symbol, Vec<&'a SemFunctionDef>>;
 
 /// Result of checking a whole file: either every obligation was proved
 /// (yielding a [`ConstrainedTree`] — see there for why that's the only way
@@ -176,13 +182,12 @@ pub fn check_file(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let sem_items = elaborate(items)?;
 
-    let fn_env: FunctionEnv<'_> = sem_items
-        .iter()
-        .filter_map(|item| match item {
-            SemItem::FunctionDef(def) => Some((def.name.clone(), def)),
-            _ => None,
-        })
-        .collect();
+    let mut fn_env: FunctionEnv<'_> = FunctionEnv::new();
+    for item in &sem_items {
+        if let SemItem::FunctionDef(def) = item {
+            fn_env.entry(def.name.clone()).or_default().push(def);
+        }
+    }
 
     let name_defs: NameDefs = sem_items
         .iter()
@@ -202,12 +207,25 @@ pub fn check_file(
     // file is otherwise `Proved` — see below.
     let mut overflow_checks: HashMap<Span, bool> = HashMap::new();
 
-    let results: Vec<(String, Vec<(String, CheckResult)>)> = sem_items
+    // Overload call-resolution outcomes (int-soundness-plan phase 2): same
+    // side-channel shape as `overflow_checks` but keeps `Option<usize>` while
+    // accumulating (see `decide_overload_resolutions`'s unanimous-agreement
+    // merge) — only converted to the `HashMap<Span, usize>` `ConstrainedTree`
+    // exposes once every function has been checked, below.
+    let mut overload_resolutions: HashMap<Span, Option<usize>> = HashMap::new();
+
+    let mut results: Vec<(String, Vec<(String, CheckResult)>)> = sem_items
         .iter()
         .filter_map(|item| match item {
             SemItem::FunctionDef(def) => {
-                let results =
-                    check_function(def, &fn_env, &name_defs, timeout_ms, &mut overflow_checks);
+                let results = check_function(
+                    def,
+                    &fn_env,
+                    &name_defs,
+                    timeout_ms,
+                    &mut overflow_checks,
+                    &mut overload_resolutions,
+                );
                 Some(results.map(|r| (def.name.0.clone(), r)))
             }
             SemItem::NameDef(def) => {
@@ -220,16 +238,28 @@ pub fn check_file(
         })
         .collect::<Result<_, _>>()?;
 
+    // int-soundness-plan phase 2: overload domains must be provably disjoint
+    // — unlike overflow/resolution, this *does* gate `all_proved` below (an
+    // ordinary proof obligation, reusing the domain/range checker, not a new
+    // escape hatch). Differing-arity overloads of the same name need no
+    // check against each other (arity alone already makes them disjoint).
+    results.extend(check_overload_disjointness(&fn_env, &name_defs, timeout_ms));
+
     let all_proved = results
         .iter()
         .all(|(_, sig_results)| sig_results.iter().all(|(_, r)| *r == CheckResult::Proved));
 
     if all_proved {
+        let overload_resolution: HashMap<Span, usize> = overload_resolutions
+            .into_iter()
+            .filter_map(|(span, resolved)| resolved.map(|idx| (span, idx)))
+            .collect();
         Ok(CheckOutcome::Proved(ConstrainedTree {
             items: items.to_vec(),
             sem_items,
             results,
             overflow_checks,
+            overload_resolution,
         }))
     } else {
         Ok(CheckOutcome::NotProved(results))
@@ -246,6 +276,7 @@ pub fn check_function(
     name_defs: &NameDefs,
     timeout_ms: u64,
     overflow_checks: &mut HashMap<Span, bool>,
+    overload_resolutions: &mut HashMap<Span, Option<usize>>,
 ) -> Result<Vec<(String, CheckResult)>, crate::error::CompileError> {
     let param_names: Vec<Symbol> = def.params.iter().map(|p| p.name.clone()).collect();
 
@@ -255,16 +286,14 @@ pub fn check_function(
         .enumerate()
         .map(|(i, sig)| {
             let label = sig_label(&def.name.0, i, def.sigs.len());
+            let mut channels = SideChannels {
+                overflow_checks,
+                overload_resolutions,
+            };
             let result = match &def.body {
-                SemFunctionBody::Expr(body) => check_sig(
-                    sig,
-                    &param_names,
-                    body,
-                    fn_env,
-                    name_defs,
-                    timeout_ms,
-                    overflow_checks,
-                ),
+                SemFunctionBody::Expr(body) => {
+                    check_sig(sig, &param_names, body, fn_env, name_defs, timeout_ms, &mut channels)
+                }
                 SemFunctionBody::Block(stmts) => check_block_sig(
                     sig,
                     &param_names,
@@ -272,7 +301,7 @@ pub fn check_function(
                     fn_env,
                     name_defs,
                     timeout_ms,
-                    overflow_checks,
+                    &mut channels,
                 ),
             };
             (label, result)
@@ -320,6 +349,9 @@ fn check_name_def(
     // verdict here. Collected (encode_expr requires the accumulator
     // unconditionally) but deliberately never decided/merged anywhere.
     let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
+    // Same rationale as `overflow_obligs` just above: collected because
+    // `encode_expr` requires the accumulator unconditionally, never decided.
+    let mut overload_obligs: Vec<self::encode::OverloadCallObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
 
     let mut encode_ctx = EncodeCtx {
@@ -330,6 +362,7 @@ fn check_name_def(
         call_counter: &mut call_counter,
         builtin_obligs: &mut builtin_obligs,
         overflow_obligs: &mut overflow_obligs,
+        overload_obligs: &mut overload_obligs,
         distinct_preds: &distinct_preds,
     };
     let value_term = match encode_expr(&def.value, &env, &mut encode_ctx, top_guard, None) {
@@ -481,6 +514,179 @@ fn validate_disjoint_unions(
     }
 }
 
+// ── Overload disjointness (int-soundness-plan phase 2) ───────────────────────
+
+/// Fresh per-parameter-position solver constants for one overload group —
+/// shared across every candidate in the group so their domain terms can be
+/// asserted together and checked for a common witness. Every member of a
+/// same-name-same-arity group is guaranteed to agree on `param_kinds`
+/// (enforced by `elaborate::check_overload_kind_agreement`), so it's safe to
+/// derive these once from any one member.
+///
+/// TODO: only scalar (`Int`/`Bool`) parameter positions are supported — a
+/// `Tuple`/`TaggedUnion`/`Vector` position returns `Err` (reported as
+/// `Unknown`), matching `validate_disjoint_unions`'s existing scalar-only
+/// scope. Lift together if ever needed.
+fn fresh_overload_param_terms<'tm>(
+    param_kinds: &[ValKind],
+    tm: &'tm TermManager,
+) -> Result<Vec<Term<'tm>>, String> {
+    param_kinds
+        .iter()
+        .enumerate()
+        .map(|(i, kind)| match kind {
+            ValKind::Bool => Ok(tm.mk_const(tm.boolean_sort(), &format!("__ov_disjoint_{i}"))),
+            ValKind::Int => Ok(tm.mk_const(tm.integer_sort(), &format!("__ov_disjoint_{i}"))),
+            _ => Err(
+                "cannot verify overload disjointness: non-scalar parameter positions \
+                 are not yet supported"
+                    .to_string(),
+            ),
+        })
+        .collect()
+}
+
+/// The term "`param_terms` lie in `def`'s declared domain" — an OR across
+/// `def`'s own signatures (one overload may itself declare more than one
+/// signature over one shared body, exactly like today's non-overloaded
+/// functions) of an AND across parameter positions.
+fn overload_domain_term<'tm>(
+    def: &SemFunctionDef,
+    param_terms: &[Term<'tm>],
+    tm: &'tm TermManager,
+    name_defs: &NameDefs,
+    distinct_preds: &DistinctPreds<'tm>,
+) -> Result<Term<'tm>, String> {
+    let mut arms: Vec<Term<'_>> = Vec::new();
+    for sig in &def.sigs {
+        let parts = sem_param_set_exprs(sig.domain.as_ref(), param_terms.len()).map_err(|_| {
+            format!(
+                "cannot verify overload disjointness for `{}`: signature arity mismatch \
+                 (internal error)",
+                def.name.0
+            )
+        })?;
+        let mut conjuncts: Vec<Term<'_>> = Vec::new();
+        for ((term, part), kind) in param_terms.iter().zip(&parts).zip(&def.param_kinds) {
+            if *kind == ValKind::Bool {
+                continue; // membership is definitional, no constraint needed
+            }
+            match membership_constraint(tm, term.clone(), part, name_defs, distinct_preds) {
+                Membership::Unconstrained => {}
+                Membership::Constrained(c) => conjuncts.push(c),
+                Membership::Unsupported => {
+                    return Err(format!(
+                        "cannot verify overload disjointness for `{}`: domain `{}` uses syntax \
+                         not yet supported in the SMT encoding",
+                        def.name.0, part
+                    ));
+                }
+            }
+        }
+        arms.push(match conjuncts.len() {
+            0 => tm.mk_boolean(true),
+            1 => conjuncts.into_iter().next().unwrap(),
+            _ => tm.mk_term(Kind::And, &conjuncts),
+        });
+    }
+    Ok(match arms.len() {
+        1 => arms.into_iter().next().unwrap(),
+        _ => tm.mk_term(Kind::Or, &arms),
+    })
+}
+
+/// Prove `def_a`'s and `def_b`'s declared domains share no value — a
+/// counterexample is a witness argument tuple in both.
+fn check_pair_disjoint(
+    def_a: &SemFunctionDef,
+    def_b: &SemFunctionDef,
+    name_defs: &NameDefs,
+    timeout_ms: u64,
+) -> CheckResult {
+    let tm = TermManager::new();
+    let mut solver = configured_solver(&tm, timeout_ms);
+    let distinct_preds = build_distinct_preds(&tm, name_defs);
+
+    let param_terms = match fresh_overload_param_terms(&def_a.param_kinds, &tm) {
+        Ok(v) => v,
+        Err(e) => return CheckResult::Unknown(e),
+    };
+    let term_a = match overload_domain_term(def_a, &param_terms, &tm, name_defs, &distinct_preds) {
+        Ok(t) => t,
+        Err(e) => return CheckResult::Unknown(e),
+    };
+    let term_b = match overload_domain_term(def_b, &param_terms, &tm, name_defs, &distinct_preds) {
+        Ok(t) => t,
+        Err(e) => return CheckResult::Unknown(e),
+    };
+    solver.assert_formula(term_a);
+    solver.assert_formula(term_b);
+
+    let sat = solver.check_sat();
+    if sat.is_unsat() {
+        CheckResult::Proved
+    } else if sat.is_sat() {
+        let mut params = HashMap::new();
+        for (i, term) in param_terms.iter().enumerate() {
+            let val = solver.get_value(term.clone());
+            let n = if term.sort().is_boolean() {
+                boolean_value(&val) as i64
+            } else {
+                integer_value(&val)
+            };
+            params.insert(format!("arg{i}"), n);
+        }
+        CheckResult::Counterexample {
+            params,
+            output: 0,
+            reason: format!(
+                "overloads of `{}` are not disjoint — a value exists in both declared domains; \
+                 overload domains must be disjoint (design-decisions.md §7)",
+                def_a.name.0
+            ),
+        }
+    } else {
+        CheckResult::Unknown(format!(
+            "cannot prove overloads of `{}` are disjoint",
+            def_a.name.0
+        ))
+    }
+}
+
+/// Pairwise-disjointness obligations for every (name, arity) group with more
+/// than one member in `fn_env` — groups of differing arity for the same
+/// name need no check (arity alone is always statically decidable, so it
+/// already makes them disjoint).
+fn check_overload_disjointness(
+    fn_env: &FunctionEnv<'_>,
+    name_defs: &NameDefs,
+    timeout_ms: u64,
+) -> Vec<(String, Vec<(String, CheckResult)>)> {
+    let mut out = Vec::new();
+    for (name, defs) in fn_env {
+        let mut by_arity: HashMap<usize, Vec<&SemFunctionDef>> = HashMap::new();
+        for def in defs {
+            by_arity.entry(def.params.len()).or_default().push(*def);
+        }
+        for group in by_arity.values() {
+            if group.len() < 2 {
+                continue;
+            }
+            let mut sig_results = Vec::new();
+            for i in 0..group.len() {
+                for j in (i + 1)..group.len() {
+                    let label =
+                        format!("{} (overload {} vs {}, disjointness)", name.0, i + 1, j + 1);
+                    let result = check_pair_disjoint(group[i], group[j], name_defs, timeout_ms);
+                    sig_results.push((label, result));
+                }
+            }
+            out.push((name.0.clone(), sig_results));
+        }
+    }
+    out
+}
+
 // ── Shared setup/teardown for both signature checkers ────────────────────────
 //
 // check_sig (pure expression body) and check_block_sig (block body) both:
@@ -611,6 +817,15 @@ fn decode_cex_params<'tm>(
     cex_params
 }
 
+/// The two file-wide proof side-channels (int-soundness-plan phases 1 and 2)
+/// threaded through `check_sig`/`check_block_sig`, bundled to keep those
+/// functions under clippy's argument-count limit — same fix as the
+/// `EncodeCtx`/`BlockCtx`/`LoopCtx` family (see project history).
+struct SideChannels<'a> {
+    overflow_checks: &'a mut HashMap<Span, bool>,
+    overload_resolutions: &'a mut HashMap<Span, Option<usize>>,
+}
+
 /// The solver-wide pieces `finish_check`/`decode_cex_params` need, common to
 /// both `check_sig` and `check_block_sig`.
 struct CheckCtx<'a, 'tm> {
@@ -729,7 +944,7 @@ fn check_block_sig(
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs,
     timeout_ms: u64,
-    overflow_checks: &mut HashMap<Span, bool>,
+    channels: &mut SideChannels<'_>,
 ) -> CheckResult {
     if let Some(dom) = &sig.domain
         && let Some(result) = validate_disjoint_unions(dom, name_defs, timeout_ms)
@@ -765,6 +980,7 @@ fn check_block_sig(
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
     let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
+    let mut overload_obligs: Vec<self::encode::OverloadCallObligation<'_>> = Vec::new();
     let mut ssa_counter = 0usize;
     let mut constraint_env: HashMap<Symbol, SemExpr> = HashMap::new();
     let mut has_runtime_assert = false;
@@ -780,6 +996,7 @@ fn check_block_sig(
             call_counter: &mut call_counter,
             builtin_obligs: &mut builtin_obligs,
             overflow_obligs: &mut overflow_obligs,
+            overload_obligs: &mut overload_obligs,
             distinct_preds: &distinct_preds,
         },
         ssa_counter: &mut ssa_counter,
@@ -788,7 +1005,8 @@ fn check_block_sig(
         constraint_env: &mut constraint_env,
         has_runtime_assert: &mut has_runtime_assert,
         immutable_names: &mut immutable_names,
-        overflow_checks,
+        overflow_checks: channels.overflow_checks,
+        overload_resolutions: channels.overload_resolutions,
     };
     let body_term = match encode_block(stmts, &mut env, &mut block_ctx, result_sort) {
         Ok(Some(t)) => t,
@@ -804,7 +1022,13 @@ fn check_block_sig(
     // and every later query vacuously "proved". Loop bodies already decided
     // their own overflow obligations inline (see `loops.rs`), directly into
     // `overflow_checks`, since they run on an isolated temp solver.
-    decide_overflow_obligations(&overflow_obligs, &tm, &solver, overflow_checks);
+    decide_overflow_obligations(&overflow_obligs, &tm, &solver, channels.overflow_checks);
+    self::encode::decide_overload_resolutions(
+        &overload_obligs,
+        &tm,
+        &solver,
+        channels.overload_resolutions,
+    );
 
     if has_runtime_assert && !crate::semantics::tree::range_contains_fail(&sig.range) {
         return CheckResult::Counterexample {
@@ -855,7 +1079,7 @@ fn check_sig(
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs,
     timeout_ms: u64,
-    overflow_checks: &mut HashMap<Span, bool>,
+    channels: &mut SideChannels<'_>,
 ) -> CheckResult {
     if let Some(dom) = &sig.domain
         && let Some(result) = validate_disjoint_unions(dom, name_defs, timeout_ms)
@@ -891,6 +1115,7 @@ fn check_sig(
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
     let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
+    let mut overload_obligs: Vec<self::encode::OverloadCallObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
     let range_sort = set_sort(&tm, &sig.range, &distinct_preds, name_defs);
     let mut encode_ctx = EncodeCtx {
@@ -901,6 +1126,7 @@ fn check_sig(
         call_counter: &mut call_counter,
         builtin_obligs: &mut builtin_obligs,
         overflow_obligs: &mut overflow_obligs,
+        overload_obligs: &mut overload_obligs,
         distinct_preds: &distinct_preds,
     };
     let body_term = match encode_expr(body, &env, &mut encode_ctx, top_guard, range_sort) {
@@ -910,7 +1136,13 @@ fn check_sig(
 
     // See `check_block_sig`'s identical comment: must run before `finish_check`'s
     // negated-goal assertion.
-    decide_overflow_obligations(&overflow_obligs, &tm, &solver, overflow_checks);
+    decide_overflow_obligations(&overflow_obligs, &tm, &solver, channels.overflow_checks);
+    self::encode::decide_overload_resolutions(
+        &overload_obligs,
+        &tm,
+        &solver,
+        channels.overload_resolutions,
+    );
 
     let mut check_ctx = CheckCtx {
         tm: &tm,

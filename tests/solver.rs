@@ -22,6 +22,8 @@ mod membership;
 mod named_errors;
 #[path = "solver/overflow.rs"]
 mod overflow;
+#[path = "solver/overloads.rs"]
+mod overloads;
 #[path = "solver/runtime_sets.rs"]
 mod runtime_sets;
 #[path = "solver/set_defs.rs"]

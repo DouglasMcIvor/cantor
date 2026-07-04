@@ -12,7 +12,7 @@ use crate::{
     ast::DefKind,
     kind::Kind as ValKind,
     semantics::tree::{SemExpr, SemFunctionDef, SemFunctionSig, sem_param_set_exprs},
-    span::Symbol,
+    span::{Span, Symbol},
 };
 
 use super::NameDefs;
@@ -21,13 +21,25 @@ use super::sort::{
     extract_success_value, is_product_range, maybe_coerce, set_sort, success_arm_of_range,
 };
 
-use super::encode::{BuiltinObligation, EncodeCtx, Env, encode_expr, mk_decomposed_tuple};
+use super::encode::{
+    BuiltinObligation, EncodeCtx, Env, OverloadCallObligation, encode_expr, mk_decomposed_tuple,
+};
 
 // ── Call encoder ──────────────────────────────────────────────────────────────
 
+/// The pieces of a `Call`/`Try(Call)` node `encode_call` needs from its
+/// caller, bundled to keep the function under clippy's argument-count limit
+/// — same fix as the `EncodeCtx`/`BlockCtx`/`LoopCtx` family (see project
+/// history for the established pattern).
+#[derive(Clone, Copy)]
+pub(crate) struct CallSite<'e> {
+    pub(crate) callee: &'e Symbol,
+    pub(crate) args: &'e [SemExpr],
+    pub(crate) span: Span,
+}
+
 pub(crate) fn encode_call<'tm>(
-    callee: &Symbol,
-    args: &[SemExpr],
+    call: &CallSite<'_>,
     env: &Env<'tm>,
     ctx: &mut EncodeCtx<'_, 'tm>,
     path_cond: Term<'tm>,
@@ -36,6 +48,11 @@ pub(crate) fn encode_call<'tm>(
     // per-signature success-narrowing `args ∈ domain_i → result ∈ success_arm_i`.
     narrow_try: bool,
 ) -> Result<Term<'tm>, String> {
+    let CallSite {
+        callee,
+        args,
+        span: call_span,
+    } = *call;
     macro_rules! enc {
         ($e:expr) => {
             encode_expr($e, env, ctx, path_cond.clone(), None)
@@ -75,20 +92,39 @@ pub(crate) fn encode_call<'tm>(
 
     let arg_terms: Vec<Term<'_>> = args.iter().map(|a| enc!(a)).collect::<Result<_, _>>()?;
 
-    let callee_def = *ctx
+    let overload_set = ctx
         .fn_env
         .get(callee)
         .ok_or_else(|| format!("unknown function `{}`", callee.0))?;
 
-    push_call_domain_obligation(callee, callee_def, args, &arg_terms, ctx, &path_cond)?;
+    // int-soundness-plan phase 2: only definitions whose arity matches this
+    // call are candidates — arity alone is always statically decidable, so a
+    // def of a different arity contributes nothing here (mirrors, at the
+    // overload-set level, the per-signature `DomainMatch::Mismatch` arm
+    // below). Indices are positions in the whole same-name `Vec`, matching
+    // codegen's mangled-name table and `ConstrainedTree::overload_resolution`.
+    let candidates: Vec<(usize, &SemFunctionDef)> = overload_set
+        .iter()
+        .enumerate()
+        .filter(|(_, def)| def.params.len() == args.len())
+        .map(|(i, def)| (i, *def))
+        .collect();
+
+    push_call_domain_obligation(callee, &candidates, args, &arg_terms, ctx, &path_cond)?;
+
+    if candidates.len() > 1 {
+        push_overload_call_obligation(callee, &candidates, args, &arg_terms, ctx, &path_cond, call_span)?;
+    }
 
     let fresh = format!("_call_{}", *ctx.call_counter);
     *ctx.call_counter += 1;
 
+    let all_sigs = || candidates.iter().flat_map(|(_, def)| def.sigs.iter());
+
     // For tuple-returning callees, decompose the result into leaf scalar
     // constants assembled with mk_tuple — same reason as for tuple params:
     // a symbolic tuple constant can't be used with child() extraction.
-    let result_var = if let Some(first_sig) = callee_def.sigs.first() {
+    let result_var = if let Some(first_sig) = all_sigs().next() {
         if is_product_range(&first_sig.range) {
             let (assembled, leaves) = mk_decomposed_tuple(
                 ctx.tm,
@@ -120,7 +156,7 @@ pub(crate) fn encode_call<'tm>(
         ctx.tm.mk_const(ctx.tm.integer_sort(), &fresh)
     };
 
-    for sig in &callee_def.sigs {
+    for sig in all_sigs() {
         assert_call_contract(sig, &arg_terms, result_var.clone(), ctx);
         if narrow_try && let Some(success) = success_arm_of_range(&sig.range) {
             assert_domain_implies_membership(sig, &arg_terms, result_var.clone(), success, ctx);
@@ -134,7 +170,7 @@ pub(crate) fn encode_call<'tm>(
         // tagged wrapper — callers immediately use it as a plain Int/Bool/
         // tuple value (e.g. `y : Nat = f(x)?; y - 1`), which would otherwise
         // build an ill-sorted term against `result_var`'s DT sort.
-        let first_sig = callee_def.sigs.first().ok_or_else(|| {
+        let first_sig = all_sigs().next().ok_or_else(|| {
             format!(
                 "call to `{}` under `?` has no signature (internal error)",
                 callee.0
@@ -224,7 +260,7 @@ fn sig_domain_match<'tm>(
 }
 
 /// Push the proof obligation that the call's arguments lie in the domain of
-/// at least one of the callee's declared signatures.
+/// at least one signature of at least one arity-matching candidate overload.
 ///
 /// Without this obligation the per-signature contracts are vacuous
 /// implications: an out-of-domain call (e.g. passing `0` where the domain is
@@ -233,26 +269,28 @@ fn sig_domain_match<'tm>(
 /// never verified against, and the caller would still be reported `proved`.
 fn push_call_domain_obligation<'tm>(
     callee: &Symbol,
-    callee_def: &SemFunctionDef,
+    candidates: &[(usize, &SemFunctionDef)],
     args: &[SemExpr],
     arg_terms: &[Term<'tm>],
     ctx: &mut EncodeCtx<'_, 'tm>,
     path_cond: &Term<'tm>,
 ) -> Result<(), String> {
     let mut arms: Vec<Term<'_>> = Vec::new();
-    for sig in &callee_def.sigs {
-        match sig_domain_match(
-            sig,
-            args,
-            arg_terms,
-            callee,
-            ctx.tm,
-            ctx.name_defs,
-            ctx.distinct_preds,
-        )? {
-            DomainMatch::Mismatch => {}
-            DomainMatch::Trivial => return Ok(()),
-            DomainMatch::Constrained(c) => arms.push(c),
+    for (_, def) in candidates {
+        for sig in &def.sigs {
+            match sig_domain_match(
+                sig,
+                args,
+                arg_terms,
+                callee,
+                ctx.tm,
+                ctx.name_defs,
+                ctx.distinct_preds,
+            )? {
+                DomainMatch::Mismatch => {}
+                DomainMatch::Trivial => return Ok(()),
+                DomainMatch::Constrained(c) => arms.push(c),
+            }
         }
     }
     let (obligation, reason) = if arms.is_empty() {
@@ -282,6 +320,70 @@ fn push_call_domain_obligation<'tm>(
         path_cond: path_cond.clone(),
         obligation,
         violated_reason: reason,
+    });
+    Ok(())
+}
+
+// ── Overload call resolution (int-soundness-plan phase 2) ───────────────────
+
+/// The term "these call arguments lie in `def`'s declared domain" — an OR
+/// across `def`'s own signatures (one overload may itself declare more than
+/// one signature over one shared body, exactly like today's non-overloaded
+/// functions). Unlike `push_call_domain_obligation`'s union-across-candidates
+/// obligation, this is scoped to a single candidate, for per-overload
+/// call-resolution below.
+fn candidate_domain_term<'tm>(
+    def: &SemFunctionDef,
+    args: &[SemExpr],
+    arg_terms: &[Term<'tm>],
+    callee: &Symbol,
+    ctx: &EncodeCtx<'_, 'tm>,
+) -> Result<Term<'tm>, String> {
+    let mut arms: Vec<Term<'_>> = Vec::new();
+    for sig in &def.sigs {
+        match sig_domain_match(
+            sig,
+            args,
+            arg_terms,
+            callee,
+            ctx.tm,
+            ctx.name_defs,
+            ctx.distinct_preds,
+        )? {
+            DomainMatch::Mismatch => {}
+            DomainMatch::Trivial => return Ok(ctx.tm.mk_boolean(true)),
+            DomainMatch::Constrained(c) => arms.push(c),
+        }
+    }
+    Ok(match arms.len() {
+        0 => ctx.tm.mk_boolean(false),
+        1 => arms.remove(0),
+        _ => ctx.tm.mk_term(Kind::Or, &arms),
+    })
+}
+
+/// Record a "which overload does this call resolve to" obligation, decided
+/// later (see `encode::decide_overload_resolutions`) — purely an
+/// optimization side-channel for codegen, never a soundness requirement (the
+/// domain obligation above already guarantees correctness regardless of
+/// whether resolution succeeds).
+fn push_overload_call_obligation<'tm>(
+    callee: &Symbol,
+    candidates: &[(usize, &SemFunctionDef)],
+    args: &[SemExpr],
+    arg_terms: &[Term<'tm>],
+    ctx: &mut EncodeCtx<'_, 'tm>,
+    path_cond: &Term<'tm>,
+    call_span: Span,
+) -> Result<(), String> {
+    let mut terms = Vec::with_capacity(candidates.len());
+    for (idx, def) in candidates {
+        terms.push((*idx, candidate_domain_term(def, args, arg_terms, callee, ctx)?));
+    }
+    ctx.overload_obligs.push(OverloadCallObligation {
+        call_span,
+        path_cond: path_cond.clone(),
+        candidates: terms,
     });
     Ok(())
 }

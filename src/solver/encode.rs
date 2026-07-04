@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::blocks::check_require;
-use super::encode_call::encode_call;
+use super::encode_call::{CallSite, encode_call};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 use super::sort::{maybe_coerce, set_sort};
 use super::{CheckResult, NameDefs};
@@ -50,6 +50,26 @@ pub(crate) struct OverflowObligation<'tm> {
     pub(crate) obligation: Term<'tm>,
 }
 
+/// A "which overload does this call resolve to" obligation, produced by
+/// `encode_call` (int-soundness-plan phase 2) only when the callee's
+/// overload set has more than one candidate at the call's arity.
+///
+/// Like `OverflowObligation`, this is an optimization side-channel, not a
+/// soundness requirement: the call's domain obligation (that the arguments
+/// lie in *some* candidate's domain — asserted unconditionally, unaffected
+/// by this) already guarantees correctness. Deciding which one is proved is
+/// purely so codegen can emit a direct call instead of a runtime dispatch
+/// chain; failing to resolve is always safe (falls back to runtime
+/// dispatch), never a compile error.
+pub(crate) struct OverloadCallObligation<'tm> {
+    pub(crate) call_span: Span,
+    pub(crate) path_cond: Term<'tm>,
+    /// `(overload_index, "args ∈ this overload's domain")`, indexed the same
+    /// way `codegen`'s mangled-name table is: position in file order within
+    /// the whole same-name `Vec<&SemFunctionDef>`.
+    pub(crate) candidates: Vec<(usize, Term<'tm>)>,
+}
+
 /// Everything `encode_expr` and its arm helpers (`encode_unop`/`encode_binop`/
 /// `encode_if`/`encode_proj`/`encode_call`) thread unchanged through the whole
 /// recursive descent over one function body. `env` is deliberately *not* a
@@ -58,12 +78,13 @@ pub(crate) struct OverflowObligation<'tm> {
 /// and `path_cond`/`coerce_to` are specific to one call.
 pub(crate) struct EncodeCtx<'a, 'tm> {
     pub(crate) name_defs: &'a NameDefs,
-    pub(crate) fn_env: &'a HashMap<Symbol, &'a SemFunctionDef>,
+    pub(crate) fn_env: &'a HashMap<Symbol, Vec<&'a SemFunctionDef>>,
     pub(crate) tm: &'tm TermManager,
     pub(crate) solver: &'a mut Solver<'tm>,
     pub(crate) call_counter: &'a mut usize,
     pub(crate) builtin_obligs: &'a mut Vec<BuiltinObligation<'tm>>,
     pub(crate) overflow_obligs: &'a mut Vec<OverflowObligation<'tm>>,
+    pub(crate) overload_obligs: &'a mut Vec<OverloadCallObligation<'tm>>,
     pub(crate) distinct_preds: &'a DistinctPreds<'tm>,
 }
 
@@ -101,6 +122,53 @@ pub(crate) fn decide_overflow_obligations<'tm>(
             .entry(ob.span)
             .and_modify(|p| *p &= proved)
             .or_insert(proved);
+    }
+}
+
+/// Decide every collected overload-call obligation against `solver`, same
+/// timing rule as `decide_overflow_obligations` (before the caller's own
+/// negated-goal assertion). For each obligation, tries every candidate in
+/// order and records the first one whose `path_cond → args ∈ domain_i` is
+/// provable via `check_require`.
+///
+/// Merges into `overload_resolutions` by requiring unanimous agreement
+/// across every reaching path (`None` on any disagreement) rather than
+/// `&=`: a shared body is checked once per signature and, for loops, once
+/// per inductive-step call, but a *specific* resolved index (not a boolean)
+/// is only trustworthy for codegen — which compiles that call site exactly
+/// once — when every path that reaches it agrees on the same overload. A
+/// span absent from every reaching obligation set (this obligation is the
+/// first entry seen for it) starts at whatever that first path resolved.
+pub(crate) fn decide_overload_resolutions<'tm>(
+    overload_obligs: &[OverloadCallObligation<'tm>],
+    tm: &'tm TermManager,
+    solver: &Solver<'tm>,
+    overload_resolutions: &mut HashMap<Span, Option<usize>>,
+) {
+    for ob in overload_obligs {
+        let mut resolved: Option<usize> = None;
+        for (idx, candidate) in &ob.candidates {
+            let implication = if ob.path_cond.to_string().trim() == "true" {
+                candidate.clone()
+            } else {
+                tm.mk_term(Kind::Implies, &[ob.path_cond.clone(), candidate.clone()])
+            };
+            if matches!(
+                check_require(implication, tm, solver, &[], &[]),
+                CheckResult::Proved
+            ) {
+                resolved = Some(*idx);
+                break;
+            }
+        }
+        overload_resolutions
+            .entry(ob.call_span)
+            .and_modify(|p| {
+                if *p != resolved {
+                    *p = None;
+                }
+            })
+            .or_insert(resolved);
     }
 }
 
@@ -380,8 +448,11 @@ pub(crate) fn encode_expr<'tm>(
         ),
 
         SemExprKind::Call { callee, args } => encode_call(
-            callee,
-            args,
+            &CallSite {
+                callee,
+                args,
+                span: expr.span,
+            },
             env,
             ctx,
             path_cond.clone(),
@@ -397,9 +468,18 @@ pub(crate) fn encode_expr<'tm>(
         // unguarded assertion would let an out-of-domain or other-overload
         // call "prove" the wrong success set.
         SemExprKind::Try(inner) => match &inner.kind {
-            SemExprKind::Call { callee, args } => {
-                encode_call(callee, args, env, ctx, path_cond.clone(), None, true)
-            }
+            SemExprKind::Call { callee, args } => encode_call(
+                &CallSite {
+                    callee,
+                    args,
+                    span: inner.span,
+                },
+                env,
+                ctx,
+                path_cond.clone(),
+                None,
+                true,
+            ),
             _ => enc!(inner),
         },
 

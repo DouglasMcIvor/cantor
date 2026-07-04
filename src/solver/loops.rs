@@ -11,8 +11,8 @@ use crate::{
 
 use super::blocks::{BlockCtx, encode_block};
 use super::encode::{
-    BuiltinObligation, EncodeCtx, Env, OverflowObligation, boolean_value,
-    decide_overflow_obligations, encode_expr, integer_value,
+    BuiltinObligation, EncodeCtx, Env, OverflowObligation, OverloadCallObligation, boolean_value,
+    decide_overflow_obligations, decide_overload_resolutions, encode_expr, integer_value,
 };
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 use super::{CheckResult, NameDefs};
@@ -27,7 +27,7 @@ use super::{CheckResult, NameDefs};
 pub(super) struct LoopCtx<'a, 'tm> {
     pub(super) constraint_env: &'a HashMap<Symbol, SemExpr>,
     pub(super) name_defs: &'a NameDefs,
-    pub(super) fn_env: &'a HashMap<Symbol, &'a SemFunctionDef>,
+    pub(super) fn_env: &'a HashMap<Symbol, Vec<&'a SemFunctionDef>>,
     pub(super) tm: &'tm TermManager,
     pub(super) outer_solver: &'a Solver<'tm>,
     pub(super) ssa_counter: &'a mut usize,
@@ -37,6 +37,7 @@ pub(super) struct LoopCtx<'a, 'tm> {
     pub(super) distinct_preds: &'a DistinctPreds<'tm>,
     pub(super) has_runtime_assert: &'a mut bool,
     pub(super) overflow_checks: &'a mut HashMap<Span, bool>,
+    pub(super) overload_resolutions: &'a mut HashMap<Span, Option<usize>>,
 }
 
 // ── Inductive step checking ───────────────────────────────────────────────────
@@ -67,6 +68,7 @@ where
         &mut Env<'tm>,
         &mut usize,
         &mut Vec<OverflowObligation<'tm>>,
+        &mut Vec<OverloadCallObligation<'tm>>,
     ) -> Option<CheckResult>,
 {
     // Even when no modified variable carries an invariant, the body must still
@@ -120,6 +122,7 @@ where
     // against `tmp` once encoding finishes, before the correctness check's
     // negated-goal assertion makes `tmp` inconsistent (see below).
     let mut overflow_obligs: Vec<OverflowObligation<'tm>> = Vec::new();
+    let mut overload_obligs: Vec<OverloadCallObligation<'tm>> = Vec::new();
 
     // Loop-specific setup: assert the condition / introduce the loop variable.
     if let Some(err) = add_loop_entry(
@@ -127,6 +130,7 @@ where
         &mut ind_env,
         ctx.ssa_counter,
         &mut overflow_obligs,
+        &mut overload_obligs,
     ) {
         return Some(err);
     }
@@ -151,6 +155,7 @@ where
             call_counter: &mut cc,
             builtin_obligs: &mut obligs,
             overflow_obligs: &mut overflow_obligs,
+            overload_obligs: &mut overload_obligs,
             distinct_preds: ctx.distinct_preds,
         };
         let mut block_ctx = BlockCtx {
@@ -162,6 +167,7 @@ where
             has_runtime_assert: ctx.has_runtime_assert,
             immutable_names: &mut step_imm,
             overflow_checks: ctx.overflow_checks,
+            overload_resolutions: ctx.overload_resolutions,
         };
         encode_block(body, &mut body_env, &mut block_ctx, None)
     };
@@ -177,6 +183,7 @@ where
     // would make its assertion set inconsistent and every later query
     // vacuously "proved".
     decide_overflow_obligations(&overflow_obligs, ctx.tm, &tmp, ctx.overflow_checks);
+    decide_overload_resolutions(&overload_obligs, ctx.tm, &tmp, ctx.overload_resolutions);
 
     // Every constrained var's post-iteration value must satisfy its invariant.
     let mut step_obligs: Vec<Term<'tm>> = Vec::new();
@@ -297,7 +304,7 @@ pub(super) fn check_inductive_step<'tm>(
         env,
         ctx,
         "loop invariant",
-        |tmp, ind_env, _ssa, overflow_obligs| {
+        |tmp, ind_env, _ssa, overflow_obligs, overload_obligs| {
             let mut cc = 0usize;
             let mut obligs = Vec::new();
             let mut encode_ctx = EncodeCtx {
@@ -308,6 +315,7 @@ pub(super) fn check_inductive_step<'tm>(
                 call_counter: &mut cc,
                 builtin_obligs: &mut obligs,
                 overflow_obligs,
+                overload_obligs,
                 distinct_preds,
             };
             match encode_expr(cond, ind_env, &mut encode_ctx, tm.mk_boolean(true), None) {
@@ -359,7 +367,7 @@ pub(super) fn check_for_inductive_step<'tm>(
         env,
         ctx,
         "for-loop invariant",
-        |tmp, ind_env, ssa, _overflow_obligs| {
+        |tmp, ind_env, ssa, _overflow_obligs, _overload_obligs| {
             let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
             *ssa += 1;
             let var_fresh = tm.mk_const(tm.integer_sort(), &var_fresh_name);
