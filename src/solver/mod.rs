@@ -732,6 +732,11 @@ fn check_sig(
                 0 // TODO: decode datatype arm for cross-kind union counterexample display
             } else if matches!(k, ValKind::Vector(_)) {
                 0 // TODO: render vector model value in counterexample display
+            } else if let Some(info) = distinct_preds.values().find(|i| i.sort == term.sort()) {
+                // Parameter has a distinct (uninterpreted) sort — apply `from_D` to
+                // recover the underlying integer for the counterexample display.
+                let from_app = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), term.clone()]);
+                integer_value(&solver.get_value(from_app))
             } else {
                 integer_value(&val)
             };

@@ -99,6 +99,29 @@ freeze() = 273
 ");
 }
 
+// check_sig (pure expression body) used to lack the `from_D` decode step that
+// check_block_sig already had, so a distinct-sorted parameter's counterexample
+// witness fell through to `integer_value` on the raw uninterpreted-sort term —
+// which never parses as an integer, so `unwrap_or(0)` silently displayed 0
+// regardless of the real witness. `from(x) + 5` forces a non-zero witness
+// (from(x) = -5) so a wrong-but-plausible `x = 0` display can't hide behind
+// a coincidentally-zero answer.
+#[test]
+fn distinct_set_param_counterexample_shows_decoded_witness() {
+    let results = check("
+Litre = distinct Int
+f : Litre -> NatPos
+f(x) = from(x) + 5
+");
+    let (label, result) = &results[0];
+    match result {
+        CheckResult::Counterexample { params, .. } => {
+            assert_eq!(params.get("x"), Some(&-5), "expected decoded witness x = -5, got {params:?}");
+        }
+        other => panic!("`{label}` should be Counterexample, got {other:?}"),
+    }
+}
+
 #[test]
 fn distinct_set_wrong_basis_counterexample() {
     // Claiming Int output is Litre (distinct Nat) when input could be negative
