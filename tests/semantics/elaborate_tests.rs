@@ -463,3 +463,41 @@ fn value_position_var_falls_back_to_a_top_level_scalar_constant() {
     };
     assert_eq!(body.kind_of, Kind::Int);
 }
+
+// ── int-soundness-plan phase 2: overload sets (multiple bodies, one name) ────
+
+/// Confirms `elaborate()`'s current behaviour ahead of phase 2: two top-level
+/// `FunctionDef`s sharing a name already parse as two distinct items (see
+/// tests/funcdef_tests.rs::two_function_defs_same_name_parse_as_separate_items),
+/// and `elaborate()` maps over every item unconditionally — both bodies do
+/// already survive into the returned `Vec<SemItem>` today, with no grouping
+/// or validation applied to them at all. (The last-wins collapsing that
+/// actually drops a body lives further downstream, in
+/// `solver::FunctionEnv`/`codegen`'s name-keyed maps, not here.)
+#[test]
+fn two_same_name_function_defs_both_survive_elaboration_untouched() {
+    let items = elaborate_src("f : Nat -> Nat\nf(x) = x + 1\nf : Nat -> Nat\nf(x) = x + 2");
+    let count = items
+        .iter()
+        .filter(|item| matches!(item, SemItem::FunctionDef(def) if def.name.0 == "f"))
+        .count();
+    assert_eq!(count, 2, "expected both overloads of `f` to survive elaboration");
+}
+
+/// TODO(int-soundness-plan phase 2): `elaborate()` has no cross-definition
+/// check at all today — two same-name, same-arity `FunctionDef`s that
+/// disagree on the Kind of a position (here: `Int` vs `Bool` return) both
+/// elaborate independently and successfully. Phase 2 adds an explicit
+/// overload-set grouping (by name+arity) that requires every member to agree
+/// on param/return Kind, rejecting this case with a new
+/// `CompileError::OverloadKindMismatch` — un-ignore once that check lands.
+#[test]
+#[ignore = "phase 2 not yet implemented: no cross-overload Kind-agreement check exists yet"]
+fn overloads_with_mismatched_return_kind_are_rejected() {
+    let items = parse_file("f : Int -> Int\nf(x) = x\nf : Int -> Bool\nf(x) = true")
+        .unwrap_or_else(|e| panic!("parse error: {e}"));
+    assert!(
+        elaborate(&items).is_err(),
+        "expected elaborate to reject overloads that disagree on return Kind"
+    );
+}

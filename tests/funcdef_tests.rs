@@ -186,6 +186,26 @@ fn two_function_defs() {
     assert_eq!(items.len(), 2);
 }
 
+/// Locks in current parser behaviour ahead of int-soundness-plan phase 2
+/// (function overloading with multiple bodies): two top-level `FunctionDef`s
+/// sharing a name already parse as two distinct `Item::FunctionDef`s — no
+/// grouping, no error. The grouping into an explicit overload set happens in
+/// the semantic phase (see tests/semantics/elaborate_tests.rs); downstream of
+/// the parser, every one of those stages currently collapses this into a
+/// single silently-shadowed definition (last one wins) until phase 2 lands.
+#[test]
+fn two_function_defs_same_name_parse_as_separate_items() {
+    let src = "f : Int -> Int\nf(x) = x + 1\nf : Nat -> Nat\nf(x) = x + 2";
+    let items = parse_file(src).unwrap();
+    assert_eq!(items.len(), 2);
+    for item in &items {
+        let Item::FunctionDef(def) = item else {
+            panic!("expected FunctionDef item, got {item:?}")
+        };
+        assert_eq!(def.name.0, "f");
+    }
+}
+
 // ── Error cases ───────────────────────────────────────────────────────────────
 
 #[test]
