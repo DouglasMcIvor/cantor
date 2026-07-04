@@ -14,7 +14,7 @@ use crate::{
     error::CompileError,
     kind::Kind,
     semantics::{elaborate::elaborate, tree::{SemExpr, SemFunctionBody, SemItem, SemStmt}},
-    span::Symbol,
+    span::{Span, Symbol},
 };
 
 mod blocks;
@@ -72,6 +72,18 @@ pub struct Compiler<'ctx> {
     /// `fn_ranges` is used by `coerce_tagged_union_return`: to disambiguate
     /// which arm of a `+`-typed parameter a scalar call argument belongs to.
     fn_param_set_exprs: HashMap<String, Vec<SemExpr>>,
+    /// int-soundness-plan phase 1: per-arithmetic-node-span "proved not to
+    /// overflow i64" verdicts from `ConstrainedTree::overflow_checks`. Empty
+    /// (via `compile_items`/`compile_file`, which have no solver-verified
+    /// tree — the REPL, `llvm-ir` on an unproved file) means every arithmetic
+    /// op is conservatively treated as unproved: `.get(span).copied().unwrap_or(false)`.
+    overflow_checks: HashMap<Span, bool>,
+    /// `(path, src)` for formatting an overflow-abort message with a
+    /// `path:line:col` prefix, matching `main.rs`'s `print_compile_error`.
+    /// `None` when there's no single coherent source string to point at
+    /// (`compile_items`/`compile_file` — see the REPL's own note on why
+    /// span→line:col can't be trusted there).
+    overflow_ctx: Option<(String, String)>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -88,6 +100,8 @@ impl<'ctx> Compiler<'ctx> {
             distinct_names: HashSet::new(),
             fn_param_set_exprs: HashMap::new(),
             fn_param_kinds: HashMap::new(),
+            overflow_checks: HashMap::new(),
+            overflow_ctx: None,
         }
     }
 
@@ -539,7 +553,7 @@ pub(super) fn compile_items<'ctx>(
     items: &[Item],
 ) -> Result<Compiler<'ctx>, CompileError> {
     let sem_items = elaborate(items)?;
-    compile_elaborated(ctx, items, &sem_items)
+    compile_elaborated(ctx, items, &sem_items, HashMap::new(), None)
 }
 
 /// Compile an already-elaborated file — the shared core of `compile_items`
@@ -549,12 +563,20 @@ pub(super) fn compile_items<'ctx>(
 /// Takes `items` *and* `sem_items` because pass 0 (constant-folding) below
 /// deliberately walks the raw AST rather than the elaborated tree — see its
 /// comment for why.
+///
+/// `overflow_checks`/`overflow_ctx` come from a verified `ConstrainedTree`
+/// (`compile_constrained`) or are empty/`None` (`compile_items` — no solver
+/// verification ran, so every arithmetic op is conservatively unproved).
 pub(super) fn compile_elaborated<'ctx>(
     ctx: &'ctx Context,
     items: &[Item],
     sem_items: &[SemItem],
+    overflow_checks: HashMap<Span, bool>,
+    overflow_ctx: Option<(String, String)>,
 ) -> Result<Compiler<'ctx>, CompileError> {
     let mut compiler = Compiler::new(ctx, "cantor");
+    compiler.overflow_checks = overflow_checks;
+    compiler.overflow_ctx = overflow_ctx;
     compiler.declare_runtime_functions();
 
     // Pass 0 — evaluate scalar constants and build a shared env of inlined values.

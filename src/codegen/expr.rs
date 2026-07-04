@@ -1,6 +1,7 @@
 use inkwell::{
     IntPredicate,
-    values::{AggregateValueEnum, BasicValueEnum},
+    intrinsics::Intrinsic,
+    values::{AggregateValueEnum, BasicValueEnum, IntValue},
 };
 
 use crate::{
@@ -36,10 +37,10 @@ impl<'ctx> Compiler<'ctx> {
                     name: sym.0.clone(),
                     span: expr.span,
                 }),
-            SemExprKind::Add(lhs, rhs) => self.compile_arith(BinOp::Add, lhs, rhs, env),
-            SemExprKind::Sub(lhs, rhs) => self.compile_arith(BinOp::Sub, lhs, rhs, env),
-            SemExprKind::Mul(lhs, rhs) => self.compile_arith(BinOp::Mul, lhs, rhs, env),
-            SemExprKind::Div(lhs, rhs) => self.compile_arith(BinOp::Div, lhs, rhs, env),
+            SemExprKind::Add(lhs, rhs) => self.compile_arith(BinOp::Add, lhs, rhs, env, expr.span),
+            SemExprKind::Sub(lhs, rhs) => self.compile_arith(BinOp::Sub, lhs, rhs, env, expr.span),
+            SemExprKind::Mul(lhs, rhs) => self.compile_arith(BinOp::Mul, lhs, rhs, env, expr.span),
+            SemExprKind::Div(lhs, rhs) => self.compile_arith(BinOp::Div, lhs, rhs, env, expr.span),
             // Set-position-only variants: elaboration never threads these into
             // a value-position tree (see `semantics::elaborate`'s module doc),
             // so reaching them here means an elaborator invariant broke —
@@ -80,28 +81,159 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Value-position `+ - * /` — dedicated `SemExprKind` variants (never
-    /// wrapped in `BinOp`, see `tree.rs`'s module doc), always plain i64 arithmetic.
+    /// wrapped in `BinOp`, see `tree.rs`'s module doc).
+    ///
+    /// int-soundness-plan phase 1: when the solver proved this node's result
+    /// fits in `Int64` (`self.overflow_checks`), emits today's plain
+    /// instruction — zero cost. Otherwise emits a checked instruction that
+    /// aborts at runtime rather than silently wrapping; unproved is the
+    /// common case (`Mul` under an unconstrained domain is nonlinear
+    /// arithmetic the solver can't decide), and is deliberately *not* a
+    /// compile error — see docs/int-soundness-plan.md.
     fn compile_arith(
         &self,
         op: BinOp,
         lhs: &SemExpr,
         rhs: &SemExpr,
         env: &Env<'ctx>,
+        span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (lv, lk) = self.compile_expr(lhs, env)?;
         let (rv, rk) = self.compile_expr(rhs, env)?;
         let li = self.scalarize_to_int(lv, &lk)?;
         let ri = self.scalarize_to_int(rv, &rk)?;
+        let proved = self.overflow_checks.get(&span).copied().unwrap_or(false);
         let b = &self.builder;
-        let v = match op {
-            BinOp::Add => b.build_int_add(li, ri, "add"),
-            BinOp::Sub => b.build_int_sub(li, ri, "sub"),
-            BinOp::Mul => b.build_int_mul(li, ri, "mul"),
-            BinOp::Div => b.build_int_signed_div(li, ri, "div"),
-            _ => unreachable!("compile_arith is only called for Add/Sub/Mul/Div"),
+
+        if proved {
+            let v = match op {
+                BinOp::Add => b.build_int_add(li, ri, "add"),
+                BinOp::Sub => b.build_int_sub(li, ri, "sub"),
+                BinOp::Mul => b.build_int_mul(li, ri, "mul"),
+                BinOp::Div => b.build_int_signed_div(li, ri, "div"),
+                _ => unreachable!("compile_arith is only called for Add/Sub/Mul/Div"),
+            }
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+            return Ok((v.into(), Kind::Int));
         }
-        .map_err(|e| CompileError::ice(e.to_string()))?;
+
+        let v = match op {
+            BinOp::Add => self.emit_checked_arith_i64("llvm.sadd.with.overflow", li, ri, span)?,
+            BinOp::Sub => self.emit_checked_arith_i64("llvm.ssub.with.overflow", li, ri, span)?,
+            BinOp::Mul => self.emit_checked_arith_i64("llvm.smul.with.overflow", li, ri, span)?,
+            // Divisor-nonzero is already a hard proof gate (untouched by this
+            // phase); the only remaining overflow case is `i64::MIN / -1`
+            // (UB in LLVM's `sdiv`), which has no `with.overflow` intrinsic —
+            // an explicit guard is cheaper anyway since both operands are
+            // already valid i64 words by this point.
+            BinOp::Div => {
+                let i64_type = self.context.i64_type();
+                let min = i64_type.const_int(i64::MIN as u64, true);
+                let neg_one = i64_type.const_all_ones();
+                let is_min = b.build_int_compare(IntPredicate::EQ, li, min, "div_lhs_is_min")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                let is_neg_one = b.build_int_compare(IntPredicate::EQ, ri, neg_one, "div_rhs_is_neg_one")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                let overflow = b.build_and(is_min, is_neg_one, "div_overflow")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                self.emit_overflow_abort_branch(overflow, span)?;
+                b.build_int_signed_div(li, ri, "div").map_err(|e| CompileError::ice(e.to_string()))?
+            }
+            _ => unreachable!("compile_arith is only called for Add/Sub/Mul/Div"),
+        };
         Ok((v.into(), Kind::Int))
+    }
+
+    /// Emit an LLVM `llvm.{s}.with.overflow.i64` intrinsic call for `l op r`,
+    /// then an overflow-abort branch (`emit_overflow_abort_branch`) gated on
+    /// the intrinsic's overflow flag. Returns the (possibly-wrapped, but only
+    /// reached when the flag is false) result.
+    fn emit_checked_arith_i64(
+        &self,
+        intrinsic_name: &str,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        span: Span,
+    ) -> Result<IntValue<'ctx>, CompileError> {
+        let i64_type = self.context.i64_type();
+        let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+            CompileError::ice(format!("LLVM intrinsic `{intrinsic_name}` not found"))
+        })?;
+        let decl = intrinsic.get_declaration(&self.module, &[i64_type.into()]).ok_or_else(|| {
+            CompileError::ice(format!("could not declare LLVM intrinsic `{intrinsic_name}`"))
+        })?;
+        let call = self.builder
+            .build_call(decl, &[l.into(), r.into()], "checked_arith")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        let agg = call.try_as_basic_value().left().ok_or_else(|| {
+            CompileError::ice(format!("`{intrinsic_name}` returned void unexpectedly"))
+        })?.into_struct_value();
+
+        let result = self.builder
+            .build_extract_value(AggregateValueEnum::StructValue(agg), 0, "checked_result")
+            .map_err(|e| CompileError::ice(e.to_string()))?
+            .into_int_value();
+        let overflow = self.builder
+            .build_extract_value(AggregateValueEnum::StructValue(agg), 1, "checked_overflow")
+            .map_err(|e| CompileError::ice(e.to_string()))?
+            .into_int_value();
+
+        self.emit_overflow_abort_branch(overflow, span)?;
+        Ok(result)
+    }
+
+    /// Branch to a runtime abort (never returns) when `is_overflow` is true,
+    /// otherwise fall through — same branch-and-continue shape as
+    /// `compile_assert` (blocks.rs). Positions the builder at the
+    /// fallthrough block afterward.
+    fn emit_overflow_abort_branch(
+        &self,
+        is_overflow: IntValue<'ctx>,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        let function = self.current_fn
+            .ok_or_else(|| CompileError::ice("checked arithmetic outside a function"))?;
+
+        let abort_bb = self.context.append_basic_block(function, "overflow_abort");
+        let pass_bb = self.context.append_basic_block(function, "overflow_pass");
+
+        self.builder
+            .build_conditional_branch(is_overflow, abort_bb, pass_bb)
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+
+        self.builder.position_at_end(abort_bb);
+        let message = self.overflow_message(span);
+        let msg_global = self.builder
+            .build_global_string_ptr(&message, "overflow_msg")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        let msg_i64 = self.builder
+            .build_ptr_to_int(msg_global.as_pointer_value(), self.context.i64_type(), "overflow_msg_i64")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        let abort_fn = self.module.get_function("cantor_overflow_abort").ok_or_else(|| {
+            CompileError::ice("cantor_overflow_abort not declared")
+        })?;
+        self.builder
+            .build_call(abort_fn, &[msg_i64.into()], "overflow_abort_call")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        self.builder.build_unreachable().map_err(|e| CompileError::ice(e.to_string()))?;
+
+        self.builder.position_at_end(pass_bb);
+        Ok(())
+    }
+
+    /// Format an overflow-abort message, `path:line:col`-prefixed when
+    /// `overflow_ctx` is available (matches `main.rs`'s `print_compile_error`),
+    /// falling back to a bare message when it isn't (`compile_items`/
+    /// `compile_file` — no single coherent source string to point at).
+    fn overflow_message(&self, span: Span) -> String {
+        const MSG: &str = "arithmetic overflow (result does not fit in a 64-bit integer)";
+        match &self.overflow_ctx {
+            Some((path, src)) => {
+                let (line, col) = crate::span::offset_to_line_col(src, span.start);
+                format!("{path}:{line}:{col}: {MSG}")
+            }
+            None => MSG.to_string(),
+        }
     }
 
     fn compile_try(
@@ -277,16 +409,25 @@ impl<'ctx> Compiler<'ctx> {
         op: UnOp,
         inner: &SemExpr,
         env: &Env<'ctx>,
-        _span: Span,
+        span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (val, _ty) = self.compile_expr(inner, env)?;
         let iv = val.into_int_value();
         match op {
             UnOp::Neg => {
-                let v = self
-                    .builder
-                    .build_int_neg(iv, "neg")
-                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                // int-soundness-plan phase 1: `-x` overflows only at `i64::MIN`.
+                // Lowered as `0 - x` via `ssub.with.overflow` when unproved so
+                // it shares `emit_checked_arith_i64` with `Sub` rather than a
+                // bespoke compare.
+                if self.overflow_checks.get(&span).copied().unwrap_or(false) {
+                    let v = self
+                        .builder
+                        .build_int_neg(iv, "neg")
+                        .map_err(|e| CompileError::ice(e.to_string()))?;
+                    return Ok((v.into(), Kind::Int));
+                }
+                let zero = self.context.i64_type().const_int(0, true);
+                let v = self.emit_checked_arith_i64("llvm.ssub.with.overflow", zero, iv, span)?;
                 Ok((v.into(), Kind::Int))
             }
             // build_not is bitwise NOT; on i1 this is logical NOT (0↔1).

@@ -219,6 +219,7 @@ fn call_other_function() {
     // main()    = double(21)
     let ctx = Context::create();
     let mut compiler = Compiler::new(&ctx, "test_call");
+    compiler.declare_runtime_functions();
 
     let double_body = SemExpr::binop(BinOp::Mul, SemExpr::var("x", Kind::Int), SemExpr::int(2));
     compiler.compile_function("double", &[Param::new("x")], &double_body).unwrap();

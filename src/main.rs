@@ -234,7 +234,7 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
     }
 
     let ctx = Context::create();
-    let engine = match compile_constrained(&ctx, &tree) {
+    let engine = match compile_constrained(&ctx, &tree, path, src) {
         Ok(e) => e,
         Err(e) => {
             print_compile_error(path, &e, src);

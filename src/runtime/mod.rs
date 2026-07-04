@@ -670,3 +670,18 @@ pub extern "C" fn cantor_union_vec_concat(va: i64, vb: i64) -> i64 {
 
     cantor_union_vec_builder_finish(out)
 }
+
+// ── Checked arithmetic (int-soundness-plan phase 1) ────────────────────────────
+
+/// Print an overflow message and exit nonzero. Called from a checked-arithmetic
+/// abort block; codegen emits `unreachable` immediately after the call, so this
+/// never needs to return control to the caller.
+///
+/// `msg_ptr` points at a null-terminated string baked into the module as a
+/// global constant at compile time.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_overflow_abort(msg_ptr: i64) {
+    let msg = unsafe { std::ffi::CStr::from_ptr(msg_ptr as *const i8) };
+    eprintln!("{}", msg.to_string_lossy());
+    std::process::exit(1);
+}

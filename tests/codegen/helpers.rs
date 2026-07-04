@@ -12,6 +12,7 @@ pub fn jit_eval(body: SemExpr) -> i64 {
 pub fn jit_eval_fn(params: &[Param], body: SemExpr, args: &[i64]) -> i64 {
     let ctx = Context::create();
     let mut compiler = Compiler::new(&ctx, "test");
+    compiler.declare_runtime_functions();
     compiler.compile_function("__test__", params, &body).unwrap();
     let engine = compiler.into_jit_engine().unwrap();
     unsafe {

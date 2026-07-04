@@ -85,5 +85,10 @@ impl<'ctx> Compiler<'ctx> {
         self.module.add_function("cantor_union_vec_get_tag",           i64t.fn_type(ii,   false), None);
         self.module.add_function("cantor_union_vec_get_leaf",          i64t.fn_type(iii,  false), None);
         self.module.add_function("cantor_union_vec_concat",            i64t.fn_type(ii,   false), None);
+
+        // int-soundness-plan phase 1: checked-arithmetic overflow abort.
+        // Takes a pointer (as i64) to a null-terminated message; never returns
+        // (the caller emits `unreachable` right after the call).
+        self.module.add_function("cantor_overflow_abort", void.fn_type(i, false), None);
     }
 }

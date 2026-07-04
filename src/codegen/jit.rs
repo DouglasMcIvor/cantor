@@ -68,6 +68,7 @@ impl<'ctx> Compiler<'ctx> {
                 ("cantor_union_vec_get_tag",           runtime::cantor_union_vec_get_tag           as *const () as usize),
                 ("cantor_union_vec_get_leaf",          runtime::cantor_union_vec_get_leaf          as *const () as usize),
                 ("cantor_union_vec_concat",            runtime::cantor_union_vec_concat            as *const () as usize),
+                ("cantor_overflow_abort",               runtime::cantor_overflow_abort               as *const () as usize),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))
@@ -104,11 +105,21 @@ pub fn compile_file<'ctx>(
 /// re-running `elaborate()` — the `solver`-verified counterpart to
 /// `compile_file`. Only reachable once `solver::check_file` has returned a
 /// `ConstrainedTree`, so this is the entry point `cantor run` should use.
+///
+/// `path`/`src` are baked into any overflow-abort message this file's
+/// arithmetic needs (`path:line:col: ...`, matching `main.rs`'s
+/// `print_compile_error`) — both already in scope at this function's only
+/// call site (`main.rs`'s `run_main`).
 pub fn compile_constrained<'ctx>(
     ctx: &'ctx Context,
     tree: &ConstrainedTree,
+    path: &str,
+    src: &str,
 ) -> Result<ExecutionEngine<'ctx>, CompileError> {
-    compile_elaborated(ctx, &tree.items, &tree.sem_items)?
+    compile_elaborated(
+        ctx, &tree.items, &tree.sem_items,
+        tree.overflow_checks.clone(), Some((path.to_string(), src.to_string())),
+    )?
         .into_jit_engine()
         .map_err(|e| CompileError::ice(e))
 }
