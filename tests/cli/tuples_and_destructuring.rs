@@ -137,6 +137,39 @@ fn destructure_partial_run_produces_correct_output() {
     );
 }
 
+// ── Destructuring a locally let-bound tuple variable ─────────────────────────
+//
+// A local `let`'s tuple value becomes an opaque SSA constant, not an
+// `mk_tuple(...)` APPLY_CONSTRUCTOR term — unlike a tuple literal or a tuple
+// parameter — so destructuring straight off it used to abort cvc5 raw
+// (`index out of bound`). See tests/solver/destructuring.rs for the solver-
+// level tests; these confirm the fix end-to-end through the CLI.
+
+#[test]
+fn destructure_local_tuple_var_all_proved() {
+    let out = run_file("destructure_local_tuple_var.cantor");
+    assert_eq!(out.code, 0, "destructure_local_tuple_var.cantor should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected no failures:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("cvc5") && !out.stderr.contains("cvc5"),
+        "must not leak a raw cvc5 abort:\nstdout: {}\nstderr: {}", out.stdout, out.stderr
+    );
+}
+
+#[test]
+fn destructure_local_tuple_var_run_produces_correct_output() {
+    let out = run_subcommand("destructure_local_tuple_var.cantor");
+    assert_eq!(out.code, 0, "destructure_local_tuple_var.cantor run should exit 0\nstdout: {}", out.stdout);
+    // main() computes f(1, 2) = 1 + 2 = 3
+    assert!(
+        out.stdout.contains("main() = 3"),
+        "expected 'main() = 3' in output:\n{}", out.stdout
+    );
+}
+
 // ── Vector destructuring: not yet implemented ────────────────────────────────
 //
 // The README documents `h, t = v` for a vector `v` (head elements plus a

@@ -163,6 +163,54 @@ f(p) {
 ");
 }
 
+// ── Destructuring a locally let-bound tuple variable ─────────────────────────
+//
+// A local `let`'s tuple value becomes an opaque SSA constant (`mk_const`), not
+// an `mk_tuple(...)` APPLY_CONSTRUCTOR term — unlike a tuple literal or a tuple
+// parameter (deliberately decomposed into leaf constants). `.child()` only
+// works on a genuine constructor application, so destructuring straight off a
+// local variable used to abort cvc5 raw (`index out of bound`). Both
+// `DestructLet` and `DestructAssign` now project via `ApplySelector` (through
+// `proj_from_tuple`/`tuple_arity`), which works on any tuple-sorted term.
+
+#[test]
+fn destruct_let_from_local_tuple_var_proved() {
+    proved("
+f : Int * Int -> Int
+f(p) {
+    v : Int * Int = (p.0, p.1)
+    x, y = v
+    x + y
+}
+");
+}
+
+#[test]
+fn destruct_assign_from_local_tuple_var_proved() {
+    proved("
+f : Int * Int -> Int
+f(p) {
+    v : Int * Int = (p.0, p.1)
+    mut x : Int = 0
+    mut y : Int = 0
+    x, y := v
+    x + y
+}
+");
+}
+
+#[test]
+fn partial_destruct_from_local_tuple_var_proved() {
+    proved("
+f : Int * Int * Int -> Int
+f(p) {
+    v : Int * Int * Int = (p.0, p.1, p.2)
+    a, rest = v
+    a + rest.0 + rest.1
+}
+");
+}
+
 // ── Vector destructuring: not yet implemented ────────────────────────────────
 //
 // The README documents `h, t = v` for a vector `v` (head elements plus a

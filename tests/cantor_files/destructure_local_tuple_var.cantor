@@ -1,0 +1,13 @@
+-- Destructuring off a locally let-bound tuple variable (not a literal or a
+-- parameter). Regression test: the tuple value is an opaque SSA constant in
+-- the solver, not an `mk_tuple(...)` constructor application, which used to
+-- abort cvc5 raw when destructured.
+f : Int * Int -> Int
+f(a, b) {
+    v : Int * Int = (a, b)
+    x, y = v
+    x + y
+}
+
+main : -> Int
+main() = f(1, 2)

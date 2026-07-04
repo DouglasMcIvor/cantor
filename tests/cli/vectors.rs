@@ -144,3 +144,26 @@ fn vec_length_narrowing_control_counterexample() {
         "expected h_no_empty_guard counterexample:\n{}", out.stdout
     );
 }
+
+// ── Kleene-star membership over tuple-sorted terms ───────────────────────────
+//
+// A local variable with a fixed-arity tuple kind (`Nat * 3`), checked against
+// a Kleene-star range (`Nat*`) — `t` here is a tuple-sorted *opaque* SSA
+// constant (a local `let`, not an `mk_tuple(...)` literal), which used to
+// abort cvc5 raw (`membership_constraint`'s KleeneStar-tuple branch called
+// `.child()`, valid only on a genuine constructor application). See
+// tests/solver/vectors.rs for the solver-level tests.
+
+#[test]
+fn kleene_tuple_membership_local_var_all_proved() {
+    let out = run_file("kleene_tuple_local_var.cantor");
+    assert_eq!(out.code, 0, "kleene_tuple_local_var.cantor should exit 0\nstdout: {}", out.stdout);
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected all proved:\n{}", out.stdout
+    );
+    assert!(
+        !out.stdout.contains("cvc5") && !out.stderr.contains("cvc5"),
+        "must not leak a raw cvc5 abort:\nstdout: {}\nstderr: {}", out.stdout, out.stderr
+    );
+}

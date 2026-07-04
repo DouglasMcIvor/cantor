@@ -159,7 +159,7 @@ destructure_mut.cantor      -- mut pattern + reassignment
 destructure_bad.cantor      -- expect error: reassign immutable, wrong arity, etc.
 ```
 
-Add corresponding entries in `tests/cli_tests.rs` (mirrors existing tuple test style).
+Add corresponding entries in `tests/cli/tuples_and_destructuring.rs` (mirrors existing tuple test style).
 Add solver-level unit tests in `tests/solver/destructuring.rs` and wire via `#[path]`
 in `tests/solver.rs`.
 

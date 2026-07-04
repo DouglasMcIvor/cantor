@@ -13,7 +13,7 @@ use crate::{
 use super::NameDefs;
 use super::CheckResult;
 use super::loops::{check_inductive_step, check_for_inductive_step};
-use super::encode::{Env, BuiltinObligation, encode_expr, integer_value};
+use super::encode::{Env, BuiltinObligation, encode_expr, integer_value, proj_from_tuple, tuple_arity};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 
 // ── Loop predicate ────────────────────────────────────────────────────────────
@@ -240,18 +240,24 @@ pub(crate) fn encode_block<'tm>(
                     }
                 }
 
-                // child(0) of an APPLY_CONSTRUCTOR tuple is the constructor; elements at child(1+i).
-                let tuple_arity = rhs_term.num_children().saturating_sub(1);
+                // Read arity from the tuple sort itself (not term children) — `rhs_term`
+                // may be an opaque SSA constant (a local let-bound tuple variable), which
+                // carries a genuine tuple sort but has no APPLY_CONSTRUCTOR children.
+                let arity = tuple_arity(&rhs_term);
                 let last_i = bindings.len() - 1;
 
                 for (i, binding) in bindings.iter().enumerate() {
-                    let is_tail = i == last_i && bindings.len() < tuple_arity;
+                    let is_tail = i == last_i && bindings.len() < arity;
 
                     if is_tail {
                         // Last binder collects remaining elements as a sub-tuple.
-                        let tail: Vec<Term<'_>> = (i..tuple_arity)
-                            .map(|j| rhs_term.child(j + 1))
-                            .collect();
+                        // ApplySelector (via proj_from_tuple) works on any tuple-sorted
+                        // term, unlike `.child()` which requires a literal constructor
+                        // application.
+                        let tail: Vec<Term<'_>> = (i..arity)
+                            .map(|j| proj_from_tuple(tm, rhs_term.clone(), j))
+                            .collect::<Result<_, _>>()
+                            .map_err(CheckResult::Unknown)?;
                         let sub_tuple = tm.mk_tuple(&tail);
                         if let Some(constraint) = &binding.constraint {
                             if let Membership::Constrained(c) = membership_constraint(tm, sub_tuple.clone(), constraint, name_defs, distinct_preds) {
@@ -274,7 +280,7 @@ pub(crate) fn encode_block<'tm>(
                         }
                         env.insert(binding.name.clone(), sub_tuple);
                     } else {
-                        let proj = rhs_term.child(i + 1);
+                        let proj = proj_from_tuple(tm, rhs_term.clone(), i).map_err(CheckResult::Unknown)?;
                         let ssa_name = format!("{}_{}", binding.name.0, ssa_counter);
                         *ssa_counter += 1;
                         let fresh = tm.mk_const(proj.sort(), &ssa_name);
@@ -347,17 +353,24 @@ pub(crate) fn encode_block<'tm>(
                     ));
                 }
 
-                let tuple_arity = rhs_term.num_children().saturating_sub(1);
+                // Read arity from the tuple sort itself (not term children) — `rhs_term`
+                // may be an opaque SSA constant (a local let-bound tuple variable), which
+                // carries a genuine tuple sort but has no APPLY_CONSTRUCTOR children.
+                let arity = tuple_arity(&rhs_term);
                 let last_i = dest_names.len() - 1;
 
                 for (i, name) in dest_names.iter().enumerate() {
-                    let is_tail = i == last_i && dest_names.len() < tuple_arity;
+                    let is_tail = i == last_i && dest_names.len() < arity;
 
                     if is_tail {
                         // Last binder collects remaining elements as a sub-tuple.
-                        let tail: Vec<Term<'_>> = (i..tuple_arity)
-                            .map(|j| rhs_term.child(j + 1))
-                            .collect();
+                        // ApplySelector (via proj_from_tuple) works on any tuple-sorted
+                        // term, unlike `.child()` which requires a literal constructor
+                        // application.
+                        let tail: Vec<Term<'_>> = (i..arity)
+                            .map(|j| proj_from_tuple(tm, rhs_term.clone(), j))
+                            .collect::<Result<_, _>>()
+                            .map_err(CheckResult::Unknown)?;
                         let sub_tuple = tm.mk_tuple(&tail);
                         if let Some(constraint) = constraint_env.get(name).cloned() {
                             if let Membership::Constrained(c) = membership_constraint(tm, sub_tuple.clone(), &constraint, name_defs, distinct_preds) {
@@ -381,7 +394,7 @@ pub(crate) fn encode_block<'tm>(
                         }
                         env.insert(name.clone(), sub_tuple);
                     } else {
-                        let proj = rhs_term.child(i + 1);
+                        let proj = proj_from_tuple(tm, rhs_term.clone(), i).map_err(CheckResult::Unknown)?;
                         let ssa_name = format!("{}_{}", name.0, ssa_counter);
                         *ssa_counter += 1;
                         let fresh = tm.mk_const(proj.sort(), &ssa_name);

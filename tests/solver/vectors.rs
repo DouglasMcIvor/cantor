@@ -311,6 +311,33 @@ f(xs) = xs
 ");
 }
 
+// A local variable with a fixed-arity tuple kind (`Nat * 3`), checked against
+// a Kleene-star range (`Nat*`) — `t` here is a tuple-sorted *opaque* SSA
+// constant (a local `let`, not an `mk_tuple(...)` literal), which used to
+// abort cvc5 raw (`membership_constraint`'s KleeneStar-tuple branch called
+// `.child()`, valid only on a genuine constructor application).
+#[test]
+fn kleene_tuple_membership_local_var_proved() {
+    proved("
+f : -> Nat*
+f() {
+    v : Nat * 3 = [1, 2, 3]
+    v
+}
+");
+}
+
+#[test]
+fn kleene_tuple_membership_local_var_counterexample() {
+    counterexample("
+f : -> Nat*
+f() {
+    v : Int * 3 = [1, -2, 3]
+    v
+}
+");
+}
+
 // ── X* as a cross-kind union arm ─────────────────────────────────────────────
 
 // Nat* | Int domain: the function takes either a vector of nats or a single int.

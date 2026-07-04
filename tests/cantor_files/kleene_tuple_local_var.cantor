@@ -1,0 +1,12 @@
+-- A local variable with a fixed-arity tuple kind (`Nat * 3`), returned into a
+-- Kleene-star range (`Nat*`). Regression test: the local `let`'s value is an
+-- opaque tuple-sorted SSA constant, not an `mk_tuple(...)` literal, which
+-- used to abort cvc5 raw when its Nat* membership was checked element-wise.
+f : -> Nat*
+f() {
+    v : Nat * 3 = [1, 2, 3]
+    v
+}
+
+main : -> Nat
+main() = 0

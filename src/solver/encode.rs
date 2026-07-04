@@ -1028,9 +1028,17 @@ pub(crate) fn boolean_value(term: &Term<'_>) -> bool {
 /// Uses `ApplySelector` rather than `child(index + 1)` so this works for any
 /// tuple-sorted term: concrete `mk_tuple(a, b, c)` applications, `Ite` results,
 /// and `SeqNth` results (which are symbolic, not `APPLY_CONSTRUCTOR` terms).
-fn proj_from_tuple<'tm>(tm: &'tm TermManager, base: Term<'tm>, index: usize) -> Result<Term<'tm>, String> {
+pub(crate) fn proj_from_tuple<'tm>(tm: &'tm TermManager, base: Term<'tm>, index: usize) -> Result<Term<'tm>, String> {
     let sel = base.sort().datatype().constructor(0).selector(index);
     Ok(tm.mk_term(Kind::ApplySelector, &[sel.term(), base]))
+}
+
+/// Number of elements in a tuple-sorted term, read from its sort's datatype —
+/// works for any tuple-sorted term, not just genuine `mk_tuple(...)` constructor
+/// applications (an opaque SSA constant carrying a tuple sort has no children,
+/// but its sort still knows its own arity).
+pub(crate) fn tuple_arity<'tm>(base: &Term<'tm>) -> usize {
+    base.sort().datatype().constructor(0).num_selectors()
 }
 
 /// Create a decomposed representation of a tuple-valued term.

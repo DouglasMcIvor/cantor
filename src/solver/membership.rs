@@ -552,11 +552,16 @@ pub(crate) fn membership_constraint<'tm>(
                 return Membership::Unsupported;
             }
             // Tuple branch: fixed-length concrete body.
+            // Use ApplySelector rather than child(i+1) — `t` may be an opaque
+            // tuple-sorted term (e.g. a SeqNth result or a local let-bound tuple
+            // constant), which carries no APPLY_CONSTRUCTOR children.
             let dt = t.sort().datatype();
-            let n_elems = dt.constructor(0).num_selectors();
+            let ctor = dt.constructor(0);
+            let n_elems = ctor.num_selectors();
             let mut constraints: Vec<Term<'_>> = Vec::new();
             for i in 0..n_elems {
-                let elem = t.child(i + 1);
+                let sel = ctor.selector(i);
+                let elem = tm.mk_term(Kind::ApplySelector, &[sel.term(), t.clone()]);
                 match membership_constraint(tm, elem, inner, name_defs, distinct_preds) {
                     Membership::Constrained(c) => constraints.push(c),
                     Membership::Unconstrained => {}
