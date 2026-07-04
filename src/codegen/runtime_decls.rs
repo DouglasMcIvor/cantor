@@ -185,5 +185,28 @@ impl<'ctx> Compiler<'ctx> {
         // as `cantor_overflow_abort`.
         self.module
             .add_function("cantor_dispatch_unreachable", void.fn_type(i, false), None);
+
+        // int-soundness-plan phase 3: tagged-word BigInt arithmetic. Every
+        // entry point takes/returns tagged `i64` words (see
+        // `runtime/mod.rs`'s module doc comment) — codegen never inspects
+        // tag bits itself, it just calls these.
+        self.module
+            .add_function("cantor_bigint_from_i64", i64t.fn_type(i, false), None);
+        self.module
+            .add_function("cantor_bigint_to_i64", i64t.fn_type(i, false), None);
+        self.module
+            .add_function("cantor_bigint_add", i64t.fn_type(ii, false), None);
+        self.module
+            .add_function("cantor_bigint_sub", i64t.fn_type(ii, false), None);
+        self.module
+            .add_function("cantor_bigint_mul", i64t.fn_type(ii, false), None);
+        self.module
+            .add_function("cantor_bigint_div", i64t.fn_type(ii, false), None);
+        self.module
+            .add_function("cantor_bigint_neg", i64t.fn_type(i, false), None);
+        self.module
+            .add_function("cantor_bigint_cmp", i64t.fn_type(ii, false), None);
+        self.module
+            .add_function("cantor_bigint_to_string", i64t.fn_type(i, false), None);
     }
 }

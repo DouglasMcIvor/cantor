@@ -776,8 +776,10 @@ pub extern "C" fn cantor_dispatch_unreachable(msg_ptr: i64) {
 use num_bigint::BigInt;
 
 /// One bit narrower than `Int64`'s own range — see the module comment above.
-const TAG_SMALL_MIN: i64 = -(1i64 << 62);
-const TAG_SMALL_MAX: i64 = (1i64 << 62) - 1;
+/// `pub` so codegen can constant-fold a small literal's tagged encoding
+/// directly at compile time instead of always emitting a runtime call.
+pub const TAG_SMALL_MIN: i64 = -(1i64 << 62);
+pub const TAG_SMALL_MAX: i64 = (1i64 << 62) - 1;
 
 #[repr(align(8))]
 pub struct CantorBigInt(BigInt);
@@ -838,6 +840,41 @@ pub extern "C" fn cantor_bigint_from_i64(n: i64) -> i64 {
     match encode_small(n) {
         Some(word) => word,
         None => box_bigint(BigInt::from(n)),
+    }
+}
+
+/// Decode a tagged `Int` word into a plain i64 — the inverse of
+/// `cantor_bigint_from_i64`. Used at a call boundary where an already-
+/// tagged argument is passed to a statically-resolved raw-`Int64`
+/// parameter (int-soundness-plan phase 3 step 4b): the solver has already
+/// proved the value lies in `Int64` before codegen ever emits this call,
+/// so the boxed branch is expected to be rare in practice but must still
+/// decode correctly when it does happen (e.g. a value in the tagged
+/// scheme's own narrow-small-range wrinkle band, see `runtime/mod.rs`'s
+/// module doc comment).
+///
+/// Aborts (does not panic — a Rust panic can't safely unwind across the
+/// `extern "C"` boundary into JIT-compiled code, see `cantor_overflow_abort`
+/// for the same reasoning) if the boxed value doesn't actually fit in i64
+/// despite that — a real compiler bug (a wrongly-resolved static proof),
+/// never a legitimate runtime outcome, so this fails loudly rather than
+/// silently truncating.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_bigint_to_i64(word: i64) -> i64 {
+    if word & 1 == 0 {
+        word >> 1
+    } else {
+        let ptr = (word & !1) as *const CantorBigInt;
+        match i64::try_from(unsafe { &(*ptr).0 }) {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!(
+                    "cantor_bigint_to_i64: boxed value doesn't fit in i64 despite a proved \
+                     Int64 boundary — compiler invariant violated"
+                );
+                std::process::exit(1);
+            }
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 use cantor::runtime::{
     CantorBoolSet, CantorIntSet, cantor_bigint_add, cantor_bigint_cmp, cantor_bigint_div,
     cantor_bigint_from_i64, cantor_bigint_mul, cantor_bigint_neg, cantor_bigint_sub,
-    cantor_bigint_to_string,
+    cantor_bigint_to_i64, cantor_bigint_to_string,
 };
 
 // ── CantorIntSet ──────────────────────────────────────────────────────────────
@@ -226,3 +226,17 @@ fn cmp_orders_boxed_values_and_mixed_small_and_boxed() {
     assert_eq!(cantor_bigint_cmp(big, small), 1);
     assert_eq!(cantor_bigint_cmp(big, big), 0);
 }
+
+#[test]
+fn to_i64_round_trips_through_from_i64_for_small_and_boxed_values() {
+    for n in [0i64, 1, -1, 42, -42, i64::MAX, i64::MIN, 1 << 62, -(1 << 62)] {
+        assert_eq!(cantor_bigint_to_i64(cantor_bigint_from_i64(n)), n);
+    }
+}
+
+// `cantor_bigint_to_i64` aborts the process (does not panic — see its own
+// doc comment) if the boxed value genuinely doesn't fit in i64, violating
+// the "already proved to fit" contract. Not exercised here: like
+// `cantor_overflow_abort`/`cantor_dispatch_unreachable` elsewhere in this
+// file, an abort path isn't safely testable from an ordinary in-process
+// unit test (it would kill the whole test binary).

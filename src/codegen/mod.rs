@@ -436,13 +436,14 @@ impl<'ctx> Compiler<'ctx> {
                     )
                     .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1_val.into(), Kind::Bool)
-            } else if matches!(
-                kind,
-                Kind::Tuple(_) | Kind::TaggedUnion(_) | Kind::Vector(_) | Kind::Set(_)
-            ) {
-                (llvm_param, kind.clone())
             } else {
-                (llvm_param, Kind::Int)
+                // int-soundness-plan phase 3: preserving the declared Kind
+                // here (not hardcoding `Kind::Int`) is what lets a
+                // compiler-generated `Int64` overload's parameter be
+                // correctly seen as raw/untagged downstream, distinct from
+                // an ordinary `Kind::Int` (tagged) parameter — both are the
+                // same `i64` LLVM type, so no other change is needed here.
+                (llvm_param, kind.clone())
             };
             env.insert(param.name.clone(), entry);
         }
@@ -508,13 +509,14 @@ impl<'ctx> Compiler<'ctx> {
                     )
                     .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1_val.into(), Kind::Bool)
-            } else if matches!(
-                kind,
-                Kind::Tuple(_) | Kind::TaggedUnion(_) | Kind::Vector(_) | Kind::Set(_)
-            ) {
-                (llvm_param, kind.clone())
             } else {
-                (llvm_param, Kind::Int)
+                // int-soundness-plan phase 3: preserving the declared Kind
+                // here (not hardcoding `Kind::Int`) is what lets a
+                // compiler-generated `Int64` overload's parameter be
+                // correctly seen as raw/untagged downstream, distinct from
+                // an ordinary `Kind::Int` (tagged) parameter — both are the
+                // same `i64` LLVM type, so no other change is needed here.
+                (llvm_param, kind.clone())
             };
             env.insert(param.name.clone(), entry);
         }

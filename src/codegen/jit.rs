@@ -210,6 +210,42 @@ impl<'ctx> Compiler<'ctx> {
                     "cantor_dispatch_unreachable",
                     runtime::cantor_dispatch_unreachable as *const () as usize,
                 ),
+                (
+                    "cantor_bigint_from_i64",
+                    runtime::cantor_bigint_from_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_bigint_to_i64",
+                    runtime::cantor_bigint_to_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_bigint_add",
+                    runtime::cantor_bigint_add as *const () as usize,
+                ),
+                (
+                    "cantor_bigint_sub",
+                    runtime::cantor_bigint_sub as *const () as usize,
+                ),
+                (
+                    "cantor_bigint_mul",
+                    runtime::cantor_bigint_mul as *const () as usize,
+                ),
+                (
+                    "cantor_bigint_div",
+                    runtime::cantor_bigint_div as *const () as usize,
+                ),
+                (
+                    "cantor_bigint_neg",
+                    runtime::cantor_bigint_neg as *const () as usize,
+                ),
+                (
+                    "cantor_bigint_cmp",
+                    runtime::cantor_bigint_cmp as *const () as usize,
+                ),
+                (
+                    "cantor_bigint_to_string",
+                    runtime::cantor_bigint_to_string as *const () as usize,
+                ),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))

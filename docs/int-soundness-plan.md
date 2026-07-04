@@ -19,9 +19,15 @@ latent-bug fix in the phase 2 disjointness machinery found while auditing
 DONE (2026-07-04) — the overload split itself was also corrected during
 this step (see "The overload split" section below); a pre-existing,
 unrelated cvc5 hang on self-multiplication (`x * x`) was found and logged
-as a known issue rather than fixed (see step 4a's entry). Steps 4b–5
-(tagged-value codegen, tests/docs) not started — no LLVM/codegen/JIT wiring
-for the tagged representation exists yet.
+as a known issue rather than fixed (see step 4a's entry). Step 4b (scalar
+tagged-value codegen) attempted and reverted (2026-07-04) — "scalar only,
+defer call boundaries" turned out not to be a viable slice at all; see
+step 4b's entry for the confirmed real scope and the (kept, inert) prep
+work from the attempt: a new `cantor_bigint_to_i64` runtime function, its
+`runtime_decls.rs`/`jit.rs` wiring, and an independent parameter-Kind-
+binding bug fix in `codegen/mod.rs`. Steps 4b–5 (tagged-value codegen,
+tests/docs) otherwise not started — no LLVM/codegen/JIT wiring for the
+tagged representation's arithmetic/call-boundary behaviour exists yet.
 **Executes in three phases; phase 1 alone closes the soundness gap**
 
 ---
@@ -555,10 +561,53 @@ independently unit-testable before any codegen exists)
       a fresh term with an asserted non-negativity fact rather than a raw
       product. Whoever picks this up should also lift step 4a's `Mul`
       restriction once it's resolved.
-   b. tagged encode/decode at every unbounded-`Int` value's construction/
-      consumption site (literals, arithmetic results, vector/struct/tuple
-      element get/set, function parameters/returns, the `Fail` wire's payload
-      field when its success `Kind` is unbounded `Int`);
+   b. **Attempted 2026-07-04, reverted mid-session — "scalar only, defer
+      call boundaries" is not a viable slice boundary.** Original plan:
+      tagged encode/decode at every unbounded-`Int` value's construction/
+      consumption site (literals, arithmetic results, comparisons,
+      printing), deferring vector/struct/tuple elements *and* call-boundary
+      coercion to later slices. Landed literal/arithmetic/comparison
+      tagging (`cantor_bigint_*` calls in `compile_arith`, a new
+      `cantor_bigint_to_i64` decode entry point, `runtime_decls.rs`/`jit.rs`
+      wiring) and tested against a real multi-function CLI program
+      (`run_demo.cantor`: `double(abs(-21))`) — **immediate crash**, nothing
+      to do with the split. `double`'s `Kind::Int` parameter is now
+      "tagged" by convention, but `compile_call` (untouched) still passes
+      the caller's raw, untagged result of `abs(-21)` = -21; being odd,
+      its low bit reads as "pointer to a boxed BigInt", and the runtime
+      dereferences garbage. Nearly every test in the suite calls at least
+      one helper function, so call-boundary coercion isn't a rare edge case
+      to defer — it's the overwhelming common case, and can't be separated
+      from literal/arithmetic tagging even for a "scalar only" cut. Reverted
+      `codegen/expr.rs`'s tagging changes back to today's raw-only
+      behaviour; kept the inert prep work (the new runtime function +
+      tests, the declarations, and an independent, already-latent
+      parameter-binding bug this surfaced — see below) since none of it
+      changes behaviour on its own. All 704 tests green again as of this
+      revert.
+
+      **Independent bug found and fixed while investigating (kept,
+      unrelated to the revert):** `compile_function_body`/
+      `compile_block_body` (`codegen/mod.rs`) hardcoded `Kind::Int` when
+      binding *any* non-Bool/Tuple/TaggedUnion/Vector/Set parameter into
+      `env`, discarding the actual declared `Kind`. Harmless before
+      `Kind::Int64` existed (both compiled identically), but would have
+      silently mislabelled a compiler-generated `Int64` overload's own
+      parameter as `Kind::Int` the moment any codegen logic started caring
+      about the difference. Fixed to preserve `kind.clone()`.
+
+      **Real scope, confirmed empirically, for whenever this is picked
+      back up:** call-boundary coercion (tag a raw arg for a `Kind::Int`
+      param; decode a tagged arg for a resolved `Int64` param; the
+      dispatch-merge return-Kind bug already identified) has to land
+      *together* with literal/arithmetic/comparison tagging and CLI/JIT
+      output decode — there is no smaller correct increment than "every
+      place a scalar `Kind::Int` value is produced, consumed, or crosses a
+      function boundary, all at once." Vector/struct/tuple elements of
+      `Kind::Int` can still wait for a later step. Doug chose to pause
+      here for the session rather than pick a path forward (fold call
+      boundaries into one big change vs. reconsider the representation
+      vs. stop) — revisit this decision point first next time.
    c. replace phase 1's abort branch with the promotion branch at unbounded-
       `Int` arithmetic nodes (bounded-`IntN` nodes keep the phase 1 abort,
       unchanged);
