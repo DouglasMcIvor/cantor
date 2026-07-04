@@ -27,6 +27,7 @@ mod expr_vec;
 mod jit;
 mod loops;
 mod membership;
+mod overload_dispatch;
 mod runtime_decls;
 mod trampoline;
 pub mod wire;
