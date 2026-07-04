@@ -370,6 +370,205 @@ fn validate_disjoint_unions(set_expr: &SemExpr, name_defs: &NameDefs, timeout_ms
     }
 }
 
+// ── Shared setup/teardown for both signature checkers ────────────────────────
+//
+// check_sig (pure expression body) and check_block_sig (block body) both:
+// configure a fresh solver, build each parameter's solver constant from the
+// domain (decomposing tuples into leaf constants), then — after the body is
+// encoded by whichever encoder fits the body shape — combine the range
+// obligation with any built-in obligations and decode the solver's model into
+// a CheckResult. Only the body-encoding step itself differs (encode_expr vs
+// encode_block, plus check_block_sig's loop-invariant Unknown carve-out).
+
+/// Configure a solver with the options both checkers need.
+fn configured_solver<'tm>(tm: &'tm TermManager, timeout_ms: u64) -> Solver<'tm> {
+    let mut solver = Solver::new(tm);
+    solver.set_logic("ALL");
+    solver.set_option("produce-models", "true");
+    // Sequence membership uses universally-quantified constraints (∀i. guard → elem∈X).
+    // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
+    // for existential goals arising from negated universals (counterexample direction).
+    solver.set_option("mbqi", "true");
+    if timeout_ms > 0 { solver.set_option("tlimit", &timeout_ms.to_string()); }
+    solver
+}
+
+/// Build each parameter's solver constant from `domain`, asserting its
+/// domain-membership constraint onto `solver`. Tuple params are decomposed
+/// into leaf scalar constants assembled with `mk_tuple` — this ensures
+/// `TupleProject` in the body always operates on a concrete constructor term
+/// (not a symbolic tuple constant), which cvc5's arithmetic beta-reduction
+/// requires. Returns `(domain_parts, param_terms)`, both in parameter order —
+/// callers need `domain_parts` again later to decode counterexample witnesses
+/// by Kind.
+fn build_param_terms<'tm, 'e>(
+    tm: &'tm TermManager,
+    solver: &mut Solver<'tm>,
+    domain: Option<&'e SemExpr>,
+    param_names: &[Symbol],
+    distinct_preds: &DistinctPreds<'tm>,
+    name_defs: &NameDefs,
+) -> Result<(Vec<&'e SemExpr>, Vec<Term<'tm>>), CheckResult> {
+    let domain_parts: Vec<&SemExpr> = sem_param_set_exprs(domain, param_names.len())
+        .map_err(CheckResult::Unknown)?;
+
+    let mut param_terms: Vec<Term<'_>> = Vec::new();
+    for (n, part) in param_names.iter().zip(domain_parts.iter()) {
+        let k = part.kind_of.clone();
+        if matches!(k, ValKind::Tuple(_)) {
+            let (assembled, leaves) = mk_decomposed_tuple(tm, &n.0, part, distinct_preds, name_defs);
+            for (leaf, leaf_set) in leaves {
+                match membership_constraint(tm, leaf, leaf_set, name_defs, distinct_preds) {
+                    Membership::Unconstrained => {}
+                    Membership::Constrained(c) => solver.assert_formula(c),
+                    Membership::Unsupported => {
+                        return Err(CheckResult::Unknown("unsupported domain set expression".into()));
+                    }
+                }
+            }
+            param_terms.push(assembled);
+        } else {
+            let sort = match set_sort(tm, part, distinct_preds, name_defs) {
+                Some(s) => s,
+                None => return Err(CheckResult::Unknown(format!(
+                    "parameter `{}` has an unsupported domain sort (internal error)",
+                    n.0
+                ))),
+            };
+            let term = tm.mk_const(sort, &n.0);
+            if k != ValKind::Bool {
+                match membership_constraint(tm, term.clone(), part, name_defs, distinct_preds) {
+                    Membership::Unconstrained => {}
+                    Membership::Constrained(c) => solver.assert_formula(c),
+                    Membership::Unsupported => {
+                        return Err(CheckResult::Unknown("unsupported domain set expression".into()));
+                    }
+                }
+            }
+            param_terms.push(term);
+        }
+    }
+
+    Ok((domain_parts, param_terms))
+}
+
+/// Decode each parameter's solver-model value into the `i64` shown in a
+/// `CheckResult::Counterexample`'s `params` map, keyed by Kind.
+fn decode_cex_params<'tm>(
+    tm: &'tm TermManager,
+    solver: &mut Solver<'tm>,
+    param_names: &[Symbol],
+    param_terms: &[Term<'tm>],
+    domain_parts: &[&SemExpr],
+    distinct_preds: &DistinctPreds<'tm>,
+) -> HashMap<String, i64> {
+    let mut cex_params = HashMap::new();
+    for ((name, term), part) in param_names.iter().zip(param_terms.iter()).zip(domain_parts.iter()) {
+        let val = solver.get_value(term.clone());
+        let k = part.kind_of.clone();
+        let n = if k == ValKind::Bool {
+            boolean_value(&val) as i64
+        } else if matches!(k, ValKind::Tuple(_)) {
+            0 // TODO: render tuple model value in counterexample display
+        } else if matches!(k, ValKind::TaggedUnion(_)) {
+            0 // TODO: decode datatype arm for cross-kind union counterexample display
+        } else if matches!(k, ValKind::Vector(_)) {
+            0 // TODO: render vector model value in counterexample display
+        } else if let Some(info) = distinct_preds.values().find(|i| i.sort == term.sort()) {
+            // Parameter has a distinct (uninterpreted) sort — apply `from_D` to
+            // recover the underlying integer for the counterexample display.
+            let from_app = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), term.clone()]);
+            integer_value(&solver.get_value(from_app))
+        } else {
+            integer_value(&val)
+        };
+        cex_params.insert(name.0.clone(), n);
+    }
+    cex_params
+}
+
+/// Shared tail of both signature checkers: combine the range obligation with
+/// any built-in obligations, ask the solver to refute their conjunction, and
+/// turn the result into a `CheckResult`. `extra_unknown_check` runs only on
+/// the SAT (counterexample) path, before decoding witness params — it lets
+/// `check_block_sig` report its loop-invariant-specific `Unknown` message
+/// instead of a generic counterexample when that's the real cause.
+#[allow(clippy::too_many_arguments)]
+fn finish_check<'tm>(
+    tm: &'tm TermManager,
+    solver: &mut Solver<'tm>,
+    body_term: Term<'tm>,
+    range: &SemExpr,
+    builtin_obligs: &[BuiltinObligation<'tm>],
+    param_names: &[Symbol],
+    param_terms: &[Term<'tm>],
+    domain_parts: &[&SemExpr],
+    distinct_preds: &DistinctPreds<'tm>,
+    name_defs: &NameDefs,
+    extra_unknown_check: impl FnOnce() -> Option<CheckResult>,
+) -> CheckResult {
+    let range_obligation = match membership_constraint(tm, body_term.clone(), range, name_defs, distinct_preds) {
+        Membership::Unconstrained => None,
+        Membership::Constrained(c) => Some(c),
+        Membership::Unsupported => {
+            return CheckResult::Unknown("unsupported range set expression".into());
+        }
+    };
+
+    let builtin_formulas: Vec<Term<'_>> = builtin_obligs
+        .iter()
+        .map(|o| {
+            if o.path_cond.to_string().trim() == "true" {
+                o.obligation.clone()
+            } else {
+                tm.mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
+            }
+        })
+        .collect();
+
+    let mut all_obligations: Vec<Term<'_>> = builtin_formulas;
+    if let Some(rc) = range_obligation {
+        all_obligations.push(rc);
+    }
+
+    if all_obligations.is_empty() {
+        return CheckResult::Proved;
+    }
+
+    let combined = if all_obligations.len() == 1 {
+        all_obligations.remove(0)
+    } else {
+        tm.mk_term(Kind::And, &all_obligations)
+    };
+    solver.assert_formula(tm.mk_term(Kind::Not, &[combined]));
+
+    let sat = solver.check_sat();
+    if sat.is_unsat() {
+        CheckResult::Proved
+    } else if sat.is_sat() {
+        if let Some(early) = extra_unknown_check() {
+            return early;
+        }
+        let cex_params = decode_cex_params(tm, solver, param_names, param_terms, domain_parts, distinct_preds);
+        let reason = builtin_obligs
+            .iter()
+            .find(|o| {
+                boolean_value(&solver.get_value(o.path_cond.clone()))
+                    && !boolean_value(&solver.get_value(o.obligation.clone()))
+            })
+            .map(|o| o.violated_reason.to_string())
+            .unwrap_or_else(|| format!("not in {}", range));
+        let output_term = solver.get_value(body_term);
+        CheckResult::Counterexample {
+            params: cex_params,
+            output: integer_value(&output_term),
+            reason,
+        }
+    } else {
+        CheckResult::Unknown("solver returned unknown".into())
+    }
+}
+
 // ── Block body checker ────────────────────────────────────────────────────────
 
 fn check_block_sig(
@@ -386,63 +585,15 @@ fn check_block_sig(
     if let Some(result) = validate_disjoint_unions(&sig.range, name_defs, timeout_ms) { return result; }
 
     let tm = TermManager::new();
-    let mut solver = Solver::new(&tm);
-    solver.set_logic("ALL");
-    solver.set_option("produce-models", "true");
-    // Sequence membership uses universally-quantified constraints (∀i. guard → elem∈X).
-    // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
-    // for existential goals arising from negated universals (counterexample direction).
-    solver.set_option("mbqi", "true");
-    if timeout_ms > 0 { solver.set_option("tlimit", &timeout_ms.to_string()); }
-
+    let mut solver = configured_solver(&tm, timeout_ms);
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
-    let domain_parts: Vec<&SemExpr> = match sem_param_set_exprs(sig.domain.as_ref(), param_names.len()) {
-        Ok(parts) => parts,
-        Err(msg) => return CheckResult::Unknown(msg),
+    let (domain_parts, param_terms) = match build_param_terms(
+        &tm, &mut solver, sig.domain.as_ref(), param_names, &distinct_preds, name_defs,
+    ) {
+        Ok(v) => v,
+        Err(e) => return e,
     };
-
-    // Same decomposition as check_sig: tuple params → leaf constants + mk_tuple.
-    let mut param_terms: Vec<Term<'_>> = Vec::new();
-    for (n, part) in param_names.iter().zip(domain_parts.iter()) {
-        let k = part.kind_of.clone();
-        if matches!(k, ValKind::Tuple(_)) {
-            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part, &distinct_preds, &name_defs);
-            for (leaf, leaf_set) in leaves {
-                match membership_constraint(&tm, leaf.clone(), leaf_set, name_defs, &distinct_preds) {
-                    Membership::Unconstrained => {}
-                    Membership::Constrained(c) => {
-                        solver.assert_formula(c.clone());
-                    }
-                    Membership::Unsupported => {
-                        return CheckResult::Unknown("unsupported domain set expression".into());
-                    }
-                }
-            }
-            param_terms.push(assembled);
-        } else {
-            let sort = match set_sort(&tm, part, &distinct_preds, &name_defs) {
-                Some(s) => s,
-                None => return CheckResult::Unknown(format!(
-                    "parameter `{}` has an unsupported domain sort (internal error)",
-                    n.0
-                )),
-            };
-            let term = tm.mk_const(sort, &n.0);
-            if k != ValKind::Bool {
-                match membership_constraint(&tm, term.clone(), part, name_defs, &distinct_preds) {
-                    Membership::Unconstrained => {}
-                    Membership::Constrained(c) => {
-                        solver.assert_formula(c.clone());
-                    }
-                    Membership::Unsupported => {
-                        return CheckResult::Unknown("unsupported domain set expression".into());
-                    }
-                }
-            }
-            param_terms.push(term);
-        }
-    }
 
     let mut env: Env<'_> = param_names
         .iter()
@@ -493,94 +644,18 @@ fn check_block_sig(
         };
     }
 
-    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range, name_defs, &distinct_preds) {
-        Membership::Unconstrained => None,
-        Membership::Constrained(c) => Some(c),
-        Membership::Unsupported => {
-            return CheckResult::Unknown("unsupported range set expression".into());
-        }
-    };
-
-    let builtin_formulas: Vec<Term<'_>> = builtin_obligs
-        .iter()
-        .map(|o| {
-            if o.path_cond.to_string().trim() == "true" {
-                o.obligation.clone()
-            } else {
-                tm.mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
-            }
-        })
-        .collect();
-
-    let mut all_obligations: Vec<Term<'_>> = builtin_formulas;
-    if let Some(rc) = range_obligation {
-        all_obligations.push(rc);
-    }
-
-    if all_obligations.is_empty() {
-        return CheckResult::Proved;
-    }
-
-    let combined = if all_obligations.len() == 1 {
-        all_obligations.remove(0)
-    } else {
-        tm.mk_term(Kind::And, &all_obligations)
-    };
-    solver.assert_formula(tm.mk_term(Kind::Not, &[combined]));
-
-    let sat = solver.check_sat();
-    if sat.is_unsat() {
-        CheckResult::Proved
-    } else if sat.is_sat() {
-        if body_has_unconstrained_loop_var(stmts, &constraint_env, &tm, name_defs, &distinct_preds) {
-            return CheckResult::Unknown(
-                "while loop: declare all mutable variable constraints \
-                 (`mut name: Set = expr`) to enable counterexample extraction".into()
-            );
-        }
-        let mut cex_params = HashMap::new();
-        for (name, term, part) in param_names.iter()
-            .zip(param_terms.iter())
-            .zip(domain_parts.iter())
-            .map(|((n, t), p)| (n, t, p))
-        {
-            let val = solver.get_value(term.clone());
-            let k = part.kind_of.clone();
-            let n = if k == ValKind::Bool {
-                boolean_value(&val) as i64
-            } else if matches!(k, ValKind::Tuple(_)) {
-                0 // TODO: render tuple model value in counterexample display
-            } else if matches!(k, ValKind::TaggedUnion(_)) {
-                0 // TODO: decode datatype arm for cross-kind union counterexample display
-            } else if matches!(k, ValKind::Vector(_)) {
-                0 // TODO: render vector model value in counterexample display
-            } else if let Some(info) = distinct_preds.values().find(|i| i.sort == term.sort()) {
-                // Parameter has a distinct (uninterpreted) sort — apply `from_D` to
-                // recover the underlying integer for the counterexample display.
-                let from_app = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), term.clone()]);
-                integer_value(&solver.get_value(from_app))
-            } else {
-                integer_value(&val)
-            };
-            cex_params.insert(name.0.clone(), n);
-        }
-        let reason = builtin_obligs
-            .iter()
-            .find(|o| {
-                boolean_value(&solver.get_value(o.path_cond.clone()))
-                    && !boolean_value(&solver.get_value(o.obligation.clone()))
+    finish_check(
+        &tm, &mut solver, body_term, &sig.range, &builtin_obligs,
+        param_names, &param_terms, &domain_parts, &distinct_preds, name_defs,
+        || {
+            body_has_unconstrained_loop_var(stmts, &constraint_env, &tm, name_defs, &distinct_preds).then(|| {
+                CheckResult::Unknown(
+                    "while loop: declare all mutable variable constraints \
+                     (`mut name: Set = expr`) to enable counterexample extraction".into()
+                )
             })
-            .map(|o| o.violated_reason.to_string())
-            .unwrap_or_else(|| format!("not in {}", sig.range));
-        let output_term = solver.get_value(body_term);
-        CheckResult::Counterexample {
-            params: cex_params,
-            output: integer_value(&output_term),
-            reason,
-        }
-    } else {
-        CheckResult::Unknown("solver returned unknown".into())
-    }
+        },
+    )
 }
 
 // ── Pure expression body checker ──────────────────────────────────────────────
@@ -599,66 +674,15 @@ fn check_sig(
     if let Some(result) = validate_disjoint_unions(&sig.range, name_defs, timeout_ms) { return result; }
 
     let tm = TermManager::new();
-    let mut solver = Solver::new(&tm);
-    solver.set_logic("ALL");
-    solver.set_option("produce-models", "true");
-    // Sequence-theory goals use universally-quantified membership constraints.
-    // `full-saturate-quant` tells cvc5 to keep instantiating quantifiers until
-    // a model is found — needed to produce counterexamples for ¬(∀i. …) goals.
-    // Sequence membership uses universally-quantified constraints (∀i. guard → elem∈X).
-    // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
-    // for existential goals arising from negated universals (counterexample direction).
-    solver.set_option("mbqi", "true");
-    if timeout_ms > 0 { solver.set_option("tlimit", &timeout_ms.to_string()); }
-
+    let mut solver = configured_solver(&tm, timeout_ms);
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
-    // sem_param_set_exprs guarantees domain_parts.len() == param_names.len() on Ok.
-    let domain_parts: Vec<&SemExpr> = match sem_param_set_exprs(sig.domain.as_ref(), param_names.len()) {
-        Ok(parts) => parts,
-        Err(msg) => return CheckResult::Unknown(msg),
+    let (domain_parts, param_terms) = match build_param_terms(
+        &tm, &mut solver, sig.domain.as_ref(), param_names, &distinct_preds, name_defs,
+    ) {
+        Ok(v) => v,
+        Err(e) => return e,
     };
-
-    // Create each param constant.  For tuple params, decompose into leaf scalar
-    // constants assembled with mk_tuple — this ensures TupleProject in the body
-    // always operates on a concrete mk_tuple term (not a symbolic tuple constant),
-    // which is required for cvc5's arithmetic beta-reduction to apply.
-    let mut param_terms: Vec<Term<'_>> = Vec::new();
-    for (n, part) in param_names.iter().zip(domain_parts.iter()) {
-        let k = part.kind_of.clone();
-        if matches!(k, ValKind::Tuple(_)) {
-            let (assembled, leaves) = mk_decomposed_tuple(&tm, &n.0, part, &distinct_preds, &name_defs);
-            for (leaf, leaf_set) in leaves {
-                match membership_constraint(&tm, leaf, leaf_set, name_defs, &distinct_preds) {
-                    Membership::Unconstrained => {}
-                    Membership::Constrained(c) => solver.assert_formula(c),
-                    Membership::Unsupported => {
-                        return CheckResult::Unknown("unsupported domain set expression".into())
-                    }
-                }
-            }
-            param_terms.push(assembled);
-        } else {
-            let sort = match set_sort(&tm, part, &distinct_preds, &name_defs) {
-                Some(s) => s,
-                None => return CheckResult::Unknown(format!(
-                    "parameter `{}` has an unsupported domain sort (internal error)",
-                    n.0
-                )),
-            };
-            let term = tm.mk_const(sort, &n.0);
-            if k != ValKind::Bool {
-                match membership_constraint(&tm, term.clone(), part, name_defs, &distinct_preds) {
-                    Membership::Unconstrained => {}
-                    Membership::Constrained(c) => solver.assert_formula(c),
-                    Membership::Unsupported => {
-                        return CheckResult::Unknown("unsupported domain set expression".into())
-                    }
-                }
-            }
-            param_terms.push(term);
-        }
-    }
 
     let env: Env<'_> = param_names
         .iter()
@@ -677,86 +701,9 @@ fn check_sig(
         Err(msg) => return CheckResult::Unknown(msg),
     };
 
-    let range_obligation = match membership_constraint(&tm, body_term.clone(), &sig.range, name_defs, &distinct_preds) {
-        Membership::Unconstrained => None,
-        Membership::Constrained(c) => Some(c),
-        Membership::Unsupported => {
-            return CheckResult::Unknown("unsupported range set expression".into())
-        }
-    };
-
-    let builtin_formulas: Vec<Term<'_>> = builtin_obligs
-        .iter()
-        .map(|o| {
-            if o.path_cond.to_string().trim() == "true" {
-                o.obligation.clone()
-            } else {
-                tm.mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
-            }
-        })
-        .collect();
-
-    let mut all_obligations: Vec<Term<'_>> = builtin_formulas;
-    if let Some(rc) = range_obligation {
-        all_obligations.push(rc);
-    }
-
-    if all_obligations.is_empty() {
-        return CheckResult::Proved;
-    }
-
-    let combined = if all_obligations.len() == 1 {
-        all_obligations.remove(0)
-    } else {
-        tm.mk_term(Kind::And, &all_obligations)
-    };
-    solver.assert_formula(tm.mk_term(Kind::Not, &[combined]));
-
-    let sat = solver.check_sat();
-    if sat.is_unsat() {
-        CheckResult::Proved
-    } else if sat.is_sat() {
-        let mut cex_params = HashMap::new();
-        for (name, term, part) in param_names.iter()
-            .zip(param_terms.iter())
-            .zip(domain_parts.iter())
-            .map(|((n, t), p)| (n, t, p))
-        {
-            let val = solver.get_value(term.clone());
-            let k = part.kind_of.clone();
-            let n = if k == ValKind::Bool {
-                boolean_value(&val) as i64
-            } else if matches!(k, ValKind::Tuple(_)) {
-                0 // TODO: render tuple model value in counterexample display
-            } else if matches!(k, ValKind::TaggedUnion(_)) {
-                0 // TODO: decode datatype arm for cross-kind union counterexample display
-            } else if matches!(k, ValKind::Vector(_)) {
-                0 // TODO: render vector model value in counterexample display
-            } else if let Some(info) = distinct_preds.values().find(|i| i.sort == term.sort()) {
-                // Parameter has a distinct (uninterpreted) sort — apply `from_D` to
-                // recover the underlying integer for the counterexample display.
-                let from_app = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), term.clone()]);
-                integer_value(&solver.get_value(from_app))
-            } else {
-                integer_value(&val)
-            };
-            cex_params.insert(name.0.clone(), n);
-        }
-        let reason = builtin_obligs
-            .iter()
-            .find(|o| {
-                boolean_value(&solver.get_value(o.path_cond.clone()))
-                    && !boolean_value(&solver.get_value(o.obligation.clone()))
-            })
-            .map(|o| o.violated_reason.to_string())
-            .unwrap_or_else(|| format!("not in {}", sig.range));
-        let output_term = solver.get_value(body_term);
-        CheckResult::Counterexample {
-            params: cex_params,
-            output: integer_value(&output_term),
-            reason,
-        }
-    } else {
-        CheckResult::Unknown("solver returned unknown".into())
-    }
+    finish_check(
+        &tm, &mut solver, body_term, &sig.range, &builtin_obligs,
+        param_names, &param_terms, &domain_parts, &distinct_preds, name_defs,
+        || None,
+    )
 }
