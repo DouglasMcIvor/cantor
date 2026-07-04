@@ -6,8 +6,10 @@
 (arity as a free dispatch key, disjointness/Kind-agreement scoped to a
 (name, arity) group). Phase 3 design DECIDED (2026-07-04) — see the
 "Phase 3 — BigInt runtime" section below for the tagged-word representation,
-the `Int64`/`BigInt` overload split, and the step order; implementation not
-started.
+the `Int64`/`BigInt` overload split, and the step order. Implementation
+step 1 (runtime — `CantorBigInt`, tagged encode/decode, `cantor_bigint_*`)
+DONE (2026-07-04); steps 2–5 (semantics, solver, codegen, tests/docs) not
+started — no LLVM/codegen/JIT wiring exists yet.
 **Executes in three phases; phase 1 alone closes the soundness gap**
 
 ---
@@ -361,9 +363,12 @@ at the boundary; it does not eliminate tagged locals inside bodies.
 runtime-first step since the BigInt arithmetic itself is pure Rust and
 independently unit-testable before any codegen exists)
 
-1. **Runtime** — `CantorBigInt` (wraps `num_bigint::BigInt`), tagged
-   encode/decode helpers, and the `cantor_bigint_*` entry points listed
-   above. Pure Rust, unit-tested directly (no LLVM/CLI involvement yet).
+1. **Runtime — DONE (2026-07-04).** `CantorBigInt` (wraps `num_bigint::BigInt`,
+   `#[repr(align(8))]`), tagged encode/decode helpers, and
+   `cantor_bigint_{from_i64,add,sub,mul,div,neg,cmp,to_string}` in
+   `src/runtime/mod.rs`, unit-tested directly in `tests/runtime.rs` (no
+   LLVM/CLI involvement — not yet declared in `runtime_decls.rs` or
+   registered in `jit.rs`, that's step 4).
 2. **Semantics** — the compiler-generated-split marker and the
    `check_overload_kind_agreement` relaxation described above. No user-facing
    syntax changes; this step alone should be invisible to existing programs.
