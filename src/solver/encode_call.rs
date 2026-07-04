@@ -6,9 +6,7 @@
 //! obligation, and callee-contract assertion), while `encode.rs` keeps the
 //! expression router and its non-call arms.
 
-use std::collections::HashMap;
-
-use cvc5::{Kind, Solver, Term, TermManager};
+use cvc5::{Kind, Term, TermManager};
 
 use crate::{
     ast::DefKind,
@@ -23,24 +21,16 @@ use super::sort::{
     extract_success_value, is_product_range, maybe_coerce, set_sort, success_arm_of_range,
 };
 
-use super::encode::{BuiltinObligation, Env, OverflowObligation, encode_expr, mk_decomposed_tuple};
+use super::encode::{BuiltinObligation, EncodeCtx, Env, encode_expr, mk_decomposed_tuple};
 
 // ── Call encoder ──────────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_call<'tm>(
     callee: &Symbol,
     args: &[SemExpr],
     env: &Env<'tm>,
-    name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &SemFunctionDef>,
-    tm: &'tm TermManager,
-    solver: &mut Solver<'tm>,
-    call_counter: &mut usize,
-    builtin_obligs: &mut Vec<BuiltinObligation<'tm>>,
-    overflow_obligs: &mut Vec<OverflowObligation<'tm>>,
+    ctx: &mut EncodeCtx<'_, 'tm>,
     path_cond: Term<'tm>,
-    distinct_preds: &DistinctPreds<'tm>,
     coerce_to: Option<cvc5::Sort<'tm>>,
     // True when this call sits directly under `?`: additionally assert the
     // per-signature success-narrowing `args ∈ domain_i → result ∈ success_arm_i`.
@@ -48,20 +38,7 @@ pub(crate) fn encode_call<'tm>(
 ) -> Result<Term<'tm>, String> {
     macro_rules! enc {
         ($e:expr) => {
-            encode_expr(
-                $e,
-                env,
-                name_defs,
-                fn_env,
-                tm,
-                solver,
-                call_counter,
-                builtin_obligs,
-                overflow_obligs,
-                path_cond.clone(),
-                distinct_preds,
-                None,
-            )
+            encode_expr($e, env, ctx, path_cond.clone(), None)
         };
     }
 
@@ -70,18 +47,18 @@ pub(crate) fn encode_call<'tm>(
     // Apply the `mk` UF — result has sort D_sort (distinct sort).
     // Emit a basis obligation so `litre(x)` with x : Int is rejected when x ∉ Nat.
     if args.len() == 1
-        && let Some(distinct_def) = distinct_def_for_constructor(callee, name_defs)
-        && let Some(info) = distinct_preds.get(&distinct_def.name)
+        && let Some(distinct_def) = distinct_def_for_constructor(callee, ctx.name_defs)
+        && let Some(info) = ctx.distinct_preds.get(&distinct_def.name)
     {
         let arg_term = enc!(&args[0])?;
         match membership_constraint(
-            tm,
+            ctx.tm,
             arg_term.clone(),
             &distinct_def.value,
-            name_defs,
-            distinct_preds,
+            ctx.name_defs,
+            ctx.distinct_preds,
         ) {
-            Membership::Constrained(c) => builtin_obligs.push(BuiltinObligation {
+            Membership::Constrained(c) => ctx.builtin_obligs.push(BuiltinObligation {
                 path_cond: path_cond.clone(),
                 obligation: c,
                 violated_reason: format!(
@@ -91,50 +68,46 @@ pub(crate) fn encode_call<'tm>(
             }),
             Membership::Unconstrained | Membership::Unsupported => {}
         }
-        let result = tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term]);
+        let result = ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term]);
         // maybe_coerce handles distinct→DT coercion; router's final call is a no-op.
-        return maybe_coerce(tm, result, &coerce_to);
+        return maybe_coerce(ctx.tm, result, &coerce_to);
     }
 
     let arg_terms: Vec<Term<'_>> = args.iter().map(|a| enc!(a)).collect::<Result<_, _>>()?;
 
-    let callee_def = fn_env
+    let callee_def = *ctx
+        .fn_env
         .get(callee)
         .ok_or_else(|| format!("unknown function `{}`", callee.0))?;
 
-    push_call_domain_obligation(
-        callee,
-        callee_def,
-        args,
-        &arg_terms,
-        tm,
-        name_defs,
-        distinct_preds,
-        &path_cond,
-        builtin_obligs,
-    )?;
+    push_call_domain_obligation(callee, callee_def, args, &arg_terms, ctx, &path_cond)?;
 
-    let fresh = format!("_call_{}", *call_counter);
-    *call_counter += 1;
+    let fresh = format!("_call_{}", *ctx.call_counter);
+    *ctx.call_counter += 1;
 
     // For tuple-returning callees, decompose the result into leaf scalar
     // constants assembled with mk_tuple — same reason as for tuple params:
     // a symbolic tuple constant can't be used with child() extraction.
     let result_var = if let Some(first_sig) = callee_def.sigs.first() {
         if is_product_range(&first_sig.range) {
-            let (assembled, leaves) =
-                mk_decomposed_tuple(tm, &fresh, &first_sig.range, distinct_preds, name_defs);
+            let (assembled, leaves) = mk_decomposed_tuple(
+                ctx.tm,
+                &fresh,
+                &first_sig.range,
+                ctx.distinct_preds,
+                ctx.name_defs,
+            );
             for (leaf, leaf_set) in leaves {
                 if let Membership::Constrained(c) =
-                    membership_constraint(tm, leaf, leaf_set, name_defs, distinct_preds)
+                    membership_constraint(ctx.tm, leaf, leaf_set, ctx.name_defs, ctx.distinct_preds)
                 {
-                    solver.assert_formula(c);
+                    ctx.solver.assert_formula(c);
                 }
             }
             assembled
         } else {
-            match set_sort(tm, &first_sig.range, distinct_preds, name_defs) {
-                Some(sort) => tm.mk_const(sort, &fresh),
+            match set_sort(ctx.tm, &first_sig.range, ctx.distinct_preds, ctx.name_defs) {
+                Some(sort) => ctx.tm.mk_const(sort, &fresh),
                 None => {
                     return Err(format!(
                         "call to `{}` has an unsupported range sort (internal error)",
@@ -144,30 +117,13 @@ pub(crate) fn encode_call<'tm>(
             }
         }
     } else {
-        tm.mk_const(tm.integer_sort(), &fresh)
+        ctx.tm.mk_const(ctx.tm.integer_sort(), &fresh)
     };
 
     for sig in &callee_def.sigs {
-        assert_call_contract(
-            sig,
-            &arg_terms,
-            result_var.clone(),
-            tm,
-            solver,
-            name_defs,
-            distinct_preds,
-        );
+        assert_call_contract(sig, &arg_terms, result_var.clone(), ctx);
         if narrow_try && let Some(success) = success_arm_of_range(&sig.range) {
-            assert_domain_implies_membership(
-                sig,
-                &arg_terms,
-                result_var.clone(),
-                success,
-                tm,
-                solver,
-                name_defs,
-                distinct_preds,
-            );
+            assert_domain_implies_membership(sig, &arg_terms, result_var.clone(), success, ctx);
         }
     }
 
@@ -190,14 +146,20 @@ pub(crate) fn encode_call<'tm>(
                 callee.0
             )
         })?;
-        return extract_success_value(tm, result_var, success, distinct_preds, name_defs)
-            .ok_or_else(|| {
-                format!(
-                    "cannot narrow `?` on call to `{}`: the success arm's shape doesn't \
+        return extract_success_value(
+            ctx.tm,
+            result_var,
+            success,
+            ctx.distinct_preds,
+            ctx.name_defs,
+        )
+        .ok_or_else(|| {
+            format!(
+                "cannot narrow `?` on call to `{}`: the success arm's shape doesn't \
              resolve to a single extraction from its range's datatype",
-                    callee.0
-                )
-            });
+                callee.0
+            )
+        });
     }
 
     Ok(result_var)
@@ -269,21 +231,25 @@ fn sig_domain_match<'tm>(
 /// `Int - {0}`) would simply fail every antecedent, the callee's body — proved
 /// only *under* its domain assumption — would be entered with an input it was
 /// never verified against, and the caller would still be reported `proved`.
-#[allow(clippy::too_many_arguments)]
 fn push_call_domain_obligation<'tm>(
     callee: &Symbol,
     callee_def: &SemFunctionDef,
     args: &[SemExpr],
     arg_terms: &[Term<'tm>],
-    tm: &'tm TermManager,
-    name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    ctx: &mut EncodeCtx<'_, 'tm>,
     path_cond: &Term<'tm>,
-    builtin_obligs: &mut Vec<BuiltinObligation<'tm>>,
 ) -> Result<(), String> {
     let mut arms: Vec<Term<'_>> = Vec::new();
     for sig in &callee_def.sigs {
-        match sig_domain_match(sig, args, arg_terms, callee, tm, name_defs, distinct_preds)? {
+        match sig_domain_match(
+            sig,
+            args,
+            arg_terms,
+            callee,
+            ctx.tm,
+            ctx.name_defs,
+            ctx.distinct_preds,
+        )? {
             DomainMatch::Mismatch => {}
             DomainMatch::Trivial => return Ok(()),
             DomainMatch::Constrained(c) => arms.push(c),
@@ -291,7 +257,7 @@ fn push_call_domain_obligation<'tm>(
     }
     let (obligation, reason) = if arms.is_empty() {
         (
-            tm.mk_boolean(false),
+            ctx.tm.mk_boolean(false),
             format!(
                 "no signature of `{}` accepts {} argument(s)",
                 callee.0,
@@ -305,14 +271,14 @@ fn push_call_domain_obligation<'tm>(
         )
     } else {
         (
-            tm.mk_term(Kind::Or, &arms),
+            ctx.tm.mk_term(Kind::Or, &arms),
             format!(
                 "arguments to `{}` do not satisfy any of its declared domains",
                 callee.0
             ),
         )
     };
-    builtin_obligs.push(BuiltinObligation {
+    ctx.builtin_obligs.push(BuiltinObligation {
         path_cond: path_cond.clone(),
         obligation,
         violated_reason: reason,
@@ -332,21 +298,9 @@ pub(crate) fn assert_call_contract<'tm>(
     sig: &SemFunctionSig,
     arg_terms: &[Term<'tm>],
     result: Term<'tm>,
-    tm: &'tm TermManager,
-    solver: &mut Solver<'tm>,
-    name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    ctx: &mut EncodeCtx<'_, 'tm>,
 ) {
-    assert_domain_implies_membership(
-        sig,
-        arg_terms,
-        result,
-        &sig.range,
-        tm,
-        solver,
-        name_defs,
-        distinct_preds,
-    );
+    assert_domain_implies_membership(sig, arg_terms, result, &sig.range, ctx);
 }
 
 /// Assert `args ∈ sig.domain → result ∈ target_set` as a solver fact.
@@ -356,16 +310,12 @@ pub(crate) fn assert_call_contract<'tm>(
 /// matched with the same tuple-vs-scalars rule as parameter binding
 /// (`sem_param_set_exprs`); a signature that can't cover this call, or any
 /// unsupported membership, skips the fact — fewer facts, never wrong ones.
-#[allow(clippy::too_many_arguments)]
 fn assert_domain_implies_membership<'tm>(
     sig: &SemFunctionSig,
     arg_terms: &[Term<'tm>],
     result: Term<'tm>,
     target_set: &SemExpr,
-    tm: &'tm TermManager,
-    solver: &mut Solver<'tm>,
-    name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    ctx: &mut EncodeCtx<'_, 'tm>,
 ) {
     let parts = match sem_param_set_exprs(sig.domain.as_ref(), arg_terms.len()) {
         Ok(p) => p,
@@ -373,15 +323,20 @@ fn assert_domain_implies_membership<'tm>(
     };
     let mut antecedents: Vec<Term<'_>> = Vec::new();
     for (part, arg) in parts.iter().zip(arg_terms.iter()) {
-        match membership_constraint(tm, arg.clone(), part, name_defs, distinct_preds) {
+        match membership_constraint(ctx.tm, arg.clone(), part, ctx.name_defs, ctx.distinct_preds) {
             Membership::Unconstrained => {}
             Membership::Constrained(c) => antecedents.push(c),
             Membership::Unsupported => return,
         }
     }
 
-    let consequent = match membership_constraint(tm, result, target_set, name_defs, distinct_preds)
-    {
+    let consequent = match membership_constraint(
+        ctx.tm,
+        result,
+        target_set,
+        ctx.name_defs,
+        ctx.distinct_preds,
+    ) {
         Membership::Unconstrained => return,
         Membership::Constrained(c) => c,
         Membership::Unsupported => return,
@@ -393,12 +348,12 @@ fn assert_domain_implies_membership<'tm>(
         let antecedent = if antecedents.len() == 1 {
             antecedents.into_iter().next().unwrap()
         } else {
-            tm.mk_term(Kind::And, &antecedents)
+            ctx.tm.mk_term(Kind::And, &antecedents)
         };
-        tm.mk_term(Kind::Implies, &[antecedent, consequent])
+        ctx.tm.mk_term(Kind::Implies, &[antecedent, consequent])
     };
 
-    solver.assert_formula(formula);
+    ctx.solver.assert_formula(formula);
 }
 
 // ── Distinct-set helpers ──────────────────────────────────────────────────────

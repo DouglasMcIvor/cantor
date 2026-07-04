@@ -53,10 +53,10 @@ pub(crate) type NameDefs = HashMap<Symbol, SemNameDef>;
 
 use crate::kind::Kind as ValKind;
 
-use self::blocks::{body_has_unconstrained_loop_var, encode_block};
+use self::blocks::{BlockCtx, body_has_unconstrained_loop_var, encode_block};
 use self::encode::{
-    BuiltinObligation, Env, OverflowObligation, boolean_value, decide_overflow_obligations,
-    encode_expr, integer_value, mk_decomposed_tuple,
+    BuiltinObligation, EncodeCtx, Env, OverflowObligation, boolean_value,
+    decide_overflow_obligations, encode_expr, integer_value, mk_decomposed_tuple,
 };
 use self::membership::{DistinctInfo, DistinctPreds, Membership, membership_constraint};
 use self::sort::set_sort;
@@ -322,20 +322,17 @@ fn check_name_def(
     let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
 
-    let value_term = match encode_expr(
-        &def.value,
-        &env,
+    let mut encode_ctx = EncodeCtx {
         name_defs,
         fn_env,
-        &tm,
-        &mut solver,
-        &mut call_counter,
-        &mut builtin_obligs,
-        &mut overflow_obligs,
-        top_guard,
-        &distinct_preds,
-        None,
-    ) {
+        tm: &tm,
+        solver: &mut solver,
+        call_counter: &mut call_counter,
+        builtin_obligs: &mut builtin_obligs,
+        overflow_obligs: &mut overflow_obligs,
+        distinct_preds: &distinct_preds,
+    };
+    let value_term = match encode_expr(&def.value, &env, &mut encode_ctx, top_guard, None) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
     };
@@ -614,34 +611,51 @@ fn decode_cex_params<'tm>(
     cex_params
 }
 
+/// The solver-wide pieces `finish_check`/`decode_cex_params` need, common to
+/// both `check_sig` and `check_block_sig`.
+struct CheckCtx<'a, 'tm> {
+    tm: &'tm TermManager,
+    solver: &'a mut Solver<'tm>,
+    name_defs: &'a NameDefs,
+    distinct_preds: &'a DistinctPreds<'tm>,
+}
+
+/// One signature's parameter names/solver terms/domain parts, always indexed
+/// in parallel — bundled since every consumer (`finish_check`,
+/// `decode_cex_params`) reads all three together.
+struct SigParams<'a, 'tm> {
+    names: &'a [Symbol],
+    terms: &'a [Term<'tm>],
+    domain_parts: &'a [&'a SemExpr],
+}
+
 /// Shared tail of both signature checkers: combine the range obligation with
 /// any built-in obligations, ask the solver to refute their conjunction, and
 /// turn the result into a `CheckResult`. `extra_unknown_check` runs only on
 /// the SAT (counterexample) path, before decoding witness params — it lets
 /// `check_block_sig` report its loop-invariant-specific `Unknown` message
 /// instead of a generic counterexample when that's the real cause.
-#[allow(clippy::too_many_arguments)]
 fn finish_check<'tm>(
-    tm: &'tm TermManager,
-    solver: &mut Solver<'tm>,
+    ctx: &mut CheckCtx<'_, 'tm>,
     body_term: Term<'tm>,
     range: &SemExpr,
     builtin_obligs: &[BuiltinObligation<'tm>],
-    param_names: &[Symbol],
-    param_terms: &[Term<'tm>],
-    domain_parts: &[&SemExpr],
-    distinct_preds: &DistinctPreds<'tm>,
-    name_defs: &NameDefs,
+    params: &SigParams<'_, 'tm>,
     extra_unknown_check: impl FnOnce() -> Option<CheckResult>,
 ) -> CheckResult {
-    let range_obligation =
-        match membership_constraint(tm, body_term.clone(), range, name_defs, distinct_preds) {
-            Membership::Unconstrained => None,
-            Membership::Constrained(c) => Some(c),
-            Membership::Unsupported => {
-                return CheckResult::Unknown("unsupported range set expression".into());
-            }
-        };
+    let range_obligation = match membership_constraint(
+        ctx.tm,
+        body_term.clone(),
+        range,
+        ctx.name_defs,
+        ctx.distinct_preds,
+    ) {
+        Membership::Unconstrained => None,
+        Membership::Constrained(c) => Some(c),
+        Membership::Unsupported => {
+            return CheckResult::Unknown("unsupported range set expression".into());
+        }
+    };
 
     let builtin_formulas: Vec<Term<'_>> = builtin_obligs
         .iter()
@@ -649,7 +663,8 @@ fn finish_check<'tm>(
             if o.path_cond.to_string().trim() == "true" {
                 o.obligation.clone()
             } else {
-                tm.mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
+                ctx.tm
+                    .mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
             }
         })
         .collect();
@@ -666,11 +681,12 @@ fn finish_check<'tm>(
     let combined = if all_obligations.len() == 1 {
         all_obligations.remove(0)
     } else {
-        tm.mk_term(Kind::And, &all_obligations)
+        ctx.tm.mk_term(Kind::And, &all_obligations)
     };
-    solver.assert_formula(tm.mk_term(Kind::Not, &[combined]));
+    ctx.solver
+        .assert_formula(ctx.tm.mk_term(Kind::Not, &[combined]));
 
-    let sat = solver.check_sat();
+    let sat = ctx.solver.check_sat();
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {
@@ -678,22 +694,22 @@ fn finish_check<'tm>(
             return early;
         }
         let cex_params = decode_cex_params(
-            tm,
-            solver,
-            param_names,
-            param_terms,
-            domain_parts,
-            distinct_preds,
+            ctx.tm,
+            ctx.solver,
+            params.names,
+            params.terms,
+            params.domain_parts,
+            ctx.distinct_preds,
         );
         let reason = builtin_obligs
             .iter()
             .find(|o| {
-                boolean_value(&solver.get_value(o.path_cond.clone()))
-                    && !boolean_value(&solver.get_value(o.obligation.clone()))
+                boolean_value(&ctx.solver.get_value(o.path_cond.clone()))
+                    && !boolean_value(&ctx.solver.get_value(o.obligation.clone()))
             })
             .map(|o| o.violated_reason.to_string())
             .unwrap_or_else(|| format!("not in {}", range));
-        let output_term = solver.get_value(body_term);
+        let output_term = ctx.solver.get_value(body_term);
         CheckResult::Counterexample {
             params: cex_params,
             output: integer_value(&output_term),
@@ -706,7 +722,6 @@ fn finish_check<'tm>(
 
 // ── Block body checker ────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 fn check_block_sig(
     sig: &SemFunctionSig,
     param_names: &[Symbol],
@@ -756,26 +771,26 @@ fn check_block_sig(
     let mut immutable_names: HashSet<Symbol> = HashSet::new();
 
     let result_sort = set_sort(&tm, &sig.range, &distinct_preds, name_defs);
-    let body_term = match encode_block(
-        stmts,
-        &mut env,
-        name_defs,
-        fn_env,
-        &tm,
-        &mut solver,
-        &mut call_counter,
-        &mut builtin_obligs,
-        &mut overflow_obligs,
-        &mut ssa_counter,
+    let mut block_ctx = BlockCtx {
+        encode: EncodeCtx {
+            name_defs,
+            fn_env,
+            tm: &tm,
+            solver: &mut solver,
+            call_counter: &mut call_counter,
+            builtin_obligs: &mut builtin_obligs,
+            overflow_obligs: &mut overflow_obligs,
+            distinct_preds: &distinct_preds,
+        },
+        ssa_counter: &mut ssa_counter,
         param_names,
-        &param_terms,
-        &mut constraint_env,
-        &mut has_runtime_assert,
-        &mut immutable_names,
-        &distinct_preds,
+        param_terms: &param_terms,
+        constraint_env: &mut constraint_env,
+        has_runtime_assert: &mut has_runtime_assert,
+        immutable_names: &mut immutable_names,
         overflow_checks,
-        result_sort,
-    ) {
+    };
+    let body_term = match encode_block(stmts, &mut env, &mut block_ctx, result_sort) {
         Ok(Some(t)) => t,
         Ok(None) => {
             return CheckResult::Unknown("block body has no return expression".into());
@@ -801,17 +816,23 @@ fn check_block_sig(
         };
     }
 
+    let mut check_ctx = CheckCtx {
+        tm: &tm,
+        solver: &mut solver,
+        name_defs,
+        distinct_preds: &distinct_preds,
+    };
+    let sig_params = SigParams {
+        names: param_names,
+        terms: &param_terms,
+        domain_parts: &domain_parts,
+    };
     finish_check(
-        &tm,
-        &mut solver,
+        &mut check_ctx,
         body_term,
         &sig.range,
         &builtin_obligs,
-        param_names,
-        &param_terms,
-        &domain_parts,
-        &distinct_preds,
-        name_defs,
+        &sig_params,
         || {
             body_has_unconstrained_loop_var(stmts, &constraint_env, &tm, name_defs, &distinct_preds)
                 .then(|| {
@@ -871,20 +892,18 @@ fn check_sig(
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
     let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
-    let body_term = match encode_expr(
-        body,
-        &env,
+    let range_sort = set_sort(&tm, &sig.range, &distinct_preds, name_defs);
+    let mut encode_ctx = EncodeCtx {
         name_defs,
         fn_env,
-        &tm,
-        &mut solver,
-        &mut call_counter,
-        &mut builtin_obligs,
-        &mut overflow_obligs,
-        top_guard,
-        &distinct_preds,
-        set_sort(&tm, &sig.range, &distinct_preds, name_defs),
-    ) {
+        tm: &tm,
+        solver: &mut solver,
+        call_counter: &mut call_counter,
+        builtin_obligs: &mut builtin_obligs,
+        overflow_obligs: &mut overflow_obligs,
+        distinct_preds: &distinct_preds,
+    };
+    let body_term = match encode_expr(body, &env, &mut encode_ctx, top_guard, range_sort) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
     };
@@ -893,17 +912,23 @@ fn check_sig(
     // negated-goal assertion.
     decide_overflow_obligations(&overflow_obligs, &tm, &solver, overflow_checks);
 
+    let mut check_ctx = CheckCtx {
+        tm: &tm,
+        solver: &mut solver,
+        name_defs,
+        distinct_preds: &distinct_preds,
+    };
+    let sig_params = SigParams {
+        names: param_names,
+        terms: &param_terms,
+        domain_parts: &domain_parts,
+    };
     finish_check(
-        &tm,
-        &mut solver,
+        &mut check_ctx,
         body_term,
         &sig.range,
         &builtin_obligs,
-        param_names,
-        &param_terms,
-        &domain_parts,
-        &distinct_preds,
-        name_defs,
+        &sig_params,
         || None,
     )
 }

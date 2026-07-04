@@ -14,6 +14,18 @@ use crate::{
 
 use super::{Compiler, Env};
 
+/// The comprehension shape `compile_for_in_comprehension` compiles: `var in
+/// { output for comp_var in source if filter }`. Bundled since all five
+/// travel together as one syntactic unit — never independently varying.
+#[derive(Clone, Copy)]
+struct ComprehensionSpec<'a> {
+    var: &'a Symbol,
+    output: &'a SemExpr,
+    comp_var: &'a Symbol,
+    source: &'a SemExpr,
+    filter: Option<&'a SemExpr>,
+}
+
 impl<'ctx> Compiler<'ctx> {
     /// Emit LLVM IR for `while cond { body }`.
     ///
@@ -179,16 +191,14 @@ impl<'ctx> Compiler<'ctx> {
                 let output = output.as_ref().clone();
                 let source = source.as_ref().clone();
                 let filter = filter.as_ref().map(|f| f.as_ref().clone());
-                self.compile_for_in_comprehension(
+                let spec = ComprehensionSpec {
                     var,
-                    &output,
-                    &comp_var,
-                    &source,
-                    filter.as_ref(),
-                    body,
-                    env,
-                    alloca_map,
-                )
+                    output: &output,
+                    comp_var: &comp_var,
+                    source: &source,
+                    filter: filter.as_ref(),
+                };
+                self.compile_for_in_comprehension(&spec, body, env, alloca_map)
             }
             _ => {
                 // Compile the set expression and dispatch on its runtime Kind.
@@ -415,20 +425,20 @@ impl<'ctx> Compiler<'ctx> {
     /// alloca is given a fresh alloca here so both paths (filter-true and filter-false)
     /// reload the correct value from memory rather than using a stale LLVM value from
     /// a non-dominating block.
-    // TODO: 9 params is a clippy::too_many_arguments smell; consider bundling the
-    // comprehension pieces (output/comp_var/source/filter) into a struct.
-    #[allow(clippy::too_many_arguments)]
     fn compile_for_in_comprehension(
         &mut self,
-        var: &Symbol,
-        output: &SemExpr,
-        comp_var: &Symbol,
-        source: &SemExpr,
-        filter: Option<&SemExpr>,
+        spec: &ComprehensionSpec<'_>,
         body: &[SemStmt],
         env: &mut Env<'ctx>,
         outer_alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
     ) -> Result<(), CompileError> {
+        let ComprehensionSpec {
+            var,
+            output,
+            comp_var,
+            source,
+            filter,
+        } = *spec;
         let SemExprKind::SetLit(elements) = &source.kind else {
             return Err(CompileError::ice(
                 "comprehension in `for` source: only set literal sources are supported \

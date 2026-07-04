@@ -9,13 +9,35 @@ use crate::{
     span::{Span, Symbol},
 };
 
-use super::blocks::encode_block;
+use super::blocks::{BlockCtx, encode_block};
 use super::encode::{
-    BuiltinObligation, Env, OverflowObligation, boolean_value, decide_overflow_obligations,
-    encode_expr, integer_value,
+    BuiltinObligation, EncodeCtx, Env, OverflowObligation, boolean_value,
+    decide_overflow_obligations, encode_expr, integer_value,
 };
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 use super::{CheckResult, NameDefs};
+
+/// Everything `check_inductive_step`/`check_for_inductive_step` (and their
+/// shared driver `check_loop_inductive_step`) thread unchanged through one
+/// loop's inductive-step check. Deliberately separate from `EncodeCtx`: the
+/// step check runs against a fresh, isolated solver seeded from
+/// `outer_solver`'s assertions (see `check_loop_inductive_step`'s module
+/// doc), so `outer_solver` is a shared reference here, never the `&mut
+/// Solver` `EncodeCtx` holds.
+pub(super) struct LoopCtx<'a, 'tm> {
+    pub(super) constraint_env: &'a HashMap<Symbol, SemExpr>,
+    pub(super) name_defs: &'a NameDefs,
+    pub(super) fn_env: &'a HashMap<Symbol, &'a SemFunctionDef>,
+    pub(super) tm: &'tm TermManager,
+    pub(super) outer_solver: &'a Solver<'tm>,
+    pub(super) ssa_counter: &'a mut usize,
+    pub(super) param_names: &'a [Symbol],
+    pub(super) param_terms: &'a [Term<'tm>],
+    pub(super) immutable_names: &'a HashSet<Symbol>,
+    pub(super) distinct_preds: &'a DistinctPreds<'tm>,
+    pub(super) has_runtime_assert: &'a mut bool,
+    pub(super) overflow_checks: &'a mut HashMap<Span, bool>,
+}
 
 // ── Inductive step checking ───────────────────────────────────────────────────
 
@@ -31,24 +53,12 @@ use super::{CheckResult, NameDefs};
 /// dropping them instead was a false-proof hole.
 ///
 /// Returns `None` when UNSAT (step proved); `Some(result)` otherwise.
-#[allow(clippy::too_many_arguments)]
 fn check_loop_inductive_step<'tm, F>(
     body: &[SemStmt],
     modified: &HashSet<Symbol>,
-    constraint_env: &HashMap<Symbol, SemExpr>,
     env: &Env<'tm>,
-    outer_solver: &Solver<'tm>,
-    name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &SemFunctionDef>,
-    tm: &'tm TermManager,
-    ssa_counter: &mut usize,
-    param_names: &[Symbol],
-    param_terms: &[Term<'tm>],
+    ctx: &mut LoopCtx<'_, 'tm>,
     inv_label: &str,
-    outer_immutable_names: &HashSet<Symbol>,
-    distinct_preds: &DistinctPreds<'tm>,
-    has_runtime_assert: &mut bool,
-    overflow_checks: &mut HashMap<Span, bool>,
     add_loop_entry: F,
 ) -> Option<CheckResult>
 where
@@ -63,10 +73,10 @@ where
     // be encoded: its built-in obligations need discharging regardless.
     let constrained: Vec<&Symbol> = modified
         .iter()
-        .filter(|n| constraint_env.contains_key(*n))
+        .filter(|n| ctx.constraint_env.contains_key(*n))
         .collect();
 
-    let mut tmp = Solver::new(tm);
+    let mut tmp = Solver::new(ctx.tm);
     tmp.set_logic("ALL");
     tmp.set_option("produce-models", "true");
 
@@ -74,26 +84,31 @@ where
     // a separately-threaded fact list — so call contracts established before
     // the loop (asserted straight onto `outer_solver` by `assert_call_contract`)
     // are visible here too. Same fix as `check_require`'s in blocks.rs.
-    for fact in outer_solver.get_assertions() {
+    for fact in ctx.outer_solver.get_assertions() {
         tmp.assert_formula(fact);
     }
 
     // Fresh inductive-hypothesis variable for each loop-modified binding.
     let mut ind_env = env.clone();
     for name in modified {
-        let fresh_name = format!("{}_step_{}", name.0, ssa_counter);
-        *ssa_counter += 1;
+        let fresh_name = format!("{}_step_{}", name.0, ctx.ssa_counter);
+        *ctx.ssa_counter += 1;
         // The hypothesis variable carries the binding's actual solver sort
         // (Bool muts are boolean-sorted, tuple muts tuple-sorted); a name not
         // in the outer env is declared inside the body and will be shadowed.
         let sort = env
             .get(name)
             .map(|t| t.sort())
-            .unwrap_or_else(|| tm.integer_sort());
-        let fresh = tm.mk_const(sort, &fresh_name);
-        if let Some(constraint) = constraint_env.get(name)
-            && let Membership::Constrained(c) =
-                membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds)
+            .unwrap_or_else(|| ctx.tm.integer_sort());
+        let fresh = ctx.tm.mk_const(sort, &fresh_name);
+        if let Some(constraint) = ctx.constraint_env.get(name)
+            && let Membership::Constrained(c) = membership_constraint(
+                ctx.tm,
+                fresh.clone(),
+                constraint,
+                ctx.name_defs,
+                ctx.distinct_preds,
+            )
         {
             tmp.assert_formula(c.clone());
         }
@@ -107,7 +122,12 @@ where
     let mut overflow_obligs: Vec<OverflowObligation<'tm>> = Vec::new();
 
     // Loop-specific setup: assert the condition / introduce the loop variable.
-    if let Some(err) = add_loop_entry(&mut tmp, &mut ind_env, ssa_counter, &mut overflow_obligs) {
+    if let Some(err) = add_loop_entry(
+        &mut tmp,
+        &mut ind_env,
+        ctx.ssa_counter,
+        &mut overflow_obligs,
+    ) {
         return Some(err);
     }
 
@@ -116,50 +136,59 @@ where
     // outer scope so the body can't reassign them.
     let mut body_env = ind_env;
     let mut empty_cenv: HashMap<Symbol, SemExpr> = HashMap::new();
-    let mut step_imm: HashSet<Symbol> = outer_immutable_names.clone();
+    let mut step_imm: HashSet<Symbol> = ctx.immutable_names.clone();
     let mut cc = 0usize;
     let mut obligs: Vec<BuiltinObligation<'tm>> = Vec::new();
-    let mut step_ssa = *ssa_counter;
+    let mut step_ssa = *ctx.ssa_counter;
     // An unproved `assert` inside the body needs `| Fail` on the range exactly
     // like one in a flat block — the flag must reach the function-level check.
-    match encode_block(
-        body,
-        &mut body_env,
-        name_defs,
-        fn_env,
-        tm,
-        &mut tmp,
-        &mut cc,
-        &mut obligs,
-        &mut overflow_obligs,
-        &mut step_ssa,
-        param_names,
-        param_terms,
-        &mut empty_cenv,
-        has_runtime_assert,
-        &mut step_imm,
-        distinct_preds,
-        overflow_checks,
-        None,
-    ) {
+    let step_result = {
+        let encode_ctx = EncodeCtx {
+            name_defs: ctx.name_defs,
+            fn_env: ctx.fn_env,
+            tm: ctx.tm,
+            solver: &mut tmp,
+            call_counter: &mut cc,
+            builtin_obligs: &mut obligs,
+            overflow_obligs: &mut overflow_obligs,
+            distinct_preds: ctx.distinct_preds,
+        };
+        let mut block_ctx = BlockCtx {
+            encode: encode_ctx,
+            ssa_counter: &mut step_ssa,
+            param_names: ctx.param_names,
+            param_terms: ctx.param_terms,
+            constraint_env: &mut empty_cenv,
+            has_runtime_assert: ctx.has_runtime_assert,
+            immutable_names: &mut step_imm,
+            overflow_checks: ctx.overflow_checks,
+        };
+        encode_block(body, &mut body_env, &mut block_ctx, None)
+    };
+    match step_result {
         Ok(_) => {}
         Err(e) => return Some(e),
     }
-    *ssa_counter = step_ssa;
+    *ctx.ssa_counter = step_ssa;
 
     // Decide overflow obligations from this body iteration now, against `tmp`
     // as it stands (hypothesis vars + loop entry + body facts) — before the
     // correctness check below asserts the negated goal onto `tmp`, which
     // would make its assertion set inconsistent and every later query
     // vacuously "proved".
-    decide_overflow_obligations(&overflow_obligs, tm, &tmp, overflow_checks);
+    decide_overflow_obligations(&overflow_obligs, ctx.tm, &tmp, ctx.overflow_checks);
 
     // Every constrained var's post-iteration value must satisfy its invariant.
     let mut step_obligs: Vec<Term<'tm>> = Vec::new();
     for name in &constrained {
-        if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name))
-            && let Membership::Constrained(c) =
-                membership_constraint(tm, post.clone(), constraint, name_defs, distinct_preds)
+        if let (Some(constraint), Some(post)) = (ctx.constraint_env.get(*name), body_env.get(*name))
+            && let Membership::Constrained(c) = membership_constraint(
+                ctx.tm,
+                post.clone(),
+                constraint,
+                ctx.name_defs,
+                ctx.distinct_preds,
+            )
         {
             step_obligs.push(c);
         }
@@ -172,7 +201,8 @@ where
             if o.path_cond.to_string().trim() == "true" {
                 o.obligation.clone()
             } else {
-                tm.mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
+                ctx.tm
+                    .mk_term(Kind::Implies, &[o.path_cond.clone(), o.obligation.clone()])
             }
         })
         .collect();
@@ -185,16 +215,16 @@ where
     let combined = if all_obligs.len() == 1 {
         all_obligs.remove(0)
     } else {
-        tm.mk_term(Kind::And, &all_obligs)
+        ctx.tm.mk_term(Kind::And, &all_obligs)
     };
-    tmp.assert_formula(tm.mk_term(Kind::Not, &[combined]));
+    tmp.assert_formula(ctx.tm.mk_term(Kind::Not, &[combined]));
 
     let sat = tmp.check_sat();
     if sat.is_unsat() {
         None
     } else if sat.is_sat() {
         let mut cex_params: HashMap<String, i64> = HashMap::new();
-        for (name, term) in param_names.iter().zip(param_terms.iter()) {
+        for (name, term) in ctx.param_names.iter().zip(ctx.param_terms.iter()) {
             let val = tmp.get_value(term.clone());
             cex_params.insert(name.0.clone(), integer_value(&val));
         }
@@ -211,13 +241,13 @@ where
         if reason.is_none() {
             for name in &constrained {
                 if let (Some(constraint), Some(post)) =
-                    (constraint_env.get(*name), body_env.get(*name))
+                    (ctx.constraint_env.get(*name), body_env.get(*name))
                     && let Membership::Constrained(c) = membership_constraint(
-                        tm,
+                        ctx.tm,
                         post.clone(),
                         constraint,
-                        name_defs,
-                        distinct_preds,
+                        ctx.name_defs,
+                        ctx.distinct_preds,
                     )
                     && !boolean_value(&tmp.get_value(c))
                 {
@@ -250,64 +280,39 @@ where
     }
 }
 
-// TODO: 16 params is a clippy::too_many_arguments smell; consider bundling the
-// solver-wide context (env, name_defs, fn_env, tm, distinct_preds, ...) into a
-// struct threaded through this module once the encoding pipeline settles down.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn check_inductive_step<'tm>(
     cond: &SemExpr,
     body: &[SemStmt],
     modified: &HashSet<Symbol>,
-    constraint_env: &HashMap<Symbol, SemExpr>,
     env: &Env<'tm>,
-    outer_solver: &Solver<'tm>,
-    name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &SemFunctionDef>,
-    tm: &'tm TermManager,
-    ssa_counter: &mut usize,
-    param_names: &[Symbol],
-    param_terms: &[Term<'tm>],
-    immutable_names: &HashSet<Symbol>,
-    distinct_preds: &DistinctPreds<'tm>,
-    has_runtime_assert: &mut bool,
-    overflow_checks: &mut HashMap<Span, bool>,
+    ctx: &mut LoopCtx<'_, 'tm>,
 ) -> Option<CheckResult> {
+    let name_defs = ctx.name_defs;
+    let fn_env = ctx.fn_env;
+    let tm = ctx.tm;
+    let distinct_preds = ctx.distinct_preds;
     check_loop_inductive_step(
         body,
         modified,
-        constraint_env,
         env,
-        outer_solver,
-        name_defs,
-        fn_env,
-        tm,
-        ssa_counter,
-        param_names,
-        param_terms,
+        ctx,
         "loop invariant",
-        immutable_names,
-        distinct_preds,
-        has_runtime_assert,
-        overflow_checks,
         |tmp, ind_env, _ssa, overflow_obligs| {
             let mut cc = 0usize;
             let mut obligs = Vec::new();
-            match encode_expr(
-                cond,
-                ind_env,
+            let mut encode_ctx = EncodeCtx {
                 name_defs,
                 fn_env,
                 tm,
-                tmp,
-                &mut cc,
-                &mut obligs,
+                solver: tmp,
+                call_counter: &mut cc,
+                builtin_obligs: &mut obligs,
                 overflow_obligs,
-                tm.mk_boolean(true),
                 distinct_preds,
-                None,
-            ) {
+            };
+            match encode_expr(cond, ind_env, &mut encode_ctx, tm.mk_boolean(true), None) {
                 Ok(c) => {
-                    tmp.assert_formula(c.clone());
+                    encode_ctx.solver.assert_formula(c.clone());
                     None
                 }
                 Err(_) => Some(CheckResult::Unknown(
@@ -320,32 +325,19 @@ pub(super) fn check_inductive_step<'tm>(
     )
 }
 
-// TODO: same too-many-arguments smell as check_inductive_step above.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn check_for_inductive_step<'tm>(
     var: &Symbol,
     set: &SemExpr,
     body: &[SemStmt],
     modified: &HashSet<Symbol>,
-    constraint_env: &HashMap<Symbol, SemExpr>,
     env: &Env<'tm>,
-    outer_solver: &Solver<'tm>,
-    name_defs: &NameDefs,
-    fn_env: &HashMap<Symbol, &SemFunctionDef>,
-    tm: &'tm TermManager,
-    ssa_counter: &mut usize,
-    param_names: &[Symbol],
-    param_terms: &[Term<'tm>],
-    immutable_names: &HashSet<Symbol>,
-    distinct_preds: &DistinctPreds<'tm>,
-    has_runtime_assert: &mut bool,
-    overflow_checks: &mut HashMap<Span, bool>,
+    ctx: &mut LoopCtx<'_, 'tm>,
 ) -> Option<CheckResult> {
     // If `set` is a runtime set variable, extract its element-kind expression
     // from the Set(ElemKind) constraint (e.g. Set(Nat) → Nat, Set(Int-{0}) →
     // Int-{0}).  The clone is cheap — we just need the Expr for membership_constraint.
     let runtime_elem_constraint: Option<SemExpr> = if let SemExprKind::Var(sym) = &set.kind {
-        constraint_env.get(sym).and_then(|c| {
+        ctx.constraint_env.get(sym).and_then(|c| {
             if let SemExprKind::Call { callee, args } = &c.kind
                 && callee.0 == "Set"
                 && args.len() == 1
@@ -358,23 +350,15 @@ pub(super) fn check_for_inductive_step<'tm>(
         None
     };
 
+    let name_defs = ctx.name_defs;
+    let tm = ctx.tm;
+    let distinct_preds = ctx.distinct_preds;
     check_loop_inductive_step(
         body,
         modified,
-        constraint_env,
         env,
-        outer_solver,
-        name_defs,
-        fn_env,
-        tm,
-        ssa_counter,
-        param_names,
-        param_terms,
+        ctx,
         "for-loop invariant",
-        immutable_names,
-        distinct_preds,
-        has_runtime_assert,
-        overflow_checks,
         |tmp, ind_env, ssa, _overflow_obligs| {
             let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
             *ssa += 1;

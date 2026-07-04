@@ -541,14 +541,16 @@ pub(crate) fn membership_constraint<'tm>(
             source,
             filter,
         } => comprehension_membership(
-            tm,
             t,
             output,
             var,
             source,
             filter.as_deref(),
-            name_defs,
-            distinct_preds,
+            CompCtx {
+                tm,
+                name_defs,
+                distinct_preds,
+            },
         ),
 
         // `t ∈ X*`  ↔  every element of `t` is in `X`.
@@ -655,26 +657,32 @@ pub(crate) fn membership_constraint<'tm>(
     }
 }
 
+/// The solver-wide pieces shared, unchanged, by `comprehension_membership`,
+/// `encode_comp_expr`, and `encode_comp_arith` — all `Copy` shared
+/// references, so this bundle can just be passed by value throughout their
+/// mutual recursion.
+#[derive(Clone, Copy)]
+struct CompCtx<'a, 'tm> {
+    tm: &'tm TermManager,
+    name_defs: &'a NameDefs,
+    distinct_preds: &'a DistinctPreds<'tm>,
+}
+
 /// Encode `t ∈ { output for var in source if filter }` as a cvc5 predicate.
 ///
 /// Two strategies:
 /// - Finite literal source: unroll into a disjunction of equalities (one per element).
 /// - Identity output (`{x for x in S if P(x)}`): encode as `t ∈ S ∧ P(t)`.
 /// - All other cases: `Unsupported` (Unknown at the solver level).
-// TODO: 8 params is a clippy::too_many_arguments smell; consider bundling the
-// solver-wide context (tm, name_defs, distinct_preds, ...) into a struct threaded
-// through this module once the encoding pipeline settles down.
-#[allow(clippy::too_many_arguments)]
 fn comprehension_membership<'tm>(
-    tm: &'tm TermManager,
     t: Term<'tm>,
     output: &SemExpr,
     var: &Symbol,
     source: &SemExpr,
     filter: Option<&SemExpr>,
-    name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    ctx: CompCtx<'_, 'tm>,
 ) -> Membership<'tm> {
+    let tm = ctx.tm;
     // Case 1: source is a finite set literal — unroll.
     if let SemExprKind::SetLit(elements) = &source.kind {
         if elements.is_empty() {
@@ -686,21 +694,12 @@ fn comprehension_membership<'tm>(
                 return Membership::Unsupported;
             };
             let elem_term = tm.mk_integer(*n);
-            let Some(out_term) = encode_comp_expr(
-                output,
-                var,
-                elem_term.clone(),
-                tm,
-                name_defs,
-                distinct_preds,
-            ) else {
+            let Some(out_term) = encode_comp_expr(output, var, elem_term.clone(), ctx) else {
                 return Membership::Unsupported;
             };
             let eq = tm.mk_term(Kind::Equal, &[t.clone(), out_term]);
             if let Some(f) = filter {
-                let Some(filter_term) =
-                    encode_comp_expr(f, var, elem_term, tm, name_defs, distinct_preds)
-                else {
+                let Some(filter_term) = encode_comp_expr(f, var, elem_term, ctx) else {
                     return Membership::Unsupported;
                 };
                 disjuncts.push(tm.mk_term(Kind::And, &[filter_term, eq]));
@@ -721,10 +720,11 @@ fn comprehension_membership<'tm>(
     if let SemExprKind::Var(sym) = &output.kind
         && sym == var
     {
-        let source_mem = membership_constraint(tm, t.clone(), source, name_defs, distinct_preds);
+        let source_mem =
+            membership_constraint(tm, t.clone(), source, ctx.name_defs, ctx.distinct_preds);
         let filter_mem = match filter {
             None => None,
-            Some(f) => match encode_comp_expr(f, var, t.clone(), tm, name_defs, distinct_preds) {
+            Some(f) => match encode_comp_expr(f, var, t.clone(), ctx) {
                 Some(term) => Some(term),
                 None => return Membership::Unsupported,
             },
@@ -750,17 +750,16 @@ fn encode_comp_expr<'tm>(
     expr: &SemExpr,
     var: &Symbol,
     var_term: Term<'tm>,
-    tm: &'tm TermManager,
-    name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    ctx: CompCtx<'_, 'tm>,
 ) -> Option<Term<'tm>> {
+    let tm = ctx.tm;
     match &expr.kind {
         SemExprKind::IntLit(n) => Some(tm.mk_integer(*n)),
         SemExprKind::BoolLit(b) => Some(tm.mk_boolean(*b)),
         SemExprKind::Var(sym) if sym == var => Some(var_term),
         SemExprKind::Var(_) => None, // free variable — not the bound var; unsupported
         SemExprKind::UnOp { op, expr: inner } => {
-            let t = encode_comp_expr(inner, var, var_term, tm, name_defs, distinct_preds)?;
+            let t = encode_comp_expr(inner, var, var_term, ctx)?;
             match op {
                 UnOp::Neg => Some(tm.mk_term(Kind::Neg, &[t])),
                 UnOp::Not => Some(tm.mk_term(Kind::Not, &[t])),
@@ -769,58 +768,17 @@ fn encode_comp_expr<'tm>(
         // `output`/`filter` are value-position (elaborate_expr elaborates a
         // comprehension's output/filter under Position::Value), so `+ - * /`
         // are the dedicated arithmetic variants here, never DisjointUnion/etc.
-        SemExprKind::Add(lhs, rhs) => encode_comp_arith(
-            Kind::Add,
-            lhs,
-            rhs,
-            var,
-            var_term,
-            tm,
-            name_defs,
-            distinct_preds,
-        ),
-        SemExprKind::Sub(lhs, rhs) => encode_comp_arith(
-            Kind::Sub,
-            lhs,
-            rhs,
-            var,
-            var_term,
-            tm,
-            name_defs,
-            distinct_preds,
-        ),
-        SemExprKind::Mul(lhs, rhs) => encode_comp_arith(
-            Kind::Mult,
-            lhs,
-            rhs,
-            var,
-            var_term,
-            tm,
-            name_defs,
-            distinct_preds,
-        ),
-        SemExprKind::Div(lhs, rhs) => encode_comp_arith(
-            Kind::IntsDivision,
-            lhs,
-            rhs,
-            var,
-            var_term,
-            tm,
-            name_defs,
-            distinct_preds,
-        ),
+        SemExprKind::Add(lhs, rhs) => encode_comp_arith(Kind::Add, lhs, rhs, var, var_term, ctx),
+        SemExprKind::Sub(lhs, rhs) => encode_comp_arith(Kind::Sub, lhs, rhs, var, var_term, ctx),
+        SemExprKind::Mul(lhs, rhs) => encode_comp_arith(Kind::Mult, lhs, rhs, var, var_term, ctx),
+        SemExprKind::Div(lhs, rhs) => {
+            encode_comp_arith(Kind::IntsDivision, lhs, rhs, var, var_term, ctx)
+        }
         SemExprKind::BinOp { op, lhs, rhs } => {
             match op {
                 BinOp::In | BinOp::NotIn => {
-                    let l = encode_comp_expr(
-                        lhs,
-                        var,
-                        var_term.clone(),
-                        tm,
-                        name_defs,
-                        distinct_preds,
-                    )?;
-                    let mem = membership_constraint(tm, l, rhs, name_defs, distinct_preds);
+                    let l = encode_comp_expr(lhs, var, var_term.clone(), ctx)?;
+                    let mem = membership_constraint(tm, l, rhs, ctx.name_defs, ctx.distinct_preds);
                     return match (op, mem) {
                         (BinOp::In, Membership::Constrained(c)) => Some(c),
                         (BinOp::In, Membership::Unconstrained) => Some(tm.mk_boolean(true)),
@@ -833,8 +791,8 @@ fn encode_comp_expr<'tm>(
                 }
                 _ => {}
             }
-            let l = encode_comp_expr(lhs, var, var_term.clone(), tm, name_defs, distinct_preds)?;
-            let r = encode_comp_expr(rhs, var, var_term, tm, name_defs, distinct_preds)?;
+            let l = encode_comp_expr(lhs, var, var_term.clone(), ctx)?;
+            let r = encode_comp_expr(rhs, var, var_term, ctx)?;
             let kind = match op {
                 BinOp::Eq => Kind::Equal,
                 BinOp::Ne => Kind::Distinct,
@@ -856,21 +814,17 @@ fn encode_comp_expr<'tm>(
     }
 }
 
-// TODO: same too-many-arguments smell as comprehension_membership above.
-#[allow(clippy::too_many_arguments)]
 fn encode_comp_arith<'tm>(
     kind: Kind,
     lhs: &SemExpr,
     rhs: &SemExpr,
     var: &Symbol,
     var_term: Term<'tm>,
-    tm: &'tm TermManager,
-    name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    ctx: CompCtx<'_, 'tm>,
 ) -> Option<Term<'tm>> {
-    let l = encode_comp_expr(lhs, var, var_term.clone(), tm, name_defs, distinct_preds)?;
-    let r = encode_comp_expr(rhs, var, var_term, tm, name_defs, distinct_preds)?;
-    Some(tm.mk_term(kind, &[l, r]))
+    let l = encode_comp_expr(lhs, var, var_term.clone(), ctx)?;
+    let r = encode_comp_expr(rhs, var, var_term, ctx)?;
+    Some(ctx.tm.mk_term(kind, &[l, r]))
 }
 
 pub(crate) fn bounded<'tm>(
