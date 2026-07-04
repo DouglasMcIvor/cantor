@@ -12,11 +12,10 @@ use crate::{
 
 use super::CheckResult;
 use super::NameDefs;
-use super::encode::{
-    BuiltinObligation, EncodeCtx, Env, encode_expr, integer_value, proj_from_tuple, tuple_arity,
-};
+use super::encode::{EncodeCtx, Env, encode_expr, integer_value, proj_from_tuple, tuple_arity};
 use super::loops::{LoopCtx, check_for_inductive_step, check_inductive_step};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
+use super::obligations::BuiltinObligation;
 
 // ── Loop predicate ────────────────────────────────────────────────────────────
 

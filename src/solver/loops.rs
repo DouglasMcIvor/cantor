@@ -10,11 +10,12 @@ use crate::{
 };
 
 use super::blocks::{BlockCtx, encode_block};
-use super::encode::{
-    BuiltinObligation, EncodeCtx, Env, OverflowObligation, OverloadCallObligation, boolean_value,
-    decide_overflow_obligations, decide_overload_resolutions, encode_expr, integer_value,
-};
+use super::encode::{EncodeCtx, Env, boolean_value, encode_expr, integer_value};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
+use super::obligations::{
+    BuiltinObligation, OverflowObligation, OverloadCallObligation, decide_overflow_obligations,
+    decide_overload_resolutions,
+};
 use super::{CheckResult, NameDefs};
 
 /// Everything `check_inductive_step`/`check_for_inductive_step` (and their

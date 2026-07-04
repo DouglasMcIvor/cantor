@@ -21,9 +21,8 @@ use super::sort::{
     extract_success_value, is_product_range, maybe_coerce, set_sort, success_arm_of_range,
 };
 
-use super::encode::{
-    BuiltinObligation, EncodeCtx, Env, OverloadCallObligation, encode_expr, mk_decomposed_tuple,
-};
+use super::encode::{EncodeCtx, Env, encode_expr, mk_decomposed_tuple};
+use super::obligations::{BuiltinObligation, OverloadCallObligation};
 
 // ── Call encoder ──────────────────────────────────────────────────────────────
 

@@ -25,6 +25,7 @@ mod encode;
 mod encode_call;
 mod loops;
 mod membership;
+mod obligations;
 mod sort;
 
 pub use constrained::ConstrainedTree;
@@ -57,10 +58,12 @@ use crate::kind::Kind as ValKind;
 use self::blocks::{BlockCtx, body_has_unconstrained_loop_var, encode_block};
 use self::disjointness::{check_overload_disjointness, validate_disjoint_unions};
 use self::encode::{
-    BuiltinObligation, EncodeCtx, Env, OverflowObligation, boolean_value,
-    decide_overflow_obligations, encode_expr, integer_value, mk_decomposed_tuple,
+    EncodeCtx, Env, boolean_value, encode_expr, integer_value, mk_decomposed_tuple,
 };
 use self::membership::{DistinctInfo, DistinctPreds, Membership, membership_constraint};
+use self::obligations::{
+    BuiltinObligation, OverflowObligation, decide_overflow_obligations, decide_overload_resolutions,
+};
 use self::sort::set_sort;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -359,7 +362,7 @@ fn check_name_def(
     let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
     // Same rationale as `overflow_obligs` just above: collected because
     // `encode_expr` requires the accumulator unconditionally, never decided.
-    let mut overload_obligs: Vec<self::encode::OverloadCallObligation<'_>> = Vec::new();
+    let mut overload_obligs: Vec<self::obligations::OverloadCallObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
 
     let mut encode_ctx = EncodeCtx {
@@ -728,7 +731,7 @@ fn check_block_sig(
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
     let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
-    let mut overload_obligs: Vec<self::encode::OverloadCallObligation<'_>> = Vec::new();
+    let mut overload_obligs: Vec<self::obligations::OverloadCallObligation<'_>> = Vec::new();
     let mut ssa_counter = 0usize;
     let mut constraint_env: HashMap<Symbol, SemExpr> = HashMap::new();
     let mut has_runtime_assert = false;
@@ -771,7 +774,7 @@ fn check_block_sig(
     // their own overflow obligations inline (see `loops.rs`), directly into
     // `overflow_checks`, since they run on an isolated temp solver.
     decide_overflow_obligations(&overflow_obligs, &tm, &solver, channels.overflow_checks);
-    self::encode::decide_overload_resolutions(
+    decide_overload_resolutions(
         &overload_obligs,
         &tm,
         &solver,
@@ -863,7 +866,7 @@ fn check_sig(
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
     let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
-    let mut overload_obligs: Vec<self::encode::OverloadCallObligation<'_>> = Vec::new();
+    let mut overload_obligs: Vec<self::obligations::OverloadCallObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
     let range_sort = set_sort(&tm, &sig.range, &distinct_preds, name_defs);
     let mut encode_ctx = EncodeCtx {
@@ -885,7 +888,7 @@ fn check_sig(
     // See `check_block_sig`'s identical comment: must run before `finish_check`'s
     // negated-goal assertion.
     decide_overflow_obligations(&overflow_obligs, &tm, &solver, channels.overflow_checks);
-    self::encode::decide_overload_resolutions(
+    decide_overload_resolutions(
         &overload_obligs,
         &tm,
         &solver,
