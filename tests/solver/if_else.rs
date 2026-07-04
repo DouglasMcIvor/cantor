@@ -18,6 +18,21 @@ f(b) = if b then true else false
 ");
 }
 
+// ── Non-Bool condition is rejected at elaboration ────────────────────────────
+// Bool and Int are disjoint (feedback_bool_int_disjoint): an `Int`-sorted
+// condition must never be silently coerced via `c != 0`. `encode_if` relies
+// on elaborate having already rejected this — if that guard ever regressed,
+// this test would start hitting `encode_if`'s `unreachable!` instead of
+// failing cleanly here.
+
+#[test]
+fn if_int_condition_rejected_at_elaboration() {
+    rejected("
+f : Int -> Int
+f(n) = if n then 1 else 2
+");
+}
+
 // ── Bool / Int branches require explicit conversion ──────────────────────────
 // Bool and Int are disjoint in Cantor's value model — `true`/`false` are not
 // silently 1/0. A bare `if` with one Int branch and one Bool branch (neither

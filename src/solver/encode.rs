@@ -548,14 +548,20 @@ fn encode_if<'tm>(
     let c = encode_expr(cond, env, name_defs, fn_env, tm, solver, call_counter,
                         builtin_obligs, path_cond.clone(), distinct_preds, None)?;
 
-    // CVC5 requires a boolean-sort condition for Ite.  If the encoded
-    // condition is integer-sort (e.g. a variable from a Bool|Nat domain),
-    // coerce it to boolean via `c != 0` (0 = false, non-zero = true).
-    let c_bool = if c.sort().is_boolean() {
-        c
-    } else {
-        tm.mk_term(Kind::Distinct, &[c, tm.mk_integer(0)])
-    };
+    // `elaborate_expr`'s `If` case rejects any condition whose Kind isn't
+    // Bool, and sort-aware SSA constants mean a Kind::Bool value always
+    // encodes to boolean sort — so `c` reaching here as non-boolean would
+    // mean a Bool/Int value got silently conflated somewhere upstream.
+    // Bool and Int are disjoint in Cantor's value model (feedback_bool_int_disjoint):
+    // fail loudly instead of quietly coercing via `c != 0`.
+    if !c.sort().is_boolean() {
+        unreachable!(
+            "encode_if: condition encoded to non-boolean sort {:?} — \
+             elaborate_expr should have rejected a non-Bool if-condition",
+            c.sort()
+        );
+    }
+    let c_bool = c;
 
     // Then-branch: path_cond ∧ cond — propagate coerce_to so the branch
     // result is wrapped in the union datatype if needed.
