@@ -16,21 +16,15 @@ You probably don't want to read this unless you're me.
     ```
     and so we can see exactly what a refactor changed, `insta` crate recommended
   - Lots nice built in static analysis
-    - `cargo clippy -- -W clippy::pedantic`
-    -  `cargo fmt --check`
     -  `cargo udeps` and `cargo machete`
     -  `cargo deny` for vulns, dupes and licensing
-    -  `cargo llvm-cov` for coverage
+    -  `cargo llvm-cov` for coverage - try again to publish to GitHub pages
     -  `cargo +nightly miri test` for UB, aliasing, invalid references
   - "giving every stage a `validate()` method"
 - termination checking on recursion and loops with a 'decreases n' annotation to declare a ranking function.
   automatic inference of the ranking function structurally where possible 
 - `none` value and `None` set, currently missing
-- function overloads, or as ChatGPT suggests "the language should officially define an overloaded
-  function as *the union of compatible partial functions*". In my own words "all functions are partial
-  until linking is complete"
-- see if we can switch to proper ListArrays for nested vecs instead of using pointers? Or perhaps the current approach 
-  is better for mutability etc?
+- function overloads - support different kinds, currently only `foo : Nat`, `foo : NegInt` would work not `Bool`
 - more set comprehensions features
   - math syntax `{x*2 | x ∈ Nat, x > 0}` as sugar for the python form (deferred)
   - multi-binder `{x+y for x in A for y in B}` desugaring to Cartesian product (deferred)
@@ -66,10 +60,10 @@ You probably don't want to read this unless you're me.
   - comparison operators (they are in the lexer but I don't think they are implemented)
 - `Rational` support, including making `/` for `Int` return `Rational`
   - adding `quot` and `rem` to keep `Int` inside `Int`
+  - division soundness issue for ints, need to ensure cvc5 and codegen agree
 - operator overloading for things like `List(Byte)`?
   - custom operator overloading syntax like with haskell? I don't care for inventing new ops but supporting existing ones might be important
   - automatic operator overloading for disinct sets, like allowing arithmetic on Litre. See `deriving` below.
-- Use `iN` in the LLVM IR for `Int(N)` and cousins, i.e. whenever the size is known at compile time.
 - BigInt runtime support for our unsized `Int` and `Nat` sets, should come after function overloading so that
   ```
   foo : Int -> Int
@@ -84,7 +78,6 @@ You probably don't want to read this unless you're me.
   becomes useful for optimization without needing to know about the target architecture.
   ChatGPT suggests num-bigint as a mature widely used pure rust impl.
 - constants JIT'd instead of at rust level to get consistency 
-- spin up some code review agents to assess quality of rust implementation, factoring and maintainability before it gets too large
 - human intros (familiar with types, newbie with the word type taboo'd) and LLM intro. The human intros would be good to include a bunch of Venn diagrams and ye olde curved arrows between ovals representing functions to visualise the concepts along the way.
 - error messages
   - review and improve error messages
@@ -104,12 +97,11 @@ Algorithm:
 1. Mark every set with a production consisting entirely of already-known finite sets as generating.
 2. Repeat until no new sets become generating.
 3. Reject any recursive SCC (strongly connected component) that never becomes generating.
-- should we use apache arrow for runtime storage of containers so that we serialisation for free? gives us struct of arrays naturally too
+- Allow splitting huge arrow data up for performance, each chunk is an array
   * vector → balanced tree of chunks
   * set → hash table of chunks
   * map → hash table of key/value chunks
   * string → rope of UTF-8 chunks
-  But the leaf representation is always the same immutable Arrow arrays.
 - natural `for i, x in foo` syntax to combine destructuring should fall out from the above without additional work
 - destructuring assignment should work when we "don't provide enough binders" so that
   ```
@@ -188,7 +180,7 @@ Algorithm:
   )
   mut m1 : Measurement = Measurement.length(3m) -- requires namespaces to exist first
   mut m2 = Measurement.volume(4l) -- requires mutable range inference to exist first
-- mutable range inference
+- automatic range inference
 - pattern matching with `match x { a => ... , b => ...}`?
 - higher order functions: X -> Y is already the set of functions from X -> Y and we can use Haskell precedence rules for X -> Y -> Z.
 - partial application via `_` as a placeholder `add(_, 1)` or `sub(1, _)` or `f(x, _, y, _)`
@@ -226,7 +218,6 @@ Algorithm:
     ```
     I think the first is slightly less ugly until we get automatic inference
   - closures capture everything used within the body of the lambda. They capture mutables by reference, _unless_ they escape via the funcion return in which case they take ownership of the captured variables and copies of the constants.
-- dynamic dispatch? - this is just overloading a function to get a union domain and the compiler outputting a switch or a jump table!
 - ~macros~ - "compiler functions". what is a natural Cantor way of doing code generation? functions that manipulate ASTs? yes! we can make them work on the `SemanticTree`! post elaboration, but before constraint checking.
   > Compilation itself becomes a computation over ordinary values.
   > A semantic tree is just another value. A compile-time transformation is just another function. The compiler is simply evaluating functions whose domains happen to be compiler data structures.
