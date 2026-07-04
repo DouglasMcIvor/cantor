@@ -37,6 +37,8 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
 
+    - name: Install llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
     - name: Coverage
       run: cargo llvm-cov --html
     - name: Setup Pages
