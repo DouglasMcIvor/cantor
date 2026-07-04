@@ -185,8 +185,14 @@ fn div_truncates_toward_zero_not_floor() {
 
 #[test]
 fn neg_small_value() {
-    assert_eq!(to_string(cantor_bigint_neg(cantor_bigint_from_i64(5))), "-5");
-    assert_eq!(to_string(cantor_bigint_neg(cantor_bigint_from_i64(-5))), "5");
+    assert_eq!(
+        to_string(cantor_bigint_neg(cantor_bigint_from_i64(5))),
+        "-5"
+    );
+    assert_eq!(
+        to_string(cantor_bigint_neg(cantor_bigint_from_i64(-5))),
+        "5"
+    );
     assert_eq!(to_string(cantor_bigint_neg(cantor_bigint_from_i64(0))), "0");
 }
 
