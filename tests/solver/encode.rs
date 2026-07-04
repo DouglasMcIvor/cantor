@@ -124,16 +124,19 @@ caller(x) = negate(x)
     let caller_result = all.iter().find(|(n, _)| n == "caller").unwrap();
     assert!(
         matches!(caller_result.1[0].1, CheckResult::Counterexample { .. }),
-        "caller should be Counterexample, got {:?}", caller_result.1[0].1
+        "caller should be Counterexample, got {:?}",
+        caller_result.1[0].1
     );
 }
 
 #[test]
 fn recursive_function_proved_via_own_contract() {
-    proved("
+    proved(
+        "
 factorial : NatPos -> NatPos
 factorial(n) = if n == 1 then 1 else n * factorial(n - 1)
-");
+",
+    );
 }
 
 // ── Interprocedural: two-argument callee ─────────────────────────────────────
@@ -158,34 +161,42 @@ sum3(a, b, c) = add_nat(add_nat(a, b), c)
 
 #[test]
 fn division_by_literal_proved() {
-    proved("
+    proved(
+        "
 half : Int -> Int
 half(x) = x / 2
-");
+",
+    );
 }
 
 #[test]
 fn division_unconstrained_denominator_counterexample() {
-    counterexample("
+    counterexample(
+        "
 unsafe_div : Int * Int -> Int
 unsafe_div(x, y) = x / y
-");
+",
+    );
 }
 
 #[test]
 fn division_unconstrained_single_param_counterexample() {
-    counterexample("
+    counterexample(
+        "
 recip : Int -> Int
 recip(x) = 1 / x
-");
+",
+    );
 }
 
 #[test]
 fn division_by_zero_reason_in_result() {
-    let results = check("
+    let results = check(
+        "
 unsafe_div : Int * Int -> Int
 unsafe_div(x, y) = x / y
-");
+",
+    );
     let (_, result) = results.into_iter().next().unwrap();
     let CheckResult::Counterexample { reason, .. } = result else {
         panic!("expected counterexample");
@@ -195,39 +206,52 @@ unsafe_div(x, y) = x / y
 
 #[test]
 fn range_violation_reason_in_result() {
-    let results = check("
+    let results = check(
+        "
 negate : Nat -> Nat
 negate(x) = -x
-");
+",
+    );
     let (_, result) = results.into_iter().next().unwrap();
     let CheckResult::Counterexample { reason, .. } = result else {
         panic!("expected counterexample");
     };
-    assert!(reason.contains("not in"), "reason should say 'not in …': {reason}");
-    assert!(reason.contains("Nat"), "reason should name the range: {reason}");
+    assert!(
+        reason.contains("not in"),
+        "reason should say 'not in …': {reason}"
+    );
+    assert!(
+        reason.contains("Nat"),
+        "reason should name the range: {reason}"
+    );
 }
 
 #[test]
 fn division_excluded_zero_domain_proved() {
-    proved("
+    proved(
+        "
 safe_recip : Int - {0} -> Int
 safe_recip(x) = 1 / x
-");
+",
+    );
 }
 
 #[test]
 fn division_two_arg_excluded_zero_proved() {
-    proved("
+    proved(
+        "
 safe_div : Int * (Int - {0}) -> Int
 safe_div(x, y) = x / y
-");
+",
+    );
 }
 
 // ── Try operator (?) ──────────────────────────────────────────────────────────
 
 #[test]
 fn try_propagates_fail_proved() {
-    proved_all("
+    proved_all(
+        "
 safe_to_nat : Int -> Nat | Fail
 safe_to_nat(x) {
     assert x in Nat
@@ -239,12 +263,14 @@ caller(n) {
     mut x: Nat = safe_to_nat(n)?
     x + 1
 }
-");
+",
+    );
 }
 
 #[test]
 fn try_in_expression_body_proved() {
-    proved_all("
+    proved_all(
+        "
 safe_to_nat : Int -> Nat | Fail
 safe_to_nat(x) {
     assert x in Nat
@@ -253,15 +279,18 @@ safe_to_nat(x) {
 
 wrap : Int -> Nat | Fail
 wrap(n) = safe_to_nat(n)?
-");
+",
+    );
 }
 
 #[test]
 fn fail_set_in_membership_is_false() {
-    counterexample("
+    counterexample(
+        "
 bad : Int -> Nat | Fail
 bad(x) = x
-");
+",
+    );
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -282,20 +311,24 @@ fn const_type_check_fails_wrong_type() {
 
 #[test]
 fn const_used_in_function_proved() {
-    proved_all("
+    proved_all(
+        "
 base : Nat = 10
 
 add_base : Nat -> Nat
 add_base(x) = x + base
-");
+",
+    );
 }
 
 #[test]
 fn chained_constants_proved() {
-    proved_all("
+    proved_all(
+        "
 pi : Nat = 314
 tau : Nat = 2 * pi
-");
+",
+    );
 }
 
 #[test]
@@ -323,10 +356,12 @@ safe_div(x, y) = x / y
 
 #[test]
 fn call_site_domain_violation_counterexample() {
-    let results = check_all(&format!("{SAFE_DIV}
+    let results = check_all(&format!(
+        "{SAFE_DIV}
 bad : Int -> Int
 bad(x) = safe_div(x, 0)
-"));
+"
+    ));
     let CheckResult::Counterexample { reason, .. } = result_for(&results, "bad") else {
         panic!("expected counterexample for bad");
     };
@@ -338,48 +373,61 @@ bad(x) = safe_div(x, 0)
 
 #[test]
 fn call_site_domain_satisfied_proved() {
-    proved_all(&format!("{SAFE_DIV}
+    proved_all(&format!(
+        "{SAFE_DIV}
 good : Int -> Int
 good(x) = safe_div(x, 2)
-"));
+"
+    ));
 }
 
 #[test]
 fn call_site_domain_from_caller_domain_proved() {
     // The caller's own domain supplies the proof that the argument is non-zero.
-    proved_all(&format!("{SAFE_DIV}
+    proved_all(&format!(
+        "{SAFE_DIV}
 forward : Int * (Int - {{0}}) -> Int
 forward(a, b) = safe_div(a, b)
-"));
+"
+    ));
 }
 
 #[test]
 fn call_site_domain_path_condition_proved() {
     // The obligation is path-sensitive: the call only happens when x != 0.
-    proved_all(&format!("{SAFE_DIV}
+    proved_all(&format!(
+        "{SAFE_DIV}
 guarded : Int -> Int
 guarded(x) = if x == 0 then 0 else safe_div(10, x)
-"));
+"
+    ));
 }
 
 #[test]
 fn call_site_recursive_in_domain_proved() {
-    proved("
+    proved(
+        "
 count_down : Nat -> Nat
 count_down(n) = if n == 0 then 0 else count_down(n - 1)
-");
+",
+    );
 }
 
 #[test]
 fn call_site_recursive_out_of_domain_counterexample() {
     // n = 2 recurses with n - 2 = 0 ∉ NatPos — the induction hypothesis only
     // covers in-domain arguments, so this must be rejected.
-    let results = check_all("
+    let results = check_all(
+        "
 shrink : NatPos -> Nat
 shrink(n) = if n == 1 then 1 else shrink(n - 2)
-");
+",
+    );
     assert!(
-        matches!(result_for(&results, "shrink"), CheckResult::Counterexample { .. }),
+        matches!(
+            result_for(&results, "shrink"),
+            CheckResult::Counterexample { .. }
+        ),
         "expected counterexample for shrink"
     );
 }
@@ -387,14 +435,16 @@ shrink(n) = if n == 1 then 1 else shrink(n - 2)
 #[test]
 fn call_site_overload_union_domain_proved() {
     // Args need only lie in the union of the overloads' domains.
-    proved_all("
+    proved_all(
+        "
 pick : Nat -> Nat
 pick : (Int - Nat) -> Nat
 pick(x) = if x >= 0 then x else -x
 
 any_int : Int -> Nat
 any_int(x) = pick(x)
-");
+",
+    );
 }
 
 // ── `?` success-narrowing is guarded per-signature ────────────────────────────
@@ -409,12 +459,17 @@ f(x) = x
 fn try_narrowing_other_overload_counterexample() {
     // g(-5) resolves to the (Int - Nat) overload, whose success arm is NOT
     // Nat — narrowing via the first signature alone would falsely prove this.
-    let results = check_all(&format!("{OVERLOADED_FALLIBLE}
+    let results = check_all(&format!(
+        "{OVERLOADED_FALLIBLE}
 g : Int -> Nat | Fail
 g(n) = f(n)?
-"));
+"
+    ));
     assert!(
-        matches!(result_for(&results, "g"), CheckResult::Counterexample { .. }),
+        matches!(
+            result_for(&results, "g"),
+            CheckResult::Counterexample { .. }
+        ),
         "expected counterexample for g"
     );
 }
@@ -423,17 +478,21 @@ g(n) = f(n)?
 fn try_narrowing_domain_restricted_proved() {
     // With the caller restricted to Nat, only the Nat overload applies and
     // its success arm proves the range.
-    proved_all(&format!("{OVERLOADED_FALLIBLE}
+    proved_all(&format!(
+        "{OVERLOADED_FALLIBLE}
 g : Nat -> Nat | Fail
 g(n) = f(n)?
-"));
+"
+    ));
 }
 
 #[test]
 fn const_literal_proved() {
-    proved_all("
+    proved_all(
+        "
 answer : Nat = 42
-");
+",
+    );
 }
 
 #[test]

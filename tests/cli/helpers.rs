@@ -29,15 +29,15 @@ pub fn run(args: &[&str]) -> Output {
     Output {
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        code:   out.status.code().unwrap_or(-1),
+        code: out.status.code().unwrap_or(-1),
     }
 }
 
 pub fn run_repl(input: &str) -> Output {
     let mut cmd = cantor();
     cmd.stdin(Stdio::piped())
-       .stdout(Stdio::piped())
-       .stderr(Stdio::piped());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("failed to spawn cantor binary");
     child
         .stdin
@@ -46,11 +46,13 @@ pub fn run_repl(input: &str) -> Output {
         .write_all(input.as_bytes())
         .expect("failed to write to stdin");
     drop(child.stdin.take());
-    let out = child.wait_with_output().expect("failed to wait for cantor binary");
+    let out = child
+        .wait_with_output()
+        .expect("failed to wait for cantor binary");
     Output {
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        code:   out.status.code().unwrap_or(-1),
+        code: out.status.code().unwrap_or(-1),
     }
 }
 
@@ -73,10 +75,15 @@ pub fn run_llvm_ir(name: &str) -> Output {
 /// gate — not every signature was `Proved`), regardless of whether the
 /// culprit is a `Counterexample` or an `Unknown`.
 pub fn assert_run_refused(out: &Output) {
-    assert_ne!(out.code, 0, "should refuse to run\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert_ne!(
+        out.code, 0,
+        "should refuse to run\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
     assert!(
         out.stderr.contains("not running"),
-        "expected refusal message on stderr:\n{}", out.stderr
+        "expected refusal message on stderr:\n{}",
+        out.stderr
     );
 }
 
@@ -87,6 +94,7 @@ pub fn assert_run_refused_due_to_unknown(out: &Output) {
     assert_run_refused(out);
     assert!(
         out.stdout.contains("  unknown  "),
-        "expected an `unknown` line in the check report:\n{}", out.stdout
+        "expected an `unknown` line in the check report:\n{}",
+        out.stdout
     );
 }

@@ -44,8 +44,8 @@ pub enum Token {
     Plus,     // +
     PlusPlus, // ++ (vector concatenation)
     Minus,    // -  (also set difference; disambiguation is semantic)
-    Star,   // *  (also Cartesian product in signature position)
-    Slash,  // /
+    Star,     // *  (also Cartesian product in signature position)
+    Slash,    // /
 
     // Set operators
     Pipe,     // |  union
@@ -62,10 +62,10 @@ pub enum Token {
     GtEq,   // >=
 
     // Definition / assignment
-    Eq,       // =   (initial binding, pure-body connector)
-    ColonEq,  // :=  (reassignment of a `mut` variable)
-    Arrow,    // ->  (signature range separator)
-    Colon,    // :   (signature type separator)
+    Eq,      // =   (initial binding, pure-body connector)
+    ColonEq, // :=  (reassignment of a `mut` variable)
+    Arrow,   // ->  (signature range separator)
+    Colon,   // :   (signature type separator)
 
     // Punctuation
     LParen,   // (
@@ -78,66 +78,66 @@ pub enum Token {
     Question, // ?  (postfix propagate-failure operator)
     Dot,      // .  (tuple projection `t.0`)
 
-    Newline,  // \n at paren-depth 0 (statement terminator)
+    Newline, // \n at paren-depth 0 (statement terminator)
     Eof,
 }
 
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Token::Int(n)   => write!(f, "{n}"),
+            Token::Int(n) => write!(f, "{n}"),
             Token::Ident(s) => write!(f, "`{s}`"),
-            Token::True     => f.write_str("true"),
-            Token::False    => f.write_str("false"),
-            Token::Not      => f.write_str("not"),
-            Token::And      => f.write_str("and"),
-            Token::Or       => f.write_str("or"),
-            Token::In       => f.write_str("in"),
-            Token::If       => f.write_str("if"),
-            Token::Then     => f.write_str("then"),
-            Token::Else     => f.write_str("else"),
-            Token::Mut      => f.write_str("mut"),
-            Token::Assert   => f.write_str("assert"),
-            Token::Assume   => f.write_str("assume"),
-            Token::Require  => f.write_str("require"),
-            Token::Return   => f.write_str("return"),
-            Token::Alias    => f.write_str("alias"),
+            Token::True => f.write_str("true"),
+            Token::False => f.write_str("false"),
+            Token::Not => f.write_str("not"),
+            Token::And => f.write_str("and"),
+            Token::Or => f.write_str("or"),
+            Token::In => f.write_str("in"),
+            Token::If => f.write_str("if"),
+            Token::Then => f.write_str("then"),
+            Token::Else => f.write_str("else"),
+            Token::Mut => f.write_str("mut"),
+            Token::Assert => f.write_str("assert"),
+            Token::Assume => f.write_str("assume"),
+            Token::Require => f.write_str("require"),
+            Token::Return => f.write_str("return"),
+            Token::Alias => f.write_str("alias"),
             Token::Distinct => f.write_str("distinct"),
-            Token::While    => f.write_str("while"),
-            Token::For      => f.write_str("for"),
-            Token::Fail     => f.write_str("fail"),
-            Token::From     => f.write_str("from"),
-            Token::Size     => f.write_str("size"),
-            Token::Plus     => f.write_str("+"),
+            Token::While => f.write_str("while"),
+            Token::For => f.write_str("for"),
+            Token::Fail => f.write_str("fail"),
+            Token::From => f.write_str("from"),
+            Token::Size => f.write_str("size"),
+            Token::Plus => f.write_str("+"),
             Token::PlusPlus => f.write_str("++"),
-            Token::Minus    => f.write_str("-"),
-            Token::Star     => f.write_str("*"),
-            Token::Slash    => f.write_str("/"),
-            Token::Pipe     => f.write_str("|"),
+            Token::Minus => f.write_str("-"),
+            Token::Star => f.write_str("*"),
+            Token::Slash => f.write_str("/"),
+            Token::Pipe => f.write_str("|"),
             Token::BangBang => f.write_str("!!"),
-            Token::Caret    => f.write_str("^"),
-            Token::Amp      => f.write_str("&"),
-            Token::EqEq     => f.write_str("=="),
-            Token::BangEq   => f.write_str("!="),
-            Token::Lt       => f.write_str("<"),
-            Token::LtEq     => f.write_str("<="),
-            Token::Gt       => f.write_str(">"),
-            Token::GtEq     => f.write_str(">="),
-            Token::Eq       => f.write_str("="),
-            Token::ColonEq  => f.write_str(":="),
-            Token::Arrow    => f.write_str("->"),
-            Token::Colon    => f.write_str(":"),
-            Token::LParen   => f.write_str("("),
-            Token::RParen   => f.write_str(")"),
-            Token::LBrace   => f.write_str("{"),
-            Token::RBrace   => f.write_str("}"),
+            Token::Caret => f.write_str("^"),
+            Token::Amp => f.write_str("&"),
+            Token::EqEq => f.write_str("=="),
+            Token::BangEq => f.write_str("!="),
+            Token::Lt => f.write_str("<"),
+            Token::LtEq => f.write_str("<="),
+            Token::Gt => f.write_str(">"),
+            Token::GtEq => f.write_str(">="),
+            Token::Eq => f.write_str("="),
+            Token::ColonEq => f.write_str(":="),
+            Token::Arrow => f.write_str("->"),
+            Token::Colon => f.write_str(":"),
+            Token::LParen => f.write_str("("),
+            Token::RParen => f.write_str(")"),
+            Token::LBrace => f.write_str("{"),
+            Token::RBrace => f.write_str("}"),
             Token::LBracket => f.write_str("["),
             Token::RBracket => f.write_str("]"),
-            Token::Comma    => f.write_str(","),
+            Token::Comma => f.write_str(","),
             Token::Question => f.write_str("?"),
-            Token::Dot      => f.write_str("."),
-            Token::Newline  => f.write_str("<newline>"),
-            Token::Eof      => f.write_str("<eof>"),
+            Token::Dot => f.write_str("."),
+            Token::Newline => f.write_str("<newline>"),
+            Token::Eof => f.write_str("<eof>"),
         }
     }
 }
@@ -152,7 +152,11 @@ pub struct Lexer<'src> {
 
 impl<'src> Lexer<'src> {
     pub fn new(src: &'src str) -> Self {
-        Self { src, pos: 0, paren_depth: 0 }
+        Self {
+            src,
+            pos: 0,
+            paren_depth: 0,
+        }
     }
 
     fn peek_char(&self) -> Option<char> {
@@ -176,10 +180,12 @@ impl<'src> Lexer<'src> {
             self.advance_char();
         }
         let text = &self.src[start..self.pos];
-        let n = text.parse::<i64>().map_err(|_| CompileError::InvalidIntLiteral {
-            text: text.to_owned(),
-            span: Span::new(start as u32, self.pos as u32),
-        })?;
+        let n = text
+            .parse::<i64>()
+            .map_err(|_| CompileError::InvalidIntLiteral {
+                text: text.to_owned(),
+                span: Span::new(start as u32, self.pos as u32),
+            })?;
         Ok((Token::Int(n), Span::new(start as u32, self.pos as u32)))
     }
 
@@ -189,28 +195,28 @@ impl<'src> Lexer<'src> {
         }
         let word = &self.src[start..self.pos];
         let tok = match word {
-            "true"   => Token::True,
-            "false"  => Token::False,
-            "not"    => Token::Not,
-            "and"    => Token::And,
-            "or"     => Token::Or,
-            "in"     => Token::In,
-            "if"     => Token::If,
-            "then"   => Token::Then,
-            "else"   => Token::Else,
-            "mut"      => Token::Mut,
-            "assert"   => Token::Assert,
-            "assume"   => Token::Assume,
-            "require"  => Token::Require,
-            "alias"    => Token::Alias,
+            "true" => Token::True,
+            "false" => Token::False,
+            "not" => Token::Not,
+            "and" => Token::And,
+            "or" => Token::Or,
+            "in" => Token::In,
+            "if" => Token::If,
+            "then" => Token::Then,
+            "else" => Token::Else,
+            "mut" => Token::Mut,
+            "assert" => Token::Assert,
+            "assume" => Token::Assume,
+            "require" => Token::Require,
+            "alias" => Token::Alias,
             "distinct" => Token::Distinct,
-            "while"    => Token::While,
-            "for"      => Token::For,
-            "fail"     => Token::Fail,
-            "return"   => Token::Return,
-            "from"     => Token::From,
-            "size"     => Token::Size,
-            _          => Token::Ident(word.to_owned()),
+            "while" => Token::While,
+            "for" => Token::For,
+            "fail" => Token::Fail,
+            "return" => Token::Return,
+            "from" => Token::From,
+            "size" => Token::Size,
+            _ => Token::Ident(word.to_owned()),
         };
         (tok, Span::new(start as u32, self.pos as u32))
     }
@@ -257,10 +263,22 @@ impl<'src> Lexer<'src> {
                 '|' => Token::Pipe,
                 '^' => Token::Caret,
                 '&' => Token::Amp,
-                '(' => { self.paren_depth += 1; Token::LParen }
-                ')' => { self.paren_depth = self.paren_depth.saturating_sub(1); Token::RParen }
-                '[' => { self.paren_depth += 1; Token::LBracket }
-                ']' => { self.paren_depth = self.paren_depth.saturating_sub(1); Token::RBracket }
+                '(' => {
+                    self.paren_depth += 1;
+                    Token::LParen
+                }
+                ')' => {
+                    self.paren_depth = self.paren_depth.saturating_sub(1);
+                    Token::RParen
+                }
+                '[' => {
+                    self.paren_depth += 1;
+                    Token::LBracket
+                }
+                ']' => {
+                    self.paren_depth = self.paren_depth.saturating_sub(1);
+                    Token::RBracket
+                }
                 '{' => Token::LBrace,
                 '}' => Token::RBrace,
                 ',' => Token::Comma,

@@ -1,13 +1,12 @@
 use cantor::{
-    ast::{BinOp, ExprKind, FunctionBody, Item, NameDef, FunctionDef},
+    ast::{BinOp, ExprKind, FunctionBody, FunctionDef, Item, NameDef},
     parser::parse_file,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn parse_one(src: &str) -> FunctionDef {
-    let items = parse_file(src)
-        .unwrap_or_else(|e| panic!("parse error for {src:?}: {e}"));
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error for {src:?}: {e}"));
     assert_eq!(items.len(), 1, "expected exactly one item");
     let Item::FunctionDef(def) = items.into_iter().next().unwrap() else {
         panic!("expected FunctionDef item");
@@ -16,8 +15,7 @@ fn parse_one(src: &str) -> FunctionDef {
 }
 
 fn parse_one_const(src: &str) -> NameDef {
-    let items = parse_file(src)
-        .unwrap_or_else(|e| panic!("parse error for {src:?}: {e}"));
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error for {src:?}: {e}"));
     assert_eq!(items.len(), 1, "expected exactly one item");
     let Item::NameDef(def) = items.into_iter().next().unwrap() else {
         panic!("expected NameDef item");
@@ -59,21 +57,35 @@ fn cartesian_product_domain() {
     let def = parse_one("add : Int * Int -> Int\nadd(x, y) = x + y");
     assert_eq!(def.params.len(), 2);
     let domain = def.sigs[0].domain.as_ref().expect("expected a domain expr");
-    assert!(matches!(domain.kind, ExprKind::BinOp { op: BinOp::Mul, .. }));
+    assert!(matches!(
+        domain.kind,
+        ExprKind::BinOp { op: BinOp::Mul, .. }
+    ));
 }
 
 #[test]
 fn if_then_else_body() {
     let def = parse_one("abs : Int -> Int\nabs(x) = if x >= 0 then x else -x");
-    let FunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
+    let FunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
     assert!(matches!(body.kind, ExprKind::If { .. }));
 }
 
 #[test]
 fn if_cond_then_else_structure() {
     let def = parse_one("abs : Int -> Int\nabs(x) = if x >= 0 then x else -x");
-    let FunctionBody::Expr(body) = &def.body else { panic!() };
-    let ExprKind::If { cond, then_expr, else_expr } = &body.kind else { panic!() };
+    let FunctionBody::Expr(body) = &def.body else {
+        panic!()
+    };
+    let ExprKind::If {
+        cond,
+        then_expr,
+        else_expr,
+    } = &body.kind
+    else {
+        panic!()
+    };
     // Condition is x >= 0
     assert!(matches!(cond.kind, ExprKind::BinOp { op: BinOp::Ge, .. }));
     // Then branch is x
@@ -87,14 +99,19 @@ fn no_arg_function() {
     // Zero-arg functions use `-> Set` with an empty domain (no `Unit`).
     let def = parse_one("zero : -> Int\nzero() = 0");
     assert_eq!(def.params.len(), 0);
-    assert!(def.sigs[0].domain.is_none(), "zero-arg sig should have no domain");
+    assert!(
+        def.sigs[0].domain.is_none(),
+        "zero-arg sig should have no domain"
+    );
     assert!(matches!(def.body, FunctionBody::Expr(_)));
 }
 
 #[test]
 fn function_call_in_body() {
     let def = parse_one("quad : Int -> Int\nquad(x) = double(double(x))");
-    let FunctionBody::Expr(body) = &def.body else { panic!() };
+    let FunctionBody::Expr(body) = &def.body else {
+        panic!()
+    };
     assert!(matches!(body.kind, ExprKind::Call { .. }));
 }
 
@@ -118,7 +135,9 @@ f(x) {
 }
 "#;
     let def = parse_one(src);
-    let FunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let FunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
     assert_eq!(stmts.len(), 3);
     assert!(matches!(stmts[0], cantor::ast::Stmt::MutLet { .. }));
     assert!(matches!(stmts[1], cantor::ast::Stmt::Assign { .. }));
@@ -129,7 +148,9 @@ f(x) {
 fn block_with_assert() {
     let src = "f : Nat -> Nat\nf(x) { assert x in Nat\nx * 2 }";
     let def = parse_one(src);
-    let FunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let FunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
     assert!(matches!(stmts[0], cantor::ast::Stmt::Assert { .. }));
 }
 
@@ -137,7 +158,9 @@ fn block_with_assert() {
 fn block_with_assume() {
     let src = "f : Int -> Nat\nf(x) { assume x in Nat\nx }";
     let def = parse_one(src);
-    let FunctionBody::Block(stmts) = &def.body else { panic!() };
+    let FunctionBody::Block(stmts) = &def.body else {
+        panic!()
+    };
     assert!(matches!(stmts[0], cantor::ast::Stmt::Assume { .. }));
 }
 
@@ -189,7 +212,9 @@ fn missing_body() {
 fn singleton_set_as_range() {
     let def = parse_one("f : Int -> {42}\nf(x) = 42");
     let sig = &def.sigs[0];
-    let ExprKind::SetLit(elems) = &sig.range.kind else { panic!("expected SetLit") };
+    let ExprKind::SetLit(elems) = &sig.range.kind else {
+        panic!("expected SetLit")
+    };
     assert_eq!(elems.len(), 1);
     assert!(matches!(elems[0].kind, ExprKind::IntLit(42)));
 }
@@ -198,7 +223,9 @@ fn singleton_set_as_range() {
 fn multi_element_set_as_range() {
     let def = parse_one("f : Int -> {0, 1, 2}\nf(x) = 0");
     let sig = &def.sigs[0];
-    let ExprKind::SetLit(elems) = &sig.range.kind else { panic!("expected SetLit") };
+    let ExprKind::SetLit(elems) = &sig.range.kind else {
+        panic!("expected SetLit")
+    };
     assert_eq!(elems.len(), 3);
 }
 
@@ -207,10 +234,18 @@ fn set_difference_in_domain() {
     let def = parse_one("f : Int - {0} -> Int\nf(x) = x");
     let sig = &def.sigs[0];
     let domain = sig.domain.as_ref().unwrap();
-    let ExprKind::BinOp { op: BinOp::Sub, lhs, rhs } = &domain.kind
-        else { panic!("expected BinOp::Sub, got {:?}", domain.kind) };
+    let ExprKind::BinOp {
+        op: BinOp::Sub,
+        lhs,
+        rhs,
+    } = &domain.kind
+    else {
+        panic!("expected BinOp::Sub, got {:?}", domain.kind)
+    };
     assert!(matches!(lhs.kind, ExprKind::Var(_)));
-    let ExprKind::SetLit(elems) = &rhs.kind else { panic!("expected SetLit on rhs") };
+    let ExprKind::SetLit(elems) = &rhs.kind else {
+        panic!("expected SetLit on rhs")
+    };
     assert_eq!(elems.len(), 1);
     assert!(matches!(elems[0].kind, ExprKind::IntLit(0)));
 }
@@ -219,7 +254,9 @@ fn set_difference_in_domain() {
 fn set_lit_in_expression_body() {
     // {0} in expression position should parse as a SetLit.
     let def = parse_one("f : Int -> {0}\nf(x) = {0}");
-    let FunctionBody::Expr(body) = &def.body else { panic!("expected Expr body") };
+    let FunctionBody::Expr(body) = &def.body else {
+        panic!("expected Expr body")
+    };
     assert!(matches!(body.kind, ExprKind::SetLit(_)));
 }
 
@@ -228,7 +265,9 @@ fn empty_set_lit() {
     // {} should parse without error (empty SetLit).
     let def = parse_one("f : Int -> {}\nf(x) = {}");
     let sig = &def.sigs[0];
-    let ExprKind::SetLit(elems) = &sig.range.kind else { panic!("expected SetLit") };
+    let ExprKind::SetLit(elems) = &sig.range.kind else {
+        panic!("expected SetLit")
+    };
     assert_eq!(elems.len(), 0);
 }
 
@@ -236,7 +275,9 @@ fn empty_set_lit() {
 fn set_lit_trailing_comma() {
     let def = parse_one("f : Int -> {1, 2,}\nf(x) = 1");
     let sig = &def.sigs[0];
-    let ExprKind::SetLit(elems) = &sig.range.kind else { panic!("expected SetLit") };
+    let ExprKind::SetLit(elems) = &sig.range.kind else {
+        panic!("expected SetLit")
+    };
     assert_eq!(elems.len(), 2);
 }
 
@@ -245,8 +286,9 @@ fn cartesian_product_with_set_difference() {
     let def = parse_one("f : Int * (Int - {0}) -> Int\nf(x, y) = x");
     let sig = &def.sigs[0];
     let domain = sig.domain.as_ref().unwrap();
-    let ExprKind::BinOp { op: BinOp::Mul, .. } = &domain.kind
-        else { panic!("expected Mul (Cartesian product) at top level") };
+    let ExprKind::BinOp { op: BinOp::Mul, .. } = &domain.kind else {
+        panic!("expected Mul (Cartesian product) at top level")
+    };
     assert_eq!(def.params.len(), 2);
 }
 
@@ -263,7 +305,10 @@ fn const_literal_nat() {
 #[test]
 fn const_arithmetic_value() {
     let def = parse_one_const("tau : Nat = 2 * 314");
-    assert!(matches!(def.value.kind, ExprKind::BinOp { op: BinOp::Mul, .. }));
+    assert!(matches!(
+        def.value.kind,
+        ExprKind::BinOp { op: BinOp::Mul, .. }
+    ));
 }
 
 #[test]
@@ -287,7 +332,13 @@ fn const_and_function_in_same_file() {
 #[test]
 fn const_negative_value() {
     let def = parse_one_const("offset : Int = -5");
-    assert!(matches!(def.value.kind, ExprKind::UnOp { op: cantor::ast::UnOp::Neg, .. }));
+    assert!(matches!(
+        def.value.kind,
+        ExprKind::UnOp {
+            op: cantor::ast::UnOp::Neg,
+            ..
+        }
+    ));
 }
 
 // ── While loops ───────────────────────────────────────────────────────────────
@@ -296,7 +347,9 @@ fn const_negative_value() {
 fn while_parses_as_stmt() {
     let src = "sum_to : Nat -> Nat\nsum_to(n) {\n    mut acc: Nat = 0\n    mut i: Nat = 1\n    while i <= n {\n        acc := acc + i\n        i := i + 1\n    }\n    acc\n}";
     let def = parse_one(src);
-    let FunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let FunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
     assert_eq!(stmts.len(), 4); // MutLet acc, MutLet i, While, Expr(acc)
     assert!(matches!(stmts[2], cantor::ast::Stmt::While { .. }));
 }
@@ -305,8 +358,12 @@ fn while_parses_as_stmt() {
 fn while_body_stmts_parsed() {
     let src = "f : Int -> Int\nf(x) {\n    mut i: Int = 0\n    while i < x {\n        i := i + 1\n    }\n    i\n}";
     let def = parse_one(src);
-    let FunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
-    let cantor::ast::Stmt::While { body, .. } = &stmts[1] else { panic!("expected While") };
+    let FunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
+    let cantor::ast::Stmt::While { body, .. } = &stmts[1] else {
+        panic!("expected While")
+    };
     assert_eq!(body.len(), 1);
     assert!(matches!(body[0], cantor::ast::Stmt::Assign { .. }));
 }
@@ -315,8 +372,12 @@ fn while_body_stmts_parsed() {
 fn while_condition_parsed() {
     let src = "f : Nat -> Nat\nf(n) {\n    mut i: Nat = 0\n    while i < n {\n        i := i + 1\n    }\n    i\n}";
     let def = parse_one(src);
-    let FunctionBody::Block(stmts) = &def.body else { panic!() };
-    let cantor::ast::Stmt::While { cond, .. } = &stmts[1] else { panic!("expected While") };
+    let FunctionBody::Block(stmts) = &def.body else {
+        panic!()
+    };
+    let cantor::ast::Stmt::While { cond, .. } = &stmts[1] else {
+        panic!("expected While")
+    };
     assert!(matches!(cond.kind, ExprKind::BinOp { op: BinOp::Lt, .. }));
 }
 
@@ -326,7 +387,9 @@ fn while_condition_parsed() {
 fn for_in_parses_as_stmt() {
     let src = "f : -> Int\nf() {\n    mut acc: Int = 0\n    for x in {1, 2, 3} {\n        acc := acc + x\n    }\n    acc\n}";
     let def = parse_one(src);
-    let FunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let FunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
     assert_eq!(stmts.len(), 3); // MutLet acc, ForIn, Expr(acc)
     assert!(matches!(stmts[1], cantor::ast::Stmt::ForIn { .. }));
 }
@@ -335,8 +398,12 @@ fn for_in_parses_as_stmt() {
 fn for_in_var_and_set_parsed() {
     let src = "f : -> Int\nf() {\n    mut acc: Int = 0\n    for x in {1, 2, 3} {\n        acc := acc + x\n    }\n    acc\n}";
     let def = parse_one(src);
-    let FunctionBody::Block(stmts) = &def.body else { panic!() };
-    let cantor::ast::Stmt::ForIn { var, set, .. } = &stmts[1] else { panic!("expected ForIn") };
+    let FunctionBody::Block(stmts) = &def.body else {
+        panic!()
+    };
+    let cantor::ast::Stmt::ForIn { var, set, .. } = &stmts[1] else {
+        panic!("expected ForIn")
+    };
     assert_eq!(var.0.as_str(), "x");
     assert!(matches!(set.kind, ExprKind::SetLit(_)));
 }
@@ -345,8 +412,12 @@ fn for_in_var_and_set_parsed() {
 fn for_in_body_parsed() {
     let src = "f : -> Int\nf() {\n    mut acc: Int = 0\n    for x in {1, 2} {\n        acc := acc + x\n    }\n    acc\n}";
     let def = parse_one(src);
-    let FunctionBody::Block(stmts) = &def.body else { panic!() };
-    let cantor::ast::Stmt::ForIn { body, .. } = &stmts[1] else { panic!("expected ForIn") };
+    let FunctionBody::Block(stmts) = &def.body else {
+        panic!()
+    };
+    let cantor::ast::Stmt::ForIn { body, .. } = &stmts[1] else {
+        panic!("expected ForIn")
+    };
     assert_eq!(body.len(), 1);
     assert!(matches!(body[0], cantor::ast::Stmt::Assign { .. }));
 }
@@ -388,7 +459,8 @@ fn kleene_star_in_range() {
     let range = &def.sigs[0].range;
     assert!(
         matches!(&range.kind, ExprKind::KleeneStar(inner) if matches!(inner.kind, ExprKind::Var(ref s) if s.0 == "Nat")),
-        "range should be KleeneStar(Nat); got {:?}", range.kind
+        "range should be KleeneStar(Nat); got {:?}",
+        range.kind
     );
 }
 
@@ -398,7 +470,8 @@ fn kleene_star_in_domain() {
     let domain = def.sigs[0].domain.as_ref().unwrap();
     assert!(
         matches!(&domain.kind, ExprKind::KleeneStar(inner) if matches!(inner.kind, ExprKind::Var(ref s) if s.0 == "Nat")),
-        "domain should be KleeneStar(Nat); got {:?}", domain.kind
+        "domain should be KleeneStar(Nat); got {:?}",
+        domain.kind
     );
 }
 
@@ -408,7 +481,8 @@ fn kleene_star_set_diff_in_domain() {
     let domain = def.sigs[0].domain.as_ref().unwrap();
     assert!(
         matches!(&domain.kind, ExprKind::KleeneStar(inner) if matches!(inner.kind, ExprKind::BinOp { op: BinOp::Sub, .. })),
-        "domain should be KleeneStar(Sub(Int, {{0}})); got {:?}", domain.kind
+        "domain should be KleeneStar(Sub(Int, {{0}})); got {:?}",
+        domain.kind
     );
 }
 
@@ -418,7 +492,9 @@ fn kleene_star_set_diff_in_domain() {
 #[test]
 fn array_lit_in_body_parses_as_tuple() {
     let def = parse_one("f : -> Int * 3\nf() = [1, 2, 3]");
-    let FunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
+    let FunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
     let ExprKind::Tuple(elems) = &body.kind else {
         panic!("expected Tuple body, got {:?}", body.kind)
     };
@@ -437,6 +513,8 @@ fn array_lit_used_in_set_position_parses_as_tuple_domain() {
     let def = parse_one("f : [Int] -> Int\nf(xs) = 0");
     let sig = &def.sigs[0];
     let domain = sig.domain.as_ref().expect("expected a domain");
-    assert!(matches!(&domain.kind, ExprKind::Tuple(_)),
-        "domain parsed as Tuple (semantic check deferred to solver)");
+    assert!(
+        matches!(&domain.kind, ExprKind::Tuple(_)),
+        "domain parsed as Tuple (semantic check deferred to solver)"
+    );
 }

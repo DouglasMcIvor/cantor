@@ -29,7 +29,9 @@ fn print_compile_error(path: &str, e: &CompileError, src: &str) {
         None => eprintln!("{path}: {e}"),
     }
     if e.is_ice() {
-        eprintln!("note: this is a bug in the Cantor compiler itself, not your program — please file an issue");
+        eprintln!(
+            "note: this is a bug in the Cantor compiler itself, not your program — please file an issue"
+        );
     }
 }
 
@@ -77,9 +79,7 @@ fn main() {
             repl::run();
             return;
         }
-        1 if positional[0] != "run" && positional[0] != "llvm-ir" => {
-            (false, false, positional[0])
-        }
+        1 if positional[0] != "run" && positional[0] != "llvm-ir" => (false, false, positional[0]),
         2 if positional[0] == "run" => (true, false, positional[1]),
         2 if positional[0] == "llvm-ir" => (false, true, positional[1]),
         _ => {
@@ -160,9 +160,9 @@ fn main() {
     // produce no check result, so zipping items with all_results is unsafe).
     let item_by_name: HashMap<&str, &Item> = items
         .iter()
-        .filter_map(|item| match item {
-            Item::FunctionDef(def) => Some((def.name.0.as_str(), item)),
-            Item::NameDef(def) => Some((def.name.0.as_str(), item)),
+        .map(|item| match item {
+            Item::FunctionDef(def) => (def.name.0.as_str(), item),
+            Item::NameDef(def) => (def.name.0.as_str(), item),
         })
         .collect();
 
@@ -179,7 +179,11 @@ fn main() {
                     println!("  proved          {sig_display}");
                     n_proved += 1;
                 }
-                CheckResult::Counterexample { params, output, reason } => {
+                CheckResult::Counterexample {
+                    params,
+                    output,
+                    reason,
+                } => {
                     println!("  counterexample  {sig_display}");
                     let mut pairs: Vec<_> = params.iter().collect();
                     pairs.sort_by_key(|(k, _)| k.as_str());
@@ -244,12 +248,16 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
 
     // Determine main's return Kind from the already-elaborated tree — no need
     // to recompute it from the raw ast via `wire::range_kind` a second time.
-    let main_return_kind = tree.sem_items.iter().find_map(|item| match item {
-        SemItem::FunctionDef(def) if def.name.0 == "main" && def.params.is_empty() => {
-            Some(def.return_kind.clone())
-        }
-        _ => None,
-    }).unwrap_or(Kind::Int);
+    let main_return_kind = tree
+        .sem_items
+        .iter()
+        .find_map(|item| match item {
+            SemItem::FunctionDef(def) if def.name.0 == "main" && def.params.is_empty() => {
+                Some(def.return_kind.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or(Kind::Int);
 
     match &main_return_kind {
         // Fallible main: the runner converts {i1, i64} → flat i64 (sentinel on failure).
@@ -267,9 +275,9 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
             if result == i64::MIN {
                 // Read the typed error code stored by the runner via the JIT getter.
                 let error_code: i64 = unsafe {
-                    match engine.get_function::<unsafe extern "C" fn() -> i64>(
-                        "__cantor_get_fail_code",
-                    ) {
+                    match engine
+                        .get_function::<unsafe extern "C" fn() -> i64>("__cantor_get_fail_code")
+                    {
                         Ok(f) => f.call(),
                         Err(_) => 0,
                     }
@@ -328,15 +336,33 @@ fn count_kind_leaves(kind: &Kind) -> usize {
 
 fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
     match kind {
-        Kind::Bool => { let v = buf[*offset] != 0; *offset += 1; format!("{v}") }
-        Kind::Fail => { *offset += 1; "fail".to_string() }
-        Kind::Int | Kind::Set(_) => { let v = buf[*offset]; *offset += 1; format!("{v}") }
+        Kind::Bool => {
+            let v = buf[*offset] != 0;
+            *offset += 1;
+            format!("{v}")
+        }
+        Kind::Fail => {
+            *offset += 1;
+            "fail".to_string()
+        }
+        Kind::Int | Kind::Set(_) => {
+            let v = buf[*offset];
+            *offset += 1;
+            format!("{v}")
+        }
         Kind::Tuple(elems) => {
-            let parts: Vec<String> = elems.iter().map(|k| format_kind_val(k, buf, offset)).collect();
+            let parts: Vec<String> = elems
+                .iter()
+                .map(|k| format_kind_val(k, buf, offset))
+                .collect();
             format!("({})", parts.join(", "))
         }
         // TODO: tagged-union IR — decode tag and display the active arm
-        Kind::TaggedUnion(_) => { let v = buf[*offset]; *offset += 1; format!("<tagged-union {v}>") }
+        Kind::TaggedUnion(_) => {
+            let v = buf[*offset];
+            *offset += 1;
+            format!("<tagged-union {v}>")
+        }
         Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in CLI output"),
     }
 }

@@ -13,7 +13,9 @@ pub fn check_tree(src: &str) -> ConstrainedTree {
     let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
     match check_file(&items, 60_000).unwrap_or_else(|e| panic!("check error: {e}")) {
         CheckOutcome::Proved(tree) => tree,
-        CheckOutcome::NotProved(results) => panic!("expected file to be fully proved, got: {results:?}"),
+        CheckOutcome::NotProved(results) => {
+            panic!("expected file to be fully proved, got: {results:?}")
+        }
     }
 }
 
@@ -39,7 +41,11 @@ pub fn check(src: &str) -> Vec<(String, CheckResult)> {
 /// Assert that the first (usually only) signature of a single-function source is Proved.
 pub fn proved(src: &str) {
     for (label, result) in &check(src) {
-        assert_eq!(result, &CheckResult::Proved, "`{label}` should be Proved, got {result:?}");
+        assert_eq!(
+            result,
+            &CheckResult::Proved,
+            "`{label}` should be Proved, got {result:?}"
+        );
     }
 }
 
@@ -47,7 +53,11 @@ pub fn proved(src: &str) {
 pub fn proved_all(src: &str) {
     for (_fn_name, sig_results) in &check_all(src) {
         for (label, result) in sig_results {
-            assert_eq!(result, &CheckResult::Proved, "`{label}` should be Proved, got {result:?}");
+            assert_eq!(
+                result,
+                &CheckResult::Proved,
+                "`{label}` should be Proved, got {result:?}"
+            );
         }
     }
 }
@@ -89,5 +99,8 @@ pub fn unknown(src: &str) {
 /// elaborator rejects loudly rather than silently coercing.
 pub fn rejected(src: &str) {
     let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
-    assert!(check_file(&items, 60_000).is_err(), "expected `{src}` to fail elaboration/checking");
+    assert!(
+        check_file(&items, 60_000).is_err(),
+        "expected `{src}` to fail elaboration/checking"
+    );
 }

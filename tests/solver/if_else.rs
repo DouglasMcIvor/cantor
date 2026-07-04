@@ -4,18 +4,22 @@ use super::helpers::*;
 
 #[test]
 fn if_int_int_proved() {
-    proved("
+    proved(
+        "
 max : Int * Int -> Int
 max(a, b) = if a > b then a else b
-");
+",
+    );
 }
 
 #[test]
 fn if_bool_bool_proved() {
-    proved("
+    proved(
+        "
 f : Bool -> Bool
 f(b) = if b then true else false
-");
+",
+    );
 }
 
 // ── Non-Bool condition is rejected at elaboration ────────────────────────────
@@ -27,10 +31,12 @@ f(b) = if b then true else false
 
 #[test]
 fn if_int_condition_rejected_at_elaboration() {
-    rejected("
+    rejected(
+        "
 f : Int -> Int
 f(n) = if n then 1 else 2
-");
+",
+    );
 }
 
 // ── Bool / Int branches require explicit conversion ──────────────────────────
@@ -43,37 +49,45 @@ f(n) = if n then 1 else 2
 #[test]
 fn if_int_then_explicit_bool_conversion_else_proved() {
     // `false` converted explicitly to 0 — both branches are now plain Int.
-    proved("
+    proved(
+        "
 f : Nat -> Int
 f(n) = if n > 0 then n else 0
-");
+",
+    );
 }
 
 #[test]
 fn if_explicit_bool_conversion_then_int_else_proved() {
     // `true` converted explicitly to 1 — both branches are now plain Int.
-    proved("
+    proved(
+        "
 f : Nat -> Int
 f(n) = if n > 0 then 1 else n
-");
+",
+    );
 }
 
 #[test]
 fn if_bool_param_then_int_else_explicit_conversion_proved() {
-    proved("
+    proved(
+        "
 f : Bool -> Int
 f(b) = if b then 1 else 0
-");
+",
+    );
 }
 
 // Bool/Int mismatch where range catches a violation (the result must still be checked).
 #[test]
 fn if_int_branches_range_counterexample() {
     // else-branch = 0, but 0 ∉ NatPos → counterexample.
-    counterexample("
+    counterexample(
+        "
 f : Nat -> NatPos
 f(n) = if n > 0 then n else 0
-");
+",
+    );
 }
 
 #[test]
@@ -81,10 +95,12 @@ fn if_bare_bool_int_branches_rejected_at_elaboration() {
     // No Tuple/TaggedUnion side and no explicit conversion — merge_if_branches
     // has no coercion for this, so the whole file fails to elaborate rather
     // than silently treating `false` as 0.
-    rejected("
+    rejected(
+        "
 f : Nat -> Int
 f(n) = if n > 0 then n else false
-");
+",
+    );
 }
 
 // ── Bool branch + fail branch ─────────────────────────────────────────────────
@@ -93,18 +109,22 @@ f(n) = if n > 0 then n else false
 
 #[test]
 fn if_bool_or_fail_proved() {
-    proved("
+    proved(
+        "
 f : Int -> Bool | Fail
 f(n) = if n == 0 then false else fail
-");
+",
+    );
 }
 
 #[test]
 fn if_true_or_fail_proved() {
-    proved("
+    proved(
+        "
 f : NatPos -> Bool | Fail
 f(n) = if n > 0 then true else fail
-");
+",
+    );
 }
 
 // ── Distinct-sort / Int branch in union range ─────────────────────────────────
@@ -113,21 +133,25 @@ f(n) = if n > 0 then true else fail
 
 #[test]
 fn if_distinct_or_int_branch_proved() {
-    proved("
+    proved(
+        "
 Litre = distinct Nat
 f : Bool -> Litre | Nat
 f(b) = if b then litre(5) else 3
-");
+",
+    );
 }
 
 #[test]
 fn if_distinct_or_int_branch_counterexample() {
     // The Litre arm does not satisfy Nat, so a Litre result fails the range Nat.
-    counterexample("
+    counterexample(
+        "
 Litre = distinct Nat
 f : Bool -> Nat
 f(b) = if b then litre(0) else 0
-");
+",
+    );
 }
 
 // ── Tuple branch + fail branch ────────────────────────────────────────────────
@@ -136,10 +160,12 @@ f(b) = if b then litre(0) else 0
 
 #[test]
 fn if_tuple_fail_proved() {
-    proved("
+    proved(
+        "
 f : Bool -> (Nat * Nat) | Fail
 f(b) = if b then (1, 2) else fail
-");
+",
+    );
 }
 
 // ── Tuple branch in a scalar range — should counterexample ───────────────────
@@ -149,10 +175,12 @@ f(b) = if b then (1, 2) else fail
 
 #[test]
 fn if_tuple_branch_in_scalar_range_counterexample() {
-    counterexample("
+    counterexample(
+        "
 f : Bool -> Nat
 f(b) = if b then (1, 2) else 0
-");
+",
+    );
 }
 
 // ── Projection from an if/else result ────────────────────────────────────────
@@ -161,17 +189,21 @@ f(b) = if b then (1, 2) else 0
 
 #[test]
 fn if_else_tuple_proj_proved() {
-    proved("
+    proved(
+        "
 f : Bool -> Nat
 f(b) = (if b then (1, 2) else (3, 4)).0
-");
+",
+    );
 }
 
 #[test]
 fn if_else_tuple_proj_counterexample() {
     // When b is true the tuple is (0, 2); .0 = 0 which is not in NatPos.
-    counterexample("
+    counterexample(
+        "
 f : Bool -> NatPos
 f(b) = (if b then (0, 2) else (3, 4)).0
-");
+",
+    );
 }

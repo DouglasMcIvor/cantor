@@ -53,11 +53,25 @@ pub enum SemExprKind {
     SetQuotient(Box<SemExpr>, Box<SemExpr>),
 
     /// Every other binary operator — single meaning regardless of position.
-    BinOp { op: BinOp, lhs: Box<SemExpr>, rhs: Box<SemExpr> },
-    UnOp { op: UnOp, expr: Box<SemExpr> },
+    BinOp {
+        op: BinOp,
+        lhs: Box<SemExpr>,
+        rhs: Box<SemExpr>,
+    },
+    UnOp {
+        op: UnOp,
+        expr: Box<SemExpr>,
+    },
 
-    Call { callee: Symbol, args: Vec<SemExpr> },
-    If { cond: Box<SemExpr>, then_expr: Box<SemExpr>, else_expr: Box<SemExpr> },
+    Call {
+        callee: Symbol,
+        args: Vec<SemExpr>,
+    },
+    If {
+        cond: Box<SemExpr>,
+        then_expr: Box<SemExpr>,
+        else_expr: Box<SemExpr>,
+    },
     /// `{ expr, … }` — explicit set literal.
     SetLit(Vec<SemExpr>),
     /// `expr?`
@@ -71,8 +85,14 @@ pub enum SemExprKind {
         filter: Option<Box<SemExpr>>,
     },
     Tuple(Vec<SemExpr>),
-    Proj { base: Box<SemExpr>, index: usize },
-    Index { base: Box<SemExpr>, index: Box<SemExpr> },
+    Proj {
+        base: Box<SemExpr>,
+        index: usize,
+    },
+    Index {
+        base: Box<SemExpr>,
+        index: Box<SemExpr>,
+    },
     /// `X*` — always set position; describes the set of finite sequences of `X`.
     KleeneStar(Box<SemExpr>),
 }
@@ -93,20 +113,70 @@ pub enum SemAssertElse {
 
 #[derive(Debug, Clone)]
 pub enum SemStmt {
-    Let { name: Symbol, constraint: SemExpr, value: SemExpr, span: Span },
-    MutLet { name: Symbol, constraint: SemExpr, value: SemExpr, span: Span },
-    Assign { name: Symbol, value: SemExpr, span: Span },
-    DestructLet { bindings: Vec<SemDestructBinding>, tuple_constraint: Option<SemExpr>, value: SemExpr, span: Span },
-    DestructMutLet { bindings: Vec<SemDestructBinding>, tuple_constraint: Option<SemExpr>, value: SemExpr, span: Span },
-    DestructAssign { names: Vec<Symbol>, value: SemExpr, span: Span },
-    Require { predicate: SemExpr, span: Span },
-    Assert { predicate: SemExpr, else_clause: Option<SemAssertElse>, span: Span },
-    Assume { predicate: SemExpr, span: Span },
+    Let {
+        name: Symbol,
+        constraint: SemExpr,
+        value: SemExpr,
+        span: Span,
+    },
+    MutLet {
+        name: Symbol,
+        constraint: SemExpr,
+        value: SemExpr,
+        span: Span,
+    },
+    Assign {
+        name: Symbol,
+        value: SemExpr,
+        span: Span,
+    },
+    DestructLet {
+        bindings: Vec<SemDestructBinding>,
+        tuple_constraint: Option<SemExpr>,
+        value: SemExpr,
+        span: Span,
+    },
+    DestructMutLet {
+        bindings: Vec<SemDestructBinding>,
+        tuple_constraint: Option<SemExpr>,
+        value: SemExpr,
+        span: Span,
+    },
+    DestructAssign {
+        names: Vec<Symbol>,
+        value: SemExpr,
+        span: Span,
+    },
+    Require {
+        predicate: SemExpr,
+        span: Span,
+    },
+    Assert {
+        predicate: SemExpr,
+        else_clause: Option<SemAssertElse>,
+        span: Span,
+    },
+    Assume {
+        predicate: SemExpr,
+        span: Span,
+    },
     Expr(SemExpr),
     Block(Vec<SemStmt>),
-    While { cond: SemExpr, body: Vec<SemStmt>, span: Span },
-    ForIn { var: Symbol, set: SemExpr, body: Vec<SemStmt>, span: Span },
-    Return { value: SemExpr, span: Span },
+    While {
+        cond: SemExpr,
+        body: Vec<SemStmt>,
+        span: Span,
+    },
+    ForIn {
+        var: Symbol,
+        set: SemExpr,
+        body: Vec<SemStmt>,
+        span: Span,
+    },
+    Return {
+        value: SemExpr,
+        span: Span,
+    },
 }
 
 // ── Function and name definitions ───────────────────────────────────────────
@@ -192,7 +262,11 @@ pub fn flatten_disjoint_union(expr: &SemExpr) -> Vec<&SemExpr> {
 /// `+`-always-tags distinction that matters for `Kind` computation.
 pub fn flatten_any_union(expr: &SemExpr) -> Vec<&SemExpr> {
     match &expr.kind {
-        SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+        SemExprKind::BinOp {
+            op: BinOp::Union,
+            lhs,
+            rhs,
+        } => {
             let mut arms = flatten_any_union(lhs);
             arms.push(rhs);
             arms
@@ -210,10 +284,15 @@ pub fn flatten_any_union(expr: &SemExpr) -> Vec<&SemExpr> {
 /// expression. Mirrors `ast::param_set_exprs`'s arity disambiguation exactly,
 /// operating on `CartesianProduct` (the disambiguated variant) instead of
 /// `BinOp::Mul`.
-pub fn sem_param_set_exprs(domain: Option<&SemExpr>, n_params: usize) -> Result<Vec<&SemExpr>, String> {
+pub fn sem_param_set_exprs(
+    domain: Option<&SemExpr>,
+    n_params: usize,
+) -> Result<Vec<&SemExpr>, String> {
     match domain {
         None if n_params == 0 => Ok(vec![]),
-        None => Err(format!("domain has 0 parts but function has {n_params} parameters")),
+        None => Err(format!(
+            "domain has 0 parts but function has {n_params} parameters"
+        )),
         Some(domain_expr) => {
             let parts = flatten_cartesian_product(domain_expr);
             if parts.len() == n_params {
@@ -227,7 +306,8 @@ pub fn sem_param_set_exprs(domain: Option<&SemExpr>, n_params: usize) -> Result<
                      parameters, e.g. `foo(x, y)` on a `Nat*` domain, that isn't \
                      supported yet — only a Cartesian-product tuple domain can bind \
                      multiple parameters)",
-                    parts.len(), n_params
+                    parts.len(),
+                    n_params
                 ))
             }
         }
@@ -241,9 +321,11 @@ pub fn sem_param_set_exprs(domain: Option<&SemExpr>, n_params: usize) -> Result<
 pub fn range_contains_fail(range: &SemExpr) -> bool {
     match &range.kind {
         SemExprKind::Var(sym) => sym.0 == "Fail",
-        SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
-            range_contains_fail(lhs) || range_contains_fail(rhs)
-        }
+        SemExprKind::BinOp {
+            op: BinOp::Union,
+            lhs,
+            rhs,
+        } => range_contains_fail(lhs) || range_contains_fail(rhs),
         SemExprKind::CartesianProduct(lhs, _) => {
             matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
         }
@@ -263,14 +345,24 @@ pub fn collect_loop_modified(stmts: &[SemStmt]) -> std::collections::HashSet<Sym
 fn collect_loop_modified_rec(stmts: &[SemStmt], names: &mut std::collections::HashSet<Symbol>) {
     for stmt in stmts {
         match stmt {
-            SemStmt::MutLet { name, .. } | SemStmt::Assign { name, .. } => { names.insert(name.clone()); }
+            SemStmt::MutLet { name, .. } | SemStmt::Assign { name, .. } => {
+                names.insert(name.clone());
+            }
             SemStmt::DestructMutLet { bindings, .. } => {
-                for b in bindings { names.insert(b.name.clone()); }
+                for b in bindings {
+                    names.insert(b.name.clone());
+                }
             }
-            SemStmt::DestructAssign { names: dest_names, .. } => {
-                for n in dest_names { names.insert(n.clone()); }
+            SemStmt::DestructAssign {
+                names: dest_names, ..
+            } => {
+                for n in dest_names {
+                    names.insert(n.clone());
+                }
             }
-            SemStmt::While { body, .. } | SemStmt::ForIn { body, .. } => collect_loop_modified_rec(body, names),
+            SemStmt::While { body, .. } | SemStmt::ForIn { body, .. } => {
+                collect_loop_modified_rec(body, names)
+            }
             SemStmt::Block(inner) => collect_loop_modified_rec(inner, names),
             _ => {}
         }
@@ -286,7 +378,11 @@ fn collect_loop_modified_rec(stmts: &[SemStmt], names: &mut std::collections::Ha
 
 impl SemExpr {
     pub fn new(kind: SemExprKind, kind_of: Kind, span: Span) -> Self {
-        Self { kind, kind_of, span }
+        Self {
+            kind,
+            kind_of,
+            span,
+        }
     }
 
     pub fn int(n: i64) -> Self {
@@ -308,12 +404,42 @@ impl SemExpr {
     pub fn binop(op: BinOp, lhs: SemExpr, rhs: SemExpr) -> Self {
         let span = Span::dummy();
         match op {
-            BinOp::Add => Self::new(SemExprKind::Add(Box::new(lhs), Box::new(rhs)), Kind::Int, span),
-            BinOp::Sub => Self::new(SemExprKind::Sub(Box::new(lhs), Box::new(rhs)), Kind::Int, span),
-            BinOp::Mul => Self::new(SemExprKind::Mul(Box::new(lhs), Box::new(rhs)), Kind::Int, span),
-            BinOp::Div => Self::new(SemExprKind::Div(Box::new(lhs), Box::new(rhs)), Kind::Int, span),
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or =>
-                Self::new(SemExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, Kind::Bool, span),
+            BinOp::Add => Self::new(
+                SemExprKind::Add(Box::new(lhs), Box::new(rhs)),
+                Kind::Int,
+                span,
+            ),
+            BinOp::Sub => Self::new(
+                SemExprKind::Sub(Box::new(lhs), Box::new(rhs)),
+                Kind::Int,
+                span,
+            ),
+            BinOp::Mul => Self::new(
+                SemExprKind::Mul(Box::new(lhs), Box::new(rhs)),
+                Kind::Int,
+                span,
+            ),
+            BinOp::Div => Self::new(
+                SemExprKind::Div(Box::new(lhs), Box::new(rhs)),
+                Kind::Int,
+                span,
+            ),
+            BinOp::Eq
+            | BinOp::Ne
+            | BinOp::Lt
+            | BinOp::Le
+            | BinOp::Gt
+            | BinOp::Ge
+            | BinOp::And
+            | BinOp::Or => Self::new(
+                SemExprKind::BinOp {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                Kind::Bool,
+                span,
+            ),
             _ => panic!(
                 "SemExpr::binop: `{op}` needs an explicit kind_of (set-position/`in`/`++` \
                  operator) — use SemExpr::new directly"
@@ -322,12 +448,29 @@ impl SemExpr {
     }
 
     pub fn unop(op: UnOp, expr: SemExpr) -> Self {
-        let kind_of = match op { UnOp::Neg => Kind::Int, UnOp::Not => Kind::Bool };
-        Self::new(SemExprKind::UnOp { op, expr: Box::new(expr) }, kind_of, Span::dummy())
+        let kind_of = match op {
+            UnOp::Neg => Kind::Int,
+            UnOp::Not => Kind::Bool,
+        };
+        Self::new(
+            SemExprKind::UnOp {
+                op,
+                expr: Box::new(expr),
+            },
+            kind_of,
+            Span::dummy(),
+        )
     }
 
     pub fn call(callee: &str, args: Vec<SemExpr>, return_kind: Kind) -> Self {
-        Self::new(SemExprKind::Call { callee: Symbol::new(callee), args }, return_kind, Span::dummy())
+        Self::new(
+            SemExprKind::Call {
+                callee: Symbol::new(callee),
+                args,
+            },
+            return_kind,
+            Span::dummy(),
+        )
     }
 }
 
@@ -351,7 +494,14 @@ fn sem_binop_prec(op: &BinOp) -> u8 {
     match op {
         BinOp::Or => 1,
         BinOp::And => 2,
-        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::In | BinOp::NotIn => 3,
+        BinOp::Eq
+        | BinOp::Ne
+        | BinOp::Lt
+        | BinOp::Le
+        | BinOp::Gt
+        | BinOp::Ge
+        | BinOp::In
+        | BinOp::NotIn => 3,
         BinOp::Union => 4,
         BinOp::SymDiff => 5,
         BinOp::Intersect => 6,
@@ -380,8 +530,16 @@ impl std::fmt::Display for SemExprKind {
                 .is_some_and(|(child_op, ..)| sem_binop_prec(&child_op) < sem_binop_prec(&op));
             let rhs_needs_parens = as_binop(&rhs.kind)
                 .is_some_and(|(child_op, ..)| sem_binop_prec(&child_op) <= sem_binop_prec(&op));
-            let lhs_str = if lhs_needs_parens { format!("({lhs})") } else { format!("{lhs}") };
-            let rhs_str = if rhs_needs_parens { format!("({rhs})") } else { format!("{rhs}") };
+            let lhs_str = if lhs_needs_parens {
+                format!("({lhs})")
+            } else {
+                format!("{lhs}")
+            };
+            let rhs_str = if rhs_needs_parens {
+                format!("({rhs})")
+            } else {
+                format!("{rhs}")
+            };
             return write!(f, "{lhs_str} {op} {rhs_str}");
         }
         match self {
@@ -395,18 +553,26 @@ impl std::fmt::Display for SemExprKind {
             SemExprKind::Call { callee, args } => {
                 write!(f, "{callee}(")?;
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{arg}")?;
                 }
                 write!(f, ")")
             }
-            SemExprKind::If { cond, then_expr, else_expr } => {
+            SemExprKind::If {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 write!(f, "if {cond} then {then_expr} else {else_expr}")
             }
             SemExprKind::SetLit(elements) => {
                 write!(f, "{{")?;
                 for (i, e) in elements.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{e}")?;
                 }
                 write!(f, "}}")
@@ -414,7 +580,12 @@ impl std::fmt::Display for SemExprKind {
             SemExprKind::Try(inner) => write!(f, "{inner}?"),
             SemExprKind::FailLit => f.write_str("fail"),
             SemExprKind::FailWith(expr) => write!(f, "fail {expr}"),
-            SemExprKind::Comprehension { output, var, source, filter } => {
+            SemExprKind::Comprehension {
+                output,
+                var,
+                source,
+                filter,
+            } => {
                 write!(f, "{{{output} for {var} in {source}")?;
                 if let Some(pred) = filter {
                     write!(f, " if {pred}")?;
@@ -424,7 +595,9 @@ impl std::fmt::Display for SemExprKind {
             SemExprKind::Tuple(elems) => {
                 write!(f, "(")?;
                 for (i, e) in elems.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{e}")?;
                 }
                 write!(f, ")")
@@ -436,9 +609,14 @@ impl std::fmt::Display for SemExprKind {
                 _ => write!(f, "({inner})*"),
             },
             // Handled by the `as_binop` early-return above.
-            SemExprKind::Add(..) | SemExprKind::Sub(..) | SemExprKind::Mul(..) | SemExprKind::Div(..)
-            | SemExprKind::DisjointUnion(..) | SemExprKind::SetDifference(..)
-            | SemExprKind::CartesianProduct(..) | SemExprKind::SetQuotient(..)
+            SemExprKind::Add(..)
+            | SemExprKind::Sub(..)
+            | SemExprKind::Mul(..)
+            | SemExprKind::Div(..)
+            | SemExprKind::DisjointUnion(..)
+            | SemExprKind::SetDifference(..)
+            | SemExprKind::CartesianProduct(..)
+            | SemExprKind::SetQuotient(..)
             | SemExprKind::BinOp { .. } => unreachable!("handled by as_binop above"),
         }
     }

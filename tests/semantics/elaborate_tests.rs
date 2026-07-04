@@ -19,10 +19,13 @@ fn elaborate_src(src: &str) -> Vec<SemItem> {
 /// `NameDef` items (aliases, distinct sets) alongside the function under test.
 fn elaborate_function(src: &str, name: &str) -> cantor::semantics::tree::SemFunctionDef {
     let items = elaborate_src(src);
-    items.into_iter().find_map(|item| match item {
-        SemItem::FunctionDef(def) if def.name.0 == name => Some(def),
-        _ => None,
-    }).unwrap_or_else(|| panic!("no function named `{name}` in elaborated output"))
+    items
+        .into_iter()
+        .find_map(|item| match item {
+            SemItem::FunctionDef(def) if def.name.0 == name => Some(def),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no function named `{name}` in elaborated output"))
 }
 
 fn only_function(src: &str) -> cantor::semantics::tree::SemFunctionDef {
@@ -40,7 +43,11 @@ fn only_function(src: &str) -> cantor::semantics::tree::SemFunctionDef {
 fn star_in_domain_is_cartesian_product() {
     let def = only_function("f : Int * Bool -> Int\nf(a, b) = 0");
     let domain = def.sigs[0].domain.as_ref().expect("domain");
-    assert!(matches!(domain.kind, SemExprKind::CartesianProduct(_, _)), "expected CartesianProduct, got {:?}", domain.kind);
+    assert!(
+        matches!(domain.kind, SemExprKind::CartesianProduct(_, _)),
+        "expected CartesianProduct, got {:?}",
+        domain.kind
+    );
     // Asymmetric arms confirm lhs/rhs aren't swapped (the bug fixed last session).
     assert_eq!(domain.kind_of, Kind::Tuple(vec![Kind::Int, Kind::Bool]));
     assert_eq!(def.sigs[0].param_kinds, vec![Kind::Int, Kind::Bool]);
@@ -49,8 +56,14 @@ fn star_in_domain_is_cartesian_product() {
 #[test]
 fn star_in_body_is_multiplication() {
     let def = only_function("f : Int * Int -> Int\nf(a, b) = a * b");
-    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
-    assert!(matches!(body.kind, SemExprKind::Mul(_, _)), "expected Mul, got {:?}", body.kind);
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert!(
+        matches!(body.kind, SemExprKind::Mul(_, _)),
+        "expected Mul, got {:?}",
+        body.kind
+    );
     assert_eq!(body.kind_of, Kind::Int);
 }
 
@@ -62,12 +75,28 @@ fn same_function_disambiguates_plus_per_position() {
     let def = only_function("h : {0} + NatPos -> Int\nh(x) = x + 1");
 
     let domain = def.sigs[0].domain.as_ref().expect("domain");
-    assert!(matches!(domain.kind, SemExprKind::DisjointUnion(_, _)), "expected DisjointUnion, got {:?}", domain.kind);
-    assert_eq!(domain.kind_of, Kind::TaggedUnion(vec![Kind::Int, Kind::Int]));
-    assert_eq!(def.sigs[0].param_kinds, vec![Kind::TaggedUnion(vec![Kind::Int, Kind::Int])]);
+    assert!(
+        matches!(domain.kind, SemExprKind::DisjointUnion(_, _)),
+        "expected DisjointUnion, got {:?}",
+        domain.kind
+    );
+    assert_eq!(
+        domain.kind_of,
+        Kind::TaggedUnion(vec![Kind::Int, Kind::Int])
+    );
+    assert_eq!(
+        def.sigs[0].param_kinds,
+        vec![Kind::TaggedUnion(vec![Kind::Int, Kind::Int])]
+    );
 
-    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
-    assert!(matches!(body.kind, SemExprKind::Add(_, _)), "expected Add, got {:?}", body.kind);
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert!(
+        matches!(body.kind, SemExprKind::Add(_, _)),
+        "expected Add, got {:?}",
+        body.kind
+    );
     assert_eq!(body.kind_of, Kind::Int);
 }
 
@@ -76,7 +105,10 @@ fn same_function_disambiguates_plus_per_position() {
 #[test]
 fn disjoint_union_stays_tagged_for_same_kind_arms() {
     let def = only_function("accept_nat : {0} + NatPos -> Nat\naccept_nat(x) = x");
-    assert_eq!(def.sigs[0].param_kinds, vec![Kind::TaggedUnion(vec![Kind::Int, Kind::Int])]);
+    assert_eq!(
+        def.sigs[0].param_kinds,
+        vec![Kind::TaggedUnion(vec![Kind::Int, Kind::Int])]
+    );
 }
 
 // ── `|` collapses same-kind arms (no tag), unlike `+` ────────────────────────
@@ -85,7 +117,13 @@ fn disjoint_union_stays_tagged_for_same_kind_arms() {
 fn union_of_same_kind_collapses_no_tag() {
     let def = only_function("g : Nat | NatPos -> Int\ng(x) = x");
     let domain = def.sigs[0].domain.as_ref().expect("domain");
-    assert!(matches!(&domain.kind, SemExprKind::BinOp { op: cantor::ast::BinOp::Union, .. }));
+    assert!(matches!(
+        &domain.kind,
+        SemExprKind::BinOp {
+            op: cantor::ast::BinOp::Union,
+            ..
+        }
+    ));
     assert_eq!(domain.kind_of, Kind::Int);
     assert_eq!(def.sigs[0].param_kinds, vec![Kind::Int]);
 }
@@ -109,15 +147,22 @@ fn distinct_set_is_int_backed_but_disjoint() {
 
 #[test]
 fn let_constraint_is_set_position_value_is_value_position() {
-    let def = only_function(
-        "f : Int * Int -> Int\nf(a, b) {\n s : Int * Int = (a, b)\n s.0 * s.1\n}"
-    );
-    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
-    let cantor::semantics::tree::SemStmt::Let { constraint, value, .. } = &stmts[0] else {
+    let def =
+        only_function("f : Int * Int -> Int\nf(a, b) {\n s : Int * Int = (a, b)\n s.0 * s.1\n}");
+    let SemFunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
+    let cantor::semantics::tree::SemStmt::Let {
+        constraint, value, ..
+    } = &stmts[0]
+    else {
         panic!("expected a Let statement, got {:?}", stmts[0])
     };
     // `Int * Int` constraint → Cartesian product (set position).
-    assert!(matches!(constraint.kind, SemExprKind::CartesianProduct(_, _)));
+    assert!(matches!(
+        constraint.kind,
+        SemExprKind::CartesianProduct(_, _)
+    ));
     assert_eq!(constraint.kind_of, Kind::Tuple(vec![Kind::Int, Kind::Int]));
     // `(a, b)` value → an ordinary tuple value (value position).
     assert!(matches!(value.kind, SemExprKind::Tuple(_)));
@@ -128,8 +173,15 @@ fn let_constraint_is_set_position_value_is_value_position() {
 #[test]
 fn in_rhs_is_set_position_regardless_of_surrounding_position() {
     let def = only_function("f : Int -> Bool\nf(x) = x * 2 in NatPos");
-    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
-    let SemExprKind::BinOp { op: cantor::ast::BinOp::In, lhs, rhs } = &body.kind else {
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    let SemExprKind::BinOp {
+        op: cantor::ast::BinOp::In,
+        lhs,
+        rhs,
+    } = &body.kind
+    else {
         panic!("expected a top-level `in`, got {:?}", body.kind)
     };
     // LHS (`x * 2`) is a value-position multiplication.
@@ -146,8 +198,13 @@ fn if_merges_tuple_and_scalar_branches_into_tagged_union() {
     // Neither branch is already a TaggedUnion, but one is a Tuple — merges
     // into a fresh 2-arm union (mirrors codegen's `IfMerge::NewTaggedUnion`).
     let def = only_function("f : Nat -> (Nat * Nat) | Nat\nf(x) = if x > 0 then (x, x) else x");
-    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
-    assert_eq!(body.kind_of, Kind::TaggedUnion(vec![Kind::Tuple(vec![Kind::Int, Kind::Int]), Kind::Int]));
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert_eq!(
+        body.kind_of,
+        Kind::TaggedUnion(vec![Kind::Tuple(vec![Kind::Int, Kind::Int]), Kind::Int])
+    );
 }
 
 #[test]
@@ -155,10 +212,19 @@ fn if_extends_existing_tagged_union_with_new_arm() {
     // `then` is already a 2-arm TaggedUnion (from the inner `if`); `else` is a
     // plain Bool appended as a third arm (mirrors `IfMerge::AppendElseArm`).
     let def = only_function(
-        "f : Nat -> (Nat * Nat) | Nat | Bool\nf(x) = if x > 2 then (if x > 5 then (x, x) else x) else false"
+        "f : Nat -> (Nat * Nat) | Nat | Bool\nf(x) = if x > 2 then (if x > 5 then (x, x) else x) else false",
     );
-    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
-    assert_eq!(body.kind_of, Kind::TaggedUnion(vec![Kind::Tuple(vec![Kind::Int, Kind::Int]), Kind::Int, Kind::Bool]));
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert_eq!(
+        body.kind_of,
+        Kind::TaggedUnion(vec![
+            Kind::Tuple(vec![Kind::Int, Kind::Int]),
+            Kind::Int,
+            Kind::Bool
+        ])
+    );
 }
 
 #[test]
@@ -167,10 +233,19 @@ fn if_merges_two_different_tagged_unions() {
     // arms first (mirrors `IfMerge::MergeTaggedUnions`).
     let def = only_function(
         "f : Nat -> (Nat * Nat) | Nat | Bool\n\
-         f(x) = if x > 3 then (if x > 5 then (x, x) else x) else (if x > 1 then false else (x, x + 1))"
+         f(x) = if x > 3 then (if x > 5 then (x, x) else x) else (if x > 1 then false else (x, x + 1))",
     );
-    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
-    assert_eq!(body.kind_of, Kind::TaggedUnion(vec![Kind::Tuple(vec![Kind::Int, Kind::Int]), Kind::Int, Kind::Bool]));
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert_eq!(
+        body.kind_of,
+        Kind::TaggedUnion(vec![
+            Kind::Tuple(vec![Kind::Int, Kind::Int]),
+            Kind::Int,
+            Kind::Bool
+        ])
+    );
 }
 
 #[test]
@@ -179,7 +254,10 @@ fn if_with_unmergeable_branch_kinds_fails_loudly() {
     // exists, so elaboration must error rather than guess a Kind.
     let items = parse_file("f : Nat -> Int\nf(x) = if x > 0 then 1 else true")
         .unwrap_or_else(|e| panic!("parse error: {e}"));
-    assert!(elaborate(&items).is_err(), "expected elaborate to reject unmergeable if-branches");
+    assert!(
+        elaborate(&items).is_err(),
+        "expected elaborate to reject unmergeable if-branches"
+    );
 }
 
 #[test]
@@ -188,7 +266,9 @@ fn concat_coerces_tuple_literal_to_vector() {
     // Vector — lhs must be coerced, and the result Kind is the shared Vector
     // element Kind.
     let def = only_function("f : Nat -> Nat*\nf(x) {\n xs : Nat* = [x]\n (x, x) ++ xs\n}");
-    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let SemFunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
     let cantor::semantics::tree::SemStmt::Expr(e) = &stmts[1] else {
         panic!("expected an Expr statement, got {:?}", stmts[1])
     };
@@ -198,7 +278,9 @@ fn concat_coerces_tuple_literal_to_vector() {
 #[test]
 fn indexing_vector_of_tuples_yields_the_tuple_kind_unchanged() {
     let def = only_function("f : -> Nat\nf() {\n xs : (Nat * Nat)* = [(1, 2), (3, 4)]\n xs[0]\n}");
-    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let SemFunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
     let cantor::semantics::tree::SemStmt::Expr(e) = &stmts[1] else {
         panic!("expected an Expr statement, got {:?}", stmts[1])
     };
@@ -207,14 +289,18 @@ fn indexing_vector_of_tuples_yields_the_tuple_kind_unchanged() {
 
 #[test]
 fn indexing_vector_of_tagged_unions_yields_the_union_kind_unchanged() {
-    let def = only_function(
-        "f : -> Nat\nf() {\n xs : (Nat | (Nat * Bool))* = [1, (2, true)]\n xs[0]\n}"
-    );
-    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let def =
+        only_function("f : -> Nat\nf() {\n xs : (Nat | (Nat * Bool))* = [1, (2, true)]\n xs[0]\n}");
+    let SemFunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
     let cantor::semantics::tree::SemStmt::Expr(e) = &stmts[1] else {
         panic!("expected an Expr statement, got {:?}", stmts[1])
     };
-    assert_eq!(e.kind_of, Kind::TaggedUnion(vec![Kind::Int, Kind::Tuple(vec![Kind::Int, Kind::Bool])]));
+    assert_eq!(
+        e.kind_of,
+        Kind::TaggedUnion(vec![Kind::Int, Kind::Tuple(vec![Kind::Int, Kind::Bool])])
+    );
 }
 
 // ── Prerequisites found while planning Stage 2b ─────────────────────────────
@@ -225,16 +311,21 @@ fn fallible_range_return_kind_is_the_fail_struct_not_the_bare_union() {
     // {Fail, payload} wrapper (mirrors codegen's `wire::range_kind`, now
     // shared via `kind::range_kind`) — plain `set_kind` would ignore the
     // Fail arm and give just the payload's Kind.
-    let items = parse_file(
-        "HTTPError = {400, 503}\nfetch : Nat -> Nat !! HTTPError\nfetch(x) = x"
-    ).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let items = parse_file("HTTPError = {400, 503}\nfetch : Nat -> Nat !! HTTPError\nfetch(x) = x")
+        .unwrap_or_else(|e| panic!("parse error: {e}"));
     let items = elaborate(&items).unwrap_or_else(|e| panic!("elaborate error: {e}"));
-    let def = items.into_iter().find_map(|item| match item {
-        SemItem::FunctionDef(def) if def.name.0 == "fetch" => Some(def),
-        _ => None,
-    }).expect("no function named `fetch`");
+    let def = items
+        .into_iter()
+        .find_map(|item| match item {
+            SemItem::FunctionDef(def) if def.name.0 == "fetch" => Some(def),
+            _ => None,
+        })
+        .expect("no function named `fetch`");
     assert_eq!(def.return_kind, Kind::Tuple(vec![Kind::Fail, Kind::Int]));
-    assert_eq!(def.sigs[0].return_kind, Kind::Tuple(vec![Kind::Fail, Kind::Int]));
+    assert_eq!(
+        def.sigs[0].return_kind,
+        Kind::Tuple(vec![Kind::Fail, Kind::Int])
+    );
 }
 
 #[test]
@@ -244,13 +335,19 @@ fn for_in_over_runtime_set_variable_does_not_treat_it_as_a_set_description() {
     // as a set-position expression (which would try `set_kind` on a local
     // name and panic with "unknown set name").
     let def = only_function(
-        "f : -> Int\nf() {\n mut s : Set(Int) = {1, 2, 3}\n mut acc : Int = 0\n for x in s {\n acc := acc + x\n }\n acc\n}"
+        "f : -> Int\nf() {\n mut s : Set(Int) = {1, 2, 3}\n mut acc : Int = 0\n for x in s {\n acc := acc + x\n }\n acc\n}",
     );
-    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let SemFunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
     let cantor::semantics::tree::SemStmt::ForIn { set, .. } = &stmts[2] else {
         panic!("expected a ForIn statement, got {:?}", stmts[2])
     };
-    assert!(matches!(set.kind, SemExprKind::Var(_)), "expected a Var node, got {:?}", set.kind);
+    assert!(
+        matches!(set.kind, SemExprKind::Var(_)),
+        "expected a Var node, got {:?}",
+        set.kind
+    );
     assert_eq!(set.kind_of, Kind::Set(cantor::kind::SetElemKind::Int));
 }
 
@@ -261,12 +358,20 @@ fn for_in_over_set_literal_elaborates_elements_as_arithmetic_not_disjoint_union(
     // `compile_for_in` compiles each element with `compile_expr` (value
     // semantics) regardless of how the literal itself is classified.
     let def = only_function("f : Int -> Int\nf(n) {\n for x in {n, n + 1} {\n }\n 0\n}");
-    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let SemFunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
     let cantor::semantics::tree::SemStmt::ForIn { set, .. } = &stmts[0] else {
         panic!("expected a ForIn statement, got {:?}", stmts[0])
     };
-    let SemExprKind::SetLit(elements) = &set.kind else { panic!("expected a SetLit, got {:?}", set.kind) };
-    assert!(matches!(elements[1].kind, SemExprKind::Add(_, _)), "expected Add, got {:?}", elements[1].kind);
+    let SemExprKind::SetLit(elements) = &set.kind else {
+        panic!("expected a SetLit, got {:?}", set.kind)
+    };
+    assert!(
+        matches!(elements[1].kind, SemExprKind::Add(_, _)),
+        "expected Add, got {:?}",
+        elements[1].kind
+    );
 }
 
 #[test]
@@ -276,7 +381,9 @@ fn for_in_over_empty_set_literal_does_not_error() {
     // time) — this must not error the way an empty value-position SetLit
     // elsewhere legitimately does.
     let def = only_function("f : -> Int\nf() {\n for x in {} {\n }\n 0\n}");
-    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
+    let SemFunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
     let cantor::semantics::tree::SemStmt::ForIn { set, .. } = &stmts[0] else {
         panic!("expected a ForIn statement, got {:?}", stmts[0])
     };
@@ -294,12 +401,20 @@ fn membership_rhs_local_runtime_set_variable_is_value_position() {
     // mirroring codegen::compile_binop's own env-first dispatch. Treating
     // it as Position::Set unconditionally panics via `set_kind`'s "unknown
     // set name" (there's no NameDef for a local).
-    let def = only_function(
-        "f : -> Bool\nf() {\n mut primes : Set(Int) = {2, 3, 5}\n 3 in primes\n}"
-    );
-    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
-    let SemStmt::Expr(e) = &stmts[1] else { panic!("expected an Expr statement, got {:?}", stmts[1]) };
-    let SemExprKind::BinOp { op: cantor::ast::BinOp::In, rhs, .. } = &e.kind else {
+    let def =
+        only_function("f : -> Bool\nf() {\n mut primes : Set(Int) = {2, 3, 5}\n 3 in primes\n}");
+    let SemFunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
+    let SemStmt::Expr(e) = &stmts[1] else {
+        panic!("expected an Expr statement, got {:?}", stmts[1])
+    };
+    let SemExprKind::BinOp {
+        op: cantor::ast::BinOp::In,
+        rhs,
+        ..
+    } = &e.kind
+    else {
         panic!("expected a top-level `in`, got {:?}", e.kind)
     };
     assert!(matches!(rhs.kind, SemExprKind::Var(_)));
@@ -312,7 +427,9 @@ fn builtin_len_call_is_not_treated_as_an_undeclared_function() {
     // recognized by name directly in codegen::compile_call and never
     // appear in `fn_sigs` — calling them must not error as "undeclared".
     let def = only_function("f : Nat* -> Nat\nf(xs) = len(xs)");
-    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
     assert_eq!(body.kind_of, Kind::Int);
 }
 
@@ -322,11 +439,13 @@ fn unconstrained_destructuring_binding_gets_a_kind_from_the_tuple_value() {
     // binding Kind must come from the value's Tuple element Kinds (mirrors
     // codegen::blocks's DestructLet handling, which never even looks at
     // constraints for Kind purposes), not be left unbound.
-    let def = only_function(
-        "f : Int * Int -> Int\nf(p) {\n x, y = (p.0, p.1)\n x + y\n}"
-    );
-    let SemFunctionBody::Block(stmts) = &def.body else { panic!("expected block body") };
-    let SemStmt::Expr(e) = &stmts[1] else { panic!("expected an Expr statement, got {:?}", stmts[1]) };
+    let def = only_function("f : Int * Int -> Int\nf(p) {\n x, y = (p.0, p.1)\n x + y\n}");
+    let SemFunctionBody::Block(stmts) = &def.body else {
+        panic!("expected block body")
+    };
+    let SemStmt::Expr(e) = &stmts[1] else {
+        panic!("expected an Expr statement, got {:?}", stmts[1])
+    };
     assert_eq!(e.kind_of, Kind::Int);
 }
 
@@ -335,7 +454,12 @@ fn value_position_var_falls_back_to_a_top_level_scalar_constant() {
     // `base` is a top-level annotated constant (`base : Nat = 10`), not a
     // local — referencing it from another function's body must resolve via
     // `name_defs`, not just the local `env`.
-    let def = elaborate_function("base : Nat = 10\nadd_base : Nat -> Nat\nadd_base(x) = x + base", "add_base");
-    let SemFunctionBody::Expr(body) = &def.body else { panic!("expected expr body") };
+    let def = elaborate_function(
+        "base : Nat = 10\nadd_base : Nat -> Nat\nadd_base(x) = x + base",
+        "add_base",
+    );
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
     assert_eq!(body.kind_of, Kind::Int);
 }

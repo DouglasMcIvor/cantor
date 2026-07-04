@@ -56,20 +56,14 @@ fn lex_in_keyword() {
 
 #[test]
 fn lex_reserved_for_if() {
-    assert_eq!(
-        lex_all("for if"),
-        vec![Token::For, Token::If, Token::Eof]
-    );
+    assert_eq!(lex_all("for if"), vec![Token::For, Token::If, Token::Eof]);
 }
 
 // ── Identifiers ───────────────────────────────────────────────────────────────
 
 #[test]
 fn lex_simple_ident() {
-    assert_eq!(
-        lex_all("foo"),
-        vec![Token::Ident("foo".into()), Token::Eof]
-    );
+    assert_eq!(lex_all("foo"), vec![Token::Ident("foo".into()), Token::Eof]);
 }
 
 #[test]
@@ -95,7 +89,13 @@ fn lex_keyword_prefix_not_keyword() {
 fn lex_arithmetic() {
     assert_eq!(
         lex_all("+ - * /"),
-        vec![Token::Plus, Token::Minus, Token::Star, Token::Slash, Token::Eof]
+        vec![
+            Token::Plus,
+            Token::Minus,
+            Token::Star,
+            Token::Slash,
+            Token::Eof
+        ]
     );
 }
 
@@ -112,9 +112,12 @@ fn lex_comparisons() {
     assert_eq!(
         lex_all("== != < <= > >="),
         vec![
-            Token::EqEq, Token::BangEq,
-            Token::Lt, Token::LtEq,
-            Token::Gt, Token::GtEq,
+            Token::EqEq,
+            Token::BangEq,
+            Token::Lt,
+            Token::LtEq,
+            Token::Gt,
+            Token::GtEq,
             Token::Eof
         ]
     );
@@ -126,7 +129,13 @@ fn lex_comparisons() {
 fn lex_parens_and_braces() {
     assert_eq!(
         lex_all("( ) { }"),
-        vec![Token::LParen, Token::RParen, Token::LBrace, Token::RBrace, Token::Eof]
+        vec![
+            Token::LParen,
+            Token::RParen,
+            Token::LBrace,
+            Token::RBrace,
+            Token::Eof
+        ]
     );
 }
 
@@ -150,9 +159,12 @@ fn lex_newlines_emit_tokens_at_depth_zero() {
     assert_eq!(
         lex_all("x\n+\ny"),
         vec![
-            Token::Ident("x".into()), Token::Newline,
-            Token::Plus, Token::Newline,
-            Token::Ident("y".into()), Token::Eof,
+            Token::Ident("x".into()),
+            Token::Newline,
+            Token::Plus,
+            Token::Newline,
+            Token::Ident("y".into()),
+            Token::Eof,
         ]
     );
 }
@@ -161,7 +173,12 @@ fn lex_newlines_emit_tokens_at_depth_zero() {
 fn lex_newlines_suppressed_inside_parens() {
     assert_eq!(
         lex_all("(\nx\n)"),
-        vec![Token::LParen, Token::Ident("x".into()), Token::RParen, Token::Eof]
+        vec![
+            Token::LParen,
+            Token::Ident("x".into()),
+            Token::RParen,
+            Token::Eof
+        ]
     );
 }
 
@@ -169,7 +186,14 @@ fn lex_newlines_suppressed_inside_parens() {
 fn lex_newlines_not_suppressed_inside_braces() {
     assert_eq!(
         lex_all("{\nx\n}"),
-        vec![Token::LBrace, Token::Newline, Token::Ident("x".into()), Token::Newline, Token::RBrace, Token::Eof]
+        vec![
+            Token::LBrace,
+            Token::Newline,
+            Token::Ident("x".into()),
+            Token::Newline,
+            Token::RBrace,
+            Token::Eof
+        ]
     );
 }
 
@@ -201,7 +225,10 @@ fn lex_span_of_two_char_op() {
 
 #[test]
 fn lex_lbracket() {
-    assert_eq!(lex_all("[ ]"), vec![Token::LBracket, Token::RBracket, Token::Eof]);
+    assert_eq!(
+        lex_all("[ ]"),
+        vec![Token::LBracket, Token::RBracket, Token::Eof]
+    );
 }
 
 #[test]
@@ -214,9 +241,14 @@ fn lex_array_lit() {
     assert_eq!(
         lex_all("[1, 2, 3]"),
         vec![
-            Token::LBracket, Token::Int(1), Token::Comma,
-            Token::Int(2), Token::Comma, Token::Int(3),
-            Token::RBracket, Token::Eof,
+            Token::LBracket,
+            Token::Int(1),
+            Token::Comma,
+            Token::Int(2),
+            Token::Comma,
+            Token::Int(3),
+            Token::RBracket,
+            Token::Eof,
         ]
     );
 }
@@ -245,7 +277,10 @@ fn lex_colon_eq_is_reassignment_token() {
 #[test]
 fn lex_colon_eq_distinguished_from_colon() {
     // `:` alone is Colon; `:=` is ColonEq.
-    assert_eq!(lex_all(": :="), vec![Token::Colon, Token::ColonEq, Token::Eof]);
+    assert_eq!(
+        lex_all(": :="),
+        vec![Token::Colon, Token::ColonEq, Token::Eof]
+    );
 }
 
 #[test]
@@ -269,7 +304,12 @@ fn line_comment_skipped() {
 fn inline_comment_skipped() {
     assert_eq!(
         lex_all("x + 1 -- add one"),
-        vec![Token::Ident("x".into()), Token::Plus, Token::Int(1), Token::Eof]
+        vec![
+            Token::Ident("x".into()),
+            Token::Plus,
+            Token::Int(1),
+            Token::Eof
+        ]
     );
 }
 

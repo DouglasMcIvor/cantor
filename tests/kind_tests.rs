@@ -6,20 +6,29 @@ use cantor::kind::{Kind, SetElemKind, set_kind};
 #[test]
 fn set_kind_of_set_int() {
     let expr = Expr::call("Set", vec![Expr::var("Int")]);
-    assert_eq!(set_kind(&expr, &NameDefs::new()), Kind::Set(SetElemKind::Int));
+    assert_eq!(
+        set_kind(&expr, &NameDefs::new()),
+        Kind::Set(SetElemKind::Int)
+    );
 }
 
 #[test]
 fn set_kind_of_set_bool() {
     let expr = Expr::call("Set", vec![Expr::var("Bool")]);
-    assert_eq!(set_kind(&expr, &NameDefs::new()), Kind::Set(SetElemKind::Bool));
+    assert_eq!(
+        set_kind(&expr, &NameDefs::new()),
+        Kind::Set(SetElemKind::Bool)
+    );
 }
 
 #[test]
 fn set_kind_of_set_nat() {
     // Nat is a subset of Int — same runtime kind as Int.
     let expr = Expr::call("Set", vec![Expr::var("Nat")]);
-    assert_eq!(set_kind(&expr, &NameDefs::new()), Kind::Set(SetElemKind::Int));
+    assert_eq!(
+        set_kind(&expr, &NameDefs::new()),
+        Kind::Set(SetElemKind::Int)
+    );
 }
 
 #[test]
@@ -27,9 +36,12 @@ fn range_kind_set_int_or_fail() {
     // `Set(Int) | Fail` — the presence of Fail produces the fallible struct wire type.
     // On success the i64 payload holds the set pointer; on failure flag=1, payload=0.
     let set_int = Expr::call("Set", vec![Expr::var("Int")]);
-    let fail    = Expr::var("Fail");
-    let union   = Expr::binop(BinOp::Union, set_int, fail);
-    assert_eq!(range_kind(&union, &NameDefs::new()), Kind::Tuple(vec![Kind::Fail, Kind::Set(SetElemKind::Int)]));
+    let fail = Expr::var("Fail");
+    let union = Expr::binop(BinOp::Union, set_int, fail);
+    assert_eq!(
+        range_kind(&union, &NameDefs::new()),
+        Kind::Tuple(vec![Kind::Fail, Kind::Set(SetElemKind::Int)])
+    );
 }
 
 // ── Homogeneous tuple literals `[...]` — kind checking ────────────────────────
@@ -66,8 +78,10 @@ fn array_elem_kind_empty_is_ok() {
 fn array_elem_kind_int_then_bool_is_error() {
     // [1, 2, true] — Int followed by Bool → kind mismatch.
     let elems = vec![Expr::int(1), Expr::int(2), Expr::bool(true)];
-    assert!(array_elem_kind(&elems).is_err(),
-        "expected kind error for [1, 2, true]");
+    assert!(
+        array_elem_kind(&elems).is_err(),
+        "expected kind error for [1, 2, true]"
+    );
 }
 
 #[cfg(any())]
@@ -75,8 +89,10 @@ fn array_elem_kind_int_then_bool_is_error() {
 fn array_elem_kind_bool_then_int_is_error() {
     // [true, 1] — Bool followed by Int → kind mismatch.
     let elems = vec![Expr::bool(true), Expr::int(1)];
-    assert!(array_elem_kind(&elems).is_err(),
-        "expected kind error for [true, 1]");
+    assert!(
+        array_elem_kind(&elems).is_err(),
+        "expected kind error for [true, 1]"
+    );
 }
 
 #[cfg(any())]

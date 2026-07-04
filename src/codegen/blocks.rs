@@ -28,7 +28,12 @@ impl<'ctx> Compiler<'ctx> {
         for stmt in stmts {
             last = None;
             match stmt {
-                SemStmt::Let { name, constraint, value, .. } => {
+                SemStmt::Let {
+                    name,
+                    constraint,
+                    value,
+                    ..
+                } => {
                     // Immutable: compile the value, optionally coerce to a vector, and bind.
                     // No alloca needed — this name cannot appear in alloca_map
                     // because collect_loop_modified skips Let bindings.
@@ -37,7 +42,12 @@ impl<'ctx> Compiler<'ctx> {
                     env.insert(name.clone(), result);
                 }
 
-                SemStmt::MutLet { name, constraint, value, .. } => {
+                SemStmt::MutLet {
+                    name,
+                    constraint,
+                    value,
+                    ..
+                } => {
                     let result = self.compile_expr(value, env)?;
                     let result = coerce_to_vector_if_needed(self, result, constraint)?;
                     // If this variable is backed by an alloca (i.e. we're in a loop
@@ -80,25 +90,32 @@ impl<'ctx> Compiler<'ctx> {
                     env.insert(name.clone(), result);
                 }
 
-                SemStmt::DestructLet { bindings, value, .. } => {
+                SemStmt::DestructLet {
+                    bindings, value, ..
+                } => {
                     let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
                     let elem_kinds = match rhs_kind {
                         Kind::Tuple(ek) => ek,
                         // See the matching guard in `elaborate_destruct_bindings` —
                         // elaboration should already reject this before codegen
                         // ever sees it; kept here as defense in depth.
-                        Kind::Vector(_) => return Err(CompileError::ice(
-                            "not yet implemented: destructuring a vector (`X*`) — \
+                        Kind::Vector(_) => {
+                            return Err(CompileError::ice(
+                                "not yet implemented: destructuring a vector (`X*`) — \
                              only tuple right-hand sides are currently supported",
-                        )),
-                        _ => return Err(CompileError::ice(
-                            "destructuring `=` requires a tuple on the right-hand side",
-                        )),
+                            ));
+                        }
+                        _ => {
+                            return Err(CompileError::ice(
+                                "destructuring `=` requires a tuple on the right-hand side",
+                            ));
+                        }
                     };
                     if bindings.len() > elem_kinds.len() {
                         return Err(CompileError::ice(format!(
                             "destructuring arity mismatch: {} binding(s) but tuple has only {} element(s)",
-                            bindings.len(), elem_kinds.len()
+                            bindings.len(),
+                            elem_kinds.len()
                         )));
                     }
                     let sv = AggregateValueEnum::StructValue(rhs_val.into_struct_value());
@@ -106,24 +123,31 @@ impl<'ctx> Compiler<'ctx> {
                     for (i, binding) in bindings.iter().enumerate() {
                         let tail_count = elem_kinds.len() - i;
                         let (elem, kind) = if i < last_i || tail_count == 1 {
-                            let e = self.builder
+                            let e = self
+                                .builder
                                 .build_extract_value(sv, i as u32, &binding.name.0)
                                 .map_err(|e| CompileError::ice(e.to_string()))?;
                             (e, elem_kinds[i].clone())
                         } else {
                             // Last binder receives the remaining elements as a sub-tuple.
                             let tail_kinds: Vec<Kind> = elem_kinds[i..].to_vec();
-                            let llvm_types: Vec<_> = tail_kinds.iter()
+                            let llvm_types: Vec<_> = tail_kinds
+                                .iter()
                                 .map(|k| self.kind_to_llvm_type(k))
                                 .collect();
                             let struct_ty = self.context.struct_type(&llvm_types, false);
                             let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
                             for (j, _) in tail_kinds.iter().enumerate() {
-                                let e = self.builder
-                                    .build_extract_value(sv, (i + j) as u32,
-                                        &format!("{}_t{}", binding.name.0, j))
+                                let e = self
+                                    .builder
+                                    .build_extract_value(
+                                        sv,
+                                        (i + j) as u32,
+                                        &format!("{}_t{}", binding.name.0, j),
+                                    )
                                     .map_err(|e| CompileError::ice(e.to_string()))?;
-                                agg = self.builder
+                                agg = self
+                                    .builder
                                     .build_insert_value(agg, e, j as u32, "ts")
                                     .map_err(|e| CompileError::ice(e.to_string()))?;
                             }
@@ -133,25 +157,32 @@ impl<'ctx> Compiler<'ctx> {
                     }
                 }
 
-                SemStmt::DestructMutLet { bindings, value, .. } => {
+                SemStmt::DestructMutLet {
+                    bindings, value, ..
+                } => {
                     let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
                     let elem_kinds = match rhs_kind {
                         Kind::Tuple(ek) => ek,
                         // See the matching guard in `elaborate_destruct_bindings` —
                         // elaboration should already reject this before codegen
                         // ever sees it; kept here as defense in depth.
-                        Kind::Vector(_) => return Err(CompileError::ice(
-                            "not yet implemented: destructuring a vector (`X*`) — \
+                        Kind::Vector(_) => {
+                            return Err(CompileError::ice(
+                                "not yet implemented: destructuring a vector (`X*`) — \
                              only tuple right-hand sides are currently supported",
-                        )),
-                        _ => return Err(CompileError::ice(
-                            "destructuring `=` requires a tuple on the right-hand side",
-                        )),
+                            ));
+                        }
+                        _ => {
+                            return Err(CompileError::ice(
+                                "destructuring `=` requires a tuple on the right-hand side",
+                            ));
+                        }
                     };
                     if bindings.len() > elem_kinds.len() {
                         return Err(CompileError::ice(format!(
                             "destructuring arity mismatch: {} binding(s) but tuple has only {} element(s)",
-                            bindings.len(), elem_kinds.len()
+                            bindings.len(),
+                            elem_kinds.len()
                         )));
                     }
                     let sv = AggregateValueEnum::StructValue(rhs_val.into_struct_value());
@@ -159,7 +190,8 @@ impl<'ctx> Compiler<'ctx> {
                     for (i, binding) in bindings.iter().enumerate() {
                         let tail_count = elem_kinds.len() - i;
                         let (elem, kind) = if i < last_i || tail_count == 1 {
-                            let e = self.builder
+                            let e = self
+                                .builder
                                 .build_extract_value(sv, i as u32, &binding.name.0)
                                 .map_err(|e| CompileError::ice(e.to_string()))?;
                             (e, elem_kinds[i].clone())
@@ -175,17 +207,23 @@ impl<'ctx> Compiler<'ctx> {
                                 );
                             }
                             let tail_kinds: Vec<Kind> = elem_kinds[i..].to_vec();
-                            let llvm_types: Vec<_> = tail_kinds.iter()
+                            let llvm_types: Vec<_> = tail_kinds
+                                .iter()
                                 .map(|k| self.kind_to_llvm_type(k))
                                 .collect();
                             let struct_ty = self.context.struct_type(&llvm_types, false);
                             let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
                             for (j, _) in tail_kinds.iter().enumerate() {
-                                let e = self.builder
-                                    .build_extract_value(sv, (i + j) as u32,
-                                        &format!("{}_t{}", binding.name.0, j))
+                                let e = self
+                                    .builder
+                                    .build_extract_value(
+                                        sv,
+                                        (i + j) as u32,
+                                        &format!("{}_t{}", binding.name.0, j),
+                                    )
                                     .map_err(|e| CompileError::ice(e.to_string()))?;
-                                agg = self.builder
+                                agg = self
+                                    .builder
                                     .build_insert_value(agg, e, j as u32, "ts")
                                     .map_err(|e| CompileError::ice(e.to_string()))?;
                             }
@@ -200,32 +238,42 @@ impl<'ctx> Compiler<'ctx> {
                             } else {
                                 elem.into_int_value()
                             };
-                            self.builder.build_store(ptr, val_i64)
+                            self.builder
+                                .build_store(ptr, val_i64)
                                 .map_err(|e| CompileError::ice(e.to_string()))?;
                         }
                         env.insert(binding.name.clone(), (elem, kind));
                     }
                 }
 
-                SemStmt::DestructAssign { names: dest_names, value, .. } => {
+                SemStmt::DestructAssign {
+                    names: dest_names,
+                    value,
+                    ..
+                } => {
                     let (rhs_val, rhs_kind) = self.compile_expr(value, env)?;
                     let elem_kinds = match rhs_kind {
                         Kind::Tuple(ek) => ek,
                         // See the matching guard in `elaborate_destruct_bindings` —
                         // elaboration should already reject this before codegen
                         // ever sees it; kept here as defense in depth.
-                        Kind::Vector(_) => return Err(CompileError::ice(
-                            "not yet implemented: destructuring a vector (`X*`) — \
+                        Kind::Vector(_) => {
+                            return Err(CompileError::ice(
+                                "not yet implemented: destructuring a vector (`X*`) — \
                              only tuple right-hand sides are currently supported",
-                        )),
-                        _ => return Err(CompileError::ice(
-                            "destructuring `:=` requires a tuple on the right-hand side",
-                        )),
+                            ));
+                        }
+                        _ => {
+                            return Err(CompileError::ice(
+                                "destructuring `:=` requires a tuple on the right-hand side",
+                            ));
+                        }
                     };
                     if dest_names.len() > elem_kinds.len() {
                         return Err(CompileError::ice(format!(
                             "destructuring arity mismatch: {} name(s) but tuple has only {} element(s)",
-                            dest_names.len(), elem_kinds.len()
+                            dest_names.len(),
+                            elem_kinds.len()
                         )));
                     }
                     let sv = AggregateValueEnum::StructValue(rhs_val.into_struct_value());
@@ -233,7 +281,8 @@ impl<'ctx> Compiler<'ctx> {
                     for (i, name) in dest_names.iter().enumerate() {
                         let tail_count = elem_kinds.len() - i;
                         let (elem, kind) = if i < last_i || tail_count == 1 {
-                            let e = self.builder
+                            let e = self
+                                .builder
                                 .build_extract_value(sv, i as u32, &name.0)
                                 .map_err(|e| CompileError::ice(e.to_string()))?;
                             (e, elem_kinds[i].clone())
@@ -247,17 +296,23 @@ impl<'ctx> Compiler<'ctx> {
                                 );
                             }
                             let tail_kinds: Vec<Kind> = elem_kinds[i..].to_vec();
-                            let llvm_types: Vec<_> = tail_kinds.iter()
+                            let llvm_types: Vec<_> = tail_kinds
+                                .iter()
                                 .map(|k| self.kind_to_llvm_type(k))
                                 .collect();
                             let struct_ty = self.context.struct_type(&llvm_types, false);
                             let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
                             for (j, _) in tail_kinds.iter().enumerate() {
-                                let e = self.builder
-                                    .build_extract_value(sv, (i + j) as u32,
-                                        &format!("{}_t{}", name.0, j))
+                                let e = self
+                                    .builder
+                                    .build_extract_value(
+                                        sv,
+                                        (i + j) as u32,
+                                        &format!("{}_t{}", name.0, j),
+                                    )
                                     .map_err(|e| CompileError::ice(e.to_string()))?;
-                                agg = self.builder
+                                agg = self
+                                    .builder
                                     .build_insert_value(agg, e, j as u32, "ts")
                                     .map_err(|e| CompileError::ice(e.to_string()))?;
                             }
@@ -272,7 +327,8 @@ impl<'ctx> Compiler<'ctx> {
                             } else {
                                 elem.into_int_value()
                             };
-                            self.builder.build_store(ptr, val_i64)
+                            self.builder
+                                .build_store(ptr, val_i64)
                                 .map_err(|e| CompileError::ice(e.to_string()))?;
                         }
                         env.insert(name.clone(), (elem, kind));
@@ -282,11 +338,19 @@ impl<'ctx> Compiler<'ctx> {
                 // Static-only constructs — no runtime representation.
                 SemStmt::Require { .. } | SemStmt::Assume { .. } => {}
 
-                SemStmt::Assert { predicate, else_clause: None, .. } => {
+                SemStmt::Assert {
+                    predicate,
+                    else_clause: None,
+                    ..
+                } => {
                     self.compile_assert(predicate, env)?;
                 }
 
-                SemStmt::Assert { predicate, else_clause: Some(else_clause), .. } => {
+                SemStmt::Assert {
+                    predicate,
+                    else_clause: Some(else_clause),
+                    ..
+                } => {
                     self.compile_assert_else(predicate, else_clause, env)?;
                 }
 
@@ -328,8 +392,7 @@ impl<'ctx> Compiler<'ctx> {
             return Err(CompileError::ice(
                 "assert in a function whose return type does not include `Fail` \
                  was not eliminated by the solver — add `| Fail` to the return type \
-                 or prove the assertion statically"
-                    ,
+                 or prove the assertion statically",
             ));
         };
 
@@ -368,8 +431,12 @@ impl<'ctx> Compiler<'ctx> {
         let (cond_val, _) = self.compile_expr(predicate, env)?;
         let cond_i1 = cond_val.into_int_value();
 
-        let fail_out_bb = self.context.append_basic_block(function, "assert_else_fail");
-        let pass_bb     = self.context.append_basic_block(function, "assert_else_pass");
+        let fail_out_bb = self
+            .context
+            .append_basic_block(function, "assert_else_fail");
+        let pass_bb = self
+            .context
+            .append_basic_block(function, "assert_else_pass");
 
         self.builder
             .build_conditional_branch(cond_i1, pass_bb, fail_out_bb)

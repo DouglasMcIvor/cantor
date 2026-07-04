@@ -6,15 +6,15 @@ use cvc5::{Kind, Solver, Sort, Term, TermManager};
 
 use crate::{
     ast::{BinOp, UnOp},
-    semantics::tree::{flatten_cartesian_product, SemExpr, SemExprKind, SemFunctionDef},
+    semantics::tree::{SemExpr, SemExprKind, SemFunctionDef, flatten_cartesian_product},
     span::{Span, Symbol},
 };
 
+use super::blocks::check_require;
+use super::encode_call::encode_call;
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 use super::sort::{maybe_coerce, set_sort};
-use super::blocks::check_require;
 use super::{CheckResult, NameDefs};
-use super::encode_call::encode_call;
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -71,10 +71,19 @@ pub(crate) fn decide_overflow_obligations<'tm>(
         let implication = if ob.path_cond.to_string().trim() == "true" {
             ob.obligation.clone()
         } else {
-            tm.mk_term(Kind::Implies, &[ob.path_cond.clone(), ob.obligation.clone()])
+            tm.mk_term(
+                Kind::Implies,
+                &[ob.path_cond.clone(), ob.obligation.clone()],
+            )
         };
-        let proved = matches!(check_require(implication, tm, solver, &[], &[]), CheckResult::Proved);
-        overflow_checks.entry(ob.span).and_modify(|p| *p &= proved).or_insert(proved);
+        let proved = matches!(
+            check_require(implication, tm, solver, &[], &[]),
+            CheckResult::Proved
+        );
+        overflow_checks
+            .entry(ob.span)
+            .and_modify(|p| *p &= proved)
+            .or_insert(proved);
     }
 }
 
@@ -92,18 +101,25 @@ pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(SemExpr,
         // ── Arithmetic ────────────────────────────────────────────────────────
         // Div arg 1: divisor must be a plain Int AND non-zero.
         (BinOp::Div, 1) => vec![
-            (named_set("Int"),        "divisor must be Int, not a member of a distinct set"),
+            (
+                named_set("Int"),
+                "divisor must be Int, not a member of a distinct set",
+            ),
             (named_set("NonZeroInt"), "division by zero"),
         ],
         // All arithmetic args must be plain Int (not Bool, not a distinct set).
-        (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, _) => vec![
-            (named_set("Int"), "operand must be Int, not a member of a distinct set"),
-        ],
+        (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, _) => vec![(
+            named_set("Int"),
+            "operand must be Int, not a member of a distinct set",
+        )],
         // ── Comparisons ───────────────────────────────────────────────────────
         (BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, _) => vec![],
         // ── Logical ───────────────────────────────────────────────────────────
         // Both args of `and`/`or` must be in Bool.
-        (BinOp::And | BinOp::Or, _) => vec![(named_set("Bool"), "operand of logical operator must be Bool")],
+        (BinOp::And | BinOp::Or, _) => vec![(
+            named_set("Bool"),
+            "operand of logical operator must be Bool",
+        )],
         // ── Set operations ────────────────────────────────────────────────────
         (BinOp::Union | BinOp::Intersect | BinOp::SymDiff, _) => vec![],
         // ── Vector operations ─────────────────────────────────────────────────
@@ -111,7 +127,9 @@ pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(SemExpr,
         (BinOp::Concat, _) => vec![],
         // ── Must never reach here ─────────────────────────────────────────────
         (BinOp::In | BinOp::NotIn, _) => {
-            panic!("binary_builtin_domain called with In/NotIn — handled before the domain-check loop")
+            panic!(
+                "binary_builtin_domain called with In/NotIn — handled before the domain-check loop"
+            )
         }
     }
 }
@@ -122,7 +140,10 @@ pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(SemExpr,
 pub(crate) fn unary_builtin_domain(op: &UnOp) -> Vec<(SemExpr, &'static str)> {
     match op {
         // Negation is defined on Int only — distinct sets cannot be negated.
-        UnOp::Neg => vec![(named_set("Int"), "operand of negation must be Int, not a member of a distinct set")],
+        UnOp::Neg => vec![(
+            named_set("Int"),
+            "operand of negation must be Int, not a member of a distinct set",
+        )],
         // Operand of `not` must be in Bool.
         UnOp::Not => vec![(named_set("Bool"), "operand of `not` must be Bool")],
     }
@@ -130,7 +151,9 @@ pub(crate) fn unary_builtin_domain(op: &UnOp) -> Vec<(SemExpr, &'static str)> {
 
 /// Build a `Var` expression that refers to a named built-in set.
 pub(crate) fn named_set(name: &'static str) -> SemExpr {
-    let kind = crate::semantics::builtins::lookup(name).map(|b| b.kind).unwrap_or(crate::kind::Kind::Int);
+    let kind = crate::semantics::builtins::lookup(name)
+        .map(|b| b.kind)
+        .unwrap_or(crate::kind::Kind::Int);
     SemExpr::var(name, kind)
 }
 
@@ -167,8 +190,20 @@ pub(crate) fn encode_expr<'tm>(
 ) -> Result<Term<'tm>, String> {
     macro_rules! enc {
         ($e:expr) => {
-            encode_expr($e, env, name_defs, fn_env, tm, solver, call_counter,
-                        builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds, None)
+            encode_expr(
+                $e,
+                env,
+                name_defs,
+                fn_env,
+                tm,
+                solver,
+                call_counter,
+                builtin_obligs,
+                overflow_obligs,
+                path_cond.clone(),
+                distinct_preds,
+                None,
+            )
         };
     }
 
@@ -180,10 +215,9 @@ pub(crate) fn encode_expr<'tm>(
         if callee.0 == "len" && args.len() == 1 {
             let arg_term = enc!(&args[0])?;
             if !arg_term.sort().is_sequence() {
-                return Err(
-                    "len() expects a vector (X*) argument; \
-                     use it only on Kleene-star values".into()
-                );
+                return Err("len() expects a vector (X*) argument; \
+                     use it only on Kleene-star values"
+                    .into());
             }
             return Ok(tm.mk_term(Kind::SeqLength, &[arg_term]));
         }
@@ -208,22 +242,28 @@ pub(crate) fn encode_expr<'tm>(
                 }
                 if arg_term.sort() == info.sort {
                     let result = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), arg_term]);
-                    if let Some(def) = name_defs.get(sym) {
-                        if let Membership::Constrained(c) =
-                            membership_constraint(tm, result.clone(), &def.value, name_defs, distinct_preds)
-                        {
-                            solver.assert_formula(c);
-                        }
+                    if let Some(def) = name_defs.get(sym)
+                        && let Membership::Constrained(c) = membership_constraint(
+                            tm,
+                            result.clone(),
+                            &def.value,
+                            name_defs,
+                            distinct_preds,
+                        )
+                    {
+                        solver.assert_formula(c);
                     }
                     return Ok(result);
                 }
             }
-            return Err("from() applied to a value that is not a member of any distinct set".into());
+            return Err(
+                "from() applied to a value that is not a member of any distinct set".into(),
+            );
         }
     }
 
     let term = match &expr.kind {
-        SemExprKind::IntLit(n)  => Ok(tm.mk_integer(*n)),
+        SemExprKind::IntLit(n) => Ok(tm.mk_integer(*n)),
         SemExprKind::BoolLit(b) => Ok(tm.mk_boolean(*b)),
 
         // `Fail` is a builtin distinct sort (registered in `build_distinct_preds`)
@@ -235,14 +275,16 @@ pub(crate) fn encode_expr<'tm>(
         // machinery (end of this function) then wraps either shape into the
         // enclosing union datatype with no Fail-specific coercion code at all.
         SemExprKind::FailLit => {
-            let info = distinct_preds.get(&Symbol::new("Fail"))
+            let info = distinct_preds
+                .get(&Symbol::new("Fail"))
                 .expect("Fail must be registered as a builtin distinct sort");
             Ok(tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), tm.mk_integer(0)]))
         }
 
         SemExprKind::FailWith(inner) => {
             let n = enc!(inner)?;
-            let info = distinct_preds.get(&Symbol::new("Fail"))
+            let info = distinct_preds
+                .get(&Symbol::new("Fail"))
                 .expect("Fail must be registered as a builtin distinct sort");
             let tag = tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), tm.mk_integer(0)]);
             Ok(tm.mk_tuple(&[tag, n]))
@@ -252,49 +294,173 @@ pub(crate) fn encode_expr<'tm>(
             if let Some(term) = env.get(sym) {
                 Ok(term.clone())
             } else if let Some(def) = name_defs.get(sym) {
-                encode_expr(&def.value, &Env::new(), name_defs, fn_env, tm, solver,
-                            call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds, None)
+                encode_expr(
+                    &def.value,
+                    &Env::new(),
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    path_cond.clone(),
+                    distinct_preds,
+                    None,
+                )
             } else {
                 Err(format!("unbound variable `{}`", sym.0))
             }
         }
 
         SemExprKind::Tuple(elems) => {
-            let terms = elems.iter().map(|e| enc!(e)).collect::<Result<Vec<_>, _>>()?;
+            let terms = elems
+                .iter()
+                .map(|e| enc!(e))
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(tm.mk_tuple(&terms))
         }
 
-        SemExprKind::UnOp { op, expr: inner } =>
-            encode_unop(op, inner, expr.span, env, name_defs, fn_env, tm, solver,
-                        call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds),
+        SemExprKind::UnOp { op, expr: inner } => encode_unop(
+            op,
+            inner,
+            expr.span,
+            env,
+            name_defs,
+            fn_env,
+            tm,
+            solver,
+            call_counter,
+            builtin_obligs,
+            overflow_obligs,
+            path_cond.clone(),
+            distinct_preds,
+        ),
 
         // `+ - * /` are dedicated SemExprKind variants (never wrapped in
         // BinOp — see tree.rs's module doc); route them through the same
         // `encode_binop` that handles the remaining operators, so the
         // domain-obligation logic (Int-only, non-zero divisor, …) isn't
         // duplicated between an arithmetic-only path and the generic one.
-        SemExprKind::Add(lhs, rhs) => encode_binop(&BinOp::Add, lhs, rhs, expr.span, env, name_defs, fn_env, tm, solver,
-                                                    call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds),
-        SemExprKind::Sub(lhs, rhs) => encode_binop(&BinOp::Sub, lhs, rhs, expr.span, env, name_defs, fn_env, tm, solver,
-                                                    call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds),
-        SemExprKind::Mul(lhs, rhs) => encode_binop(&BinOp::Mul, lhs, rhs, expr.span, env, name_defs, fn_env, tm, solver,
-                                                    call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds),
-        SemExprKind::Div(lhs, rhs) => encode_binop(&BinOp::Div, lhs, rhs, expr.span, env, name_defs, fn_env, tm, solver,
-                                                    call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds),
+        SemExprKind::Add(lhs, rhs) => encode_binop(
+            &BinOp::Add,
+            lhs,
+            rhs,
+            expr.span,
+            env,
+            name_defs,
+            fn_env,
+            tm,
+            solver,
+            call_counter,
+            builtin_obligs,
+            overflow_obligs,
+            path_cond.clone(),
+            distinct_preds,
+        ),
+        SemExprKind::Sub(lhs, rhs) => encode_binop(
+            &BinOp::Sub,
+            lhs,
+            rhs,
+            expr.span,
+            env,
+            name_defs,
+            fn_env,
+            tm,
+            solver,
+            call_counter,
+            builtin_obligs,
+            overflow_obligs,
+            path_cond.clone(),
+            distinct_preds,
+        ),
+        SemExprKind::Mul(lhs, rhs) => encode_binop(
+            &BinOp::Mul,
+            lhs,
+            rhs,
+            expr.span,
+            env,
+            name_defs,
+            fn_env,
+            tm,
+            solver,
+            call_counter,
+            builtin_obligs,
+            overflow_obligs,
+            path_cond.clone(),
+            distinct_preds,
+        ),
+        SemExprKind::Div(lhs, rhs) => encode_binop(
+            &BinOp::Div,
+            lhs,
+            rhs,
+            expr.span,
+            env,
+            name_defs,
+            fn_env,
+            tm,
+            solver,
+            call_counter,
+            builtin_obligs,
+            overflow_obligs,
+            path_cond.clone(),
+            distinct_preds,
+        ),
 
-        SemExprKind::BinOp { op, lhs, rhs } =>
-            encode_binop(op, lhs, rhs, expr.span, env, name_defs, fn_env, tm, solver,
-                         call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds),
+        SemExprKind::BinOp { op, lhs, rhs } => encode_binop(
+            op,
+            lhs,
+            rhs,
+            expr.span,
+            env,
+            name_defs,
+            fn_env,
+            tm,
+            solver,
+            call_counter,
+            builtin_obligs,
+            overflow_obligs,
+            path_cond.clone(),
+            distinct_preds,
+        ),
 
-        SemExprKind::If { cond, then_expr, else_expr } =>
-            encode_if(cond, then_expr, else_expr, env, name_defs, fn_env, tm, solver,
-                      call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds,
-                      coerce_to.clone()),
+        SemExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => encode_if(
+            cond,
+            then_expr,
+            else_expr,
+            env,
+            name_defs,
+            fn_env,
+            tm,
+            solver,
+            call_counter,
+            builtin_obligs,
+            overflow_obligs,
+            path_cond.clone(),
+            distinct_preds,
+            coerce_to.clone(),
+        ),
 
-        SemExprKind::Call { callee, args } =>
-            encode_call(callee, args, env, name_defs, fn_env, tm, solver,
-                        call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds,
-                        coerce_to.clone(), false),
+        SemExprKind::Call { callee, args } => encode_call(
+            callee,
+            args,
+            env,
+            name_defs,
+            fn_env,
+            tm,
+            solver,
+            call_counter,
+            builtin_obligs,
+            overflow_obligs,
+            path_cond.clone(),
+            distinct_preds,
+            coerce_to.clone(),
+            false,
+        ),
 
         // `f(args)?` — on the success path the result lies in the success arm
         // of the callee's range. That narrowing is only valid for a signature
@@ -304,20 +470,43 @@ pub(crate) fn encode_expr<'tm>(
         // unguarded assertion would let an out-of-domain or other-overload
         // call "prove" the wrong success set.
         SemExprKind::Try(inner) => match &inner.kind {
-            SemExprKind::Call { callee, args } =>
-                encode_call(callee, args, env, name_defs, fn_env, tm, solver,
-                            call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds,
-                            None, true),
+            SemExprKind::Call { callee, args } => encode_call(
+                callee,
+                args,
+                env,
+                name_defs,
+                fn_env,
+                tm,
+                solver,
+                call_counter,
+                builtin_obligs,
+                overflow_obligs,
+                path_cond.clone(),
+                distinct_preds,
+                None,
+                true,
+            ),
             _ => enc!(inner),
         },
 
-        SemExprKind::Proj { base, index } =>
-            encode_proj(base, *index, env, name_defs, fn_env, tm, solver,
-                        call_counter, builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds),
+        SemExprKind::Proj { base, index } => encode_proj(
+            base,
+            *index,
+            env,
+            name_defs,
+            fn_env,
+            tm,
+            solver,
+            call_counter,
+            builtin_obligs,
+            overflow_obligs,
+            path_cond.clone(),
+            distinct_preds,
+        ),
 
         SemExprKind::Index { base, index } => {
             let base_term = enc!(base)?;
-            let idx_term  = enc!(index)?;
+            let idx_term = enc!(index)?;
             if !base_term.sort().is_sequence() {
                 return Err("runtime index `xs[i]` is only valid on vector (X*) values".into());
             }
@@ -328,9 +517,9 @@ pub(crate) fn encode_expr<'tm>(
             // element sorts (struct vecs) it is essential: CVC5 can assign arbitrary
             // default components that fall outside the element range, producing false
             // counterexamples without this obligation.
-            let len = tm.mk_term(Kind::SeqLength, &[base_term.clone()]);
+            let len = tm.mk_term(Kind::SeqLength, std::slice::from_ref(&base_term));
             let lo = tm.mk_term(Kind::Leq, &[tm.mk_integer(0), idx_term.clone()]);
-            let hi = tm.mk_term(Kind::Lt,  &[idx_term.clone(), len]);
+            let hi = tm.mk_term(Kind::Lt, &[idx_term.clone(), len]);
             builtin_obligs.push(BuiltinObligation {
                 path_cond: path_cond.clone(),
                 obligation: tm.mk_term(Kind::And, &[lo, hi]),
@@ -339,19 +528,23 @@ pub(crate) fn encode_expr<'tm>(
             Ok(tm.mk_term(Kind::SeqNth, &[base_term, idx_term]))
         }
 
-        SemExprKind::SetLit(_) | SemExprKind::Comprehension { .. } | SemExprKind::KleeneStar(_) =>
+        SemExprKind::SetLit(_) | SemExprKind::Comprehension { .. } | SemExprKind::KleeneStar(_) => {
             Err("set expressions cannot appear in value position \
-                 (only in domain/range/`in`/`for` positions)".into()),
+                 (only in domain/range/`in`/`for` positions)"
+                .into())
+        }
 
         // Set-position-only variants: elaboration never threads these into a
         // value-position tree (see `semantics::elaborate`'s module doc), so
         // reaching them here means an elaborator invariant broke.
-        SemExprKind::DisjointUnion(..) | SemExprKind::SetDifference(..)
-        | SemExprKind::CartesianProduct(..) | SemExprKind::SetQuotient(..) =>
-            Err(format!(
-                "elaborator invariant broken: set-position node {:?} reached encode_expr \
-                 (value position)", expr.kind
-            )),
+        SemExprKind::DisjointUnion(..)
+        | SemExprKind::SetDifference(..)
+        | SemExprKind::CartesianProduct(..)
+        | SemExprKind::SetQuotient(..) => Err(format!(
+            "elaborator invariant broken: set-position node {:?} reached encode_expr \
+                 (value position)",
+            expr.kind
+        )),
     }?;
 
     maybe_coerce(tm, term, &coerce_to)
@@ -375,8 +568,20 @@ fn encode_unop<'tm>(
     path_cond: Term<'tm>,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Result<Term<'tm>, String> {
-    let t = encode_expr(inner, env, name_defs, fn_env, tm, solver, call_counter,
-                        builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds, None)?;
+    let t = encode_expr(
+        inner,
+        env,
+        name_defs,
+        fn_env,
+        tm,
+        solver,
+        call_counter,
+        builtin_obligs,
+        overflow_obligs,
+        path_cond.clone(),
+        distinct_preds,
+        None,
+    )?;
     for (domain, reason) in unary_builtin_domain(op) {
         if let Membership::Constrained(c) =
             membership_constraint(tm, t.clone(), &domain, name_defs, distinct_preds)
@@ -392,21 +597,33 @@ fn encode_unop<'tm>(
         UnOp::Neg => {
             // Guard: wrong-sort operand (e.g. distinct-sort) — domain check
             // pushed Constrained(false); return dummy to avoid CVC5 sort panic.
-            if !t.sort().is_integer() { return Ok(tm.mk_integer(0)); }
+            if !t.sort().is_integer() {
+                return Ok(tm.mk_integer(0));
+            }
             let result = tm.mk_term(Kind::Neg, &[t]);
             // int-soundness-plan phase 1: `-x` overflows only at `i64::MIN`.
             // Checked/elided by codegen based on whether this holds, keyed by span.
-            if let Membership::Constrained(c) =
-                membership_constraint(tm, result.clone(), &named_set("Int64"), name_defs, distinct_preds)
-            {
-                overflow_obligs.push(OverflowObligation { span, path_cond: path_cond.clone(), obligation: c });
+            if let Membership::Constrained(c) = membership_constraint(
+                tm,
+                result.clone(),
+                &named_set("Int64"),
+                name_defs,
+                distinct_preds,
+            ) {
+                overflow_obligs.push(OverflowObligation {
+                    span,
+                    path_cond: path_cond.clone(),
+                    obligation: c,
+                });
             }
             Ok(result)
         }
         UnOp::Not => {
             // Guard: wrong-sort operand — domain check pushed Constrained(false);
             // return dummy to avoid CVC5 sort panic.
-            if !t.sort().is_boolean() { return Ok(tm.mk_boolean(false)); }
+            if !t.sort().is_boolean() {
+                return Ok(tm.mk_boolean(false));
+            }
             Ok(tm.mk_term(Kind::Not, &[t]))
         }
     }
@@ -418,10 +635,7 @@ fn encode_unop<'tm>(
 /// If `term` is tuple-sorted (from an array literal like `[1, 2, 3]`),
 /// convert it by wrapping each element in `SeqUnit` and concatenating.
 /// Otherwise return an error: `++` only works on vector (X*) values.
-fn coerce_to_sequence<'tm>(
-    tm: &'tm TermManager,
-    term: Term<'tm>,
-) -> Result<Term<'tm>, String> {
+fn coerce_to_sequence<'tm>(tm: &'tm TermManager, term: Term<'tm>) -> Result<Term<'tm>, String> {
     if term.sort().is_sequence() {
         return Ok(term);
     }
@@ -469,8 +683,20 @@ fn encode_binop<'tm>(
 ) -> Result<Term<'tm>, String> {
     macro_rules! enc {
         ($e:expr) => {
-            encode_expr($e, env, name_defs, fn_env, tm, solver, call_counter,
-                        builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds, None)
+            encode_expr(
+                $e,
+                env,
+                name_defs,
+                fn_env,
+                tm,
+                solver,
+                call_counter,
+                builtin_obligs,
+                overflow_obligs,
+                path_cond.clone(),
+                distinct_preds,
+                None,
+            )
         };
     }
 
@@ -481,34 +707,34 @@ fn encode_binop<'tm>(
         BinOp::In => {
             // If the set RHS is a variable bound in the solver env it's a
             // runtime set value — membership can't be decided at proof time.
-            if let SemExprKind::Var(sym) = &rhs.kind {
-                if env.contains_key(sym) {
-                    let fresh = format!("_in_{}", *call_counter);
-                    *call_counter += 1;
-                    return Ok(tm.mk_const(tm.boolean_sort(), &fresh));
-                }
+            if let SemExprKind::Var(sym) = &rhs.kind
+                && env.contains_key(sym)
+            {
+                let fresh = format!("_in_{}", *call_counter);
+                *call_counter += 1;
+                return Ok(tm.mk_const(tm.boolean_sort(), &fresh));
             }
             let l = enc!(lhs)?;
             return match membership_constraint(tm, l, rhs, name_defs, distinct_preds) {
                 Membership::Constrained(c) => Ok(c),
-                Membership::Unconstrained  => Ok(tm.mk_boolean(true)),
-                Membership::Unsupported    => Err("unsupported set in `in` expression".into()),
+                Membership::Unconstrained => Ok(tm.mk_boolean(true)),
+                Membership::Unsupported => Err("unsupported set in `in` expression".into()),
             };
         }
         BinOp::NotIn => {
-            if let SemExprKind::Var(sym) = &rhs.kind {
-                if env.contains_key(sym) {
-                    let fresh = format!("_in_{}", *call_counter);
-                    *call_counter += 1;
-                    let b = tm.mk_const(tm.boolean_sort(), &fresh);
-                    return Ok(tm.mk_term(Kind::Not, &[b]));
-                }
+            if let SemExprKind::Var(sym) = &rhs.kind
+                && env.contains_key(sym)
+            {
+                let fresh = format!("_in_{}", *call_counter);
+                *call_counter += 1;
+                let b = tm.mk_const(tm.boolean_sort(), &fresh);
+                return Ok(tm.mk_term(Kind::Not, &[b]));
             }
             let l = enc!(lhs)?;
             return match membership_constraint(tm, l, rhs, name_defs, distinct_preds) {
                 Membership::Constrained(c) => Ok(tm.mk_term(Kind::Not, &[c])),
-                Membership::Unconstrained  => Ok(tm.mk_boolean(false)),
-                Membership::Unsupported    => Err("unsupported set in `not in` expression".into()),
+                Membership::Unconstrained => Ok(tm.mk_boolean(false)),
+                Membership::Unsupported => Err("unsupported set in `not in` expression".into()),
             };
         }
         _ => {}
@@ -544,18 +770,18 @@ fn encode_binop<'tm>(
         BinOp::Sub => Kind::Sub,
         BinOp::Mul => Kind::Mult,
         BinOp::Div => Kind::IntsDivision,
-        BinOp::Eq  => Kind::Equal,
-        BinOp::Ne  => Kind::Distinct,
-        BinOp::Lt  => Kind::Lt,
-        BinOp::Le  => Kind::Leq,
-        BinOp::Gt  => Kind::Gt,
-        BinOp::Ge  => Kind::Geq,
+        BinOp::Eq => Kind::Equal,
+        BinOp::Ne => Kind::Distinct,
+        BinOp::Lt => Kind::Lt,
+        BinOp::Le => Kind::Leq,
+        BinOp::Gt => Kind::Gt,
+        BinOp::Ge => Kind::Geq,
         BinOp::And => Kind::And,
-        BinOp::Or  => Kind::Or,
+        BinOp::Or => Kind::Or,
         BinOp::In | BinOp::NotIn => unreachable!("handled above"),
         BinOp::Concat => unreachable!("handled above"),
         BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
-            return Err(format!("set operation `{op:?}` not yet encodable"))
+            return Err(format!("set operation `{op:?}` not yet encodable"));
         }
     };
 
@@ -575,15 +801,21 @@ fn encode_binop<'tm>(
     // Guard: bail out with a sort-safe dummy when operands have the wrong sort.
     // The domain checks above push Constrained(false) obligations that cause
     // a counterexample; the dummy prevents a CVC5 sort panic.
-    if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div
-                      | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
-        && (!l.sort().is_integer() || !r.sort().is_integer())
+    if matches!(
+        op,
+        BinOp::Add
+            | BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::Lt
+            | BinOp::Le
+            | BinOp::Gt
+            | BinOp::Ge
+    ) && (!l.sort().is_integer() || !r.sort().is_integer())
     {
         return Ok(tm.mk_integer(0));
     }
-    if matches!(op, BinOp::And | BinOp::Or)
-        && (!l.sort().is_boolean() || !r.sort().is_boolean())
-    {
+    if matches!(op, BinOp::And | BinOp::Or) && (!l.sort().is_boolean() || !r.sort().is_boolean()) {
         return Ok(tm.mk_boolean(false));
     }
 
@@ -602,12 +834,20 @@ fn encode_binop<'tm>(
     // toward zero (matching docs/design-decisions.md's stated `/` semantics).
     // These disagree for negative operands — a separate, pre-existing gap
     // flagged during phase 1 but deliberately out of scope here.
-    if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
-        if let Membership::Constrained(c) =
-            membership_constraint(tm, result.clone(), &named_set("Int64"), name_defs, distinct_preds)
-        {
-            overflow_obligs.push(OverflowObligation { span, path_cond: path_cond.clone(), obligation: c });
-        }
+    if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+        && let Membership::Constrained(c) = membership_constraint(
+            tm,
+            result.clone(),
+            &named_set("Int64"),
+            name_defs,
+            distinct_preds,
+        )
+    {
+        overflow_obligs.push(OverflowObligation {
+            span,
+            path_cond: path_cond.clone(),
+            obligation: c,
+        });
     }
 
     Ok(result)
@@ -630,8 +870,20 @@ fn encode_if<'tm>(
     distinct_preds: &DistinctPreds<'tm>,
     coerce_to: Option<Sort<'tm>>,
 ) -> Result<Term<'tm>, String> {
-    let c = encode_expr(cond, env, name_defs, fn_env, tm, solver, call_counter,
-                        builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds, None)?;
+    let c = encode_expr(
+        cond,
+        env,
+        name_defs,
+        fn_env,
+        tm,
+        solver,
+        call_counter,
+        builtin_obligs,
+        overflow_obligs,
+        path_cond.clone(),
+        distinct_preds,
+        None,
+    )?;
 
     // `elaborate_expr`'s `If` case rejects any condition whose Kind isn't
     // Bool, and sort-aware SSA constants mean a Kind::Bool value always
@@ -651,14 +903,38 @@ fn encode_if<'tm>(
     // Then-branch: path_cond ∧ cond — propagate coerce_to so the branch
     // result is wrapped in the union datatype if needed.
     let then_guard = tm.mk_term(Kind::And, &[path_cond.clone(), c_bool.clone()]);
-    let t = encode_expr(then_expr, env, name_defs, fn_env, tm, solver, call_counter,
-                        builtin_obligs, overflow_obligs, then_guard, distinct_preds, coerce_to.clone())?;
+    let t = encode_expr(
+        then_expr,
+        env,
+        name_defs,
+        fn_env,
+        tm,
+        solver,
+        call_counter,
+        builtin_obligs,
+        overflow_obligs,
+        then_guard,
+        distinct_preds,
+        coerce_to.clone(),
+    )?;
 
     // Else-branch: path_cond ∧ ¬cond
-    let not_c = tm.mk_term(Kind::Not, &[c_bool.clone()]);
+    let not_c = tm.mk_term(Kind::Not, std::slice::from_ref(&c_bool));
     let else_guard = tm.mk_term(Kind::And, &[path_cond.clone(), not_c]);
-    let e = encode_expr(else_expr, env, name_defs, fn_env, tm, solver, call_counter,
-                        builtin_obligs, overflow_obligs, else_guard, distinct_preds, coerce_to.clone())?;
+    let e = encode_expr(
+        else_expr,
+        env,
+        name_defs,
+        fn_env,
+        tm,
+        solver,
+        call_counter,
+        builtin_obligs,
+        overflow_obligs,
+        else_guard,
+        distinct_preds,
+        coerce_to.clone(),
+    )?;
 
     // CVC5 requires both branches to have the same sort.
     // Unify sorts before calling mk_term(Ite, …).
@@ -702,7 +978,7 @@ fn encode_if<'tm>(
                 tm.mk_integer(0)
             }
         };
-        let not_c = tm.mk_term(Kind::Not, &[c_bool.clone()]);
+        let not_c = tm.mk_term(Kind::Not, std::slice::from_ref(&c_bool));
         let then_path = tm.mk_term(Kind::And, &[path_cond.clone(), c_bool.clone()]);
         let else_path = tm.mk_term(Kind::And, &[path_cond.clone(), not_c]);
         (to_int_or_dummy(t, then_path), to_int_or_dummy(e, else_path))
@@ -726,8 +1002,20 @@ fn encode_proj<'tm>(
     path_cond: Term<'tm>,
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Result<Term<'tm>, String> {
-    let base_term = encode_expr(base, env, name_defs, fn_env, tm, solver, call_counter,
-                                builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds, None)?;
+    let base_term = encode_expr(
+        base,
+        env,
+        name_defs,
+        fn_env,
+        tm,
+        solver,
+        call_counter,
+        builtin_obligs,
+        overflow_obligs,
+        path_cond.clone(),
+        distinct_preds,
+        None,
+    )?;
 
     // Struct vector indexing: `xs.N` / `xs[N]` on a sequence-sorted term.
     // (e.g. `(Nat * Nat)*` encoded as `Seq(Tuple(Int, Int))`).
@@ -818,7 +1106,11 @@ pub(crate) fn boolean_value(term: &Term<'_>) -> bool {
 /// Uses `ApplySelector` rather than `child(index + 1)` so this works for any
 /// tuple-sorted term: concrete `mk_tuple(a, b, c)` applications, `Ite` results,
 /// and `SeqNth` results (which are symbolic, not `APPLY_CONSTRUCTOR` terms).
-pub(crate) fn proj_from_tuple<'tm>(tm: &'tm TermManager, base: Term<'tm>, index: usize) -> Result<Term<'tm>, String> {
+pub(crate) fn proj_from_tuple<'tm>(
+    tm: &'tm TermManager,
+    base: Term<'tm>,
+    index: usize,
+) -> Result<Term<'tm>, String> {
     let sel = base.sort().datatype().constructor(0).selector(index);
     Ok(tm.mk_term(Kind::ApplySelector, &[sel.term(), base]))
 }
@@ -858,10 +1150,10 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
     let mut child_terms = Vec::new();
     for (i, part) in parts.iter().enumerate() {
         let child_name = format!("{name}__{i}");
-        let (child_term, child_leaves) = mk_decomposed_tuple(tm, &child_name, part, distinct_preds, name_defs);
+        let (child_term, child_leaves) =
+            mk_decomposed_tuple(tm, &child_name, part, distinct_preds, name_defs);
         leaves.extend(child_leaves);
         child_terms.push(child_term);
     }
     (tm.mk_tuple(&child_terms), leaves)
 }
-

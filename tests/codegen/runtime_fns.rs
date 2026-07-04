@@ -42,5 +42,8 @@ fn cantor_set_new_i64_resolves_and_returns_pointer() {
             .unwrap();
         f.call()
     };
-    assert!(result != 0, "cantor_set_new_i64 should return a non-null pointer");
+    assert!(
+        result != 0,
+        "cantor_set_new_i64 should return a non-null pointer"
+    );
 }

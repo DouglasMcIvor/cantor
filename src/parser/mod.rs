@@ -3,7 +3,10 @@ pub mod lexer;
 use lexer::{Lexer, Token};
 
 use crate::{
-    ast::{AssertElse, BinOp, DefKind, DestructBinding, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef, Param, Stmt, UnOp},
+    ast::{
+        AssertElse, BinOp, DefKind, DestructBinding, Expr, ExprKind, FunctionBody, FunctionDef,
+        FunctionSig, Item, NameDef, Param, Stmt, UnOp,
+    },
     error::CompileError,
     span::{Span, Symbol},
 };
@@ -16,9 +19,18 @@ use crate::{
 fn token_starts_expr_after_star(tok: &Token) -> bool {
     matches!(
         tok,
-        Token::Int(_) | Token::True | Token::False | Token::Ident(_)
-            | Token::Not | Token::If | Token::LParen
-            | Token::LBrace | Token::LBracket | Token::Fail | Token::From | Token::Size
+        Token::Int(_)
+            | Token::True
+            | Token::False
+            | Token::Ident(_)
+            | Token::Not
+            | Token::If
+            | Token::LParen
+            | Token::LBrace
+            | Token::LBracket
+            | Token::Fail
+            | Token::From
+            | Token::Size
     )
 }
 
@@ -37,7 +49,11 @@ impl<'src> Parser<'src> {
         let mut lexer = Lexer::new(src);
         let peek0 = lexer.next_token()?;
         let peek1 = lexer.next_token()?;
-        Ok(Self { lexer, peek0, peek1 })
+        Ok(Self {
+            lexer,
+            peek0,
+            peek1,
+        })
     }
 
     // ── Lookahead ─────────────────────────────────────────────────────────────
@@ -209,13 +225,25 @@ impl<'src> Parser<'src> {
         let name = self.expect_ident()?;
         self.expect(&Token::Eq)?;
         let kind = match self.peek().clone() {
-            Token::Distinct => { self.advance()?; DefKind::Distinct }
-            Token::Alias    => { self.advance()?; DefKind::Alias }
-            _               => DefKind::Alias,
+            Token::Distinct => {
+                self.advance()?;
+                DefKind::Distinct
+            }
+            Token::Alias => {
+                self.advance()?;
+                DefKind::Alias
+            }
+            _ => DefKind::Alias,
         };
         let value = self.parse_set_expr()?;
         let end = value.span.end;
-        Ok(Item::NameDef(NameDef { name, kind, ty: None, value, span: Span::new(start.start, end) }))
+        Ok(Item::NameDef(NameDef {
+            name,
+            kind,
+            ty: None,
+            value,
+            span: Span::new(start.start, end),
+        }))
     }
 
     /// Parse everything after the name on a signature line: `: [domain] -> range`
@@ -231,7 +259,11 @@ impl<'src> Parser<'src> {
         self.expect(&Token::Arrow)?;
         let range = self.parse_set_expr()?;
         let end = range.span.end;
-        Ok(FunctionSig { domain, range, span: Span::new(start.start, end) })
+        Ok(FunctionSig {
+            domain,
+            range,
+            span: Span::new(start.start, end),
+        })
     }
 
     /// Parse a set expression in signature position.
@@ -298,16 +330,29 @@ impl<'src> Parser<'src> {
                 // `mut a : Int, b : Nat = ...` — comma after constraint reveals destructuring.
                 if self.peek() == &Token::Comma {
                     self.advance()?;
-                    let first = DestructBinding { name, constraint: Some(constraint) };
+                    let first = DestructBinding {
+                        name,
+                        constraint: Some(constraint),
+                    };
                     let mut rest = self.parse_destruct_binding_list()?;
                     rest.insert(0, first);
                     self.expect(&Token::Eq)?;
                     let value = self.parse_expr(0)?;
-                    return Ok(Stmt::DestructMutLet { bindings: rest, tuple_constraint: None, value, span });
+                    return Ok(Stmt::DestructMutLet {
+                        bindings: rest,
+                        tuple_constraint: None,
+                        value,
+                        span,
+                    });
                 }
                 self.expect(&Token::Eq)?;
                 let value = self.parse_expr(0)?;
-                Ok(Stmt::MutLet { name, constraint, value, span })
+                Ok(Stmt::MutLet {
+                    name,
+                    constraint,
+                    value,
+                    span,
+                })
             }
             Token::Require => {
                 self.advance()?;
@@ -343,7 +388,11 @@ impl<'src> Parser<'src> {
                 } else {
                     None
                 };
-                Ok(Stmt::Assert { predicate, else_clause, span })
+                Ok(Stmt::Assert {
+                    predicate,
+                    else_clause,
+                    span,
+                })
             }
             Token::Assume => {
                 self.advance()?;
@@ -364,7 +413,12 @@ impl<'src> Parser<'src> {
                 let set = self.parse_set_expr()?;
                 self.skip_newlines()?;
                 let body = self.parse_block()?;
-                Ok(Stmt::ForIn { var, set, body, span })
+                Ok(Stmt::ForIn {
+                    var,
+                    set,
+                    body,
+                    span,
+                })
             }
             Token::Return => {
                 self.advance()?;
@@ -392,16 +446,29 @@ impl<'src> Parser<'src> {
                 // A comma after the constraint reveals a destructuring binding list.
                 if self.peek() == &Token::Comma {
                     self.advance()?;
-                    let first = DestructBinding { name, constraint: Some(constraint) };
+                    let first = DestructBinding {
+                        name,
+                        constraint: Some(constraint),
+                    };
                     let mut rest = self.parse_destruct_binding_list()?;
                     rest.insert(0, first);
                     self.expect(&Token::Eq)?;
                     let value = self.parse_expr(0)?;
-                    return Ok(Stmt::DestructLet { bindings: rest, tuple_constraint: None, value, span });
+                    return Ok(Stmt::DestructLet {
+                        bindings: rest,
+                        tuple_constraint: None,
+                        value,
+                        span,
+                    });
                 }
                 self.expect(&Token::Eq)?;
                 let value = self.parse_expr(0)?;
-                Ok(Stmt::Let { name, constraint, value, span })
+                Ok(Stmt::Let {
+                    name,
+                    constraint,
+                    value,
+                    span,
+                })
             }
             _ => Ok(Stmt::Expr(self.parse_expr(0)?)),
         }
@@ -456,7 +523,12 @@ impl<'src> Parser<'src> {
             Token::Eq => {
                 self.advance()?;
                 let value = self.parse_expr(0)?;
-                Ok(Stmt::DestructLet { bindings, tuple_constraint: None, value, span })
+                Ok(Stmt::DestructLet {
+                    bindings,
+                    tuple_constraint: None,
+                    value,
+                    span,
+                })
             }
             other => {
                 let bad_span = self.peek_span();
@@ -476,7 +548,12 @@ impl<'src> Parser<'src> {
         let bindings = self.parse_destruct_binding_list()?;
         self.expect(&Token::Eq)?;
         let value = self.parse_expr(0)?;
-        Ok(Stmt::DestructMutLet { bindings, tuple_constraint: None, value, span })
+        Ok(Stmt::DestructMutLet {
+            bindings,
+            tuple_constraint: None,
+            value,
+            span,
+        })
     }
 
     // ── Expression (Pratt) ────────────────────────────────────────────────────
@@ -501,15 +578,23 @@ impl<'src> Parser<'src> {
                 let idx_span = self.peek_span();
                 let index = match self.peek().clone() {
                     Token::Int(n) if n >= 0 => n as usize,
-                    other => return Err(CompileError::UnexpectedToken {
-                        expected: "non-negative integer index after `.`".into(),
-                        found: other.to_string(),
-                        span: idx_span,
-                    }),
+                    other => {
+                        return Err(CompileError::UnexpectedToken {
+                            expected: "non-negative integer index after `.`".into(),
+                            found: other.to_string(),
+                            span: idx_span,
+                        });
+                    }
                 };
                 self.advance()?;
                 let span = Span::new(lhs.span.start, idx_span.end);
-                lhs = Expr::new(ExprKind::Proj { base: Box::new(lhs), index }, span);
+                lhs = Expr::new(
+                    ExprKind::Proj {
+                        base: Box::new(lhs),
+                        index,
+                    },
+                    span,
+                );
                 continue;
             }
 
@@ -519,26 +604,35 @@ impl<'src> Parser<'src> {
             if self.peek() == &Token::LBracket {
                 self.advance()?;
                 // Peek: is the index a non-negative integer literal?
-                if let Token::Int(n) = self.peek().clone() {
-                    if n >= 0 {
-                        let idx = n as usize;
-                        self.advance()?;
-                        let close_span = self.peek_span();
-                        self.expect(&Token::RBracket)?;
-                        let span = Span::new(lhs.span.start, close_span.end);
-                        lhs = Expr::new(ExprKind::Proj { base: Box::new(lhs), index: idx }, span);
-                        continue;
-                    }
+                if let Token::Int(n) = self.peek().clone()
+                    && n >= 0
+                {
+                    let idx = n as usize;
+                    self.advance()?;
+                    let close_span = self.peek_span();
+                    self.expect(&Token::RBracket)?;
+                    let span = Span::new(lhs.span.start, close_span.end);
+                    lhs = Expr::new(
+                        ExprKind::Proj {
+                            base: Box::new(lhs),
+                            index: idx,
+                        },
+                        span,
+                    );
+                    continue;
                 }
                 // General expression index → runtime Index node (vectors only).
                 let index_expr = self.parse_expr(0)?;
                 let close_span = self.peek_span();
                 self.expect(&Token::RBracket)?;
                 let span = Span::new(lhs.span.start, close_span.end);
-                lhs = Expr::new(ExprKind::Index {
-                    base: Box::new(lhs),
-                    index: Box::new(index_expr),
-                }, span);
+                lhs = Expr::new(
+                    ExprKind::Index {
+                        base: Box::new(lhs),
+                        index: Box::new(index_expr),
+                    },
+                    span,
+                );
                 continue;
             }
 
@@ -559,7 +653,9 @@ impl<'src> Parser<'src> {
             // `!!` desugars to `lhs | (Fail * rhs)` — same precedences as before:
             // lbp=6 so `A | B !! C` = `(A | B) !! C`, rbp=6 so `A !! B | C` = `A !! (B | C)`.
             if self.peek() == &Token::BangBang {
-                if 6 <= min_bp { break; }
+                if 6 <= min_bp {
+                    break;
+                }
                 let op_span = self.peek_span();
                 self.advance()?;
                 let rhs = self.parse_expr(6)?;
@@ -605,7 +701,10 @@ impl<'src> Parser<'src> {
                 let expr = self.parse_expr(PREFIX_BP_NEG)?;
                 let end = expr.span.end;
                 Ok(Expr::new(
-                    ExprKind::UnOp { op: UnOp::Neg, expr: Box::new(expr) },
+                    ExprKind::UnOp {
+                        op: UnOp::Neg,
+                        expr: Box::new(expr),
+                    },
                     Span::new(span.start, end),
                 ))
             }
@@ -614,7 +713,10 @@ impl<'src> Parser<'src> {
                 let expr = self.parse_expr(PREFIX_BP_NOT)?;
                 let end = expr.span.end;
                 Ok(Expr::new(
-                    ExprKind::UnOp { op: UnOp::Not, expr: Box::new(expr) },
+                    ExprKind::UnOp {
+                        op: UnOp::Not,
+                        expr: Box::new(expr),
+                    },
                     Span::new(span.start, end),
                 ))
             }
@@ -640,7 +742,10 @@ impl<'src> Parser<'src> {
                 if self.peek_starts_expr() {
                     let inner = self.parse_expr(0)?;
                     let end = inner.span.end;
-                    Ok(Expr::new(ExprKind::FailWith(Box::new(inner)), Span::new(span.start, end)))
+                    Ok(Expr::new(
+                        ExprKind::FailWith(Box::new(inner)),
+                        Span::new(span.start, end),
+                    ))
                 } else {
                     Ok(Expr::new(ExprKind::FailLit, span))
                 }
@@ -680,12 +785,17 @@ impl<'src> Parser<'src> {
                     let mut elems = vec![first];
                     while self.peek() == &Token::Comma {
                         self.advance()?;
-                        if self.peek() == &Token::RParen { break; }
+                        if self.peek() == &Token::RParen {
+                            break;
+                        }
                         elems.push(self.parse_expr(0)?);
                     }
                     let end_span = self.peek_span();
                     self.expect(&Token::RParen)?;
-                    Ok(Expr::new(ExprKind::Tuple(elems), Span::new(span.start, end_span.end)))
+                    Ok(Expr::new(
+                        ExprKind::Tuple(elems),
+                        Span::new(span.start, end_span.end),
+                    ))
                 } else {
                     // Plain grouping: (expr)
                     let end_span = self.peek_span();
@@ -701,18 +811,26 @@ impl<'src> Parser<'src> {
                 if self.peek() == &Token::RBracket {
                     let end_span = self.peek_span();
                     self.advance()?;
-                    return Ok(Expr::new(ExprKind::Tuple(vec![]), Span::new(span.start, end_span.end)));
+                    return Ok(Expr::new(
+                        ExprKind::Tuple(vec![]),
+                        Span::new(span.start, end_span.end),
+                    ));
                 }
                 let first = self.parse_expr(0)?;
                 let mut elems = vec![first];
                 while self.peek() == &Token::Comma {
                     self.advance()?;
-                    if self.peek() == &Token::RBracket { break; }
+                    if self.peek() == &Token::RBracket {
+                        break;
+                    }
                     elems.push(self.parse_expr(0)?);
                 }
                 let end_span = self.peek_span();
                 self.expect(&Token::RBracket)?;
-                Ok(Expr::new(ExprKind::Tuple(elems), Span::new(span.start, end_span.end)))
+                Ok(Expr::new(
+                    ExprKind::Tuple(elems),
+                    Span::new(span.start, end_span.end),
+                ))
             }
             Token::LBrace => {
                 self.advance()?;
@@ -720,7 +838,10 @@ impl<'src> Parser<'src> {
                 if self.peek() == &Token::RBrace {
                     let end_span = self.peek_span();
                     self.advance()?;
-                    return Ok(Expr::new(ExprKind::SetLit(vec![]), Span::new(span.start, end_span.end)));
+                    return Ok(Expr::new(
+                        ExprKind::SetLit(vec![]),
+                        Span::new(span.start, end_span.end),
+                    ));
                 }
                 let first = self.parse_expr(0)?;
                 self.skip_newlines()?;
@@ -755,13 +876,18 @@ impl<'src> Parser<'src> {
                 while self.peek() == &Token::Comma {
                     self.advance()?;
                     self.skip_newlines()?;
-                    if self.peek() == &Token::RBrace { break; } // trailing comma
+                    if self.peek() == &Token::RBrace {
+                        break;
+                    } // trailing comma
                     elements.push(self.parse_expr(0)?);
                     self.skip_newlines()?;
                 }
                 let end_span = self.peek_span();
                 self.expect(&Token::RBrace)?;
-                Ok(Expr::new(ExprKind::SetLit(elements), Span::new(span.start, end_span.end)))
+                Ok(Expr::new(
+                    ExprKind::SetLit(elements),
+                    Span::new(span.start, end_span.end),
+                ))
             }
             // Reserved built-in functions: always called with exactly one argument.
             Token::From => {
@@ -800,23 +926,23 @@ impl<'src> Parser<'src> {
 
     fn peek_infix_op(&self) -> Option<(u8, u8, BinOp)> {
         let (lbp, rbp, op) = match self.peek() {
-            Token::Or       => (1,  2,  BinOp::Or),
-            Token::And      => (3,  4,  BinOp::And),
-            Token::EqEq     => (5,  6,  BinOp::Eq),
-            Token::BangEq   => (5,  6,  BinOp::Ne),
-            Token::Lt       => (5,  6,  BinOp::Lt),
-            Token::LtEq     => (5,  6,  BinOp::Le),
-            Token::Gt       => (5,  6,  BinOp::Gt),
-            Token::GtEq     => (5,  6,  BinOp::Ge),
-            Token::In       => (5,  6,  BinOp::In),
-            Token::Pipe     => (7,  8,  BinOp::Union),
-            Token::Caret    => (9,  10, BinOp::SymDiff),
-            Token::Amp      => (11, 12, BinOp::Intersect),
-            Token::Plus     => (13, 14, BinOp::Add),
-            Token::Minus    => (13, 14, BinOp::Sub),
+            Token::Or => (1, 2, BinOp::Or),
+            Token::And => (3, 4, BinOp::And),
+            Token::EqEq => (5, 6, BinOp::Eq),
+            Token::BangEq => (5, 6, BinOp::Ne),
+            Token::Lt => (5, 6, BinOp::Lt),
+            Token::LtEq => (5, 6, BinOp::Le),
+            Token::Gt => (5, 6, BinOp::Gt),
+            Token::GtEq => (5, 6, BinOp::Ge),
+            Token::In => (5, 6, BinOp::In),
+            Token::Pipe => (7, 8, BinOp::Union),
+            Token::Caret => (9, 10, BinOp::SymDiff),
+            Token::Amp => (11, 12, BinOp::Intersect),
+            Token::Plus => (13, 14, BinOp::Add),
+            Token::Minus => (13, 14, BinOp::Sub),
             Token::PlusPlus => (13, 14, BinOp::Concat),
-            Token::Star     => (15, 16, BinOp::Mul),
-            Token::Slash    => (15, 16, BinOp::Div),
+            Token::Star => (15, 16, BinOp::Mul),
+            Token::Slash => (15, 16, BinOp::Div),
             _ => return None,
         };
         Some((lbp, rbp, op))
@@ -885,7 +1011,14 @@ fn infix_bp_not_in() -> (u8, u8) {
 
 fn make_binop(op: BinOp, lhs: Expr, rhs: Expr, _op_span: Span) -> Expr {
     let span = Span::new(lhs.span.start, rhs.span.end);
-    Expr::new(ExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span)
+    Expr::new(
+        ExprKind::BinOp {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        },
+        span,
+    )
 }
 
 // ── Repeated-product desugaring ───────────────────────────────────────────────
@@ -899,7 +1032,11 @@ fn make_binop(op: BinOp, lhs: Expr, rhs: Expr, _op_span: Span) -> Expr {
 fn desugar_repeated_product(expr: Expr) -> Expr {
     let span = expr.span;
     match expr.kind {
-        ExprKind::BinOp { op: BinOp::Mul, lhs, rhs } => {
+        ExprKind::BinOp {
+            op: BinOp::Mul,
+            lhs,
+            rhs,
+        } => {
             let lhs = desugar_repeated_product(*lhs);
             match rhs.kind {
                 ExprKind::IntLit(1) => lhs,
@@ -919,14 +1056,28 @@ fn desugar_repeated_product(expr: Expr) -> Expr {
                 }
                 _ => {
                     let rhs = desugar_repeated_product(*rhs);
-                    Expr::new(ExprKind::BinOp { op: BinOp::Mul, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span)
+                    Expr::new(
+                        ExprKind::BinOp {
+                            op: BinOp::Mul,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
+                        span,
+                    )
                 }
             }
         }
         ExprKind::BinOp { op, lhs, rhs } => {
             let lhs = desugar_repeated_product(*lhs);
             let rhs = desugar_repeated_product(*rhs);
-            Expr::new(ExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span)
+            Expr::new(
+                ExprKind::BinOp {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            )
         }
         // Recurse into the element-set of a Kleene star so `Int * 3 *` desugars
         // the inner `Int * 3` → `Int * Int * Int` before wrapping in KleeneStar.

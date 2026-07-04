@@ -18,14 +18,9 @@ use arrow_schema::{DataType, Field, Fields, UnionFields};
 // ── Int set ───────────────────────────────────────────────────────────────────
 
 /// A finite set of i64 values, stored sorted for O(log n) membership testing.
+#[derive(Default)]
 pub struct CantorIntSet {
     elements: Vec<i64>,
-}
-
-impl Default for CantorIntSet {
-    fn default() -> Self {
-        Self { elements: Vec::new() }
-    }
 }
 
 impl CantorIntSet {
@@ -80,14 +75,9 @@ pub extern "C" fn cantor_set_get_i64(set: i64, idx: i64) -> i64 {
 ///
 /// The ABI passes booleans as i64 (0 = false, non-zero = true) to match the
 /// compiler's uniform calling convention.
+#[derive(Default)]
 pub struct CantorBoolSet {
     elements: Vec<bool>,
-}
-
-impl Default for CantorBoolSet {
-    fn default() -> Self {
-        Self { elements: Vec::new() }
-    }
 }
 
 impl CantorBoolSet {
@@ -186,7 +176,9 @@ pub extern "C" fn cantor_vec_len_i64(vec: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_vec_get_i64(vec: i64, idx: i64) -> i64 {
-    unsafe { &*(vec as *const CantorVecI64) }.array.value(idx as usize)
+    unsafe { &*(vec as *const CantorVecI64) }
+        .array
+        .value(idx as usize)
 }
 
 /// Purely functional append: returns a new vector with `val` appended.
@@ -199,7 +191,9 @@ pub extern "C" fn cantor_vec_push_i64(vec: i64, val: i64) -> i64 {
         builder.append_value(old.array.value(i));
     }
     builder.append_value(val);
-    Box::into_raw(Box::new(CantorVecI64 { array: builder.finish() })) as i64
+    Box::into_raw(Box::new(CantorVecI64 {
+        array: builder.finish(),
+    })) as i64
 }
 
 // ── Bool vector (Kind::Vector(Kind::Bool)) ────────────────────────────────────
@@ -244,7 +238,9 @@ pub extern "C" fn cantor_vec_len_bool(vec: i64) -> i64 {
 /// Returns the element at `idx` as i64 (0 or 1).
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_vec_get_bool(vec: i64, idx: i64) -> i64 {
-    unsafe { &*(vec as *const CantorVecBool) }.array.value(idx as usize) as i64
+    unsafe { &*(vec as *const CantorVecBool) }
+        .array
+        .value(idx as usize) as i64
 }
 
 /// Purely functional append for Bool vectors.
@@ -256,7 +252,9 @@ pub extern "C" fn cantor_vec_push_bool(vec: i64, val: i64) -> i64 {
         builder.append_value(old.array.value(i));
     }
     builder.append_value(val != 0);
-    Box::into_raw(Box::new(CantorVecBool { array: builder.finish() })) as i64
+    Box::into_raw(Box::new(CantorVecBool {
+        array: builder.finish(),
+    })) as i64
 }
 
 // ── Vector concatenation ──────────────────────────────────────────────────────
@@ -267,9 +265,15 @@ pub extern "C" fn cantor_vec_concat_i64(a: i64, b: i64) -> i64 {
     let va = unsafe { &*(a as *const CantorVecI64) };
     let vb = unsafe { &*(b as *const CantorVecI64) };
     let mut builder = Int64Builder::with_capacity(va.array.len() + vb.array.len());
-    for i in 0..va.array.len() { builder.append_value(va.array.value(i)); }
-    for i in 0..vb.array.len() { builder.append_value(vb.array.value(i)); }
-    Box::into_raw(Box::new(CantorVecI64 { array: builder.finish() })) as i64
+    for i in 0..va.array.len() {
+        builder.append_value(va.array.value(i));
+    }
+    for i in 0..vb.array.len() {
+        builder.append_value(vb.array.value(i));
+    }
+    Box::into_raw(Box::new(CantorVecI64 {
+        array: builder.finish(),
+    })) as i64
 }
 
 /// Concatenate two Bool* vectors into a new one.
@@ -278,9 +282,15 @@ pub extern "C" fn cantor_vec_concat_bool(a: i64, b: i64) -> i64 {
     let va = unsafe { &*(a as *const CantorVecBool) };
     let vb = unsafe { &*(b as *const CantorVecBool) };
     let mut builder = BooleanBuilder::with_capacity(va.array.len() + vb.array.len());
-    for i in 0..va.array.len() { builder.append_value(va.array.value(i)); }
-    for i in 0..vb.array.len() { builder.append_value(vb.array.value(i)); }
-    Box::into_raw(Box::new(CantorVecBool { array: builder.finish() })) as i64
+    for i in 0..va.array.len() {
+        builder.append_value(va.array.value(i));
+    }
+    for i in 0..vb.array.len() {
+        builder.append_value(vb.array.value(i));
+    }
+    Box::into_raw(Box::new(CantorVecBool {
+        array: builder.finish(),
+    })) as i64
 }
 
 // ── Struct vectors ((A * B)*) ────────────────────────────────────────────────
@@ -308,8 +318,9 @@ fn make_struct_builder(n: usize) -> StructBuilder {
         .map(|i| Arc::new(Field::new(format!("f{i}"), DataType::Int64, false)))
         .collect::<Vec<_>>()
         .into();
-    let field_builders: Vec<Box<dyn ArrayBuilder>> =
-        (0..n).map(|_| Box::new(Int64Builder::new()) as Box<dyn ArrayBuilder>).collect();
+    let field_builders: Vec<Box<dyn ArrayBuilder>> = (0..n)
+        .map(|_| Box::new(Int64Builder::new()) as Box<dyn ArrayBuilder>)
+        .collect();
     StructBuilder::new(fields, field_builders)
 }
 
@@ -329,7 +340,10 @@ pub extern "C" fn cantor_struct_vec_builder_new(n_fields: i64) -> i64 {
 pub extern "C" fn cantor_struct_vec_builder_push_field(builder: i64, field_idx: i64, value: i64) {
     let b = unsafe { &mut *(builder as *mut CantorStructVecBuilder) };
     let idx = field_idx as usize;
-    b.builder.field_builder::<Int64Builder>(idx).unwrap().append_value(value);
+    b.builder
+        .field_builder::<Int64Builder>(idx)
+        .unwrap()
+        .append_value(value);
     if idx == b.n_fields - 1 {
         b.builder.append(true);
     }
@@ -366,17 +380,24 @@ pub extern "C" fn cantor_struct_vec_concat(a: i64, b: i64) -> i64 {
     let va = unsafe { &*(a as *const CantorStructVec) };
     let vb = unsafe { &*(b as *const CantorStructVec) };
     let n = va.array.num_columns();
-    assert_eq!(n, vb.array.num_columns(), "cantor_struct_vec_concat: field count mismatch");
+    assert_eq!(
+        n,
+        vb.array.num_columns(),
+        "cantor_struct_vec_concat: field count mismatch"
+    );
     let mut sb = make_struct_builder(n);
     for sv in [&va.array, &vb.array] {
         for row in 0..sv.len() {
             for col in 0..n {
-                let val = sv.column(col)
+                let val = sv
+                    .column(col)
                     .as_any()
                     .downcast_ref::<Int64Array>()
                     .expect("struct col must be Int64Array")
                     .value(row);
-                sb.field_builder::<Int64Builder>(col).unwrap().append_value(val);
+                sb.field_builder::<Int64Builder>(col)
+                    .unwrap()
+                    .append_value(val);
             }
             sb.append(true);
         }
@@ -423,7 +444,9 @@ pub struct CantorListVecBuilder {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_list_vec_builder_new() -> i64 {
-    Box::into_raw(Box::new(CantorListVecBuilder { builder: Int64Builder::new() })) as i64
+    Box::into_raw(Box::new(CantorListVecBuilder {
+        builder: Int64Builder::new(),
+    })) as i64
 }
 
 /// Append one element (an i64 pointer to an inner vector, or any i64) to the builder.
@@ -451,7 +474,9 @@ pub extern "C" fn cantor_list_vec_len(vec: i64) -> i64 {
 /// or a scalar for flat X* built via this path).
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_list_vec_get(vec: i64, idx: i64) -> i64 {
-    unsafe { &*(vec as *const CantorListVec) }.elems.value(idx as usize)
+    unsafe { &*(vec as *const CantorListVec) }
+        .elems
+        .value(idx as usize)
 }
 
 /// Concatenate two CantorListVec values (purely functional, O(n)).
@@ -460,9 +485,15 @@ pub extern "C" fn cantor_list_vec_concat(va: i64, vb: i64) -> i64 {
     let a = unsafe { &*(va as *const CantorListVec) };
     let b = unsafe { &*(vb as *const CantorListVec) };
     let mut builder = Int64Builder::with_capacity(a.elems.len() + b.elems.len());
-    for i in 0..a.elems.len() { builder.append_value(a.elems.value(i)); }
-    for i in 0..b.elems.len() { builder.append_value(b.elems.value(i)); }
-    Box::into_raw(Box::new(CantorListVec { elems: builder.finish() })) as i64
+    for i in 0..a.elems.len() {
+        builder.append_value(a.elems.value(i));
+    }
+    for i in 0..b.elems.len() {
+        builder.append_value(b.elems.value(i));
+    }
+    Box::into_raw(Box::new(CantorListVec {
+        elems: builder.finish(),
+    })) as i64
 }
 
 // ── Union vectors ((A | B)* with at least one Tuple arm) ─────────────────────
@@ -532,7 +563,10 @@ pub extern "C" fn cantor_union_vec_builder_set_arm(builder: i64, arm_idx: i64, n
 /// codegen can always push `max_leaf_count` times per element without branching.
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_union_vec_builder_push_leaf(
-    builder: i64, arm_idx: i64, leaf_idx: i64, value: i64,
+    builder: i64,
+    arm_idx: i64,
+    leaf_idx: i64,
+    value: i64,
 ) {
     let b = unsafe { &mut *(builder as *mut CantorUnionVecBuilder) };
     let ai = arm_idx as usize;
@@ -573,14 +607,19 @@ pub extern "C" fn cantor_union_vec_builder_finish(builder: i64) -> i64 {
             .map(|j| Arc::new(Field::new(format!("l{j}"), DataType::Int64, false)))
             .collect::<Vec<_>>()
             .into();
-        let columns: Vec<ArrayRef> = col_builders.iter_mut()
+        let columns: Vec<ArrayRef> = col_builders
+            .iter_mut()
             .map(|bld| Arc::new(bld.finish()) as ArrayRef)
             .collect();
         let struct_arr = StructArray::new(arm_fields.clone(), columns, None);
         children.push(Arc::new(struct_arr));
         union_field_list.push((
             ai as i8,
-            Arc::new(Field::new(format!("arm{ai}"), DataType::Struct(arm_fields), false)),
+            Arc::new(Field::new(
+                format!("arm{ai}"),
+                DataType::Struct(arm_fields),
+                false,
+            )),
         ));
     }
 
@@ -591,7 +630,10 @@ pub extern "C" fn cantor_union_vec_builder_finish(builder: i64) -> i64 {
     let array = UnionArray::try_new(union_fields, type_ids_buf, Some(offsets_buf), children)
         .expect("cantor_union_vec_builder_finish: UnionArray::try_new failed");
 
-    Box::into_raw(Box::new(CantorUnionVec { array, arm_leaf_counts })) as i64
+    Box::into_raw(Box::new(CantorUnionVec {
+        array,
+        arm_leaf_counts,
+    })) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -624,11 +666,14 @@ pub extern "C" fn cantor_union_vec_get_leaf(vec: i64, row_idx: i64, leaf_idx: i6
         return 0;
     }
     let offset = v.array.value_offset(row);
-    v.array.child(type_id)
-        .as_any().downcast_ref::<StructArray>()
+    v.array
+        .child(type_id)
+        .as_any()
+        .downcast_ref::<StructArray>()
         .expect("union child must be StructArray")
         .column(li)
-        .as_any().downcast_ref::<Int64Array>()
+        .as_any()
+        .downcast_ref::<Int64Array>()
         .expect("union child column must be Int64Array")
         .value(offset)
 }
@@ -655,12 +700,16 @@ pub extern "C" fn cantor_union_vec_concat(va: i64, vb: i64) -> i64 {
             let offset = arr.value_offset(row);
             let ai = type_id as usize;
             let n_leaves = a.arm_leaf_counts[ai];
-            let child = arr.child(type_id)
-                .as_any().downcast_ref::<StructArray>()
+            let child = arr
+                .child(type_id)
+                .as_any()
+                .downcast_ref::<StructArray>()
                 .expect("union child must be StructArray");
             for li in 0..n_leaves {
-                let val = child.column(li)
-                    .as_any().downcast_ref::<Int64Array>()
+                let val = child
+                    .column(li)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
                     .expect("union child column must be Int64Array")
                     .value(offset);
                 cantor_union_vec_builder_push_leaf(out, ai as i64, li as i64, val);

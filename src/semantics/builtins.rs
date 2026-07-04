@@ -40,18 +40,29 @@ pub struct BuiltinSet {
 /// Look up a built-in set by name. Returns `None` for user-defined names,
 /// which callers resolve through `NameDefs` instead.
 pub fn lookup(name: &str) -> Option<BuiltinSet> {
-    let int = |bound| Some(BuiltinSet { kind: Kind::Int, bound });
+    let int = |bound| {
+        Some(BuiltinSet {
+            kind: Kind::Int,
+            bound,
+        })
+    };
     match name {
-        "Bool"       => Some(BuiltinSet { kind: Kind::Bool, bound: IntBound::Any }),
-        "Fail"       => Some(BuiltinSet { kind: Kind::Fail, bound: IntBound::Any }),
-        "Int"        => int(IntBound::Any),
-        "Nat"        => int(IntBound::NonNeg),
-        "NatPos"     => int(IntBound::Positive),
+        "Bool" => Some(BuiltinSet {
+            kind: Kind::Bool,
+            bound: IntBound::Any,
+        }),
+        "Fail" => Some(BuiltinSet {
+            kind: Kind::Fail,
+            bound: IntBound::Any,
+        }),
+        "Int" => int(IntBound::Any),
+        "Nat" => int(IntBound::NonNeg),
+        "NatPos" => int(IntBound::Positive),
         "NonZeroInt" => int(IntBound::NonZero),
-        "Int8"       => int(IntBound::Bounded(i8::MIN  as i64, i8::MAX  as i64)),
-        "Int16"      => int(IntBound::Bounded(i16::MIN as i64, i16::MAX as i64)),
-        "Int32"      => int(IntBound::Bounded(i32::MIN as i64, i32::MAX as i64)),
-        "Int64"      => int(IntBound::Bounded(i64::MIN,        i64::MAX)),
+        "Int8" => int(IntBound::Bounded(i8::MIN as i64, i8::MAX as i64)),
+        "Int16" => int(IntBound::Bounded(i16::MIN as i64, i16::MAX as i64)),
+        "Int32" => int(IntBound::Bounded(i32::MIN as i64, i32::MAX as i64)),
+        "Int64" => int(IntBound::Bounded(i64::MIN, i64::MAX)),
         _ => None,
     }
 }

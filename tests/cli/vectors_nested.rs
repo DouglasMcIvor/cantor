@@ -12,9 +12,21 @@ fn vectors_nested_pure_fns_proved() {
     // all, rather than masking it behind a blanket Unknown. That's a genuine,
     // known gap in these fixtures' signatures, deliberately left as-is.)
     let out = run_file("vectors_nested.cantor");
-    assert!(out.stdout.contains("proved          make_nested"), "make_nested not proved:\n{}", out.stdout);
-    assert!(out.stdout.contains("proved          identity_nested"), "identity_nested not proved:\n{}", out.stdout);
-    assert!(out.stdout.contains("proved          outer_len"),   "outer_len not proved:\n{}",  out.stdout);
+    assert!(
+        out.stdout.contains("proved          make_nested"),
+        "make_nested not proved:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("proved          identity_nested"),
+        "identity_nested not proved:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("proved          outer_len"),
+        "outer_len not proved:\n{}",
+        out.stdout
+    );
 }
 
 #[test]
@@ -54,12 +66,29 @@ fn vectors_struct_pure_fns_proved() {
     let out = run_file("vectors_struct.cantor");
     assert!(
         !out.stdout.contains("  counterexample  "),
-        "unexpected counterexample:\n{}", out.stdout
+        "unexpected counterexample:\n{}",
+        out.stdout
     );
-    assert!(out.stdout.contains("proved          make_pairs"),   "make_pairs not proved:\n{}",   out.stdout);
-    assert!(out.stdout.contains("proved          pair_vec_len"), "pair_vec_len not proved:\n{}", out.stdout);
-    assert!(out.stdout.contains("proved          first_fst"),    "first_fst not proved:\n{}",    out.stdout);
-    assert!(out.stdout.contains("proved          third_snd"),    "third_snd not proved:\n{}",    out.stdout);
+    assert!(
+        out.stdout.contains("proved          make_pairs"),
+        "make_pairs not proved:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("proved          pair_vec_len"),
+        "pair_vec_len not proved:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("proved          first_fst"),
+        "first_fst not proved:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("proved          third_snd"),
+        "third_snd not proved:\n{}",
+        out.stdout
+    );
 }
 
 #[test]
@@ -76,9 +105,21 @@ fn vectors_struct_literal_index_proj() {
     // All three functions are proved (literal arrays have tuple sort → statically provable).
     let out = run_subcommand("vectors_struct_fst.cantor");
     assert_eq!(out.code, 0, "run should exit 0\nstdout: {}", out.stdout);
-    assert!(out.stdout.contains("main() = 1"), "expected 'main() = 1':\n{}", out.stdout);
-    assert!(out.stdout.contains("proved          first_fst"), "first_fst not proved:\n{}", out.stdout);
-    assert!(out.stdout.contains("proved          third_snd"), "third_snd not proved:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("main() = 1"),
+        "expected 'main() = 1':\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("proved          first_fst"),
+        "first_fst not proved:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("proved          third_snd"),
+        "third_snd not proved:\n{}",
+        out.stdout
+    );
 }
 
 #[test]
@@ -87,7 +128,11 @@ fn vectors_struct_block_index_and_concat() {
     // but concat_struct's Unknown result still refuses the whole-file run.
     let out = run_subcommand("vectors_struct.cantor");
     assert_run_refused_due_to_unknown(&out);
-    assert!(!out.stdout.contains("  counterexample  "), "unexpected counterexample:\n{}", out.stdout);
+    assert!(
+        !out.stdout.contains("  counterexample  "),
+        "unexpected counterexample:\n{}",
+        out.stdout
+    );
 }
 
 // ── Vectors: block-body coercion, xs[i] indexing, ++ concatenation ───────────
@@ -108,11 +153,18 @@ fn vectors_extended_no_counterexamples() {
     let out = run_file("vectors_extended.cantor");
     assert!(
         out.stdout.contains("counterexample  get_second"),
-        "expected get_second's known counterexample:\n{}", out.stdout
+        "expected get_second's known counterexample:\n{}",
+        out.stdout
     );
-    let unexpected_counterexample = out.stdout.lines()
+    let unexpected_counterexample = out
+        .stdout
+        .lines()
         .any(|l| l.contains("  counterexample  ") && !l.contains("get_second"));
-    assert!(!unexpected_counterexample, "unexpected counterexample:\n{}", out.stdout);
+    assert!(
+        !unexpected_counterexample,
+        "unexpected counterexample:\n{}",
+        out.stdout
+    );
 }
 
 #[test]
@@ -135,7 +187,8 @@ fn vectors_extended_index_elem() {
     assert_run_refused(&out);
     assert!(
         out.stdout.contains("counterexample  get_elem"),
-        "expected get_elem's known counterexample:\n{}", out.stdout
+        "expected get_elem's known counterexample:\n{}",
+        out.stdout
     );
 }
 

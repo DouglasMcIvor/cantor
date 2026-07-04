@@ -60,7 +60,11 @@ pub fn run() {
 fn read_complete_input(rl: &mut DefaultEditor) -> Result<String, ReadlineError> {
     let mut input = String::new();
     loop {
-        let prompt = if input.is_empty() { PROMPT } else { CONT_PROMPT };
+        let prompt = if input.is_empty() {
+            PROMPT
+        } else {
+            CONT_PROMPT
+        };
         let line = rl.readline(prompt)?;
         if !input.is_empty() {
             input.push('\n');
@@ -166,7 +170,9 @@ fn print_error(e: &CompileError, src: &str) {
         None => eprintln!("  error: {e}"),
     }
     if e.is_ice() {
-        eprintln!("  note: this is a bug in the Cantor compiler itself, not your input — please file an issue");
+        eprintln!(
+            "  note: this is a bug in the Cantor compiler itself, not your input — please file an issue"
+        );
     }
 }
 
@@ -241,7 +247,11 @@ fn display_check_result(label: &str, result: &CheckResult) {
         CheckResult::Proved => {
             println!("  proved          {label}");
         }
-        CheckResult::Counterexample { params, output, reason } => {
+        CheckResult::Counterexample {
+            params,
+            output,
+            reason,
+        } => {
             println!("  counterexample  {label}");
             let mut pairs: Vec<_> = params.iter().collect();
             pairs.sort_by_key(|(k, _)| k.as_str());
@@ -284,7 +294,9 @@ fn evaluate_expr(state: &ReplState, expr: cantor::ast::Expr) {
             // misleading line:col, so only the ICE hint is safe to add here.
             eprintln!("  error: {e}");
             if e.is_ice() {
-                eprintln!("  note: this is a bug in the Cantor compiler itself, not your input — please file an issue");
+                eprintln!(
+                    "  note: this is a bug in the Cantor compiler itself, not your input — please file an issue"
+                );
             }
             return;
         }

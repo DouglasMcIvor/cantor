@@ -1,14 +1,16 @@
+use cantor::span::Symbol;
 use cantor::{
     ast::{BinOp, DefKind, ExprKind, Item, UnOp},
     parser::{parse_expr, parse_file, parse_set_expr},
     span::offset_to_line_col,
 };
-use cantor::span::Symbol;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn parse(src: &str) -> ExprKind {
-    parse_expr(src).unwrap_or_else(|e| panic!("parse error for {src:?}: {e}")).kind
+    parse_expr(src)
+        .unwrap_or_else(|e| panic!("parse error for {src:?}: {e}"))
+        .kind
 }
 
 fn parse_err(src: &str) -> String {
@@ -58,13 +60,18 @@ fn parse_identifier() {
 
 #[test]
 fn parse_add() {
-    assert!(matches!(parse("1 + 2"), ExprKind::BinOp { op: BinOp::Add, .. }));
+    assert!(matches!(
+        parse("1 + 2"),
+        ExprKind::BinOp { op: BinOp::Add, .. }
+    ));
 }
 
 #[test]
 fn parse_mul_binds_tighter_than_add() {
     // 1 + 2 * 3  →  Add(1, Mul(2, 3))
-    let ExprKind::BinOp { op, rhs, .. } = parse("1 + 2 * 3") else { panic!() };
+    let ExprKind::BinOp { op, rhs, .. } = parse("1 + 2 * 3") else {
+        panic!()
+    };
     assert_eq!(op, BinOp::Add);
     assert!(matches!(rhs.kind, ExprKind::BinOp { op: BinOp::Mul, .. }));
 }
@@ -72,15 +79,22 @@ fn parse_mul_binds_tighter_than_add() {
 #[test]
 fn parse_add_is_left_assoc() {
     // 1 + 2 + 3  →  Add(Add(1, 2), 3)
-    assert_eq!(inorder_ops(&parse("1 + 2 + 3")), vec![BinOp::Add, BinOp::Add]);
-    let ExprKind::BinOp { lhs, .. } = parse("1 + 2 + 3") else { panic!() };
+    assert_eq!(
+        inorder_ops(&parse("1 + 2 + 3")),
+        vec![BinOp::Add, BinOp::Add]
+    );
+    let ExprKind::BinOp { lhs, .. } = parse("1 + 2 + 3") else {
+        panic!()
+    };
     assert!(matches!(lhs.kind, ExprKind::BinOp { op: BinOp::Add, .. }));
 }
 
 #[test]
 fn parse_parens_override_precedence() {
     // (1 + 2) * 3  →  Mul(Add(1, 2), 3)
-    let ExprKind::BinOp { op, lhs, .. } = parse("(1 + 2) * 3") else { panic!() };
+    let ExprKind::BinOp { op, lhs, .. } = parse("(1 + 2) * 3") else {
+        panic!()
+    };
     assert_eq!(op, BinOp::Mul);
     assert!(matches!(lhs.kind, ExprKind::BinOp { op: BinOp::Add, .. }));
 }
@@ -93,7 +107,9 @@ fn parse_unary_neg() {
 #[test]
 fn parse_neg_binds_tight() {
     // -x * 2  →  Mul(Neg(x), 2)
-    let ExprKind::BinOp { op, lhs, .. } = parse("-x * 2") else { panic!() };
+    let ExprKind::BinOp { op, lhs, .. } = parse("-x * 2") else {
+        panic!()
+    };
     assert_eq!(op, BinOp::Mul);
     assert!(matches!(lhs.kind, ExprKind::UnOp { op: UnOp::Neg, .. }));
 }
@@ -102,26 +118,46 @@ fn parse_neg_binds_tight() {
 
 #[test]
 fn parse_eq() {
-    assert!(matches!(parse("x == y"), ExprKind::BinOp { op: BinOp::Eq, .. }));
+    assert!(matches!(
+        parse("x == y"),
+        ExprKind::BinOp { op: BinOp::Eq, .. }
+    ));
 }
 
 #[test]
 fn parse_ne() {
-    assert!(matches!(parse("x != y"), ExprKind::BinOp { op: BinOp::Ne, .. }));
+    assert!(matches!(
+        parse("x != y"),
+        ExprKind::BinOp { op: BinOp::Ne, .. }
+    ));
 }
 
 #[test]
 fn parse_lt_le_gt_ge() {
-    assert!(matches!(parse("a < b"),  ExprKind::BinOp { op: BinOp::Lt, .. }));
-    assert!(matches!(parse("a <= b"), ExprKind::BinOp { op: BinOp::Le, .. }));
-    assert!(matches!(parse("a > b"),  ExprKind::BinOp { op: BinOp::Gt, .. }));
-    assert!(matches!(parse("a >= b"), ExprKind::BinOp { op: BinOp::Ge, .. }));
+    assert!(matches!(
+        parse("a < b"),
+        ExprKind::BinOp { op: BinOp::Lt, .. }
+    ));
+    assert!(matches!(
+        parse("a <= b"),
+        ExprKind::BinOp { op: BinOp::Le, .. }
+    ));
+    assert!(matches!(
+        parse("a > b"),
+        ExprKind::BinOp { op: BinOp::Gt, .. }
+    ));
+    assert!(matches!(
+        parse("a >= b"),
+        ExprKind::BinOp { op: BinOp::Ge, .. }
+    ));
 }
 
 #[test]
 fn parse_comparison_lower_than_arithmetic() {
     // 1 + 2 == 3  →  Eq(Add(1, 2), 3)
-    let ExprKind::BinOp { op, lhs, .. } = parse("1 + 2 == 3") else { panic!() };
+    let ExprKind::BinOp { op, lhs, .. } = parse("1 + 2 == 3") else {
+        panic!()
+    };
     assert_eq!(op, BinOp::Eq);
     assert!(matches!(lhs.kind, ExprKind::BinOp { op: BinOp::Add, .. }));
 }
@@ -130,60 +166,106 @@ fn parse_comparison_lower_than_arithmetic() {
 
 #[test]
 fn parse_in() {
-    assert!(matches!(parse("x in S"), ExprKind::BinOp { op: BinOp::In, .. }));
+    assert!(matches!(
+        parse("x in S"),
+        ExprKind::BinOp { op: BinOp::In, .. }
+    ));
 }
 
 #[test]
 fn parse_not_in() {
-    assert!(matches!(parse("x not in S"), ExprKind::BinOp { op: BinOp::NotIn, .. }));
+    assert!(matches!(
+        parse("x not in S"),
+        ExprKind::BinOp {
+            op: BinOp::NotIn,
+            ..
+        }
+    ));
 }
 
 // ── Set operators ─────────────────────────────────────────────────────────────
 
 #[test]
 fn parse_union() {
-    assert!(matches!(parse("A | B"), ExprKind::BinOp { op: BinOp::Union, .. }));
+    assert!(matches!(
+        parse("A | B"),
+        ExprKind::BinOp {
+            op: BinOp::Union,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn parse_intersect() {
-    assert!(matches!(parse("A & B"), ExprKind::BinOp { op: BinOp::Intersect, .. }));
+    assert!(matches!(
+        parse("A & B"),
+        ExprKind::BinOp {
+            op: BinOp::Intersect,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn parse_sym_diff() {
-    assert!(matches!(parse("A ^ B"), ExprKind::BinOp { op: BinOp::SymDiff, .. }));
+    assert!(matches!(
+        parse("A ^ B"),
+        ExprKind::BinOp {
+            op: BinOp::SymDiff,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn parse_set_op_precedence() {
     // A | B & C  →  Union(A, Intersect(B, C))  because & > |
-    let ExprKind::BinOp { op, rhs, .. } = parse("A | B & C") else { panic!() };
+    let ExprKind::BinOp { op, rhs, .. } = parse("A | B & C") else {
+        panic!()
+    };
     assert_eq!(op, BinOp::Union);
-    assert!(matches!(rhs.kind, ExprKind::BinOp { op: BinOp::Intersect, .. }));
+    assert!(matches!(
+        rhs.kind,
+        ExprKind::BinOp {
+            op: BinOp::Intersect,
+            ..
+        }
+    ));
 }
 
 // ── Logic ─────────────────────────────────────────────────────────────────────
 
 #[test]
 fn parse_and() {
-    assert!(matches!(parse("a and b"), ExprKind::BinOp { op: BinOp::And, .. }));
+    assert!(matches!(
+        parse("a and b"),
+        ExprKind::BinOp { op: BinOp::And, .. }
+    ));
 }
 
 #[test]
 fn parse_or() {
-    assert!(matches!(parse("a or b"), ExprKind::BinOp { op: BinOp::Or, .. }));
+    assert!(matches!(
+        parse("a or b"),
+        ExprKind::BinOp { op: BinOp::Or, .. }
+    ));
 }
 
 #[test]
 fn parse_not() {
-    assert!(matches!(parse("not x"), ExprKind::UnOp { op: UnOp::Not, .. }));
+    assert!(matches!(
+        parse("not x"),
+        ExprKind::UnOp { op: UnOp::Not, .. }
+    ));
 }
 
 #[test]
 fn parse_not_absorbs_comparison() {
     // `not x == y`  →  Not(Eq(x, y))  — not does NOT steal `x` alone
-    let ExprKind::UnOp { op, expr } = parse("not x == y") else { panic!() };
+    let ExprKind::UnOp { op, expr } = parse("not x == y") else {
+        panic!()
+    };
     assert_eq!(op, UnOp::Not);
     assert!(matches!(expr.kind, ExprKind::BinOp { op: BinOp::Eq, .. }));
 }
@@ -191,7 +273,9 @@ fn parse_not_absorbs_comparison() {
 #[test]
 fn parse_not_does_not_absorb_and() {
     // `not x and y`  →  And(Not(x), y)
-    let ExprKind::BinOp { op, lhs, .. } = parse("not x and y") else { panic!() };
+    let ExprKind::BinOp { op, lhs, .. } = parse("not x and y") else {
+        panic!()
+    };
     assert_eq!(op, BinOp::And);
     assert!(matches!(lhs.kind, ExprKind::UnOp { op: UnOp::Not, .. }));
 }
@@ -199,7 +283,9 @@ fn parse_not_does_not_absorb_and() {
 #[test]
 fn parse_and_tighter_than_or() {
     // a or b and c  →  Or(a, And(b, c))
-    let ExprKind::BinOp { op, rhs, .. } = parse("a or b and c") else { panic!() };
+    let ExprKind::BinOp { op, rhs, .. } = parse("a or b and c") else {
+        panic!()
+    };
     assert_eq!(op, BinOp::Or);
     assert!(matches!(rhs.kind, ExprKind::BinOp { op: BinOp::And, .. }));
 }
@@ -213,14 +299,18 @@ fn parse_call_no_args() {
 
 #[test]
 fn parse_call_one_arg() {
-    let ExprKind::Call { callee, args } = parse("f(x)") else { panic!() };
+    let ExprKind::Call { callee, args } = parse("f(x)") else {
+        panic!()
+    };
     assert_eq!(callee.0, "f");
     assert_eq!(args.len(), 1);
 }
 
 #[test]
 fn parse_call_multiple_args() {
-    let ExprKind::Call { callee, args } = parse("add(1, 2, 3)") else { panic!() };
+    let ExprKind::Call { callee, args } = parse("add(1, 2, 3)") else {
+        panic!()
+    };
     assert_eq!(callee.0, "add");
     assert_eq!(args.len(), 3);
 }
@@ -228,14 +318,18 @@ fn parse_call_multiple_args() {
 #[test]
 fn parse_nested_call() {
     // f(g(x))
-    let ExprKind::Call { args, .. } = parse("f(g(x))") else { panic!() };
+    let ExprKind::Call { args, .. } = parse("f(g(x))") else {
+        panic!()
+    };
     assert!(matches!(args[0].kind, ExprKind::Call { .. }));
 }
 
 #[test]
 fn parse_call_in_expression() {
     // double(x) + 1
-    let ExprKind::BinOp { op, lhs, .. } = parse("double(x) + 1") else { panic!() };
+    let ExprKind::BinOp { op, lhs, .. } = parse("double(x) + 1") else {
+        panic!()
+    };
     assert_eq!(op, BinOp::Add);
     assert!(matches!(lhs.kind, ExprKind::Call { .. }));
 }
@@ -265,7 +359,9 @@ fn span_covers_binop() {
 #[test]
 fn parse_array_lit_three_ints() {
     let kind = parse("[1, 2, 3]");
-    let ExprKind::Tuple(elems) = kind else { panic!("expected Tuple, got {kind:?}") };
+    let ExprKind::Tuple(elems) = kind else {
+        panic!("expected Tuple, got {kind:?}")
+    };
     assert_eq!(elems.len(), 3);
     assert!(matches!(elems[0].kind, ExprKind::IntLit(1)));
     assert!(matches!(elems[1].kind, ExprKind::IntLit(2)));
@@ -275,7 +371,9 @@ fn parse_array_lit_three_ints() {
 #[test]
 fn parse_array_lit_bool_elements() {
     let kind = parse("[true, false]");
-    let ExprKind::Tuple(elems) = kind else { panic!("expected Tuple, got {kind:?}") };
+    let ExprKind::Tuple(elems) = kind else {
+        panic!("expected Tuple, got {kind:?}")
+    };
     assert_eq!(elems.len(), 2);
     assert!(matches!(elems[0].kind, ExprKind::BoolLit(true)));
     assert!(matches!(elems[1].kind, ExprKind::BoolLit(false)));
@@ -301,7 +399,9 @@ fn parse_bracket_index_is_proj() {
 
 #[test]
 fn parse_bracket_index_two() {
-    let ExprKind::Proj { index, .. } = parse("t[2]") else { panic!() };
+    let ExprKind::Proj { index, .. } = parse("t[2]") else {
+        panic!()
+    };
     assert_eq!(index, 2);
 }
 
@@ -321,8 +421,12 @@ fn parse_dot_and_bracket_are_equivalent() {
     let dot = parse("x.1");
     let bracket = parse("x[1]");
     // Both should be Proj with index 1; compare index rather than full AST.
-    let ExprKind::Proj { index: di, .. } = dot else { panic!() };
-    let ExprKind::Proj { index: bi, .. } = bracket else { panic!() };
+    let ExprKind::Proj { index: di, .. } = dot else {
+        panic!()
+    };
+    let ExprKind::Proj { index: bi, .. } = bracket else {
+        panic!()
+    };
     assert_eq!(di, bi);
 }
 
@@ -332,30 +436,52 @@ fn parse_dot_and_bracket_are_equivalent() {
 // `x * 3` remains arithmetic multiplication).
 
 fn parse_set(src: &str) -> ExprKind {
-    parse_set_expr(src).unwrap_or_else(|e| panic!("parse error for {src:?}: {e}")).kind
+    parse_set_expr(src)
+        .unwrap_or_else(|e| panic!("parse error for {src:?}: {e}"))
+        .kind
 }
 
 #[test]
 fn parse_repeated_product_two() {
     // X * 2  →  Mul(X, X) — two Var nodes, not Mul(X, IntLit(2)).
-    let ExprKind::BinOp { op, lhs, rhs } = parse_set("Int * 2") else { panic!() };
+    let ExprKind::BinOp { op, lhs, rhs } = parse_set("Int * 2") else {
+        panic!()
+    };
     assert_eq!(op, BinOp::Mul);
-    assert!(matches!(lhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
-        "lhs should be Int");
-    assert!(matches!(rhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
-        "rhs should be Int (desugared copy), not IntLit(2)");
+    assert!(
+        matches!(lhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
+        "lhs should be Int"
+    );
+    assert!(
+        matches!(rhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
+        "rhs should be Int (desugared copy), not IntLit(2)"
+    );
 }
 
 #[test]
 fn parse_repeated_product_three() {
     // X * 3  →  Mul(Mul(X, X), X)  — left-associated tree of Var nodes.
-    let ExprKind::BinOp { op: outer_op, lhs: outer_lhs, rhs: outer_rhs } = parse_set("Int * 3")
-        else { panic!() };
+    let ExprKind::BinOp {
+        op: outer_op,
+        lhs: outer_lhs,
+        rhs: outer_rhs,
+    } = parse_set("Int * 3")
+    else {
+        panic!()
+    };
     assert_eq!(outer_op, BinOp::Mul);
-    assert!(matches!(outer_rhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
-        "outer rhs should be Int Var");
-    let ExprKind::BinOp { op: inner_op, lhs: inner_lhs, rhs: inner_rhs } = outer_lhs.kind
-        else { panic!("lhs of outer Mul should itself be a Mul") };
+    assert!(
+        matches!(outer_rhs.kind, ExprKind::Var(ref s) if s.0 == "Int"),
+        "outer rhs should be Int Var"
+    );
+    let ExprKind::BinOp {
+        op: inner_op,
+        lhs: inner_lhs,
+        rhs: inner_rhs,
+    } = outer_lhs.kind
+    else {
+        panic!("lhs of outer Mul should itself be a Mul")
+    };
     assert_eq!(inner_op, BinOp::Mul);
     assert!(matches!(inner_lhs.kind, ExprKind::Var(ref s) if s.0 == "Int"));
     assert!(matches!(inner_rhs.kind, ExprKind::Var(ref s) if s.0 == "Int"));
@@ -365,8 +491,10 @@ fn parse_repeated_product_three() {
 fn parse_repeated_product_one_is_identity() {
     // X * 1  →  bare X (no Mul wrapper).
     let kind = parse_set("Nat * 1");
-    assert!(matches!(kind, ExprKind::Var(ref s) if s.0 == "Nat"),
-        "Nat * 1 should desugar to bare Nat; got {kind:?}");
+    assert!(
+        matches!(kind, ExprKind::Var(ref s) if s.0 == "Nat"),
+        "Nat * 1 should desugar to bare Nat; got {kind:?}"
+    );
 }
 
 // ── Kleene-star set expressions `X*` ─────────────────────────────────────────
@@ -392,15 +520,22 @@ fn parse_kleene_star_parenthesised_set() {
 #[test]
 fn parse_kleene_star_in_function_sig() {
     let items = parse_file("f : Nat* -> Int*\nf(xs) = 0").unwrap();
-    let Item::FunctionDef(ref def) = items[0] else { panic!("expected FunctionDef") };
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
     let sig = &def.sigs[0];
     assert!(
-        matches!(sig.domain.as_ref().map(|d| &d.kind), Some(ExprKind::KleeneStar(_))),
-        "domain should be KleeneStar; got {:?}", sig.domain
+        matches!(
+            sig.domain.as_ref().map(|d| &d.kind),
+            Some(ExprKind::KleeneStar(_))
+        ),
+        "domain should be KleeneStar; got {:?}",
+        sig.domain
     );
     assert!(
         matches!(&sig.range.kind, ExprKind::KleeneStar(_)),
-        "range should be KleeneStar; got {:?}", sig.range.kind
+        "range should be KleeneStar; got {:?}",
+        sig.range.kind
     );
 }
 
@@ -499,10 +634,19 @@ fn line_col_parse_error_location() {
 #[test]
 fn comprehension_no_filter() {
     let kind = parse("{x * 2 for x in {1, 3, 5}}");
-    let ExprKind::Comprehension { output, var, source, filter } = kind else {
+    let ExprKind::Comprehension {
+        output,
+        var,
+        source,
+        filter,
+    } = kind
+    else {
         panic!("expected Comprehension, got {kind:?}");
     };
-    assert!(matches!(output.kind, ExprKind::BinOp { op: BinOp::Mul, .. }));
+    assert!(matches!(
+        output.kind,
+        ExprKind::BinOp { op: BinOp::Mul, .. }
+    ));
     assert_eq!(var, Symbol::new("x"));
     assert!(matches!(source.kind, ExprKind::SetLit(_)));
     assert!(filter.is_none());
@@ -511,14 +655,23 @@ fn comprehension_no_filter() {
 #[test]
 fn comprehension_with_filter() {
     let kind = parse("{x for x in {1, 2, 3, 4, 5} if x > 2}");
-    let ExprKind::Comprehension { output, var, source, filter } = kind else {
+    let ExprKind::Comprehension {
+        output,
+        var,
+        source,
+        filter,
+    } = kind
+    else {
         panic!("expected Comprehension, got {kind:?}");
     };
     assert!(matches!(output.kind, ExprKind::Var(s) if s.0 == "x"));
     assert_eq!(var, Symbol::new("x"));
     assert!(matches!(source.kind, ExprKind::SetLit(_)));
     assert!(filter.is_some());
-    assert!(matches!(filter.unwrap().kind, ExprKind::BinOp { op: BinOp::Gt, .. }));
+    assert!(matches!(
+        filter.unwrap().kind,
+        ExprKind::BinOp { op: BinOp::Gt, .. }
+    ));
 }
 
 #[test]
@@ -536,7 +689,10 @@ fn comprehension_vs_set_literal_disambiguation() {
     // {1, 2, 3} is a set literal, not a comprehension.
     assert!(matches!(parse("{1, 2, 3}"), ExprKind::SetLit(_)));
     // {x * 2 for x in S} is a comprehension.
-    assert!(matches!(parse("{x * 2 for x in {1}}"), ExprKind::Comprehension { .. }));
+    assert!(matches!(
+        parse("{x * 2 for x in {1}}"),
+        ExprKind::Comprehension { .. }
+    ));
 }
 
 #[test]
@@ -590,7 +746,13 @@ fn set_def_union_implicit_alias() {
     let (name, kind, rhs) = parse_name_def("Animal = Cat | Dog");
     assert_eq!(name, "Animal");
     assert_eq!(kind, DefKind::Alias);
-    assert!(matches!(rhs, ExprKind::BinOp { op: BinOp::Union, .. }));
+    assert!(matches!(
+        rhs,
+        ExprKind::BinOp {
+            op: BinOp::Union,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -598,7 +760,13 @@ fn set_def_explicit_alias_keyword() {
     let (name, kind, rhs) = parse_name_def("Animal = alias Cat | Dog");
     assert_eq!(name, "Animal");
     assert_eq!(kind, DefKind::Alias);
-    assert!(matches!(rhs, ExprKind::BinOp { op: BinOp::Union, .. }));
+    assert!(matches!(
+        rhs,
+        ExprKind::BinOp {
+            op: BinOp::Union,
+            ..
+        }
+    ));
 }
 
 #[test]

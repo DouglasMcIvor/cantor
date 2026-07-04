@@ -21,16 +21,15 @@ fn jit_src_three_args(src: &str, a: i64, b: i64, c: i64) -> i64 {
 #[test]
 fn repeated_product_three_params_sum() {
     assert_eq!(
-        jit_src_three_args(
-            "main : Int * 3 -> Int\nmain(x, y, z) = x + y + z",
-            1, 2, 3
-        ),
+        jit_src_three_args("main : Int * 3 -> Int\nmain(x, y, z) = x + y + z", 1, 2, 3),
         6,
     );
     assert_eq!(
         jit_src_three_args(
             "main : Int * 3 -> Int\nmain(x, y, z) = x + y + z",
-            10, 20, 30
+            10,
+            20,
+            30
         ),
         60,
     );
@@ -40,10 +39,7 @@ fn repeated_product_three_params_sum() {
 #[test]
 fn repeated_product_three_nat_params_multiply() {
     assert_eq!(
-        jit_src_three_args(
-            "main : Nat * 3 -> Nat\nmain(x, y, z) = x * y * z",
-            2, 3, 4
-        ),
+        jit_src_three_args("main : Nat * 3 -> Nat\nmain(x, y, z) = x * y * z", 2, 3, 4),
         24,
     );
 }
@@ -55,8 +51,8 @@ fn repeated_product_two_params_diff() {
     assert_eq!(
         jit_src_one_arg(
             "main : Int * 2 -> Int\nmain(x, y) = x - y",
-            5  // but we need two args — this test uses the wrong helper;
-               // keep as a reminder that jit_src_two_args should be added
+            5 // but we need two args — this test uses the wrong helper;
+              // keep as a reminder that jit_src_two_args should be added
         ),
         // Placeholder: this test will be updated once jit_src_two_args exists.
         // For now we test that `Int * 2` compiles with the standard 1-arg helper
@@ -70,10 +66,7 @@ fn repeated_product_two_params_diff() {
 // [1, 2, 3] as return value; project element 0.
 #[test]
 fn array_lit_proj_zero() {
-    assert_eq!(
-        jit_src_zero_arg("main : -> Int\nmain() = [1, 2, 3].0"),
-        1,
-    );
+    assert_eq!(jit_src_zero_arg("main : -> Int\nmain() = [1, 2, 3].0"), 1,);
 }
 
 // Project element 1.
@@ -129,7 +122,7 @@ fn array_lit_same_value_as_tuple_lit() {
 // x[N] and x.N should produce identical results.
 #[test]
 fn bracket_index_same_as_dot_proj() {
-    let dot     = jit_src_zero_arg("main : -> Int\nmain() = [10, 20, 30].1");
+    let dot = jit_src_zero_arg("main : -> Int\nmain() = [10, 20, 30].1");
     let bracket = jit_src_zero_arg("main : -> Int\nmain() = [10, 20, 30][1]");
     assert_eq!(dot, bracket);
     assert_eq!(bracket, 20);
@@ -152,10 +145,7 @@ fn bracket_index_on_param() {
 // Length of an empty vector is 0.
 #[test]
 fn kleene_len_empty() {
-    assert_eq!(
-        jit_src_zero_arg("main : -> Nat\nmain() = len([])"),
-        0,
-    );
+    assert_eq!(jit_src_zero_arg("main : -> Nat\nmain() = len([])"), 0,);
 }
 
 // Length of a three-element vector is 3.
@@ -181,12 +171,14 @@ fn kleene_index_known_length() {
 fn kleene_param_len_returned() {
     // Build a two-element Int* value inline and pass to a function.
     assert_eq!(
-        jit_src_zero_arg("
+        jit_src_zero_arg(
+            "
 main : -> Nat
 main() {
     xs : Nat* = [5, 6, 7]
     len(xs)
-}"),
+}"
+        ),
         3,
     );
 }
@@ -200,12 +192,14 @@ main() {
 fn union_vec_len() {
     // Two arm-0 elements and one arm-1 element → length 3.
     assert_eq!(
-        jit_src_zero_arg("
+        jit_src_zero_arg(
+            "
 main : -> Nat
 main() {
     xs : (Nat | (Nat * Bool))* = [1, (2, true), 3]
     len(xs)
-}"),
+}"
+        ),
         3,
     );
 }
@@ -214,12 +208,14 @@ main() {
 fn union_vec_scalar_arm_index() {
     // xs[0] is a Nat arm; access its single leaf via arm tag.
     assert_eq!(
-        jit_src_zero_arg("
+        jit_src_zero_arg(
+            "
 main : -> Nat
 main() {
     xs : (Nat | (Nat * Bool))* = [42, (1, false)]
     xs[0].1
-}"),
+}"
+        ),
         42,
     );
 }
@@ -228,12 +224,14 @@ main() {
 fn union_vec_tuple_arm_index() {
     // xs[1] is a (Nat * Bool) arm; extract the Bool field.
     assert_eq!(
-        jit_src_zero_arg("
+        jit_src_zero_arg(
+            "
 main : -> Nat
 main() {
     xs : (Nat | (Nat * Bool))* = [99, (7, true)]
     xs[1].2
-}"),
+}"
+        ),
         1, // true as i64
     );
 }
@@ -241,13 +239,15 @@ main() {
 #[test]
 fn union_vec_concat_len() {
     assert_eq!(
-        jit_src_zero_arg("
+        jit_src_zero_arg(
+            "
 main : -> Nat
 main() {
     a : (Nat | (Nat * Bool))* = [1, (2, true)]
     b : (Nat | (Nat * Bool))* = [(3, false), 4]
     len(a ++ b)
-}"),
+}"
+        ),
         4,
     );
 }
@@ -257,7 +257,8 @@ main() {
 #[ignore = "for over sequences not yet implemented"]
 fn kleene_sum_via_loop() {
     assert_eq!(
-        jit_src_zero_arg("
+        jit_src_zero_arg(
+            "
 main : -> Nat
 main() {
     xs  : Nat* = [1, 2, 3, 4]
@@ -266,7 +267,8 @@ main() {
         acc := acc + x
     }
     acc
-}"),
+}"
+        ),
         10,
     );
 }

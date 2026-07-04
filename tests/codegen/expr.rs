@@ -31,22 +31,38 @@ fn bool_false() {
 
 #[test]
 fn add() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Add, SemExpr::int(1), SemExpr::int(2))), 3);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Add, SemExpr::int(1), SemExpr::int(2))),
+        3
+    );
 }
 
 #[test]
 fn sub() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Sub, SemExpr::int(5), SemExpr::int(3))), 2);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Sub, SemExpr::int(5), SemExpr::int(3))),
+        2
+    );
 }
 
 #[test]
 fn mul() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Mul, SemExpr::int(3), SemExpr::int(4))), 12);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Mul, SemExpr::int(3), SemExpr::int(4))),
+        12
+    );
 }
 
 #[test]
 fn div_truncates() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Div, SemExpr::int(10), SemExpr::int(3))), 3);
+    assert_eq!(
+        jit_eval(SemExpr::binop(
+            BinOp::Div,
+            SemExpr::int(10),
+            SemExpr::int(3)
+        )),
+        3
+    );
 }
 
 #[test]
@@ -69,42 +85,66 @@ fn nested_arithmetic() {
 
 #[test]
 fn eq_true() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Eq, SemExpr::int(3), SemExpr::int(3))), 1);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Eq, SemExpr::int(3), SemExpr::int(3))),
+        1
+    );
 }
 
 #[test]
 fn eq_false() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Eq, SemExpr::int(3), SemExpr::int(4))), 0);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Eq, SemExpr::int(3), SemExpr::int(4))),
+        0
+    );
 }
 
 #[test]
 fn ne() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Ne, SemExpr::int(1), SemExpr::int(2))), 1);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Ne, SemExpr::int(1), SemExpr::int(2))),
+        1
+    );
 }
 
 #[test]
 fn lt_true() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Lt, SemExpr::int(3), SemExpr::int(4))), 1);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Lt, SemExpr::int(3), SemExpr::int(4))),
+        1
+    );
 }
 
 #[test]
 fn lt_false() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Lt, SemExpr::int(4), SemExpr::int(3))), 0);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Lt, SemExpr::int(4), SemExpr::int(3))),
+        0
+    );
 }
 
 #[test]
 fn le_equal() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Le, SemExpr::int(3), SemExpr::int(3))), 1);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Le, SemExpr::int(3), SemExpr::int(3))),
+        1
+    );
 }
 
 #[test]
 fn gt() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Gt, SemExpr::int(5), SemExpr::int(2))), 1);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Gt, SemExpr::int(5), SemExpr::int(2))),
+        1
+    );
 }
 
 #[test]
 fn ge_equal() {
-    assert_eq!(jit_eval(SemExpr::binop(BinOp::Ge, SemExpr::int(3), SemExpr::int(3))), 1);
+    assert_eq!(
+        jit_eval(SemExpr::binop(BinOp::Ge, SemExpr::int(3), SemExpr::int(3))),
+        1
+    );
 }
 
 // ── Logic ─────────────────────────────────────────────────────────────────────
@@ -112,7 +152,11 @@ fn ge_equal() {
 #[test]
 fn and_both_true() {
     assert_eq!(
-        jit_eval(SemExpr::binop(BinOp::And, SemExpr::bool(true), SemExpr::bool(true))),
+        jit_eval(SemExpr::binop(
+            BinOp::And,
+            SemExpr::bool(true),
+            SemExpr::bool(true)
+        )),
         1
     );
 }
@@ -120,7 +164,11 @@ fn and_both_true() {
 #[test]
 fn and_one_false() {
     assert_eq!(
-        jit_eval(SemExpr::binop(BinOp::And, SemExpr::bool(true), SemExpr::bool(false))),
+        jit_eval(SemExpr::binop(
+            BinOp::And,
+            SemExpr::bool(true),
+            SemExpr::bool(false)
+        )),
         0
     );
 }
@@ -128,7 +176,11 @@ fn and_one_false() {
 #[test]
 fn or_one_true() {
     assert_eq!(
-        jit_eval(SemExpr::binop(BinOp::Or, SemExpr::bool(false), SemExpr::bool(true))),
+        jit_eval(SemExpr::binop(
+            BinOp::Or,
+            SemExpr::bool(false),
+            SemExpr::bool(true)
+        )),
         1
     );
 }
@@ -153,8 +205,15 @@ fn identity_function() {
 
 #[test]
 fn add_two_params() {
-    let body = SemExpr::binop(BinOp::Add, SemExpr::var("x", Kind::Int), SemExpr::var("y", Kind::Int));
-    assert_eq!(jit_eval_fn(&[Param::new("x"), Param::new("y")], body, &[10, 32]), 42);
+    let body = SemExpr::binop(
+        BinOp::Add,
+        SemExpr::var("x", Kind::Int),
+        SemExpr::var("y", Kind::Int),
+    );
+    assert_eq!(
+        jit_eval_fn(&[Param::new("x"), Param::new("y")], body, &[10, 32]),
+        42
+    );
 }
 
 #[test]
@@ -162,7 +221,11 @@ fn param_arithmetic() {
     // f(x) = x * x - 1
     let body = SemExpr::binop(
         BinOp::Sub,
-        SemExpr::binop(BinOp::Mul, SemExpr::var("x", Kind::Int), SemExpr::var("x", Kind::Int)),
+        SemExpr::binop(
+            BinOp::Mul,
+            SemExpr::var("x", Kind::Int),
+            SemExpr::var("x", Kind::Int),
+        ),
         SemExpr::int(1),
     );
     assert_eq!(jit_eval_fn(&[Param::new("x")], body, &[5]), 24);
@@ -222,7 +285,9 @@ fn call_other_function() {
     compiler.declare_runtime_functions();
 
     let double_body = SemExpr::binop(BinOp::Mul, SemExpr::var("x", Kind::Int), SemExpr::int(2));
-    compiler.compile_function("double", &[Param::new("x")], &double_body).unwrap();
+    compiler
+        .compile_function("double", &[Param::new("x")], &double_body)
+        .unwrap();
 
     let main_body = SemExpr::call("double", vec![SemExpr::int(21)], Kind::Int);
     compiler.compile_function("main", &[], &main_body).unwrap();

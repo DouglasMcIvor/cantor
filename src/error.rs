@@ -1,6 +1,6 @@
 use std::panic::Location;
 
-use crate::span::{offset_to_line_col, Span};
+use crate::span::{Span, offset_to_line_col};
 
 /// Three categories, kept deliberately separate because each means
 /// something different to the person reading it and will eventually
@@ -32,19 +32,40 @@ use crate::span::{offset_to_line_col, Span};
 /// compile-time diagnostics.
 #[derive(Debug, Clone)]
 pub enum CompileError {
-    UndefinedVariable { name: String, span: Span },
-    UndefinedFunction { name: String, span: Span },
-    UnexpectedToken { expected: String, found: String, span: Span },
-    InvalidIntLiteral { text: String, span: Span },
-    NamingConvention { message: String, span: Span },
+    UndefinedVariable {
+        name: String,
+        span: Span,
+    },
+    UndefinedFunction {
+        name: String,
+        span: Span,
+    },
+    UnexpectedToken {
+        expected: String,
+        found: String,
+        span: Span,
+    },
+    InvalidIntLiteral {
+        text: String,
+        span: Span,
+    },
+    NamingConvention {
+        message: String,
+        span: Span,
+    },
     /// Valid Cantor the compiler doesn't implement yet.
-    Unsupported { feature: String, span: Span },
+    Unsupported {
+        feature: String,
+        span: Span,
+    },
     // Future: DomainViolation, RangeViolation (driven by cvc5 unsat core)
-
     /// A compiler invariant was violated — a bug in Cantor's compiler
     /// itself, not something the developer can fix by editing their
     /// program. `rust_location` is captured automatically by `ice()`.
-    Ice { detail: String, rust_location: &'static Location<'static> },
+    Ice {
+        detail: String,
+        rust_location: &'static Location<'static>,
+    },
 }
 
 impl std::fmt::Display for CompileError {
@@ -52,7 +73,9 @@ impl std::fmt::Display for CompileError {
         match self {
             Self::UndefinedVariable { name, .. } => write!(f, "undefined variable `{name}`"),
             Self::UndefinedFunction { name, .. } => write!(f, "undefined function `{name}`"),
-            Self::UnexpectedToken { expected, found, .. } => {
+            Self::UnexpectedToken {
+                expected, found, ..
+            } => {
                 write!(f, "expected {expected}, found {found}")
             }
             Self::InvalidIntLiteral { text, .. } => {
@@ -60,7 +83,10 @@ impl std::fmt::Display for CompileError {
             }
             Self::NamingConvention { message, .. } => write!(f, "naming: {message}"),
             Self::Unsupported { feature, .. } => write!(f, "not yet supported: {feature}"),
-            Self::Ice { detail, rust_location } => {
+            Self::Ice {
+                detail,
+                rust_location,
+            } => {
                 write!(f, "internal compiler error ({rust_location}): {detail}")
             }
         }
@@ -75,7 +101,10 @@ impl CompileError {
     /// that used to do `Internal(e.to_string())` can just pass `e` directly.
     #[track_caller]
     pub fn ice(detail: impl std::fmt::Display) -> Self {
-        Self::Ice { detail: detail.to_string(), rust_location: Location::caller() }
+        Self::Ice {
+            detail: detail.to_string(),
+            rust_location: Location::caller(),
+        }
     }
 
     /// Whether this is a compiler bug rather than something the developer
@@ -96,13 +125,13 @@ impl CompileError {
 
     fn span(&self) -> Option<Span> {
         match self {
-            Self::UndefinedVariable  { span, .. } => Some(*span),
-            Self::UndefinedFunction  { span, .. } => Some(*span),
-            Self::UnexpectedToken    { span, .. } => Some(*span),
-            Self::InvalidIntLiteral  { span, .. } => Some(*span),
-            Self::NamingConvention   { span, .. } => Some(*span),
-            Self::Unsupported        { span, .. } => Some(*span),
-            Self::Ice { .. }                      => None,
+            Self::UndefinedVariable { span, .. } => Some(*span),
+            Self::UndefinedFunction { span, .. } => Some(*span),
+            Self::UnexpectedToken { span, .. } => Some(*span),
+            Self::InvalidIntLiteral { span, .. } => Some(*span),
+            Self::NamingConvention { span, .. } => Some(*span),
+            Self::Unsupported { span, .. } => Some(*span),
+            Self::Ice { .. } => None,
         }
     }
 }

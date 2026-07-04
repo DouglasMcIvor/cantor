@@ -8,19 +8,29 @@
 use super::helpers::*;
 
 fn unproved_overflow_count(src: &str) -> usize {
-    check_tree(src).overflow_checks.values().filter(|proved| !**proved).count()
+    check_tree(src)
+        .overflow_checks
+        .values()
+        .filter(|proved| !**proved)
+        .count()
 }
 
 #[test]
 fn bounded_mul_has_no_unproved_overflow_check() {
     let n = unproved_overflow_count("mul32 : Int32 * Int32 -> Int\nmul32(x, y) = x * y");
-    assert_eq!(n, 0, "Int32*Int32 multiply should be proved not to overflow i64");
+    assert_eq!(
+        n, 0,
+        "Int32*Int32 multiply should be proved not to overflow i64"
+    );
 }
 
 #[test]
 fn unconstrained_mul_has_unproved_overflow_check() {
     let n = unproved_overflow_count("mul : Int * Int -> Int\nmul(x, y) = x * y");
-    assert!(n >= 1, "unconstrained Int*Int multiply should have an unproved overflow obligation");
+    assert!(
+        n >= 1,
+        "unconstrained Int*Int multiply should have an unproved overflow obligation"
+    );
 }
 
 #[test]
@@ -32,19 +42,28 @@ fn bounded_add_has_no_unproved_overflow_check() {
 #[test]
 fn unconstrained_sub_has_unproved_overflow_check() {
     let n = unproved_overflow_count("sub : Int * Int -> Int\nsub(x, y) = x - y");
-    assert!(n >= 1, "unconstrained Int - Int should have an unproved overflow obligation");
+    assert!(
+        n >= 1,
+        "unconstrained Int - Int should have an unproved overflow obligation"
+    );
 }
 
 #[test]
 fn negation_of_bounded_int_has_no_unproved_overflow_check() {
     let n = unproved_overflow_count("neg32 : Int32 -> Int\nneg32(x) = -x");
-    assert_eq!(n, 0, "negating an Int32 should be proved not to overflow i64");
+    assert_eq!(
+        n, 0,
+        "negating an Int32 should be proved not to overflow i64"
+    );
 }
 
 #[test]
 fn negation_of_unconstrained_int_has_unproved_overflow_check() {
     let n = unproved_overflow_count("neg : Int -> Int\nneg(x) = -x");
-    assert!(n >= 1, "negating an unconstrained Int should have an unproved overflow obligation (i64::MIN)");
+    assert!(
+        n >= 1,
+        "negating an unconstrained Int should have an unproved overflow obligation (i64::MIN)"
+    );
 }
 
 #[test]
@@ -52,7 +71,10 @@ fn unconstrained_division_has_unproved_overflow_check() {
     // i64::MIN / -1 isn't excluded by this domain, so the MIN/-1 overflow
     // obligation should remain unproved even though divisor-nonzero is fine.
     let n = unproved_overflow_count("safe_div : Int * (Int - {0}) -> Int\nsafe_div(x, y) = x / y");
-    assert!(n >= 1, "unconstrained safe division should still have an unproved MIN/-1 overflow obligation");
+    assert!(
+        n >= 1,
+        "unconstrained safe division should still have an unproved MIN/-1 overflow obligation"
+    );
 }
 
 #[test]

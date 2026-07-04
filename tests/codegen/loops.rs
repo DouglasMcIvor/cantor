@@ -14,9 +14,9 @@ main(n) {
     }
     i
 }"#;
-    assert_eq!(jit_src_one_arg(src, 0),  0);
-    assert_eq!(jit_src_one_arg(src, 1),  1);
-    assert_eq!(jit_src_one_arg(src, 5),  5);
+    assert_eq!(jit_src_one_arg(src, 0), 0);
+    assert_eq!(jit_src_one_arg(src, 1), 1);
+    assert_eq!(jit_src_one_arg(src, 5), 5);
     assert_eq!(jit_src_one_arg(src, 10), 10);
 }
 
@@ -34,9 +34,9 @@ main(n) {
     }
     acc
 }"#;
-    assert_eq!(jit_src_one_arg(src, 0),  0);
-    assert_eq!(jit_src_one_arg(src, 1),  1);
-    assert_eq!(jit_src_one_arg(src, 5),  15);
+    assert_eq!(jit_src_one_arg(src, 0), 0);
+    assert_eq!(jit_src_one_arg(src, 1), 1);
+    assert_eq!(jit_src_one_arg(src, 5), 15);
     assert_eq!(jit_src_one_arg(src, 10), 55);
 }
 
@@ -150,7 +150,7 @@ main(n) {
     acc
 }"#;
     // n=0: 1+2+3 = 6; n=10: (1+10)+(2+10)+(3+10) = 36
-    assert_eq!(jit_src_one_arg(src, 0),  6);
+    assert_eq!(jit_src_one_arg(src, 0), 6);
     assert_eq!(jit_src_one_arg(src, 10), 36);
 }
 
@@ -214,6 +214,6 @@ main(n) {
     }
     acc
 }"#;
-    assert_eq!(jit_src_one_arg(src, 0),  5);  // (2+0) + (3+0) = 5
+    assert_eq!(jit_src_one_arg(src, 0), 5); // (2+0) + (3+0) = 5
     assert_eq!(jit_src_one_arg(src, 10), 25); // (2+10) + (3+10) = 25
 }

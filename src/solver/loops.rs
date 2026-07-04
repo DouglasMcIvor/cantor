@@ -9,10 +9,13 @@ use crate::{
     span::{Span, Symbol},
 };
 
-use super::{CheckResult, NameDefs};
 use super::blocks::encode_block;
-use super::encode::{Env, BuiltinObligation, OverflowObligation, decide_overflow_obligations, encode_expr, integer_value, boolean_value};
+use super::encode::{
+    BuiltinObligation, Env, OverflowObligation, boolean_value, decide_overflow_obligations,
+    encode_expr, integer_value,
+};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
+use super::{CheckResult, NameDefs};
 
 // ── Inductive step checking ───────────────────────────────────────────────────
 
@@ -83,12 +86,16 @@ where
         // The hypothesis variable carries the binding's actual solver sort
         // (Bool muts are boolean-sorted, tuple muts tuple-sorted); a name not
         // in the outer env is declared inside the body and will be shadowed.
-        let sort = env.get(name).map(|t| t.sort()).unwrap_or_else(|| tm.integer_sort());
+        let sort = env
+            .get(name)
+            .map(|t| t.sort())
+            .unwrap_or_else(|| tm.integer_sort());
         let fresh = tm.mk_const(sort, &fresh_name);
-        if let Some(constraint) = constraint_env.get(name) {
-            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
-                tmp.assert_formula(c.clone());
-            }
+        if let Some(constraint) = constraint_env.get(name)
+            && let Membership::Constrained(c) =
+                membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds)
+        {
+            tmp.assert_formula(c.clone());
         }
         ind_env.insert(name.clone(), fresh);
     }
@@ -116,10 +123,24 @@ where
     // An unproved `assert` inside the body needs `| Fail` on the range exactly
     // like one in a flat block — the flag must reach the function-level check.
     match encode_block(
-        body, &mut body_env, name_defs, fn_env, tm, &mut tmp,
-        &mut cc, &mut obligs, &mut overflow_obligs, &mut step_ssa,
-        param_names, param_terms, &mut empty_cenv, has_runtime_assert,
-        &mut step_imm, distinct_preds, overflow_checks, None,
+        body,
+        &mut body_env,
+        name_defs,
+        fn_env,
+        tm,
+        &mut tmp,
+        &mut cc,
+        &mut obligs,
+        &mut overflow_obligs,
+        &mut step_ssa,
+        param_names,
+        param_terms,
+        &mut empty_cenv,
+        has_runtime_assert,
+        &mut step_imm,
+        distinct_preds,
+        overflow_checks,
+        None,
     ) {
         Ok(_) => {}
         Err(e) => return Some(e),
@@ -136,10 +157,11 @@ where
     // Every constrained var's post-iteration value must satisfy its invariant.
     let mut step_obligs: Vec<Term<'tm>> = Vec::new();
     for name in &constrained {
-        if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name)) {
-            if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint, name_defs, distinct_preds) {
-                step_obligs.push(c);
-            }
+        if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name))
+            && let Membership::Constrained(c) =
+                membership_constraint(tm, post.clone(), constraint, name_defs, distinct_preds)
+        {
+            step_obligs.push(c);
         }
     }
 
@@ -188,22 +210,32 @@ where
             .map(|o| o.violated_reason.to_string());
         if reason.is_none() {
             for name in &constrained {
-                if let (Some(constraint), Some(post)) = (constraint_env.get(*name), body_env.get(*name)) {
-                    if let Membership::Constrained(c) = membership_constraint(tm, post.clone(), constraint, name_defs, distinct_preds) {
-                        if !boolean_value(&tmp.get_value(c)) {
-                            output_val = integer_value(&tmp.get_value(post.clone()));
-                            reason = Some(format!(
-                                "{inv_label} not maintained: `{}` ∉ {} (value {})",
-                                name.0, constraint, output_val
-                            ));
-                            break;
-                        }
-                    }
+                if let (Some(constraint), Some(post)) =
+                    (constraint_env.get(*name), body_env.get(*name))
+                    && let Membership::Constrained(c) = membership_constraint(
+                        tm,
+                        post.clone(),
+                        constraint,
+                        name_defs,
+                        distinct_preds,
+                    )
+                    && !boolean_value(&tmp.get_value(c))
+                {
+                    output_val = integer_value(&tmp.get_value(post.clone()));
+                    reason = Some(format!(
+                        "{inv_label} not maintained: `{}` ∉ {} (value {})",
+                        name.0, constraint, output_val
+                    ));
+                    break;
                 }
             }
         }
         let reason = reason.unwrap_or_else(|| format!("{inv_label} not maintained"));
-        Some(CheckResult::Counterexample { params: cex_params, output: output_val, reason })
+        Some(CheckResult::Counterexample {
+            params: cex_params,
+            output: output_val,
+            reason,
+        })
     } else if constrained.is_empty() {
         Some(CheckResult::Unknown(format!(
             "cannot verify built-in obligations inside the {inv_label} body",
@@ -218,6 +250,10 @@ where
     }
 }
 
+// TODO: 16 params is a clippy::too_many_arguments smell; consider bundling the
+// solver-wide context (env, name_defs, fn_env, tm, distinct_preds, ...) into a
+// struct threaded through this module once the encoding pipeline settles down.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check_inductive_step<'tm>(
     cond: &SemExpr,
     body: &[SemStmt],
@@ -237,24 +273,55 @@ pub(super) fn check_inductive_step<'tm>(
     overflow_checks: &mut HashMap<Span, bool>,
 ) -> Option<CheckResult> {
     check_loop_inductive_step(
-        body, modified, constraint_env, env, outer_solver,
-        name_defs, fn_env, tm, ssa_counter, param_names, param_terms,
-        "loop invariant", immutable_names, distinct_preds, has_runtime_assert, overflow_checks,
+        body,
+        modified,
+        constraint_env,
+        env,
+        outer_solver,
+        name_defs,
+        fn_env,
+        tm,
+        ssa_counter,
+        param_names,
+        param_terms,
+        "loop invariant",
+        immutable_names,
+        distinct_preds,
+        has_runtime_assert,
+        overflow_checks,
         |tmp, ind_env, _ssa, overflow_obligs| {
             let mut cc = 0usize;
             let mut obligs = Vec::new();
-            match encode_expr(cond, ind_env, name_defs, fn_env, tm, tmp,
-                              &mut cc, &mut obligs, overflow_obligs, tm.mk_boolean(true), distinct_preds, None) {
-                Ok(c) => { tmp.assert_formula(c.clone()); None }
+            match encode_expr(
+                cond,
+                ind_env,
+                name_defs,
+                fn_env,
+                tm,
+                tmp,
+                &mut cc,
+                &mut obligs,
+                overflow_obligs,
+                tm.mk_boolean(true),
+                distinct_preds,
+                None,
+            ) {
+                Ok(c) => {
+                    tmp.assert_formula(c.clone());
+                    None
+                }
                 Err(_) => Some(CheckResult::Unknown(
                     "cannot verify inductive step: loop condition uses syntax not yet \
-                     supported in the SMT encoding".into()
+                     supported in the SMT encoding"
+                        .into(),
                 )),
             }
         },
     )
 }
 
+// TODO: same too-many-arguments smell as check_inductive_step above.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check_for_inductive_step<'tm>(
     var: &Symbol,
     set: &SemExpr,
@@ -279,10 +346,11 @@ pub(super) fn check_for_inductive_step<'tm>(
     // Int-{0}).  The clone is cheap — we just need the Expr for membership_constraint.
     let runtime_elem_constraint: Option<SemExpr> = if let SemExprKind::Var(sym) = &set.kind {
         constraint_env.get(sym).and_then(|c| {
-            if let SemExprKind::Call { callee, args } = &c.kind {
-                if callee.0 == "Set" && args.len() == 1 {
-                    return Some(args[0].clone());
-                }
+            if let SemExprKind::Call { callee, args } = &c.kind
+                && callee.0 == "Set"
+                && args.len() == 1
+            {
+                return Some(args[0].clone());
             }
             None
         })
@@ -291,9 +359,22 @@ pub(super) fn check_for_inductive_step<'tm>(
     };
 
     check_loop_inductive_step(
-        body, modified, constraint_env, env, outer_solver,
-        name_defs, fn_env, tm, ssa_counter, param_names, param_terms,
-        "for-loop invariant", immutable_names, distinct_preds, has_runtime_assert, overflow_checks,
+        body,
+        modified,
+        constraint_env,
+        env,
+        outer_solver,
+        name_defs,
+        fn_env,
+        tm,
+        ssa_counter,
+        param_names,
+        param_terms,
+        "for-loop invariant",
+        immutable_names,
+        distinct_preds,
+        has_runtime_assert,
+        overflow_checks,
         |tmp, ind_env, ssa, _overflow_obligs| {
             let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
             *ssa += 1;
@@ -302,19 +383,32 @@ pub(super) fn check_for_inductive_step<'tm>(
                 // Apply the element-kind constraint (e.g. x >= 0 for Set(Nat)).
                 // If the element kind itself is unsupported, proceed unconstrained
                 // rather than aborting — we'll just be less precise.
-                match membership_constraint(tm, var_fresh.clone(), elem_c, name_defs, distinct_preds) {
+                match membership_constraint(
+                    tm,
+                    var_fresh.clone(),
+                    elem_c,
+                    name_defs,
+                    distinct_preds,
+                ) {
                     Membership::Unconstrained => {}
-                    Membership::Constrained(c) => { tmp.assert_formula(c.clone()); }
+                    Membership::Constrained(c) => {
+                        tmp.assert_formula(c.clone());
+                    }
                     Membership::Unsupported => {}
                 }
             } else {
                 match membership_constraint(tm, var_fresh.clone(), set, name_defs, distinct_preds) {
                     Membership::Unconstrained => {}
-                    Membership::Constrained(c) => { tmp.assert_formula(c.clone()); }
-                    Membership::Unsupported => return Some(CheckResult::Unknown(
-                        "for loop: cannot verify inductive step — iterable set uses syntax \
-                         not yet supported in the SMT encoding".into()
-                    )),
+                    Membership::Constrained(c) => {
+                        tmp.assert_formula(c.clone());
+                    }
+                    Membership::Unsupported => {
+                        return Some(CheckResult::Unknown(
+                            "for loop: cannot verify inductive step — iterable set uses syntax \
+                         not yet supported in the SMT encoding"
+                                .into(),
+                        ));
+                    }
                 }
             }
             ind_env.insert(var.clone(), var_fresh);

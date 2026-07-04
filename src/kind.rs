@@ -11,7 +11,9 @@
 //! Many set names share the same Kind (e.g. `Nat`, `NatPos`, and `Int16` are
 //! all `Kind::Int`).
 
-use crate::ast::{UnOp, BinOp, DefKind, Expr, ExprKind, NameDefs, flatten_domain, flatten_disjoint_union};
+use crate::ast::{
+    BinOp, DefKind, Expr, ExprKind, NameDefs, UnOp, flatten_disjoint_union, flatten_domain,
+};
 use crate::semantics::builtins;
 
 /// The element kind of a homogeneous runtime set.
@@ -73,12 +75,8 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
                 unreachable!("set_kind: unknown set name `{}`", sym.0)
             }
         }
-        ExprKind::BinOp { op, lhs, rhs } => {
-            binop_kind(op, lhs, rhs, name_defs)
-        }
-        ExprKind::UnOp { op, expr, .. } => {
-            unop_kind(op, expr, name_defs)
-        }
+        ExprKind::BinOp { op, lhs, rhs } => binop_kind(op, lhs, rhs, name_defs),
+        ExprKind::UnOp { op, expr, .. } => unop_kind(op, expr, name_defs),
         // TODO: "Set" should also be part of the built in symbol table
         // `Set(Int)` / `Set(Bool)` — the power set of the given element set.
         ExprKind::Call { callee, args } => {
@@ -91,12 +89,20 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
                 }
             } else {
                 // TODO: Compile error
-                unreachable!("set_kind: unknown compile time function name `{}`", callee.0)
+                unreachable!(
+                    "set_kind: unknown compile time function name `{}`",
+                    callee.0
+                )
             }
         }
-        ExprKind::If { then_expr,else_expr, .. } => {
-            merge_into_union(set_kind(then_expr, name_defs), set_kind(else_expr, name_defs))
-        }
+        ExprKind::If {
+            then_expr,
+            else_expr,
+            ..
+        } => merge_into_union(
+            set_kind(then_expr, name_defs),
+            set_kind(else_expr, name_defs),
+        ),
         // `{0, 1, 2}` as a set-builder expression — describes a domain restriction
         // to these elements, so its Kind is the *element* Kind, not `Kind::Set`
         // (which is reserved for genuine runtime Set values, e.g. the result of
@@ -115,19 +121,17 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
         ExprKind::Try(expr) => set_kind(expr, name_defs),
         ExprKind::FailLit => Kind::Fail,
         ExprKind::FailWith(expr) => set_kind(expr, name_defs),
-        ExprKind::Comprehension { source, .. } => {
-            set_kind(source, name_defs)
-        }
+        ExprKind::Comprehension { source, .. } => set_kind(source, name_defs),
         ExprKind::Tuple(exprs) => {
-            Kind::Tuple(exprs.into_iter().map(|p| set_kind(p, name_defs)).collect())
+            Kind::Tuple(exprs.iter().map(|p| set_kind(p, name_defs)).collect())
         }
         ExprKind::Proj { base, .. } => set_kind(base, name_defs),
         ExprKind::Index { base, .. } => set_kind(base, name_defs),
-        ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner, name_defs)))
+        ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner, name_defs))),
     }
 }
 
-fn binop_kind(bin_op: &BinOp, lhs: &Box<Expr>, rhs: &Box<Expr>, name_defs: &NameDefs) -> Kind {
+fn binop_kind(bin_op: &BinOp, lhs: &Expr, rhs: &Expr, name_defs: &NameDefs) -> Kind {
     match &bin_op {
         // TODO: this is also "add" we need to know the context, doesn't the parser do this?
         // `A + B` — disjoint union. Unlike `|`, `+` *forces* disjointness (akin to
@@ -137,27 +141,29 @@ fn binop_kind(bin_op: &BinOp, lhs: &Box<Expr>, rhs: &Box<Expr>, name_defs: &Name
         BinOp::Add => {
             let left_parts = flatten_disjoint_union(lhs);
             let right_parts = flatten_disjoint_union(rhs);
-            Kind::TaggedUnion(left_parts
-                .into_iter()
-                .chain(right_parts)
-                .map(|p| set_kind(p, name_defs))
-                .collect())
+            Kind::TaggedUnion(
+                left_parts
+                    .into_iter()
+                    .chain(right_parts)
+                    .map(|p| set_kind(p, name_defs))
+                    .collect(),
+            )
         }
         // TODO: this is also "sub" we need to know the context, doesn't the parser do this?
         // `A - B` — set difference.
-        BinOp::Sub => {
-            set_kind(lhs, name_defs)
-        }
+        BinOp::Sub => set_kind(lhs, name_defs),
         // TODO: this is also "mul" we need to know the context, doesn't the parser do this?
         // `A * B * C` — Cartesian product → tuple.
         BinOp::Mul => {
             let left_parts = flatten_domain(lhs);
             let right_parts = flatten_domain(rhs);
-            Kind::Tuple(left_parts
-                .into_iter()
-                .chain(right_parts)
-                .map(|p| set_kind(p, name_defs))
-                .collect())
+            Kind::Tuple(
+                left_parts
+                    .into_iter()
+                    .chain(right_parts)
+                    .map(|p| set_kind(p, name_defs))
+                    .collect(),
+            )
         }
         // TODO: this will be both "div" and set quotient, again need context
         BinOp::Div => set_kind(lhs, name_defs),
@@ -166,22 +172,18 @@ fn binop_kind(bin_op: &BinOp, lhs: &Box<Expr>, rhs: &Box<Expr>, name_defs: &Name
         BinOp::In | BinOp::NotIn => Kind::Bool,
 
         // `A | B` — union
-        BinOp::Union => {
-            merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs))
-        }
+        BinOp::Union => merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs)),
         // `A & B` — set intersection.
         BinOp::Intersect => set_kind(lhs, name_defs),
         // `A ^ B` — symmetric difference.
-        BinOp::SymDiff => {
-            merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs))
-        }
+        BinOp::SymDiff => merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs)),
         BinOp::Concat => set_kind(lhs, name_defs),
 
         BinOp::And | BinOp::Or => Kind::Bool,
     }
 }
 
-fn unop_kind(un_op: &UnOp, expr: &Box<Expr>, name_defs: &NameDefs) -> Kind {
+fn unop_kind(un_op: &UnOp, expr: &Expr, name_defs: &NameDefs) -> Kind {
     match &un_op {
         UnOp::Not => Kind::Bool,
         UnOp::Neg => set_kind(expr, name_defs),
@@ -200,16 +202,26 @@ pub fn range_kind(range: &Expr, name_defs: &NameDefs) -> Kind {
     match &range.kind {
         ExprKind::Var(sym) => {
             // Bare `Fail` has its own Kind; it becomes the flag field of {Fail, Int} structs.
-            if sym.0 == "Fail" { Kind::Fail } else { set_kind(range, name_defs) }
+            if sym.0 == "Fail" {
+                Kind::Fail
+            } else {
+                set_kind(range, name_defs)
+            }
         }
         // `A | B` — any union with a fail arm produces the fallible struct wire type {i1, i64}.
-        ExprKind::BinOp { op: BinOp::Union, lhs, rhs, .. } => {
-            range_fail_kind(range, lhs, rhs, name_defs)
-        }
+        ExprKind::BinOp {
+            op: BinOp::Union,
+            lhs,
+            rhs,
+            ..
+        } => range_fail_kind(range, lhs, rhs, name_defs),
         // `A + B + C` — disjoint union; each arm retains its own kind.
-        ExprKind::BinOp { op: BinOp::Add, lhs, rhs, .. } => {
-            range_fail_kind(range, lhs, rhs, name_defs)
-        }
+        ExprKind::BinOp {
+            op: BinOp::Add,
+            lhs,
+            rhs,
+            ..
+        } => range_fail_kind(range, lhs, rhs, name_defs),
         _ => set_kind(range, name_defs),
     }
 }
@@ -217,7 +229,11 @@ pub fn range_kind(range: &Expr, name_defs: &NameDefs) -> Kind {
 fn is_fail_arm(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Var(sym) if sym.0 == "Fail" => true,
-        ExprKind::BinOp { op: BinOp::Mul, lhs, .. } => {
+        ExprKind::BinOp {
+            op: BinOp::Mul,
+            lhs,
+            ..
+        } => {
             matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
         }
         _ => false,
@@ -233,7 +249,6 @@ fn range_fail_kind(range: &Expr, lhs: &Expr, rhs: &Expr, name_defs: &NameDefs) -
         set_kind(range, name_defs)
     }
 }
-
 
 /// Merge two Kinds into an atomic Kind or a Union
 fn merge_into_union(lk: Kind, rk: Kind) -> Kind {
@@ -291,7 +306,10 @@ pub enum IfMerge {
     /// Both branches are already (different) TaggedUnions. `then`'s arms are
     /// an unchanged prefix of `merged_arms` (append-only); `else`'s tags need
     /// runtime remapping via `else_remap` (old arm index -> merged arm index).
-    MergeTaggedUnions { merged_arms: Vec<Kind>, else_remap: Vec<usize> },
+    MergeTaggedUnions {
+        merged_arms: Vec<Kind>,
+        else_remap: Vec<usize>,
+    },
     /// `then` is already a TaggedUnion; `else` is a single plain Kind
     /// appended as the final new arm.
     AppendElseArm { merged_arms: Vec<Kind> },
@@ -333,7 +351,9 @@ pub fn merge_if_branches(then_ty: &Kind, else_ty: &Kind) -> Result<IfMerge, Stri
 
     if !then_is_tu && !else_is_tu {
         if matches!(then_ty, Kind::Tuple(_)) || matches!(else_ty, Kind::Tuple(_)) {
-            return Ok(IfMerge::NewTaggedUnion { arms: vec![then_ty.clone(), else_ty.clone()] });
+            return Ok(IfMerge::NewTaggedUnion {
+                arms: vec![then_ty.clone(), else_ty.clone()],
+            });
         }
         return Err(format!(
             "if-branches with different Kinds and no Tuple/TaggedUnion side cannot be merged \
@@ -349,20 +369,28 @@ pub fn merge_if_branches(then_ty: &Kind, else_ty: &Kind) -> Result<IfMerge, Stri
                     merged.push(arm.clone());
                 }
             }
-            let else_remap = else_inner.iter()
+            let else_remap = else_inner
+                .iter()
                 .map(|arm| merged.iter().position(|m| m == arm).unwrap())
                 .collect();
-            Ok(IfMerge::MergeTaggedUnions { merged_arms: merged, else_remap })
+            Ok(IfMerge::MergeTaggedUnions {
+                merged_arms: merged,
+                else_remap,
+            })
         }
         (Kind::TaggedUnion(inner), _) => {
             let mut merged = inner.clone();
             merged.push(else_ty.clone());
-            Ok(IfMerge::AppendElseArm { merged_arms: merged })
+            Ok(IfMerge::AppendElseArm {
+                merged_arms: merged,
+            })
         }
         (_, Kind::TaggedUnion(inner)) => {
             let mut merged = inner.clone();
             merged.push(then_ty.clone());
-            Ok(IfMerge::AppendThenArm { merged_arms: merged })
+            Ok(IfMerge::AppendThenArm {
+                merged_arms: merged,
+            })
         }
         _ => unreachable!("then_is_tu || else_is_tu guarantees at least one TaggedUnion branch"),
     }
@@ -388,11 +416,14 @@ pub enum ConcatMerge {
 pub fn merge_concat_kinds(lhs: &Kind, rhs: &Kind) -> Result<(ConcatMerge, Kind), String> {
     match (lhs, rhs) {
         (Kind::Vector(ek), Kind::Vector(_)) => Ok((ConcatMerge::Same, Kind::Vector(ek.clone()))),
-        (Kind::Tuple(_), Kind::Vector(ek)) => Ok((ConcatMerge::CoerceLhsToVector, Kind::Vector(ek.clone()))),
-        (Kind::Vector(ek), Kind::Tuple(_)) => Ok((ConcatMerge::CoerceRhsToVector, Kind::Vector(ek.clone()))),
-        _ => Err(format!("`++` requires vector (X*) operands, got {lhs:?} ++ {rhs:?}")),
+        (Kind::Tuple(_), Kind::Vector(ek)) => {
+            Ok((ConcatMerge::CoerceLhsToVector, Kind::Vector(ek.clone())))
+        }
+        (Kind::Vector(ek), Kind::Tuple(_)) => {
+            Ok((ConcatMerge::CoerceRhsToVector, Kind::Vector(ek.clone())))
+        }
+        _ => Err(format!(
+            "`++` requires vector (X*) operands, got {lhs:?} ++ {rhs:?}"
+        )),
     }
 }
-
-
-

@@ -2,7 +2,10 @@ use cantor::{names::check_names, parser::parse_file};
 
 fn check(src: &str) -> Vec<String> {
     let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
-    check_names(&items).into_iter().map(|e| e.to_string()).collect()
+    check_names(&items)
+        .into_iter()
+        .map(|e| e.to_string())
+        .collect()
 }
 
 fn ok(src: &str) {
@@ -27,7 +30,10 @@ fn function_name_lowercase_ok() {
 fn function_name_uppercase_err() {
     let e = err("Abs : Int -> Int\nAbs(x) = x");
     assert!(e.contains("Abs"), "error should name `Abs`: {e}");
-    assert!(e.contains("compile-time"), "error should mention compile-time: {e}");
+    assert!(
+        e.contains("compile-time"),
+        "error should mention compile-time: {e}"
+    );
 }
 
 #[test]
@@ -84,7 +90,10 @@ fn set_difference_domain_uppercase_ok() {
 fn lowercase_domain_err() {
     let e = err("f : mySet -> Int\nf(x) = x");
     assert!(e.contains("mySet"), "error should name `mySet`: {e}");
-    assert!(e.contains("domain/range"), "error should mention domain/range: {e}");
+    assert!(
+        e.contains("domain/range"),
+        "error should mention domain/range: {e}"
+    );
 }
 
 #[test]
@@ -109,11 +118,15 @@ fn lowercase_in_union_range_err() {
 
 #[test]
 fn multiple_violations_all_reported() {
-    let items = parse_file("Abs : mySet -> Int\nAbs(X) = X")
-        .unwrap_or_else(|e| panic!("parse error: {e}"));
+    let items =
+        parse_file("Abs : mySet -> Int\nAbs(X) = X").unwrap_or_else(|e| panic!("parse error: {e}"));
     let errs = check_names(&items);
     // Expect: Abs (function name), X (param), mySet (domain) = at least 3
-    assert!(errs.len() >= 3, "expected >= 3 errors, got {}: {errs:?}", errs.len());
+    assert!(
+        errs.len() >= 3,
+        "expected >= 3 errors, got {}: {errs:?}",
+        errs.len()
+    );
 }
 
 // ── in/not in RHS in expression bodies is unchecked ──────────────────────────
@@ -130,13 +143,17 @@ fn lowercase_in_rhs_of_assert_ok() {
 #[test]
 fn while_body_mut_lowercase_ok() {
     // `mut` locals inside a while body must obey the same lowercase rule.
-    ok("f : Nat -> Nat\nf(n) {\n  mut i: Nat = 0\n  while i < n {\n    mut tmp: Nat = i\n    i := tmp + 1\n  }\n  i\n}");
+    ok(
+        "f : Nat -> Nat\nf(n) {\n  mut i: Nat = 0\n  while i < n {\n    mut tmp: Nat = i\n    i := tmp + 1\n  }\n  i\n}",
+    );
 }
 
 #[test]
 fn while_body_mut_uppercase_err() {
     // Uppercase `mut` local inside a while body should be caught.
-    let e = err("f : Nat -> Nat\nf(n) {\n  mut i: Nat = 0\n  while i < n {\n    mut Tmp: Nat = i\n    i := Tmp + 1\n  }\n  i\n}");
+    let e = err(
+        "f : Nat -> Nat\nf(n) {\n  mut i: Nat = 0\n  while i < n {\n    mut Tmp: Nat = i\n    i := Tmp + 1\n  }\n  i\n}",
+    );
     assert!(e.contains("Tmp"), "error should name `Tmp`: {e}");
 }
 
@@ -145,40 +162,55 @@ fn while_body_mut_uppercase_err() {
 #[test]
 fn for_in_lowercase_var_set_literal_ok() {
     // Lowercase loop variable with a set literal: always fine.
-    ok("f : -> Int\nf() {\n  mut acc: Int = 0\n  for x in {1, 2, 3} {\n    acc := acc + x\n  }\n  acc\n}");
+    ok(
+        "f : -> Int\nf() {\n  mut acc: Int = 0\n  for x in {1, 2, 3} {\n    acc := acc + x\n  }\n  acc\n}",
+    );
 }
 
 #[test]
 fn for_in_uppercase_var_set_literal_ok() {
     // Uppercase loop variable with a set literal: fine — the set is compile-time.
-    ok("f : -> Int\nf() {\n  mut acc: Int = 0\n  for X in {1, 2, 3} {\n    acc := acc + X\n  }\n  acc\n}");
+    ok(
+        "f : -> Int\nf() {\n  mut acc: Int = 0\n  for X in {1, 2, 3} {\n    acc := acc + X\n  }\n  acc\n}",
+    );
 }
 
 #[test]
 fn for_in_uppercase_var_uppercase_set_ok() {
     // Uppercase loop variable with an uppercase named set: fine — the set is
     // guaranteed compile-time per the naming rules.
-    ok("f : -> Int\nf() {\n  mut acc: Int = 0\n  for X in MySet {\n    acc := acc + X\n  }\n  acc\n}");
+    ok(
+        "f : -> Int\nf() {\n  mut acc: Int = 0\n  for X in MySet {\n    acc := acc + X\n  }\n  acc\n}",
+    );
 }
 
 #[test]
 fn for_in_uppercase_var_lowercase_set_err() {
     // Uppercase loop variable with a lowercase (runtime) set: naming error.
-    let e = err("f : -> Int\nf() {\n  mut acc: Int = 0\n  for X in mySet {\n    acc := acc + X\n  }\n  acc\n}");
+    let e = err(
+        "f : -> Int\nf() {\n  mut acc: Int = 0\n  for X in mySet {\n    acc := acc + X\n  }\n  acc\n}",
+    );
     assert!(e.contains("X"), "error should name `X`: {e}");
-    assert!(e.contains("compile-time"), "error should mention compile-time: {e}");
+    assert!(
+        e.contains("compile-time"),
+        "error should mention compile-time: {e}"
+    );
 }
 
 #[test]
 fn for_in_lowercase_var_lowercase_set_ok() {
     // Lowercase loop variable with a lowercase (runtime) set: fine — x can be runtime.
-    ok("f : -> Int\nf() {\n  mut acc: Int = 0\n  for x in mySet {\n    acc := acc + x\n  }\n  acc\n}");
+    ok(
+        "f : -> Int\nf() {\n  mut acc: Int = 0\n  for x in mySet {\n    acc := acc + x\n  }\n  acc\n}",
+    );
 }
 
 #[test]
 fn for_in_body_mut_uppercase_err() {
     // `mut` uppercase locals inside a for-in body should be caught too.
-    let e = err("f : -> Int\nf() {\n  mut acc: Int = 0\n  for x in {1, 2} {\n    mut Tmp: Int = x\n    acc := acc + Tmp\n  }\n  acc\n}");
+    let e = err(
+        "f : -> Int\nf() {\n  mut acc: Int = 0\n  for x in {1, 2} {\n    mut Tmp: Int = x\n    acc := acc + Tmp\n  }\n  acc\n}",
+    );
     assert!(e.contains("Tmp"), "error should name `Tmp`: {e}");
 }
 
@@ -193,7 +225,10 @@ fn set_def_uppercase_name_ok() {
 fn set_def_lowercase_name_err() {
     let e = err("mySet = {1, 2, 3}");
     assert!(e.contains("mySet"), "error should name `mySet`: {e}");
-    assert!(e.contains("uppercase"), "error should mention uppercase: {e}");
+    assert!(
+        e.contains("uppercase"),
+        "error should mention uppercase: {e}"
+    );
 }
 
 #[test]

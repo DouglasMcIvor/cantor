@@ -31,18 +31,31 @@ impl Expr {
 
     pub fn binop(op: BinOp, lhs: Expr, rhs: Expr) -> Self {
         Self::new(
-            ExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) },
+            ExprKind::BinOp {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
             Span::dummy(),
         )
     }
 
     pub fn unop(op: UnOp, expr: Expr) -> Self {
-        Self::new(ExprKind::UnOp { op, expr: Box::new(expr) }, Span::dummy())
+        Self::new(
+            ExprKind::UnOp {
+                op,
+                expr: Box::new(expr),
+            },
+            Span::dummy(),
+        )
     }
 
     pub fn call(callee: &str, args: Vec<Expr>) -> Self {
         Self::new(
-            ExprKind::Call { callee: Symbol::new(callee), args },
+            ExprKind::Call {
+                callee: Symbol::new(callee),
+                args,
+            },
             Span::dummy(),
         )
     }
@@ -92,10 +105,24 @@ pub enum ExprKind {
     IntLit(i64),
     BoolLit(bool),
     Var(Symbol),
-    BinOp { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
-    UnOp { op: UnOp, expr: Box<Expr> },
-    Call { callee: Symbol, args: Vec<Expr> },
-    If { cond: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
+    BinOp {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+    UnOp {
+        op: UnOp,
+        expr: Box<Expr>,
+    },
+    Call {
+        callee: Symbol,
+        args: Vec<Expr>,
+    },
+    If {
+        cond: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+    },
     /// `{ expr, expr, … }` — explicit set literal; used in signature position.
     SetLit(Vec<Expr>),
     /// `expr?` — propagate `Fail` from a fallible call up to the caller.
@@ -117,11 +144,17 @@ pub enum ExprKind {
     /// `(e0, e1, …)` — anonymous product value (tuple).
     Tuple(Vec<Expr>),
     /// `expr.N` — positional projection of element N from a tuple (N is a compile-time literal).
-    Proj { base: Box<Expr>, index: usize },
+    Proj {
+        base: Box<Expr>,
+        index: usize,
+    },
     /// `expr[index]` — runtime indexing into a vector (X* value).
     /// Only valid when `base` has kind `Kind::Vector`; compile-time-literal indices are
     /// always desugared to `Proj` at parse time so `index` is always a runtime value here.
-    Index { base: Box<Expr>, index: Box<Expr> },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
     /// `X*` — Kleene star in set position: the set of all finite sequences of elements of X.
     /// Parsed as a postfix `*` when no expression follows, e.g. `Nat*` or `(Int - {0})*`.
     KleeneStar(Box<Expr>),
@@ -145,11 +178,11 @@ pub enum BinOp {
     In,
     NotIn,
     // Set operations (codegen stubs until sets are implemented)
-    Union,      // |  — `X !! Y` desugars to `X | (Fail * Y)` at parse time
-    Intersect,  // &
-    SymDiff,    // ^
+    Union,     // |  — `X !! Y` desugars to `X | (Fail * Y)` at parse time
+    Intersect, // &
+    SymDiff,   // ^
     // Vector operations
-    Concat,     // ++ — concatenate two vectors (X* ++ X* -> X*)
+    Concat, // ++ — concatenate two vectors (X* ++ X* -> X*)
     // Logical (expect Bool operands)
     And,
     Or,
@@ -177,25 +210,53 @@ pub enum Stmt {
     ///
     /// The `constraint` is verified once at the binding site; the name may not
     /// appear on the left-hand side of `:=`.
-    Let { name: Symbol, constraint: Expr, value: Expr, span: Span },
+    Let {
+        name: Symbol,
+        constraint: Expr,
+        value: Expr,
+        span: Span,
+    },
     /// `mut x: Set = expr` — introduce a new mutable local with invariant.
     ///
     /// The `constraint` is the declared set the variable must remain in through
     /// every assignment.  The solver uses it as the loop invariant when the
     /// variable is modified inside a `while` body.
-    MutLet { name: Symbol, constraint: Expr, value: Expr, span: Span },
+    MutLet {
+        name: Symbol,
+        constraint: Expr,
+        value: Expr,
+        span: Span,
+    },
     /// `x := expr` — reassign an existing mutable (semantic analysis validates).
-    Assign { name: Symbol, value: Expr, span: Span },
+    Assign {
+        name: Symbol,
+        value: Expr,
+        span: Span,
+    },
     /// `x, y = (e0, e1)` or `x : Int, y : Nat = (e0, e1)` — immutable destructure.
     ///
     /// `tuple_constraint` is `Some` for the `x, y : Int * Nat = (...)` form and
     /// `None` for the per-element constraint form.  Currently the parser always
     /// emits `None`; tuple-level constraints are a planned future extension.
-    DestructLet { bindings: Vec<DestructBinding>, tuple_constraint: Option<Expr>, value: Expr, span: Span },
+    DestructLet {
+        bindings: Vec<DestructBinding>,
+        tuple_constraint: Option<Expr>,
+        value: Expr,
+        span: Span,
+    },
     /// `mut a : Int, b : Nat = (e0, e1)` — mutable destructure; `mut` applies to all bindings.
-    DestructMutLet { bindings: Vec<DestructBinding>, tuple_constraint: Option<Expr>, value: Expr, span: Span },
+    DestructMutLet {
+        bindings: Vec<DestructBinding>,
+        tuple_constraint: Option<Expr>,
+        value: Expr,
+        span: Span,
+    },
     /// `a, b := (e0, e1)` — destructuring reassignment; all names must already be `mut`.
-    DestructAssign { names: Vec<Symbol>, value: Expr, span: Span },
+    DestructAssign {
+        names: Vec<Symbol>,
+        value: Expr,
+        span: Span,
+    },
     /// `require predicate` — static proof obligation; compile error if unprovable.
     Require { predicate: Expr, span: Span },
     /// `assert predicate` — graduated: elide if proved, compile error if disproved,
@@ -203,7 +264,11 @@ pub enum Stmt {
     /// Optional `else` clause overrides what is returned when the check fails:
     ///   - `else fail expr` — return the offset-encoded failure value
     ///   - `else return expr` — return `expr` directly (early exit, success path)
-    Assert { predicate: Expr, else_clause: Option<AssertElse>, span: Span },
+    Assert {
+        predicate: Expr,
+        else_clause: Option<AssertElse>,
+        span: Span,
+    },
     /// `assume predicate` — add predicate as a solver fact with no proof or runtime check.
     Assume { predicate: Expr, span: Span },
     /// Bare expression; the last `Expr` stmt in a block is the return value.
@@ -211,9 +276,18 @@ pub enum Stmt {
     /// Nested `{ stmts }` block — introduces a new scope.
     Block(Vec<Stmt>),
     /// `while cond { stmts }` — loop while condition holds.
-    While { cond: Expr, body: Vec<Stmt>, span: Span },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
     /// `for x in S { stmts }` — iterate over each element of the set S.
-    ForIn { var: Symbol, set: Expr, body: Vec<Stmt>, span: Span },
+    ForIn {
+        var: Symbol,
+        set: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
     /// `return expr` — early return from a block body.
     Return { value: Expr, span: Span },
 }
@@ -232,7 +306,11 @@ pub enum AssertElse {
 /// Flatten a left-associative `A * B * C` product into `[A, B, C]`.
 pub fn flatten_domain(expr: &Expr) -> Vec<&Expr> {
     match &expr.kind {
-        ExprKind::BinOp { op: BinOp::Mul, lhs, rhs } => {
+        ExprKind::BinOp {
+            op: BinOp::Mul,
+            lhs,
+            rhs,
+        } => {
             let mut parts = flatten_domain(lhs);
             parts.push(rhs);
             parts
@@ -244,7 +322,11 @@ pub fn flatten_domain(expr: &Expr) -> Vec<&Expr> {
 /// Flatten a left-associated disjoint union `((A + B) + C)` into `[A, B, C]`.
 pub fn flatten_disjoint_union(expr: &Expr) -> Vec<&Expr> {
     match &expr.kind {
-        ExprKind::BinOp { op: BinOp::Add, lhs, rhs } => {
+        ExprKind::BinOp {
+            op: BinOp::Add,
+            lhs,
+            rhs,
+        } => {
             let mut arms = flatten_disjoint_union(lhs);
             arms.extend(flatten_disjoint_union(rhs));
             arms
@@ -260,10 +342,12 @@ pub fn flatten_disjoint_union(expr: &Expr) -> Vec<&Expr> {
 /// - `n_params == 1` and `parts.len() > 1` → the single param is a tuple whose
 ///   set is the entire domain expression.
 /// - Otherwise → arity error.
-pub fn param_set_exprs<'a>(domain: Option<&'a Expr>, n_params: usize) -> Result<Vec<&'a Expr>, String> {
+pub fn param_set_exprs(domain: Option<&Expr>, n_params: usize) -> Result<Vec<&Expr>, String> {
     match domain {
         None if n_params == 0 => Ok(vec![]),
-        None => Err(format!("domain has 0 parts but function has {n_params} parameters")),
+        None => Err(format!(
+            "domain has 0 parts but function has {n_params} parameters"
+        )),
         Some(domain_expr) => {
             let parts = flatten_domain(domain_expr);
             if parts.len() == n_params {
@@ -278,7 +362,8 @@ pub fn param_set_exprs<'a>(domain: Option<&'a Expr>, n_params: usize) -> Result<
                      parameters, e.g. `foo(x, y)` on a `Nat*` domain, that isn't \
                      supported yet — only a Cartesian-product tuple domain can bind \
                      multiple parameters)",
-                    parts.len(), n_params
+                    parts.len(),
+                    n_params
                 ))
             }
         }
@@ -301,14 +386,24 @@ pub fn collect_loop_modified(stmts: &[Stmt]) -> std::collections::HashSet<Symbol
 fn collect_loop_modified_rec(stmts: &[Stmt], names: &mut std::collections::HashSet<Symbol>) {
     for stmt in stmts {
         match stmt {
-            Stmt::MutLet { name, .. } | Stmt::Assign { name, .. } => { names.insert(name.clone()); }
+            Stmt::MutLet { name, .. } | Stmt::Assign { name, .. } => {
+                names.insert(name.clone());
+            }
             Stmt::DestructMutLet { bindings, .. } => {
-                for b in bindings { names.insert(b.name.clone()); }
+                for b in bindings {
+                    names.insert(b.name.clone());
+                }
             }
-            Stmt::DestructAssign { names: dest_names, .. } => {
-                for n in dest_names { names.insert(n.clone()); }
+            Stmt::DestructAssign {
+                names: dest_names, ..
+            } => {
+                for n in dest_names {
+                    names.insert(n.clone());
+                }
             }
-            Stmt::While { body, .. } | Stmt::ForIn { body, .. } => collect_loop_modified_rec(body, names),
+            Stmt::While { body, .. } | Stmt::ForIn { body, .. } => {
+                collect_loop_modified_rec(body, names)
+            }
             Stmt::Block(inner) => collect_loop_modified_rec(inner, names),
             _ => {}
         }
@@ -326,7 +421,10 @@ pub struct Param {
 
 impl Param {
     pub fn new(name: &str) -> Self {
-        Self { name: Symbol::new(name), span: Span::dummy() }
+        Self {
+            name: Symbol::new(name),
+            span: Span::dummy(),
+        }
     }
 }
 
@@ -448,18 +546,26 @@ impl fmt::Display for ExprKind {
             Self::Call { callee, args } => {
                 write!(f, "{callee}(")?;
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{arg}")?;
                 }
                 write!(f, ")")
             }
-            Self::If { cond, then_expr, else_expr } => {
+            Self::If {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 write!(f, "if {cond} then {then_expr} else {else_expr}")
             }
             Self::SetLit(elements) => {
                 write!(f, "{{")?;
                 for (i, e) in elements.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{e}")?;
                 }
                 write!(f, "}}")
@@ -467,7 +573,12 @@ impl fmt::Display for ExprKind {
             Self::Try(inner) => write!(f, "{inner}?"),
             Self::FailLit => f.write_str("fail"),
             Self::FailWith(expr) => write!(f, "fail {expr}"),
-            Self::Comprehension { output, var, source, filter } => {
+            Self::Comprehension {
+                output,
+                var,
+                source,
+                filter,
+            } => {
                 write!(f, "{{{output} for {var} in {source}")?;
                 if let Some(pred) = filter {
                     write!(f, " if {pred}")?;
@@ -477,7 +588,9 @@ impl fmt::Display for ExprKind {
             Self::Tuple(elems) => {
                 write!(f, "(")?;
                 for (i, e) in elems.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{e}")?;
                 }
                 write!(f, ")")
@@ -495,13 +608,17 @@ impl fmt::Display for ExprKind {
 
 /// Returns true when `child` (on the left of `parent_op`) needs parentheses.
 fn needs_parens_left(parent: &BinOp, child: &ExprKind) -> bool {
-    let ExprKind::BinOp { op: child_op, .. } = child else { return false };
+    let ExprKind::BinOp { op: child_op, .. } = child else {
+        return false;
+    };
     binop_prec(child_op) < binop_prec(parent)
 }
 
 /// Returns true when `child` (on the right of `parent_op`) needs parentheses.
 fn needs_parens_right(parent: &BinOp, child: &ExprKind) -> bool {
-    let ExprKind::BinOp { op: child_op, .. } = child else { return false };
+    let ExprKind::BinOp { op: child_op, .. } = child else {
+        return false;
+    };
     // Right side also needs parens when equal precedence and left-associative
     // (all our binary operators are left-associative).
     binop_prec(child_op) <= binop_prec(parent)
@@ -510,40 +627,45 @@ fn needs_parens_right(parent: &BinOp, child: &ExprKind) -> bool {
 /// Precedence tier — higher number binds tighter.
 fn binop_prec(op: &BinOp) -> u8 {
     match op {
-        BinOp::Or                               => 1,
-        BinOp::And                              => 2,
-        BinOp::Eq | BinOp::Ne | BinOp::Lt
-        | BinOp::Le | BinOp::Gt | BinOp::Ge
-        | BinOp::In | BinOp::NotIn              => 3,
-        BinOp::Union                            => 4,
-        BinOp::SymDiff                          => 5,
-        BinOp::Intersect                        => 6,
+        BinOp::Or => 1,
+        BinOp::And => 2,
+        BinOp::Eq
+        | BinOp::Ne
+        | BinOp::Lt
+        | BinOp::Le
+        | BinOp::Gt
+        | BinOp::Ge
+        | BinOp::In
+        | BinOp::NotIn => 3,
+        BinOp::Union => 4,
+        BinOp::SymDiff => 5,
+        BinOp::Intersect => 6,
         BinOp::Add | BinOp::Sub | BinOp::Concat => 7,
-        BinOp::Mul | BinOp::Div                 => 8,
+        BinOp::Mul | BinOp::Div => 8,
     }
 }
 
 impl fmt::Display for BinOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Add       => "+",
-            Self::Sub       => "-",
-            Self::Mul       => "*",
-            Self::Div       => "/",
-            Self::Eq        => "==",
-            Self::Ne        => "!=",
-            Self::Lt        => "<",
-            Self::Le        => "<=",
-            Self::Gt        => ">",
-            Self::Ge        => ">=",
-            Self::In        => "in",
-            Self::NotIn     => "not in",
-            Self::Union      => "|",
-            Self::Intersect  => "&",
-            Self::SymDiff    => "^",
-            Self::And        => "and",
-            Self::Or         => "or",
-            Self::Concat     => "++",
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::Div => "/",
+            Self::Eq => "==",
+            Self::Ne => "!=",
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Gt => ">",
+            Self::Ge => ">=",
+            Self::In => "in",
+            Self::NotIn => "not in",
+            Self::Union => "|",
+            Self::Intersect => "&",
+            Self::SymDiff => "^",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Concat => "++",
         })
     }
 }
@@ -551,7 +673,7 @@ impl fmt::Display for BinOp {
 impl fmt::Display for FunctionSig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.domain {
-            None    => write!(f, "-> {}", self.range),
+            None => write!(f, "-> {}", self.range),
             Some(d) => write!(f, "{d} -> {}", self.range),
         }
     }

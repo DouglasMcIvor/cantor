@@ -6,7 +6,7 @@ use super::helpers::*;
 fn tuple_proj_sum_proved() {
     proved(
         "g : Int * Int -> Int\n\
-         g(t) = t.0 + t.1"
+         g(t) = t.0 + t.1",
     );
 }
 
@@ -14,7 +14,7 @@ fn tuple_proj_sum_proved() {
 fn tuple_return_proved() {
     proved(
         "h : Int -> Int * Int\n\
-         h(x) = (x, x + 1)"
+         h(x) = (x, x + 1)",
     );
 }
 
@@ -22,7 +22,7 @@ fn tuple_return_proved() {
 fn tuple_identity_proved() {
     proved(
         "id_pair : Int * Int -> Int * Int\n\
-         id_pair(t) = (t.0, t.1)"
+         id_pair(t) = (t.0, t.1)",
     );
 }
 
@@ -32,7 +32,7 @@ fn tuple_identity_proved() {
 fn nat_pair_proj_stays_nat() {
     proved(
         "fst : Nat * Nat -> Nat\n\
-         fst(t) = t.0"
+         fst(t) = t.0",
     );
 }
 
@@ -40,7 +40,7 @@ fn nat_pair_proj_stays_nat() {
 fn nat_pair_sum_proved() {
     proved(
         "pair_sum : Nat * Nat -> Nat\n\
-         pair_sum(t) = t.0 + t.1"
+         pair_sum(t) = t.0 + t.1",
     );
 }
 
@@ -50,7 +50,7 @@ fn nat_pair_sum_proved() {
 fn two_scalar_params_unchanged() {
     proved(
         "add : Int * Int -> Int\n\
-         add(x, y) = x + y"
+         add(x, y) = x + y",
     );
 }
 
@@ -58,7 +58,7 @@ fn two_scalar_params_unchanged() {
 fn nat_two_scalar_params_unchanged() {
     proved(
         "add_nat : Nat * Nat -> Nat\n\
-         add_nat(x, y) = x + y"
+         add_nat(x, y) = x + y",
     );
 }
 
@@ -68,6 +68,6 @@ fn nat_two_scalar_params_unchanged() {
 fn tuple_literal_range_proved() {
     proved(
         "mk : Int -> Int * Int\n\
-         mk(x) = (x, 0)"
+         mk(x) = (x, 0)",
     );
 }

@@ -13,7 +13,10 @@ use crate::{
     ast::{BinOp, DefKind, Expr, ExprKind, Item, Param, UnOp},
     error::CompileError,
     kind::Kind,
-    semantics::{elaborate::elaborate, tree::{SemExpr, SemFunctionBody, SemItem, SemStmt}},
+    semantics::{
+        elaborate::elaborate,
+        tree::{SemExpr, SemFunctionBody, SemItem, SemStmt},
+    },
     span::{Span, Symbol},
 };
 
@@ -123,22 +126,27 @@ impl<'ctx> Compiler<'ctx> {
         let param_types: Vec<_> = if param_kinds.is_empty() {
             params.iter().map(|_| i64_type.into()).collect()
         } else {
-            param_kinds.iter().map(|k| match k {
-                Kind::Tuple(_) | Kind::TaggedUnion(_) => self.kind_to_llvm_type(k).into(),
-                _ => i64_type.into(),
-            }).collect()
+            param_kinds
+                .iter()
+                .map(|k| match k {
+                    Kind::Tuple(_) | Kind::TaggedUnion(_) => self.kind_to_llvm_type(k).into(),
+                    _ => i64_type.into(),
+                })
+                .collect()
         };
         let fn_val = match &return_kind {
             Kind::Tuple(_) | Kind::TaggedUnion(_) => {
                 let ret_type = self.kind_to_llvm_type(&return_kind);
-                self.module.add_function(name, ret_type.fn_type(&param_types, false), None)
+                self.module
+                    .add_function(name, ret_type.fn_type(&param_types, false), None)
             }
-            _ => {
-                self.module.add_function(name, i64_type.fn_type(&param_types, false), None)
-            }
+            _ => self
+                .module
+                .add_function(name, i64_type.fn_type(&param_types, false), None),
         };
         self.fn_return_kinds.insert(name.to_owned(), return_kind);
-        self.fn_param_kinds.insert(name.to_owned(), param_kinds.to_vec());
+        self.fn_param_kinds
+            .insert(name.to_owned(), param_kinds.to_vec());
         fn_val
     }
 
@@ -150,9 +158,8 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Int | Kind::Set(_) => self.context.i64_type().into(),
             Kind::Bool | Kind::Fail => self.context.bool_type().into(),
             Kind::Tuple(elems) => {
-                let types: Vec<BasicTypeEnum<'ctx>> = elems.iter()
-                    .map(|k| self.kind_to_llvm_type(k))
-                    .collect();
+                let types: Vec<BasicTypeEnum<'ctx>> =
+                    elems.iter().map(|k| self.kind_to_llvm_type(k)).collect();
                 self.context.struct_type(&types, false).into()
             }
             Kind::TaggedUnion(arms) => {
@@ -160,7 +167,7 @@ impl<'ctx> Compiler<'ctx> {
                 let i32t: BasicTypeEnum = self.context.i32_type().into();
                 let i64t: BasicTypeEnum = self.context.i64_type().into();
                 let mut fields = vec![i32t];
-                fields.extend(std::iter::repeat(i64t).take(n));
+                fields.extend(std::iter::repeat_n(i64t, n));
                 self.context.struct_type(&fields, false).into()
             }
             // Vector is an i64 pointer-as-i64 (same wire type as Set).
@@ -170,10 +177,13 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Returns the `{i1, i64}` struct type used for all fallible function returns.
     pub(crate) fn fail_struct_type(&self) -> inkwell::types::StructType<'ctx> {
-        self.context.struct_type(&[
-            self.context.bool_type().into(),
-            self.context.i64_type().into(),
-        ], false)
+        self.context.struct_type(
+            &[
+                self.context.bool_type().into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        )
     }
 
     /// Serialise `val : arm_kind` into the i64 leaf fields of a tagged-union
@@ -189,16 +199,19 @@ impl<'ctx> Compiler<'ctx> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match arm_kind {
             Kind::Int | Kind::Set(_) => {
-                *agg = self.builder
+                *agg = self
+                    .builder
                     .build_insert_value(*agg, val.into_int_value(), *field_idx, "tu_l")
                     .map_err(err)?;
                 *field_idx += 1;
             }
             Kind::Bool | Kind::Fail => {
-                let wide = self.builder
+                let wide = self
+                    .builder
                     .build_int_z_extend(val.into_int_value(), i64t, "tu_lb")
                     .map_err(err)?;
-                *agg = self.builder
+                *agg = self
+                    .builder
                     .build_insert_value(*agg, wide, *field_idx, "tu_l")
                     .map_err(err)?;
                 *field_idx += 1;
@@ -206,7 +219,8 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Tuple(elems) => {
                 let sv = AggregateValueEnum::StructValue(val.into_struct_value());
                 for (i, ek) in elems.iter().enumerate() {
-                    let elem = self.builder
+                    let elem = self
+                        .builder
                         .build_extract_value(sv, i as u32, "tu_te")
                         .map_err(err)?;
                     self.insert_kind_leaves(agg, elem, ek, field_idx)?;
@@ -219,7 +233,8 @@ impl<'ctx> Compiler<'ctx> {
             }
             // Vector is an i64 pointer — insert it like Int/Set.
             Kind::Vector(_) => {
-                *agg = self.builder
+                *agg = self
+                    .builder
                     .build_insert_value(*agg, val.into_int_value(), *field_idx, "tu_l")
                     .map_err(err)?;
                 *field_idx += 1;
@@ -235,11 +250,13 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         let zero_i1 = self.context.bool_type().const_int(0, false);
         let s = self.fail_struct_type().get_undef();
-        let s = self.builder
+        let s = self
+            .builder
             .build_insert_value(s, zero_i1, 0, "sv_flag")
             .map_err(|e| CompileError::ice(e.to_string()))?
             .into_struct_value();
-        let s = self.builder
+        let s = self
+            .builder
             .build_insert_value(s, payload, 1, "sv_payload")
             .map_err(|e| CompileError::ice(e.to_string()))?
             .into_struct_value();
@@ -253,11 +270,13 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         let one_i1 = self.context.bool_type().const_int(1, false);
         let s = self.fail_struct_type().get_undef();
-        let s = self.builder
+        let s = self
+            .builder
             .build_insert_value(s, one_i1, 0, "fv_flag")
             .map_err(|e| CompileError::ice(e.to_string()))?
             .into_struct_value();
-        let s = self.builder
+        let s = self
+            .builder
             .build_insert_value(s, payload, 1, "fv_payload")
             .map_err(|e| CompileError::ice(e.to_string()))?
             .into_struct_value();
@@ -276,14 +295,17 @@ impl<'ctx> Compiler<'ctx> {
         }
         let i64t = self.context.i64_type();
         let payload = match kind {
-            Kind::Bool => self.builder
+            Kind::Bool => self
+                .builder
                 .build_int_z_extend(val.into_int_value(), i64t, "coerce_bool")
                 .map_err(|e| CompileError::ice(e.to_string()))?
                 .into(),
             Kind::Int => val,
-            _ => return Err(CompileError::ice(
-                "cannot coerce value to fail struct: unsupported kind",
-            )),
+            _ => {
+                return Err(CompileError::ice(
+                    "cannot coerce value to fail struct: unsupported kind",
+                ));
+            }
         };
         self.build_success_struct(payload)
     }
@@ -316,7 +338,8 @@ impl<'ctx> Compiler<'ctx> {
         }
         let i64t = self.context.i64_type();
         let payload = match kind {
-            Kind::Bool => self.builder
+            Kind::Bool => self
+                .builder
                 .build_int_z_extend(val.into_int_value(), i64t, "bool_ret")
                 .map_err(|e| CompileError::ice(e.to_string()))?
                 .into(),
@@ -378,9 +401,10 @@ impl<'ctx> Compiler<'ctx> {
                     )
                     .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1_val.into(), Kind::Bool)
-            } else if matches!(kind, Kind::Tuple(_) | Kind::TaggedUnion(_)) {
-                (llvm_param, kind.clone())
-            } else if matches!(kind, Kind::Vector(_) | Kind::Set(_)) {
+            } else if matches!(
+                kind,
+                Kind::Tuple(_) | Kind::TaggedUnion(_) | Kind::Vector(_) | Kind::Set(_)
+            ) {
                 (llvm_param, kind.clone())
             } else {
                 (llvm_param, Kind::Int)
@@ -449,9 +473,10 @@ impl<'ctx> Compiler<'ctx> {
                     )
                     .map_err(|e| CompileError::ice(e.to_string()))?;
                 (i1_val.into(), Kind::Bool)
-            } else if matches!(kind, Kind::Tuple(_) | Kind::TaggedUnion(_)) {
-                (llvm_param, kind.clone())
-            } else if matches!(kind, Kind::Vector(_) | Kind::Set(_)) {
+            } else if matches!(
+                kind,
+                Kind::Tuple(_) | Kind::TaggedUnion(_) | Kind::Vector(_) | Kind::Set(_)
+            ) {
                 (llvm_param, kind.clone())
             } else {
                 (llvm_param, Kind::Int)
@@ -587,10 +612,10 @@ pub(super) fn compile_elaborated<'ctx>(
     // elaborator needs to disambiguate.
     let mut const_vals: HashMap<Symbol, i64> = HashMap::new();
     for item in items {
-        if let Item::NameDef(def) = item {
-            if let Ok(val) = eval_const(&def.value, &const_vals) {
-                const_vals.insert(def.name.clone(), val);
-            }
+        if let Item::NameDef(def) = item
+            && let Ok(val) = eval_const(&def.value, &const_vals)
+        {
+            const_vals.insert(def.name.clone(), val);
         }
     }
 
@@ -599,19 +624,19 @@ pub(super) fn compile_elaborated<'ctx>(
     // (e.g. `HTTPError = {400, 503}`) at compile time.
     let mut user_set_vals: HashMap<String, Vec<i64>> = HashMap::new();
     for item in items {
-        if let Item::NameDef(def) = item {
-            if let ExprKind::SetLit(elements) = &def.value.kind {
-                let vals: Option<Vec<i64>> = elements
-                    .iter()
-                    .map(|e| match &e.kind {
-                        ExprKind::IntLit(n) => Some(*n),
-                        ExprKind::Var(sym) => const_vals.get(sym).copied(),
-                        _ => None,
-                    })
-                    .collect();
-                if let Some(v) = vals {
-                    user_set_vals.insert(def.name.0.clone(), v);
-                }
+        if let Item::NameDef(def) = item
+            && let ExprKind::SetLit(elements) = &def.value.kind
+        {
+            let vals: Option<Vec<i64>> = elements
+                .iter()
+                .map(|e| match &e.kind {
+                    ExprKind::IntLit(n) => Some(*n),
+                    ExprKind::Var(sym) => const_vals.get(sym).copied(),
+                    _ => None,
+                })
+                .collect();
+            if let Some(v) = vals {
+                user_set_vals.insert(def.name.0.clone(), v);
             }
         }
     }
@@ -642,20 +667,27 @@ pub(super) fn compile_elaborated<'ctx>(
         .filter_map(|item| match item {
             SemItem::FunctionDef(def) => {
                 let fn_val = compiler.declare_function(
-                    &def.name.0, &def.params, &def.param_kinds, def.return_kind.clone(),
+                    &def.name.0,
+                    &def.params,
+                    &def.param_kinds,
+                    def.return_kind.clone(),
                 );
                 // Record the range expression so `compile_try` can determine what
                 // error values `?` should propagate for this callee.
                 if let Some(sig) = def.sigs.first() {
-                    compiler.fn_ranges.insert(def.name.0.clone(), sig.range.clone());
+                    compiler
+                        .fn_ranges
+                        .insert(def.name.0.clone(), sig.range.clone());
                     // Record per-parameter domain set expressions so `coerce_call_arg`
                     // can disambiguate which arm of a `+`-typed parameter a scalar
                     // call argument belongs to.
-                    if let Ok(parts) = crate::semantics::tree::sem_param_set_exprs(sig.domain.as_ref(), def.params.len()) {
-                        compiler.fn_param_set_exprs.insert(
-                            def.name.0.clone(),
-                            parts.into_iter().cloned().collect(),
-                        );
+                    if let Ok(parts) = crate::semantics::tree::sem_param_set_exprs(
+                        sig.domain.as_ref(),
+                        def.params.len(),
+                    ) {
+                        compiler
+                            .fn_param_set_exprs
+                            .insert(def.name.0.clone(), parts.into_iter().cloned().collect());
                     }
                 }
                 Some((fn_val, def))
@@ -666,17 +698,30 @@ pub(super) fn compile_elaborated<'ctx>(
 
     // Pass 2 — compile bodies with constants available.
     for (fn_val, def) in decls {
-        let is_fallible = def.sigs.iter().any(|s| crate::semantics::tree::range_contains_fail(&s.range));
+        let is_fallible = def
+            .sigs
+            .iter()
+            .any(|s| crate::semantics::tree::range_contains_fail(&s.range));
 
         match &def.body {
             SemFunctionBody::Expr(e) => {
                 compiler.compile_function_body(
-                    fn_val, &def.params, &def.param_kinds, e, is_fallible, &const_env,
+                    fn_val,
+                    &def.params,
+                    &def.param_kinds,
+                    e,
+                    is_fallible,
+                    &const_env,
                 )?;
             }
             SemFunctionBody::Block(stmts) => {
                 compiler.compile_block_body(
-                    fn_val, &def.params, &def.param_kinds, stmts, is_fallible, &const_env,
+                    fn_val,
+                    &def.params,
+                    &def.param_kinds,
+                    stmts,
+                    is_fallible,
+                    &const_env,
                 )?;
             }
         }
@@ -684,7 +729,11 @@ pub(super) fn compile_elaborated<'ctx>(
 
     // Emit trampolines for `main` depending on its return kind.
     if let Some(main_fn) = compiler.module.get_function("main") {
-        let ret_kind = compiler.fn_return_kinds.get("main").cloned().unwrap_or(Kind::Int);
+        let ret_kind = compiler
+            .fn_return_kinds
+            .get("main")
+            .cloned()
+            .unwrap_or(Kind::Int);
         match &ret_kind {
             // Fallible main: emit an i64-returning runner that converts {i1, i64} to flat i64.
             Kind::Tuple(elems) if elems.first() == Some(&Kind::Fail) => {
@@ -705,7 +754,7 @@ pub(super) fn compile_elaborated<'ctx>(
 ///
 /// Useful in tests to assert whether something was handled at compile time
 /// (no runtime calls in the IR) or at runtime (runtime calls present).
-pub fn compile_to_ir<'ctx>(ctx: &'ctx Context, items: &[Item]) -> Result<String, CompileError> {
+pub fn compile_to_ir(ctx: &Context, items: &[Item]) -> Result<String, CompileError> {
     let compiler = compile_items(ctx, items)?;
     Ok(compiler.module().print_to_string().to_string())
 }

@@ -44,7 +44,7 @@ pub fn check_names(items: &[Item]) -> Vec<CompileError> {
     for item in items {
         match item {
             Item::FunctionDef(def) => check_function(def, &mut errors),
-            Item::NameDef(def)     => check_name_def(def, &mut errors),
+            Item::NameDef(def) => check_name_def(def, &mut errors),
         }
     }
     errors
@@ -96,15 +96,24 @@ fn check_name_def(def: &NameDef, errors: &mut Vec<CompileError>) {
 fn check_stmts(stmts: &[Stmt], errors: &mut Vec<CompileError>) {
     for stmt in stmts {
         match stmt {
-            Stmt::Let { name, span, .. } | Stmt::MutLet { name, span, .. } => must_be_lowercase(&name.0, *span, errors),
-            Stmt::DestructLet { bindings, span, .. } | Stmt::DestructMutLet { bindings, span, .. } => {
+            Stmt::Let { name, span, .. } | Stmt::MutLet { name, span, .. } => {
+                must_be_lowercase(&name.0, *span, errors)
+            }
+            Stmt::DestructLet { bindings, span, .. }
+            | Stmt::DestructMutLet { bindings, span, .. } => {
                 for binding in bindings {
                     must_be_lowercase(&binding.name.0, *span, errors);
                 }
             }
-            Stmt::Block(inner)              => check_stmts(inner, errors),
-            Stmt::While { body, .. }        => check_stmts(body, errors),
-            Stmt::ForIn { var, set, body, span, .. } => {
+            Stmt::Block(inner) => check_stmts(inner, errors),
+            Stmt::While { body, .. } => check_stmts(body, errors),
+            Stmt::ForIn {
+                var,
+                set,
+                body,
+                span,
+                ..
+            } => {
                 // Uppercase loop variable promises compile-time values; the
                 // iterable must be statically materializable to honour that promise.
                 if starts_uppercase(&var.0) && !is_compile_time_value(set) {
@@ -114,11 +123,15 @@ fn check_stmts(stmts: &[Stmt], errors: &mut Vec<CompileError>) {
                              the iterable must be a set literal or an uppercase-named \
                              set (use lowercase `{}` for a runtime iterable)",
                             var.0,
-                            var.0.chars().next().map(|c| {
-                                let mut s = c.to_lowercase().to_string();
-                                s.push_str(&var.0[c.len_utf8()..]);
-                                s
-                            }).unwrap_or_default(),
+                            var.0
+                                .chars()
+                                .next()
+                                .map(|c| {
+                                    let mut s = c.to_lowercase().to_string();
+                                    s.push_str(&var.0[c.len_utf8()..]);
+                                    s
+                                })
+                                .unwrap_or_default(),
                         ),
                         span: *span,
                     });
@@ -176,9 +189,15 @@ fn vars_must_be_uppercase(expr: &Expr, errors: &mut Vec<CompileError>) {
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 fn starts_uppercase(name: &str) -> bool {
-    name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+    name.chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
 }
 
 fn starts_lowercase(name: &str) -> bool {
-    name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false)
+    name.chars()
+        .next()
+        .map(|c| c.is_lowercase())
+        .unwrap_or(false)
 }

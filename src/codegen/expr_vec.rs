@@ -11,14 +11,9 @@
 ///   • `compile_union_vec_index`       — `xs[i]` for TaggedUnion element kind (NEW)
 ///   • `compile_scalar_as_singleton_vector`
 ///   • `compile_struct_vec_index`
-
 use inkwell::values::{AggregateValueEnum, BasicValueEnum};
 
-use crate::{
-    error::CompileError,
-    kind::Kind,
-    semantics::tree::SemExpr,
-};
+use crate::{error::CompileError, kind::Kind, semantics::tree::SemExpr};
 
 use super::wire::{leaf_count, tagged_union_leaf_count};
 
@@ -33,15 +28,31 @@ use super::{Compiler, Env};
 ///
 /// TaggedUnion and Union element kinds are NOT handled here because they use a
 /// different multi-step ABI (builder_new / set_arm / push_leaf / finish).
-fn vec_builder_fns(ek: &Kind) -> Result<(&'static str, &'static str, &'static str, &'static str), String> {
+fn vec_builder_fns(
+    ek: &Kind,
+) -> Result<(&'static str, &'static str, &'static str, &'static str), String> {
     match ek {
-        Kind::Int  => Ok(("cantor_vec_builder_new_i64",  "cantor_vec_builder_push_i64",
-                          "cantor_vec_builder_finish_i64", "cantor_vec_len_i64")),
-        Kind::Bool => Ok(("cantor_vec_builder_new_bool", "cantor_vec_builder_push_bool",
-                          "cantor_vec_builder_finish_bool", "cantor_vec_len_bool")),
-        Kind::Vector(_) => Ok(("cantor_list_vec_builder_new",    "cantor_list_vec_builder_push",
-                               "cantor_list_vec_builder_finish", "cantor_list_vec_len")),
-        other => Err(format!("vec_builder_fns: unsupported element kind {other:?}")),
+        Kind::Int => Ok((
+            "cantor_vec_builder_new_i64",
+            "cantor_vec_builder_push_i64",
+            "cantor_vec_builder_finish_i64",
+            "cantor_vec_len_i64",
+        )),
+        Kind::Bool => Ok((
+            "cantor_vec_builder_new_bool",
+            "cantor_vec_builder_push_bool",
+            "cantor_vec_builder_finish_bool",
+            "cantor_vec_len_bool",
+        )),
+        Kind::Vector(_) => Ok((
+            "cantor_list_vec_builder_new",
+            "cantor_list_vec_builder_push",
+            "cantor_list_vec_builder_finish",
+            "cantor_list_vec_len",
+        )),
+        other => Err(format!(
+            "vec_builder_fns: unsupported element kind {other:?}"
+        )),
     }
 }
 
@@ -58,7 +69,7 @@ impl<'ctx> Compiler<'ctx> {
         let (get_fn, elem_kind) = match &base_kind {
             Kind::Vector(ek) => {
                 let fn_name = match ek.as_ref() {
-                    Kind::Int  => "cantor_vec_get_i64",
+                    Kind::Int => "cantor_vec_get_i64",
                     Kind::Bool => "cantor_vec_get_bool",
                     Kind::Vector(_) => "cantor_list_vec_get",
                     Kind::Tuple(field_kinds) => {
@@ -69,27 +80,34 @@ impl<'ctx> Compiler<'ctx> {
                         let arms = arms.clone();
                         return self.compile_union_vec_index(base_val, idx_val, &arms);
                     }
-                    other => return Err(CompileError::ice(format!(
-                        "TODO: `xs[i]` not yet implemented for element kind {other:?}"
-                    ))),
+                    other => {
+                        return Err(CompileError::ice(format!(
+                            "TODO: `xs[i]` not yet implemented for element kind {other:?}"
+                        )));
+                    }
                 };
                 (fn_name, ek.as_ref().clone())
             }
-            other => return Err(CompileError::ice(format!(
-                "`xs[i]` requires a vector (X*) base, got {other:?}"
-            ))),
+            other => {
+                return Err(CompileError::ice(format!(
+                    "`xs[i]` requires a vector (X*) base, got {other:?}"
+                )));
+            }
         };
 
         let fn_val = self.module.get_function(get_fn).ok_or_else(|| {
             CompileError::ice(format!("runtime function `{get_fn}` not declared"))
         })?;
         let base_i64 = base_val.into_int_value();
-        let idx_i64  = idx_val.into_int_value();
-        let result = self.builder.build_call(fn_val, &[base_i64.into(), idx_i64.into()], "vec_get")
+        let idx_i64 = idx_val.into_int_value();
+        let result = self
+            .builder
+            .build_call(fn_val, &[base_i64.into(), idx_i64.into()], "vec_get")
             .map_err(|e| CompileError::ice(e.to_string()))?;
-        let result_val = result.try_as_basic_value().left().ok_or_else(|| {
-            CompileError::ice(format!("`{get_fn}` returned void unexpectedly"))
-        })?;
+        let result_val = result
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::ice(format!("`{get_fn}` returned void unexpectedly")))?;
         Ok((result_val, elem_kind))
     }
 
@@ -108,30 +126,41 @@ impl<'ctx> Compiler<'ctx> {
         if let Kind::Vector(ek) = &base_kind {
             match ek.as_ref() {
                 Kind::Tuple(field_kinds) => {
-                    let idx_val = self.context.i64_type().const_int(index as u64, false).into();
+                    let idx_val = self
+                        .context
+                        .i64_type()
+                        .const_int(index as u64, false)
+                        .into();
                     let fk = field_kinds.clone();
                     return self.compile_struct_vec_index(base_val, idx_val, &fk);
                 }
                 Kind::TaggedUnion(arms) => {
-                    let idx_val = self.context.i64_type().const_int(index as u64, false).into();
+                    let idx_val = self
+                        .context
+                        .i64_type()
+                        .const_int(index as u64, false)
+                        .into();
                     let arms = arms.clone();
                     return self.compile_union_vec_index(base_val, idx_val, &arms);
                 }
                 _ => {
                     let idx_val = self.context.i64_type().const_int(index as u64, false);
                     let (get_fn, elem_kind) = match ek.as_ref() {
-                        Kind::Int  => ("cantor_vec_get_i64",  Kind::Int),
+                        Kind::Int => ("cantor_vec_get_i64", Kind::Int),
                         Kind::Bool => ("cantor_vec_get_bool", Kind::Bool),
                         Kind::Vector(inner) => ("cantor_list_vec_get", Kind::Vector(inner.clone())),
-                        other => return Err(CompileError::ice(format!(
-                            "xs[N]: unsupported element kind {other:?}"
-                        ))),
+                        other => {
+                            return Err(CompileError::ice(format!(
+                                "xs[N]: unsupported element kind {other:?}"
+                            )));
+                        }
                     };
                     let fn_val = self.module.get_function(get_fn).ok_or_else(|| {
                         CompileError::ice(format!("runtime function `{get_fn}` not declared"))
                     })?;
                     let base_i64 = base_val.into_int_value();
-                    let result = self.builder
+                    let result = self
+                        .builder
                         .build_call(fn_val, &[base_i64.into(), idx_val.into()], "vec_proj")
                         .map_err(|e| CompileError::ice(e.to_string()))?;
                     let result_val = result.try_as_basic_value().left().ok_or_else(|| {
@@ -145,7 +174,8 @@ impl<'ctx> Compiler<'ctx> {
         // TaggedUnion LLVM struct: { i32 tag, i64 leaf_0, … }.  Projection .N
         // extracts field N directly; leaves are raw i64 (Kind::Int).
         if let Kind::TaggedUnion(_) = &base_kind {
-            let field_val = self.builder
+            let field_val = self
+                .builder
                 .build_extract_value(
                     AggregateValueEnum::StructValue(base_val.into_struct_value()),
                     index as u32,
@@ -157,9 +187,11 @@ impl<'ctx> Compiler<'ctx> {
 
         let elem_kinds = match base_kind {
             Kind::Tuple(ek) => ek,
-            _ => return Err(CompileError::ice(
-                "projection `.N` applied to non-tuple value",
-            )),
+            _ => {
+                return Err(CompileError::ice(
+                    "projection `.N` applied to non-tuple value",
+                ));
+            }
         };
         if index >= elem_kinds.len() {
             return Err(CompileError::ice(format!(
@@ -167,7 +199,8 @@ impl<'ctx> Compiler<'ctx> {
                 elem_kinds.len()
             )));
         }
-        let elem_val = self.builder
+        let elem_val = self
+            .builder
             .build_extract_value(
                 AggregateValueEnum::StructValue(base_val.into_struct_value()),
                 index as u32,
@@ -198,18 +231,25 @@ impl<'ctx> Compiler<'ctx> {
             return self.compile_tuple_as_union_vec(tuple_val, tuple_elems, &arms);
         }
 
-        let (new_fn, push_fn, finish_fn, _) = vec_builder_fns(elem_kind)
-            .map_err(|e| CompileError::ice(e))?;
+        let (new_fn, push_fn, finish_fn, _) =
+            vec_builder_fns(elem_kind).map_err(|e| CompileError::ice(e))?;
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
 
-        let new_fn_val = self.module.get_function(new_fn)
+        let new_fn_val = self
+            .module
+            .get_function(new_fn)
             .ok_or_else(|| CompileError::ice(format!("{new_fn} not declared")))?;
-        let push_fn_val = self.module.get_function(push_fn)
+        let push_fn_val = self
+            .module
+            .get_function(push_fn)
             .ok_or_else(|| CompileError::ice(format!("{push_fn} not declared")))?;
-        let finish_fn_val = self.module.get_function(finish_fn)
+        let finish_fn_val = self
+            .module
+            .get_function(finish_fn)
             .ok_or_else(|| CompileError::ice(format!("{finish_fn} not declared")))?;
 
-        let builder_ptr = self.builder
+        let builder_ptr = self
+            .builder
             .build_call(new_fn_val, &[], "vec_builder")
             .map_err(err)?
             .try_as_basic_value()
@@ -219,30 +259,36 @@ impl<'ctx> Compiler<'ctx> {
         let sv = AggregateValueEnum::StructValue(tuple_val.into_struct_value());
         let i64t = self.context.i64_type();
         for (i, outer_ek) in tuple_elems.iter().enumerate() {
-            let elem = self.builder
+            let elem = self
+                .builder
                 .build_extract_value(sv, i as u32, "vec_elem")
                 .map_err(err)?;
 
             let push_val: BasicValueEnum<'ctx> = match (elem_kind, outer_ek) {
                 (Kind::Vector(inner_ek), Kind::Tuple(inner_elems)) => {
-                    let (inner_ptr, _) = self.compile_tuple_as_vector(elem, inner_elems, inner_ek)?;
+                    let (inner_ptr, _) =
+                        self.compile_tuple_as_vector(elem, inner_elems, inner_ek)?;
                     inner_ptr
                 }
                 (Kind::Vector(_), Kind::Vector(_)) => elem,
-                (_, Kind::Bool) => {
-                    self.builder
-                        .build_int_z_extend(elem.into_int_value(), i64t, "vec_elem_ext")
-                        .map_err(err)?
-                        .into()
-                }
+                (_, Kind::Bool) => self
+                    .builder
+                    .build_int_z_extend(elem.into_int_value(), i64t, "vec_elem_ext")
+                    .map_err(err)?
+                    .into(),
                 _ => elem,
             };
             self.builder
-                .build_call(push_fn_val, &[builder_ptr.into(), push_val.into()], "vec_push")
+                .build_call(
+                    push_fn_val,
+                    &[builder_ptr.into(), push_val.into()],
+                    "vec_push",
+                )
                 .map_err(err)?;
         }
 
-        let vec_ptr = self.builder
+        let vec_ptr = self
+            .builder
             .build_call(finish_fn_val, &[builder_ptr.into()], "vec_ptr")
             .map_err(err)?
             .try_as_basic_value()
@@ -263,28 +309,40 @@ impl<'ctx> Compiler<'ctx> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         let i64t = self.context.i64_type();
 
-        let new_fn = self.module.get_function("cantor_struct_vec_builder_new")
+        let new_fn = self
+            .module
+            .get_function("cantor_struct_vec_builder_new")
             .ok_or_else(|| CompileError::ice("cantor_struct_vec_builder_new not declared"))?;
-        let push_fn = self.module.get_function("cantor_struct_vec_builder_push_field")
-            .ok_or_else(|| CompileError::ice("cantor_struct_vec_builder_push_field not declared"))?;
-        let finish_fn = self.module.get_function("cantor_struct_vec_builder_finish")
+        let push_fn = self
+            .module
+            .get_function("cantor_struct_vec_builder_push_field")
+            .ok_or_else(|| {
+                CompileError::ice("cantor_struct_vec_builder_push_field not declared")
+            })?;
+        let finish_fn = self
+            .module
+            .get_function("cantor_struct_vec_builder_finish")
             .ok_or_else(|| CompileError::ice("cantor_struct_vec_builder_finish not declared"))?;
 
         let n_fields_val = i64t.const_int(field_kinds.len() as u64, false);
-        let builder_ptr = self.builder
+        let builder_ptr = self
+            .builder
             .build_call(new_fn, &[n_fields_val.into()], "sv_builder")
             .map_err(err)?
-            .try_as_basic_value().left()
+            .try_as_basic_value()
+            .left()
             .ok_or_else(|| CompileError::ice("cantor_struct_vec_builder_new returned void"))?;
 
         let outer_sv = AggregateValueEnum::StructValue(tuple_val.into_struct_value());
         for i in 0..tuple_elems.len() {
-            let outer_elem = self.builder
+            let outer_elem = self
+                .builder
                 .build_extract_value(outer_sv, i as u32, "sv_row")
                 .map_err(err)?;
             let inner_sv = AggregateValueEnum::StructValue(outer_elem.into_struct_value());
             for (j, fk) in field_kinds.iter().enumerate() {
-                let field = self.builder
+                let field = self
+                    .builder
                     .build_extract_value(inner_sv, j as u32, "sv_field")
                     .map_err(err)?;
                 let field_i64 = if *fk == Kind::Bool {
@@ -297,18 +355,27 @@ impl<'ctx> Compiler<'ctx> {
                 };
                 let field_idx_val = i64t.const_int(j as u64, false);
                 self.builder
-                    .build_call(push_fn, &[builder_ptr.into(), field_idx_val.into(), field_i64.into()], "sv_push")
+                    .build_call(
+                        push_fn,
+                        &[builder_ptr.into(), field_idx_val.into(), field_i64.into()],
+                        "sv_push",
+                    )
                     .map_err(err)?;
             }
         }
 
-        let vec_ptr = self.builder
+        let vec_ptr = self
+            .builder
             .build_call(finish_fn, &[builder_ptr.into()], "sv_ptr")
             .map_err(err)?
-            .try_as_basic_value().left()
+            .try_as_basic_value()
+            .left()
             .ok_or_else(|| CompileError::ice("cantor_struct_vec_builder_finish returned void"))?;
 
-        Ok((vec_ptr, Kind::Vector(Box::new(Kind::Tuple(field_kinds.to_vec())))))
+        Ok((
+            vec_ptr,
+            Kind::Vector(Box::new(Kind::Tuple(field_kinds.to_vec()))),
+        ))
     }
 
     /// Build a union-vector (element kind = `Kind::TaggedUnion(arms)`) from an
@@ -325,20 +392,30 @@ impl<'ctx> Compiler<'ctx> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         let i64t = self.context.i64_type();
 
-        let new_fn = self.module.get_function("cantor_union_vec_builder_new")
+        let new_fn = self
+            .module
+            .get_function("cantor_union_vec_builder_new")
             .ok_or_else(|| CompileError::ice("cantor_union_vec_builder_new not declared"))?;
-        let set_arm_fn = self.module.get_function("cantor_union_vec_builder_set_arm")
+        let set_arm_fn = self
+            .module
+            .get_function("cantor_union_vec_builder_set_arm")
             .ok_or_else(|| CompileError::ice("cantor_union_vec_builder_set_arm not declared"))?;
-        let push_fn = self.module.get_function("cantor_union_vec_builder_push_leaf")
+        let push_fn = self
+            .module
+            .get_function("cantor_union_vec_builder_push_leaf")
             .ok_or_else(|| CompileError::ice("cantor_union_vec_builder_push_leaf not declared"))?;
-        let finish_fn = self.module.get_function("cantor_union_vec_builder_finish")
+        let finish_fn = self
+            .module
+            .get_function("cantor_union_vec_builder_finish")
             .ok_or_else(|| CompileError::ice("cantor_union_vec_builder_finish not declared"))?;
 
         let n_arms_val = i64t.const_int(all_arms.len() as u64, false);
-        let builder_ptr = self.builder
+        let builder_ptr = self
+            .builder
             .build_call(new_fn, &[n_arms_val.into()], "uv_builder")
             .map_err(err)?
-            .try_as_basic_value().left()
+            .try_as_basic_value()
+            .left()
             .ok_or_else(|| CompileError::ice("cantor_union_vec_builder_new returned void"))?;
 
         // Register leaf counts for all arms.
@@ -346,40 +423,60 @@ impl<'ctx> Compiler<'ctx> {
             let ai_val = i64t.const_int(ai as u64, false);
             let nl_val = i64t.const_int(leaf_count(arm_kind) as u64, false);
             self.builder
-                .build_call(set_arm_fn, &[builder_ptr.into(), ai_val.into(), nl_val.into()], "uv_set_arm")
+                .build_call(
+                    set_arm_fn,
+                    &[builder_ptr.into(), ai_val.into(), nl_val.into()],
+                    "uv_set_arm",
+                )
                 .map_err(err)?;
         }
 
         // Push each element into the builder.
         let outer_sv = AggregateValueEnum::StructValue(tuple_val.into_struct_value());
         for (i, ek) in elem_kinds.iter().enumerate() {
-            let elem = self.builder
+            let elem = self
+                .builder
                 .build_extract_value(outer_sv, i as u32, "uv_elem")
                 .map_err(err)?;
 
-            let arm_idx = all_arms.iter().position(|k| k == ek)
-                .ok_or_else(|| CompileError::ice(format!(
+            let arm_idx = all_arms.iter().position(|k| k == ek).ok_or_else(|| {
+                CompileError::ice(format!(
                     "compile_tuple_as_union_vec: element kind {ek:?} not found \
                      in arms {all_arms:?}"
-                )))?;
+                ))
+            })?;
 
             let leaves = self.extract_union_leaves(elem, ek)?;
             let ai_val = i64t.const_int(arm_idx as u64, false);
             for (li, leaf) in leaves.iter().enumerate() {
                 let li_val = i64t.const_int(li as u64, false);
                 self.builder
-                    .build_call(push_fn, &[builder_ptr.into(), ai_val.into(), li_val.into(), (*leaf).into()], "uv_push")
+                    .build_call(
+                        push_fn,
+                        &[
+                            builder_ptr.into(),
+                            ai_val.into(),
+                            li_val.into(),
+                            (*leaf).into(),
+                        ],
+                        "uv_push",
+                    )
                     .map_err(err)?;
             }
         }
 
-        let vec_ptr = self.builder
+        let vec_ptr = self
+            .builder
             .build_call(finish_fn, &[builder_ptr.into()], "uv_ptr")
             .map_err(err)?
-            .try_as_basic_value().left()
+            .try_as_basic_value()
+            .left()
             .ok_or_else(|| CompileError::ice("cantor_union_vec_builder_finish returned void"))?;
 
-        Ok((vec_ptr, Kind::Vector(Box::new(Kind::TaggedUnion(all_arms.to_vec())))))
+        Ok((
+            vec_ptr,
+            Kind::Vector(Box::new(Kind::TaggedUnion(all_arms.to_vec()))),
+        ))
     }
 
     /// Flatten a runtime value of the given Kind into a `Vec` of i64-typed LLVM values.
@@ -396,7 +493,8 @@ impl<'ctx> Compiler<'ctx> {
         match kind {
             Kind::Int | Kind::Set(_) | Kind::Vector(_) => Ok(vec![val]),
             Kind::Bool | Kind::Fail => {
-                let wide = self.builder
+                let wide = self
+                    .builder
                     .build_int_z_extend(val.into_int_value(), i64t, "ul_b")
                     .map_err(err)?;
                 Ok(vec![wide.into()])
@@ -405,7 +503,8 @@ impl<'ctx> Compiler<'ctx> {
                 let sv = AggregateValueEnum::StructValue(val.into_struct_value());
                 let mut leaves = Vec::new();
                 for (i, ek) in elems.iter().enumerate() {
-                    let field = self.builder
+                    let field = self
+                        .builder
                         .build_extract_value(sv, i as u32, "ul_f")
                         .map_err(err)?;
                     leaves.extend(self.extract_union_leaves(field, ek)?);
@@ -432,44 +531,66 @@ impl<'ctx> Compiler<'ctx> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         let i64t = self.context.i64_type();
 
-        let get_tag_fn = self.module.get_function("cantor_union_vec_get_tag")
+        let get_tag_fn = self
+            .module
+            .get_function("cantor_union_vec_get_tag")
             .ok_or_else(|| CompileError::ice("cantor_union_vec_get_tag not declared"))?;
-        let get_leaf_fn = self.module.get_function("cantor_union_vec_get_leaf")
+        let get_leaf_fn = self
+            .module
+            .get_function("cantor_union_vec_get_leaf")
             .ok_or_else(|| CompileError::ice("cantor_union_vec_get_leaf not declared"))?;
 
         let base_i64 = base_val.into_int_value();
-        let idx_i64  = idx_val.into_int_value();
+        let idx_i64 = idx_val.into_int_value();
 
         // Retrieve the arm index (tag) and truncate to i32 for the struct tag field.
-        let tag_i64 = self.builder
+        let tag_i64 = self
+            .builder
             .build_call(get_tag_fn, &[base_i64.into(), idx_i64.into()], "uv_tag")
             .map_err(err)?
-            .try_as_basic_value().left()
+            .try_as_basic_value()
+            .left()
             .ok_or_else(|| CompileError::ice("cantor_union_vec_get_tag returned void"))?
             .into_int_value();
-        let tag_i32 = self.builder
+        let tag_i32 = self
+            .builder
             .build_int_truncate(tag_i64, self.context.i32_type(), "uv_tag32")
             .map_err(err)?;
 
         // Build the { i32 tag, i64 l0, … } result struct.
         let n_leaves = tagged_union_leaf_count(arms);
-        let struct_ty = self.kind_to_llvm_type(&Kind::TaggedUnion(arms.to_vec())).into_struct_type();
+        let struct_ty = self
+            .kind_to_llvm_type(&Kind::TaggedUnion(arms.to_vec()))
+            .into_struct_type();
         let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
-        agg = self.builder.build_insert_value(agg, tag_i32, 0, "uv_r_tag").map_err(err)?;
+        agg = self
+            .builder
+            .build_insert_value(agg, tag_i32, 0, "uv_r_tag")
+            .map_err(err)?;
 
         for li in 0..n_leaves {
             let li_val = i64t.const_int(li as u64, false);
-            let leaf = self.builder
-                .build_call(get_leaf_fn, &[base_i64.into(), idx_i64.into(), li_val.into()], "uv_leaf")
+            let leaf = self
+                .builder
+                .build_call(
+                    get_leaf_fn,
+                    &[base_i64.into(), idx_i64.into(), li_val.into()],
+                    "uv_leaf",
+                )
                 .map_err(err)?
-                .try_as_basic_value().left()
+                .try_as_basic_value()
+                .left()
                 .ok_or_else(|| CompileError::ice("cantor_union_vec_get_leaf returned void"))?;
-            agg = self.builder
+            agg = self
+                .builder
                 .build_insert_value(agg, leaf, (li + 1) as u32, "uv_r_l")
                 .map_err(err)?;
         }
 
-        Ok((agg.into_struct_value().into(), Kind::TaggedUnion(arms.to_vec())))
+        Ok((
+            agg.into_struct_value().into(),
+            Kind::TaggedUnion(arms.to_vec()),
+        ))
     }
 
     /// Box a scalar (`Int` or `Bool`) value into a singleton Arrow vector.
@@ -479,18 +600,25 @@ impl<'ctx> Compiler<'ctx> {
         val_kind: &Kind,
         elem_kind: &Kind,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
-        let (new_fn, push_fn, finish_fn, _) = vec_builder_fns(elem_kind)
-            .map_err(|e| CompileError::ice(e))?;
+        let (new_fn, push_fn, finish_fn, _) =
+            vec_builder_fns(elem_kind).map_err(|e| CompileError::ice(e))?;
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
 
-        let new_fn_val = self.module.get_function(new_fn)
+        let new_fn_val = self
+            .module
+            .get_function(new_fn)
             .ok_or_else(|| CompileError::ice(format!("{new_fn} not declared")))?;
-        let push_fn_val = self.module.get_function(push_fn)
+        let push_fn_val = self
+            .module
+            .get_function(push_fn)
             .ok_or_else(|| CompileError::ice(format!("{push_fn} not declared")))?;
-        let finish_fn_val = self.module.get_function(finish_fn)
+        let finish_fn_val = self
+            .module
+            .get_function(finish_fn)
             .ok_or_else(|| CompileError::ice(format!("{finish_fn} not declared")))?;
 
-        let builder_ptr = self.builder
+        let builder_ptr = self
+            .builder
             .build_call(new_fn_val, &[], "singleton_builder")
             .map_err(err)?
             .try_as_basic_value()
@@ -499,7 +627,11 @@ impl<'ctx> Compiler<'ctx> {
 
         let push_val: BasicValueEnum<'ctx> = if *val_kind == Kind::Bool {
             self.builder
-                .build_int_z_extend(val.into_int_value(), self.context.i64_type(), "singleton_ext")
+                .build_int_z_extend(
+                    val.into_int_value(),
+                    self.context.i64_type(),
+                    "singleton_ext",
+                )
                 .map_err(err)?
                 .into()
         } else {
@@ -507,10 +639,15 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         self.builder
-            .build_call(push_fn_val, &[builder_ptr.into(), push_val.into()], "singleton_push")
+            .build_call(
+                push_fn_val,
+                &[builder_ptr.into(), push_val.into()],
+                "singleton_push",
+            )
             .map_err(err)?;
 
-        let vec_ptr = self.builder
+        let vec_ptr = self
+            .builder
             .build_call(finish_fn_val, &[builder_ptr.into()], "singleton_ptr")
             .map_err(err)?
             .try_as_basic_value()
@@ -531,37 +668,55 @@ impl<'ctx> Compiler<'ctx> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         let i64t = self.context.i64_type();
 
-        let get_fn = self.module.get_function("cantor_struct_vec_get_field")
+        let get_fn = self
+            .module
+            .get_function("cantor_struct_vec_get_field")
             .ok_or_else(|| CompileError::ice("cantor_struct_vec_get_field not declared"))?;
 
         let base_i64 = base_val.into_int_value();
-        let idx_i64  = idx_val.into_int_value();
+        let idx_i64 = idx_val.into_int_value();
 
-        let llvm_types: Vec<_> = field_kinds.iter().map(|k| self.kind_to_llvm_type(k)).collect();
+        let llvm_types: Vec<_> = field_kinds
+            .iter()
+            .map(|k| self.kind_to_llvm_type(k))
+            .collect();
         let struct_type = self.context.struct_type(&llvm_types, false);
         let mut agg: AggregateValueEnum<'ctx> = struct_type.get_undef().into();
 
         for (j, fk) in field_kinds.iter().enumerate() {
             let field_idx = i64t.const_int(j as u64, false);
-            let raw = self.builder
-                .build_call(get_fn, &[base_i64.into(), idx_i64.into(), field_idx.into()], "sv_get_f")
+            let raw = self
+                .builder
+                .build_call(
+                    get_fn,
+                    &[base_i64.into(), idx_i64.into(), field_idx.into()],
+                    "sv_get_f",
+                )
                 .map_err(err)?
-                .try_as_basic_value().left()
+                .try_as_basic_value()
+                .left()
                 .ok_or_else(|| CompileError::ice("cantor_struct_vec_get_field returned void"))?;
             let field_val = if *fk == Kind::Bool {
                 self.builder
-                    .build_int_truncate(raw.into_int_value(), self.context.bool_type(), "sv_f_trunc")
+                    .build_int_truncate(
+                        raw.into_int_value(),
+                        self.context.bool_type(),
+                        "sv_f_trunc",
+                    )
                     .map_err(err)?
                     .into()
             } else {
                 raw
             };
-            agg = self.builder
+            agg = self
+                .builder
                 .build_insert_value(agg, field_val, j as u32, "sv_row_f")
                 .map_err(err)?;
         }
 
-        Ok((agg.into_struct_value().into(), Kind::Tuple(field_kinds.to_vec())))
+        Ok((
+            agg.into_struct_value().into(),
+            Kind::Tuple(field_kinds.to_vec()),
+        ))
     }
 }
-

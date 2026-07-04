@@ -237,7 +237,8 @@ fn for_in_literal_is_compile_time() {
     // Declarations (`declare i64 @cantor_set_new_i64()`) are always emitted by
     // declare_runtime_functions. We specifically check there are no call sites.
     assert!(
-        !ir.lines().any(|l| l.contains("call") && l.contains("cantor_set_new")),
+        !ir.lines()
+            .any(|l| l.contains("call") && l.contains("cantor_set_new")),
         "expected compile-time unrolling but found a runtime set allocation call:\n{ir}"
     );
 }
@@ -253,7 +254,8 @@ fn mut_set_variable_is_runtime() {
          }",
     );
     assert!(
-        ir.lines().any(|l| l.contains("call") && l.contains("cantor_set_new_i64")),
+        ir.lines()
+            .any(|l| l.contains("call") && l.contains("cantor_set_new_i64")),
         "expected a runtime set allocation call but none found:\n{ir}"
     );
 }

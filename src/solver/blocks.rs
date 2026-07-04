@@ -6,14 +6,17 @@ use cvc5::{Kind, Solver, Sort, Term, TermManager};
 
 use crate::{
     kind::Kind as ValKind,
-    semantics::tree::{collect_loop_modified, SemExpr, SemExprKind, SemFunctionDef, SemStmt},
+    semantics::tree::{SemExpr, SemExprKind, SemFunctionDef, SemStmt, collect_loop_modified},
     span::{Span, Symbol},
 };
 
-use super::NameDefs;
 use super::CheckResult;
-use super::loops::{check_inductive_step, check_for_inductive_step};
-use super::encode::{Env, BuiltinObligation, OverflowObligation, encode_expr, integer_value, proj_from_tuple, tuple_arity};
+use super::NameDefs;
+use super::encode::{
+    BuiltinObligation, Env, OverflowObligation, encode_expr, integer_value, proj_from_tuple,
+    tuple_arity,
+};
+use super::loops::{check_for_inductive_step, check_inductive_step};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 
 // ── Loop predicate ────────────────────────────────────────────────────────────
@@ -34,20 +37,20 @@ pub(crate) fn body_has_unconstrained_loop_var<'tm>(
     stmts.iter().any(|s| match s {
         SemStmt::While { body, .. } | SemStmt::ForIn { body, .. } => {
             let modified = collect_loop_modified(body);
-            modified.iter().any(|n| {
-                match constraint_env.get(n) {
-                    None => true,
-                    Some(constraint) => {
-                        let dummy = tm.mk_integer(0);
-                        matches!(
-                            membership_constraint(tm, dummy, constraint, name_defs, distinct_preds),
-                            Membership::Unconstrained
-                        )
-                    }
+            modified.iter().any(|n| match constraint_env.get(n) {
+                None => true,
+                Some(constraint) => {
+                    let dummy = tm.mk_integer(0);
+                    matches!(
+                        membership_constraint(tm, dummy, constraint, name_defs, distinct_preds),
+                        Membership::Unconstrained
+                    )
                 }
             })
         }
-        SemStmt::Block(inner) => body_has_unconstrained_loop_var(inner, constraint_env, tm, name_defs, distinct_preds),
+        SemStmt::Block(inner) => {
+            body_has_unconstrained_loop_var(inner, constraint_env, tm, name_defs, distinct_preds)
+        }
         _ => false,
     })
 }
@@ -116,9 +119,12 @@ pub(crate) fn encode_block<'tm>(
     for stmt in stmts {
         last_expr = None; // only the last Expr stmt is the return value
         match stmt {
-            SemStmt::Let { name, constraint, value: _, .. }
-                if matches!(constraint.kind_of, ValKind::Set(_)) =>
-            {
+            SemStmt::Let {
+                name,
+                constraint,
+                value: _,
+                ..
+            } if matches!(constraint.kind_of, ValKind::Set(_)) => {
                 // Immutable runtime set: opaque integer (heap pointer), no value encoding.
                 let fresh_name = format!("{}_{}", name.0, ssa_counter);
                 *ssa_counter += 1;
@@ -127,9 +133,12 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            SemStmt::Let { name, constraint, value: _, .. }
-                if matches!(constraint.kind_of, ValKind::Vector(_)) =>
-            {
+            SemStmt::Let {
+                name,
+                constraint,
+                value: _,
+                ..
+            } if matches!(constraint.kind_of, ValKind::Vector(_)) => {
                 // Immutable runtime vector (X*): opaque integer (Arrow array pointer).
                 // Vector literals can't be represented in the QF sequence theory
                 // without knowing the exact element values, so we skip value encoding
@@ -142,10 +151,25 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            SemStmt::Let { name, constraint, value, .. } => {
+            SemStmt::Let {
+                name,
+                constraint,
+                value,
+                ..
+            } => {
                 let val = encode_expr(
-                    value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
+                    value,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
+                    None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -160,7 +184,9 @@ pub(crate) fn encode_block<'tm>(
                 // check_require) simply to keep this statement's handling uniform
                 // with the other binder forms below — check_require itself is sound
                 // either way since it now reads facts straight from `solver`.
-                if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
+                if let Membership::Constrained(c) =
+                    membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds)
+                {
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: top_guard.clone(),
                         obligation: c,
@@ -174,9 +200,12 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            SemStmt::MutLet { name, constraint, value: _, .. }
-                if matches!(constraint.kind_of, ValKind::Set(_)) =>
-            {
+            SemStmt::MutLet {
+                name,
+                constraint,
+                value: _,
+                ..
+            } if matches!(constraint.kind_of, ValKind::Set(_)) => {
                 // Runtime set values (Set(Int), Set(Bool)) can't be encoded in
                 // QF_NIA. Represent the binding as an opaque integer (the heap
                 // pointer) and skip the value encoding and membership assertion.
@@ -187,9 +216,12 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            SemStmt::MutLet { name, constraint, value: _, .. }
-                if matches!(constraint.kind_of, ValKind::Vector(_)) =>
-            {
+            SemStmt::MutLet {
+                name,
+                constraint,
+                value: _,
+                ..
+            } if matches!(constraint.kind_of, ValKind::Vector(_)) => {
                 // Mutable runtime vector (X*): opaque integer (Arrow array pointer).
                 let fresh_name = format!("{}_{}", name.0, ssa_counter);
                 *ssa_counter += 1;
@@ -198,10 +230,25 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            SemStmt::MutLet { name, constraint, value, .. } => {
+            SemStmt::MutLet {
+                name,
+                constraint,
+                value,
+                ..
+            } => {
                 let val = encode_expr(
-                    value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
+                    value,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
+                    None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -214,7 +261,9 @@ pub(crate) fn encode_block<'tm>(
                 solver.assert_formula(eq.clone());
                 // Deferred to the function-exit check — see the comment on the
                 // `Let` case above.
-                if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
+                if let Membership::Constrained(c) =
+                    membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds)
+                {
                     builtin_obligs.push(BuiltinObligation {
                         path_cond: top_guard.clone(),
                         obligation: c,
@@ -228,25 +277,47 @@ pub(crate) fn encode_block<'tm>(
                 env.insert(name.clone(), fresh);
             }
 
-            SemStmt::DestructLet { bindings, tuple_constraint, value, .. }
-            | SemStmt::DestructMutLet { bindings, tuple_constraint, value, .. } => {
+            SemStmt::DestructLet {
+                bindings,
+                tuple_constraint,
+                value,
+                ..
+            }
+            | SemStmt::DestructMutLet {
+                bindings,
+                tuple_constraint,
+                value,
+                ..
+            } => {
                 let is_mut = matches!(stmt, SemStmt::DestructMutLet { .. });
 
                 let rhs_term = encode_expr(
-                    value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
-                ).map_err(CheckResult::Unknown)?;
+                    value,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
+                    None,
+                )
+                .map_err(CheckResult::Unknown)?;
 
                 // Optional tuple-level constraint (e.g. `x, y : Int * Nat = ...`).
                 // The parser currently always emits None; this path is future use.
-                if let Some(tc) = tuple_constraint {
-                    if let Membership::Constrained(c) = membership_constraint(tm, rhs_term.clone(), tc, name_defs, distinct_preds) {
-                        builtin_obligs.push(BuiltinObligation {
-                            path_cond: top_guard.clone(),
-                            obligation: c,
-                            violated_reason: format!("destructured value is not in `{}`", tc),
-                        });
-                    }
+                if let Some(tc) = tuple_constraint
+                    && let Membership::Constrained(c) =
+                        membership_constraint(tm, rhs_term.clone(), tc, name_defs, distinct_preds)
+                {
+                    builtin_obligs.push(BuiltinObligation {
+                        path_cond: top_guard.clone(),
+                        obligation: c,
+                        violated_reason: format!("destructured value is not in `{}`", tc),
+                    });
                 }
 
                 // Read arity from the tuple sort itself (not term children) — `rhs_term`
@@ -268,17 +339,23 @@ pub(crate) fn encode_block<'tm>(
                             .collect::<Result<_, _>>()
                             .map_err(CheckResult::Unknown)?;
                         let sub_tuple = tm.mk_tuple(&tail);
-                        if let Some(constraint) = &binding.constraint {
-                            if let Membership::Constrained(c) = membership_constraint(tm, sub_tuple.clone(), constraint, name_defs, distinct_preds) {
-                                builtin_obligs.push(BuiltinObligation {
-                                    path_cond: top_guard.clone(),
-                                    obligation: c,
-                                    violated_reason: format!(
-                                        "destructured tail `{}` is not in `{}`",
-                                        binding.name.0, constraint
-                                    ),
-                                });
-                            }
+                        if let Some(constraint) = &binding.constraint
+                            && let Membership::Constrained(c) = membership_constraint(
+                                tm,
+                                sub_tuple.clone(),
+                                constraint,
+                                name_defs,
+                                distinct_preds,
+                            )
+                        {
+                            builtin_obligs.push(BuiltinObligation {
+                                path_cond: top_guard.clone(),
+                                obligation: c,
+                                violated_reason: format!(
+                                    "destructured tail `{}` is not in `{}`",
+                                    binding.name.0, constraint
+                                ),
+                            });
                         }
                         if is_mut {
                             if let Some(constraint) = &binding.constraint {
@@ -289,24 +366,31 @@ pub(crate) fn encode_block<'tm>(
                         }
                         env.insert(binding.name.clone(), sub_tuple);
                     } else {
-                        let proj = proj_from_tuple(tm, rhs_term.clone(), i).map_err(CheckResult::Unknown)?;
+                        let proj = proj_from_tuple(tm, rhs_term.clone(), i)
+                            .map_err(CheckResult::Unknown)?;
                         let ssa_name = format!("{}_{}", binding.name.0, ssa_counter);
                         *ssa_counter += 1;
                         let fresh = tm.mk_const(proj.sort(), &ssa_name);
                         let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
                         solver.assert_formula(eq.clone());
 
-                        if let Some(constraint) = &binding.constraint {
-                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
-                                builtin_obligs.push(BuiltinObligation {
-                                    path_cond: top_guard.clone(),
-                                    obligation: c,
-                                    violated_reason: format!(
-                                        "destructured element {} (`{}`) is not in `{}`",
-                                        i, binding.name.0, constraint
-                                    ),
-                                });
-                            }
+                        if let Some(constraint) = &binding.constraint
+                            && let Membership::Constrained(c) = membership_constraint(
+                                tm,
+                                fresh.clone(),
+                                constraint,
+                                name_defs,
+                                distinct_preds,
+                            )
+                        {
+                            builtin_obligs.push(BuiltinObligation {
+                                path_cond: top_guard.clone(),
+                                obligation: c,
+                                violated_reason: format!(
+                                    "destructured element {} (`{}`) is not in `{}`",
+                                    i, binding.name.0, constraint
+                                ),
+                            });
                         }
 
                         if is_mut {
@@ -321,7 +405,11 @@ pub(crate) fn encode_block<'tm>(
                 }
             }
 
-            SemStmt::DestructAssign { names: dest_names, value, .. } => {
+            SemStmt::DestructAssign {
+                names: dest_names,
+                value,
+                ..
+            } => {
                 for name in dest_names.iter() {
                     if immutable_names.contains(name) {
                         return Err(CheckResult::Counterexample {
@@ -343,9 +431,20 @@ pub(crate) fn encode_block<'tm>(
                 }
 
                 let rhs_term = encode_expr(
-                    value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
-                ).map_err(CheckResult::Unknown)?;
+                    value,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
+                    None,
+                )
+                .map_err(CheckResult::Unknown)?;
 
                 // `DestructAssign` only understands a tuple-shaped RHS (the same
                 // limitation as `DestructLet`/`DestructMutLet` — see the matching
@@ -358,7 +457,8 @@ pub(crate) fn encode_block<'tm>(
                     return Err(CheckResult::Unknown(
                         "destructuring assignment (`:=`) only supports a tuple \
                          right-hand side (a vector `X*` right-hand side is not \
-                         yet implemented)".into()
+                         yet implemented)"
+                            .into(),
                     ));
                 }
 
@@ -381,52 +481,69 @@ pub(crate) fn encode_block<'tm>(
                             .collect::<Result<_, _>>()
                             .map_err(CheckResult::Unknown)?;
                         let sub_tuple = tm.mk_tuple(&tail);
-                        if let Some(constraint) = constraint_env.get(name).cloned() {
-                            if let Membership::Constrained(c) = membership_constraint(tm, sub_tuple.clone(), &constraint, name_defs, distinct_preds) {
-                                match check_require(c.clone(), tm, solver, param_names, param_terms) {
-                                    CheckResult::Proved => {
-                                        solver.assert_formula(c.clone());
-                                    }
-                                    CheckResult::Counterexample { params, output, .. } => {
-                                        return Err(CheckResult::Counterexample {
-                                            params,
-                                            output,
-                                            reason: format!(
-                                                "`{} :=` (destructured tail) violates declared constraint `{}`",
-                                                name.0, constraint
-                                            ),
-                                        });
-                                    }
-                                    CheckResult::Unknown(msg) => return Err(CheckResult::Unknown(msg)),
+                        if let Some(constraint) = constraint_env.get(name).cloned()
+                            && let Membership::Constrained(c) = membership_constraint(
+                                tm,
+                                sub_tuple.clone(),
+                                &constraint,
+                                name_defs,
+                                distinct_preds,
+                            )
+                        {
+                            match check_require(c.clone(), tm, solver, param_names, param_terms) {
+                                CheckResult::Proved => {
+                                    solver.assert_formula(c.clone());
+                                }
+                                CheckResult::Counterexample { params, output, .. } => {
+                                    return Err(CheckResult::Counterexample {
+                                        params,
+                                        output,
+                                        reason: format!(
+                                            "`{} :=` (destructured tail) violates declared constraint `{}`",
+                                            name.0, constraint
+                                        ),
+                                    });
+                                }
+                                CheckResult::Unknown(msg) => {
+                                    return Err(CheckResult::Unknown(msg));
                                 }
                             }
                         }
                         env.insert(name.clone(), sub_tuple);
                     } else {
-                        let proj = proj_from_tuple(tm, rhs_term.clone(), i).map_err(CheckResult::Unknown)?;
+                        let proj = proj_from_tuple(tm, rhs_term.clone(), i)
+                            .map_err(CheckResult::Unknown)?;
                         let ssa_name = format!("{}_{}", name.0, ssa_counter);
                         *ssa_counter += 1;
                         let fresh = tm.mk_const(proj.sort(), &ssa_name);
                         let eq = tm.mk_term(Kind::Equal, &[fresh.clone(), proj]);
                         solver.assert_formula(eq.clone());
 
-                        if let Some(constraint) = constraint_env.get(name).cloned() {
-                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), &constraint, name_defs, distinct_preds) {
-                                match check_require(c.clone(), tm, solver, param_names, param_terms) {
-                                    CheckResult::Proved => {
-                                        solver.assert_formula(c.clone());
-                                    }
-                                    CheckResult::Counterexample { params, output, .. } => {
-                                        return Err(CheckResult::Counterexample {
-                                            params,
-                                            output,
-                                            reason: format!(
-                                                "`{} :=` (destructured) violates declared constraint `{}`",
-                                                name.0, constraint
-                                            ),
-                                        });
-                                    }
-                                    CheckResult::Unknown(msg) => return Err(CheckResult::Unknown(msg)),
+                        if let Some(constraint) = constraint_env.get(name).cloned()
+                            && let Membership::Constrained(c) = membership_constraint(
+                                tm,
+                                fresh.clone(),
+                                &constraint,
+                                name_defs,
+                                distinct_preds,
+                            )
+                        {
+                            match check_require(c.clone(), tm, solver, param_names, param_terms) {
+                                CheckResult::Proved => {
+                                    solver.assert_formula(c.clone());
+                                }
+                                CheckResult::Counterexample { params, output, .. } => {
+                                    return Err(CheckResult::Counterexample {
+                                        params,
+                                        output,
+                                        reason: format!(
+                                            "`{} :=` (destructured) violates declared constraint `{}`",
+                                            name.0, constraint
+                                        ),
+                                    });
+                                }
+                                CheckResult::Unknown(msg) => {
+                                    return Err(CheckResult::Unknown(msg));
                                 }
                             }
                         }
@@ -450,8 +567,18 @@ pub(crate) fn encode_block<'tm>(
 
             SemStmt::Assign { name, value, .. } => {
                 let val = encode_expr(
-                    value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
+                    value,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
+                    None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -466,24 +593,30 @@ pub(crate) fn encode_block<'tm>(
                 // constraint. Inside loop bodies constraint_env is empty — the
                 // inductive step checker handles loop invariants separately — so
                 // this check only fires for non-loop reassignments.
-                if let Some(constraint) = constraint_env.get(name).cloned() {
-                    if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), &constraint, name_defs, distinct_preds) {
-                        match check_require(c.clone(), tm, solver, param_names, param_terms) {
-                            CheckResult::Proved => {
-                                solver.assert_formula(c.clone());
-                            }
-                            CheckResult::Counterexample { params, output, .. } => {
-                                return Err(CheckResult::Counterexample {
-                                    params,
-                                    output,
-                                    reason: format!(
-                                        "`{} :=` violates declared constraint `{}`",
-                                        name.0, constraint
-                                    ),
-                                });
-                            }
-                            CheckResult::Unknown(msg) => return Err(CheckResult::Unknown(msg)),
+                if let Some(constraint) = constraint_env.get(name).cloned()
+                    && let Membership::Constrained(c) = membership_constraint(
+                        tm,
+                        fresh.clone(),
+                        &constraint,
+                        name_defs,
+                        distinct_preds,
+                    )
+                {
+                    match check_require(c.clone(), tm, solver, param_names, param_terms) {
+                        CheckResult::Proved => {
+                            solver.assert_formula(c.clone());
                         }
+                        CheckResult::Counterexample { params, output, .. } => {
+                            return Err(CheckResult::Counterexample {
+                                params,
+                                output,
+                                reason: format!(
+                                    "`{} :=` violates declared constraint `{}`",
+                                    name.0, constraint
+                                ),
+                            });
+                        }
+                        CheckResult::Unknown(msg) => return Err(CheckResult::Unknown(msg)),
                     }
                 }
                 env.insert(name.clone(), fresh);
@@ -491,8 +624,18 @@ pub(crate) fn encode_block<'tm>(
 
             SemStmt::Assume { predicate, .. } => {
                 let pred = encode_expr(
-                    predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
+                    predicate,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
+                    None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 solver.assert_formula(pred.clone());
@@ -500,8 +643,18 @@ pub(crate) fn encode_block<'tm>(
 
             SemStmt::Require { predicate, .. } => {
                 let pred = encode_expr(
-                    predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
+                    predicate,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
+                    None,
                 )
                 .map_err(CheckResult::Unknown)?;
 
@@ -515,8 +668,18 @@ pub(crate) fn encode_block<'tm>(
 
             SemStmt::Assert { predicate, .. } => {
                 let pred = encode_expr(
-                    predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
+                    predicate,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
+                    None,
                 )
                 .map_err(CheckResult::Unknown)?;
 
@@ -529,7 +692,7 @@ pub(crate) fn encode_block<'tm>(
                         // pred is not always true.  Check whether NOT(pred) is always
                         // true — if so, pred never holds → compile error.
                         // Otherwise pred is sometimes true → runtime check needed.
-                        let not_pred = tm.mk_term(Kind::Not, &[pred.clone()]);
+                        let not_pred = tm.mk_term(Kind::Not, std::slice::from_ref(&pred));
                         match check_require(not_pred, tm, solver, param_names, param_terms) {
                             CheckResult::Proved => {
                                 return Err(CheckResult::Counterexample {
@@ -563,8 +726,17 @@ pub(crate) fn encode_block<'tm>(
                 // this function), so a `return` reached here is unconditionally
                 // reached — returning right away is sound, not an approximation.
                 let t = encode_expr(
-                    value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds,
+                    value,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
                     result_sort.clone(),
                 )
                 .map_err(CheckResult::Unknown)?;
@@ -573,8 +745,17 @@ pub(crate) fn encode_block<'tm>(
 
             SemStmt::Expr(e) => {
                 let t = encode_expr(
-                    e, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds,
+                    e,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
                     result_sort.clone(),
                 )
                 .map_err(CheckResult::Unknown)?;
@@ -583,11 +764,24 @@ pub(crate) fn encode_block<'tm>(
 
             SemStmt::Block(inner) => {
                 last_expr = encode_block(
-                    inner, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, overflow_obligs, ssa_counter,
-                    param_names, param_terms,
-                    constraint_env, has_runtime_assert, immutable_names, distinct_preds,
-                    overflow_checks, result_sort.clone(),
+                    inner,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    ssa_counter,
+                    param_names,
+                    param_terms,
+                    constraint_env,
+                    has_runtime_assert,
+                    immutable_names,
+                    distinct_preds,
+                    overflow_checks,
+                    result_sort.clone(),
                 )?;
             }
 
@@ -595,15 +789,28 @@ pub(crate) fn encode_block<'tm>(
                 if stmts_contain_return(body) {
                     return Err(CheckResult::Unknown(
                         "early `return` inside a `while` loop body is not yet \
-                         supported in the SMT block encoder".into(),
+                         supported in the SMT block encoder"
+                            .into(),
                     ));
                 }
                 let modified = collect_loop_modified(body);
                 if let Some(step_err) = check_inductive_step(
-                    cond, body, &modified, constraint_env,
-                    env, solver, name_defs, fn_env, tm,
-                    ssa_counter, param_names, param_terms, immutable_names, distinct_preds,
-                    has_runtime_assert, overflow_checks,
+                    cond,
+                    body,
+                    &modified,
+                    constraint_env,
+                    env,
+                    solver,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    ssa_counter,
+                    param_names,
+                    param_terms,
+                    immutable_names,
+                    distinct_preds,
+                    has_runtime_assert,
+                    overflow_checks,
                 ) {
                     return Err(step_err);
                 }
@@ -615,27 +822,45 @@ pub(crate) fn encode_block<'tm>(
                 // in `modified` it is a bug that the inductive step check already
                 // reported — skip them here.
                 for name in &modified {
-                    if immutable_names.contains(name) { continue; }
+                    if immutable_names.contains(name) {
+                        continue;
+                    }
                     if let Some(cur_sort) = env.get(name).map(|t| t.sort()) {
                         let fresh_name = format!("{}_{}", name.0, ssa_counter);
                         *ssa_counter += 1;
                         let fresh = tm.mk_const(cur_sort, &fresh_name);
-                        if let Some(constraint) = constraint_env.get(name) {
-                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
-                                solver.assert_formula(c.clone());
-                            }
+                        if let Some(constraint) = constraint_env.get(name)
+                            && let Membership::Constrained(c) = membership_constraint(
+                                tm,
+                                fresh.clone(),
+                                constraint,
+                                name_defs,
+                                distinct_preds,
+                            )
+                        {
+                            solver.assert_formula(c.clone());
                         }
                         env.insert(name.clone(), fresh);
                     }
                 }
 
-                match encode_expr(cond, env, name_defs, fn_env, tm, solver,
-                                  call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None) {
-                    Ok(cond_term) => {
-                        let not_cond = tm.mk_term(Kind::Not, &[cond_term]);
-                        solver.assert_formula(not_cond.clone());
-                    }
-                    Err(_) => {} // cond uses unsupported constructs — skip the fact
+                if let Ok(cond_term) = encode_expr(
+                    cond,
+                    env,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    solver,
+                    call_counter,
+                    builtin_obligs,
+                    overflow_obligs,
+                    top_guard.clone(),
+                    distinct_preds,
+                    None,
+                ) {
+                    // cond uses unsupported constructs — skip the fact (Err case)
+                    let not_cond = tm.mk_term(Kind::Not, &[cond_term]);
+                    solver.assert_formula(not_cond.clone());
                 }
 
                 last_expr = None;
@@ -651,16 +876,30 @@ pub(crate) fn encode_block<'tm>(
                 if stmts_contain_return(body) {
                     return Err(CheckResult::Unknown(
                         "early `return` inside a `for` loop body is not yet \
-                         supported in the SMT block encoder".into(),
+                         supported in the SMT block encoder"
+                            .into(),
                     ));
                 }
 
                 let modified = collect_loop_modified(body);
                 if let Some(step_err) = check_for_inductive_step(
-                    var, set, body, &modified, constraint_env,
-                    env, solver, name_defs, fn_env, tm,
-                    ssa_counter, param_names, param_terms, immutable_names, distinct_preds,
-                    has_runtime_assert, overflow_checks,
+                    var,
+                    set,
+                    body,
+                    &modified,
+                    constraint_env,
+                    env,
+                    solver,
+                    name_defs,
+                    fn_env,
+                    tm,
+                    ssa_counter,
+                    param_names,
+                    param_terms,
+                    immutable_names,
+                    distinct_preds,
+                    has_runtime_assert,
+                    overflow_checks,
                 ) {
                     return Err(step_err);
                 }
@@ -668,15 +907,23 @@ pub(crate) fn encode_block<'tm>(
                 // Post-loop: replace each modified var with a fresh constant
                 // carrying its declared invariant (justified by the proved step).
                 for name in &modified {
-                    if immutable_names.contains(name) { continue; }
+                    if immutable_names.contains(name) {
+                        continue;
+                    }
                     if let Some(cur_sort) = env.get(name).map(|t| t.sort()) {
                         let fresh_name = format!("{}_{}", name.0, ssa_counter);
                         *ssa_counter += 1;
                         let fresh = tm.mk_const(cur_sort, &fresh_name);
-                        if let Some(constraint) = constraint_env.get(name) {
-                            if let Membership::Constrained(c) = membership_constraint(tm, fresh.clone(), constraint, name_defs, distinct_preds) {
-                                solver.assert_formula(c.clone());
-                            }
+                        if let Some(constraint) = constraint_env.get(name)
+                            && let Membership::Constrained(c) = membership_constraint(
+                                tm,
+                                fresh.clone(),
+                                constraint,
+                                name_defs,
+                                distinct_preds,
+                            )
+                        {
+                            solver.assert_formula(c.clone());
                         }
                         env.insert(name.clone(), fresh);
                     }

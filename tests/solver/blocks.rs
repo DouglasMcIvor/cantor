@@ -11,33 +11,39 @@ use super::helpers::*;
 
 #[test]
 fn return_simple_proved() {
-    proved("
+    proved(
+        "
 f : Nat -> Nat
 f(n) {
     return n + 1
 }
-");
+",
+    );
 }
 
 #[test]
 fn return_after_let_proved() {
-    proved("
+    proved(
+        "
 f : Nat -> Nat
 f(n) {
     x : Nat = n + 1
     return x + 1
 }
-");
+",
+    );
 }
 
 #[test]
 fn return_value_outside_range_counterexample() {
-    counterexample("
+    counterexample(
+        "
 f : Nat -> NatPos
 f(n) {
     return n
 }
-");
+",
+    );
 }
 
 // Anything after `return` is unreachable dead code — the solver must not
@@ -46,13 +52,15 @@ f(n) {
 // after the first `return`, the function is still fully proved.
 #[test]
 fn return_dead_code_after_return_is_never_checked_proved() {
-    proved("
+    proved(
+        "
 f : Nat -> Nat
 f(n) {
     return n + 1
     return n - 100
 }
-");
+",
+    );
 }
 
 // A `return` in the tail position of a nested `{ }` scope block (itself in
@@ -60,7 +68,8 @@ f(n) {
 // `SemStmt::Block` recursion.
 #[test]
 fn return_in_tail_position_of_nested_block_proved() {
-    proved("
+    proved(
+        "
 f : Nat -> Nat
 f(n) {
     {
@@ -68,7 +77,8 @@ f(n) {
         return x
     }
 }
-");
+",
+    );
 }
 
 // ── `return` inside a loop body — must never be silently ignored ────────────
@@ -88,7 +98,8 @@ fn return_inside_while_body_is_unknown_not_falsely_proved() {
     // so the loop body runs once and the function actually returns 0 at
     // runtime — not in NatPos — regardless of what the code after the loop
     // says.
-    unknown("
+    unknown(
+        "
 f : Nat -> NatPos
 f(n) {
     x : Nat = 0
@@ -98,12 +109,14 @@ f(n) {
     }
     return 1
 }
-");
+",
+    );
 }
 
 #[test]
 fn return_inside_for_body_is_unknown_not_falsely_proved() {
-    unknown("
+    unknown(
+        "
 f : Nat -> NatPos
 f(n) {
     for x in {0, 1} {
@@ -111,7 +124,8 @@ f(n) {
     }
     return 1
 }
-");
+",
+    );
 }
 
 // A `for` loop over a provably-empty set literal never runs its body at all,
@@ -119,7 +133,8 @@ f(n) {
 // still prove, not conservatively report Unknown.
 #[test]
 fn return_inside_empty_for_body_is_dead_code_proved() {
-    proved("
+    proved(
+        "
 f : Nat -> Nat
 f(n) {
     for x in {} {
@@ -127,7 +142,8 @@ f(n) {
     }
     return n
 }
-");
+",
+    );
 }
 
 // ── SSA constants carry the value's own solver sort ──────────────────────────
@@ -138,34 +154,40 @@ f(n) {
 
 #[test]
 fn bool_let_in_block_proved() {
-    proved("
+    proved(
+        "
 f : Bool -> Bool
 f(b) {
     x : Bool = not b
     x
 }
-");
+",
+    );
 }
 
 #[test]
 fn tuple_let_in_block_proved() {
-    proved("
+    proved(
+        "
 f : -> Int
 f() {
     p : Int * Int = (1, 2)
     p.0 + p.1
 }
-");
+",
+    );
 }
 
 #[test]
 fn mut_bool_reassign_in_block_proved() {
-    proved("
+    proved(
+        "
 f : Bool -> Bool
 f(b) {
     mut x : Bool = b
     x := not x
     x
 }
-");
+",
+    );
 }

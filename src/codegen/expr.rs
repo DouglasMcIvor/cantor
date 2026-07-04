@@ -14,7 +14,6 @@ use crate::{
 
 use super::{Compiler, Env};
 
-
 impl<'ctx> Compiler<'ctx> {
     pub(crate) fn compile_expr(
         &self,
@@ -30,13 +29,12 @@ impl<'ctx> Compiler<'ctx> {
                 let v = self.context.bool_type().const_int(*b as u64, false);
                 Ok((v.into(), Kind::Bool))
             }
-            SemExprKind::Var(sym) => env
-                .get(sym)
-                .map(|(v, t)| (*v, t.clone()))
-                .ok_or_else(|| CompileError::UndefinedVariable {
+            SemExprKind::Var(sym) => env.get(sym).map(|(v, t)| (*v, t.clone())).ok_or_else(|| {
+                CompileError::UndefinedVariable {
                     name: sym.0.clone(),
                     span: expr.span,
-                }),
+                }
+            }),
             SemExprKind::Add(lhs, rhs) => self.compile_arith(BinOp::Add, lhs, rhs, env, expr.span),
             SemExprKind::Sub(lhs, rhs) => self.compile_arith(BinOp::Sub, lhs, rhs, env, expr.span),
             SemExprKind::Mul(lhs, rhs) => self.compile_arith(BinOp::Mul, lhs, rhs, env, expr.span),
@@ -52,14 +50,19 @@ impl<'ctx> Compiler<'ctx> {
             | SemExprKind::Comprehension { .. }
             | SemExprKind::KleeneStar(_) => Err(CompileError::ice(format!(
                 "elaborator invariant broken: set-position node {:?} reached compile_expr \
-                 (value position)", expr.kind
+                 (value position)",
+                expr.kind
             ))),
             SemExprKind::UnOp { op, expr: inner } => self.compile_unop(*op, inner, env, expr.span),
-            SemExprKind::BinOp { op, lhs, rhs } => self.compile_binop(*op, lhs, rhs, env, expr.span),
-            SemExprKind::Call { callee, args } => self.compile_call(callee, args, env, expr.span),
-            SemExprKind::If { cond, then_expr, else_expr } => {
-                self.compile_if(cond, then_expr, else_expr, env)
+            SemExprKind::BinOp { op, lhs, rhs } => {
+                self.compile_binop(*op, lhs, rhs, env, expr.span)
             }
+            SemExprKind::Call { callee, args } => self.compile_call(callee, args, env, expr.span),
+            SemExprKind::If {
+                cond,
+                then_expr,
+                else_expr,
+            } => self.compile_if(cond, then_expr, else_expr, env),
             SemExprKind::SetLit(elements) => self.compile_set_lit_value(elements, env),
             SemExprKind::Try(inner) => self.compile_try(inner, env),
             SemExprKind::FailLit => {
@@ -130,14 +133,18 @@ impl<'ctx> Compiler<'ctx> {
                 let i64_type = self.context.i64_type();
                 let min = i64_type.const_int(i64::MIN as u64, true);
                 let neg_one = i64_type.const_all_ones();
-                let is_min = b.build_int_compare(IntPredicate::EQ, li, min, "div_lhs_is_min")
+                let is_min = b
+                    .build_int_compare(IntPredicate::EQ, li, min, "div_lhs_is_min")
                     .map_err(|e| CompileError::ice(e.to_string()))?;
-                let is_neg_one = b.build_int_compare(IntPredicate::EQ, ri, neg_one, "div_rhs_is_neg_one")
+                let is_neg_one = b
+                    .build_int_compare(IntPredicate::EQ, ri, neg_one, "div_rhs_is_neg_one")
                     .map_err(|e| CompileError::ice(e.to_string()))?;
-                let overflow = b.build_and(is_min, is_neg_one, "div_overflow")
+                let overflow = b
+                    .build_and(is_min, is_neg_one, "div_overflow")
                     .map_err(|e| CompileError::ice(e.to_string()))?;
                 self.emit_overflow_abort_branch(overflow, span)?;
-                b.build_int_signed_div(li, ri, "div").map_err(|e| CompileError::ice(e.to_string()))?
+                b.build_int_signed_div(li, ri, "div")
+                    .map_err(|e| CompileError::ice(e.to_string()))?
             }
             _ => unreachable!("compile_arith is only called for Add/Sub/Mul/Div"),
         };
@@ -159,21 +166,32 @@ impl<'ctx> Compiler<'ctx> {
         let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
             CompileError::ice(format!("LLVM intrinsic `{intrinsic_name}` not found"))
         })?;
-        let decl = intrinsic.get_declaration(&self.module, &[i64_type.into()]).ok_or_else(|| {
-            CompileError::ice(format!("could not declare LLVM intrinsic `{intrinsic_name}`"))
-        })?;
-        let call = self.builder
+        let decl = intrinsic
+            .get_declaration(&self.module, &[i64_type.into()])
+            .ok_or_else(|| {
+                CompileError::ice(format!(
+                    "could not declare LLVM intrinsic `{intrinsic_name}`"
+                ))
+            })?;
+        let call = self
+            .builder
             .build_call(decl, &[l.into(), r.into()], "checked_arith")
             .map_err(|e| CompileError::ice(e.to_string()))?;
-        let agg = call.try_as_basic_value().left().ok_or_else(|| {
-            CompileError::ice(format!("`{intrinsic_name}` returned void unexpectedly"))
-        })?.into_struct_value();
+        let agg = call
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| {
+                CompileError::ice(format!("`{intrinsic_name}` returned void unexpectedly"))
+            })?
+            .into_struct_value();
 
-        let result = self.builder
+        let result = self
+            .builder
             .build_extract_value(AggregateValueEnum::StructValue(agg), 0, "checked_result")
             .map_err(|e| CompileError::ice(e.to_string()))?
             .into_int_value();
-        let overflow = self.builder
+        let overflow = self
+            .builder
             .build_extract_value(AggregateValueEnum::StructValue(agg), 1, "checked_overflow")
             .map_err(|e| CompileError::ice(e.to_string()))?
             .into_int_value();
@@ -191,7 +209,8 @@ impl<'ctx> Compiler<'ctx> {
         is_overflow: IntValue<'ctx>,
         span: Span,
     ) -> Result<(), CompileError> {
-        let function = self.current_fn
+        let function = self
+            .current_fn
             .ok_or_else(|| CompileError::ice("checked arithmetic outside a function"))?;
 
         let abort_bb = self.context.append_basic_block(function, "overflow_abort");
@@ -203,19 +222,28 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.position_at_end(abort_bb);
         let message = self.overflow_message(span);
-        let msg_global = self.builder
+        let msg_global = self
+            .builder
             .build_global_string_ptr(&message, "overflow_msg")
             .map_err(|e| CompileError::ice(e.to_string()))?;
-        let msg_i64 = self.builder
-            .build_ptr_to_int(msg_global.as_pointer_value(), self.context.i64_type(), "overflow_msg_i64")
+        let msg_i64 = self
+            .builder
+            .build_ptr_to_int(
+                msg_global.as_pointer_value(),
+                self.context.i64_type(),
+                "overflow_msg_i64",
+            )
             .map_err(|e| CompileError::ice(e.to_string()))?;
-        let abort_fn = self.module.get_function("cantor_overflow_abort").ok_or_else(|| {
-            CompileError::ice("cantor_overflow_abort not declared")
-        })?;
+        let abort_fn = self
+            .module
+            .get_function("cantor_overflow_abort")
+            .ok_or_else(|| CompileError::ice("cantor_overflow_abort not declared"))?;
         self.builder
             .build_call(abort_fn, &[msg_i64.into()], "overflow_abort_call")
             .map_err(|e| CompileError::ice(e.to_string()))?;
-        self.builder.build_unreachable().map_err(|e| CompileError::ice(e.to_string()))?;
+        self.builder
+            .build_unreachable()
+            .map_err(|e| CompileError::ice(e.to_string()))?;
 
         self.builder.position_at_end(pass_bb);
         Ok(())
@@ -245,8 +273,7 @@ impl<'ctx> Compiler<'ctx> {
 
         if !val.is_struct_value() {
             return Err(CompileError::ice(
-                "`?` applied to a non-fallible expression (expected `{i1, i64}` struct return)"
-                    ,
+                "`?` applied to a non-fallible expression (expected `{i1, i64}` struct return)",
             ));
         }
 
@@ -258,7 +285,8 @@ impl<'ctx> Compiler<'ctx> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
 
         // Extract the fail flag (field 0 = i1).
-        let fail_flag = self.builder
+        let fail_flag = self
+            .builder
             .build_extract_value(struct_val, 0, "try_flag")
             .map_err(err)?
             .into_int_value();
@@ -266,16 +294,21 @@ impl<'ctx> Compiler<'ctx> {
         // If fail_flag = 1: propagate — return the struct to the caller.
         // If fail_flag = 0: extract the i64 success payload and continue.
         let propagate_bb = self.context.append_basic_block(function, "try_fail");
-        let success_bb   = self.context.append_basic_block(function, "try_ok");
+        let success_bb = self.context.append_basic_block(function, "try_ok");
         self.builder
             .build_conditional_branch(fail_flag, propagate_bb, success_bb)
             .map_err(err)?;
 
         self.builder.position_at_end(propagate_bb);
-        self.builder.build_return(Some(&inkwell::values::BasicValueEnum::StructValue(struct_val))).map_err(err)?;
+        self.builder
+            .build_return(Some(&inkwell::values::BasicValueEnum::StructValue(
+                struct_val,
+            )))
+            .map_err(err)?;
 
         self.builder.position_at_end(success_bb);
-        let payload = self.builder
+        let payload = self
+            .builder
             .build_extract_value(struct_val, 1, "try_payload")
             .map_err(err)?;
 
@@ -296,8 +329,8 @@ impl<'ctx> Compiler<'ctx> {
         let (cond_val, _) = self.compile_expr(cond, env)?;
         let cond_i1 = cond_val.into_int_value();
 
-        let then_bb  = self.context.append_basic_block(function, "then");
-        let else_bb  = self.context.append_basic_block(function, "else");
+        let then_bb = self.context.append_basic_block(function, "then");
+        let else_bb = self.context.append_basic_block(function, "else");
         let merge_bb = self.context.append_basic_block(function, "merge");
 
         self.builder
@@ -316,8 +349,8 @@ impl<'ctx> Compiler<'ctx> {
         // coercion path gets there) is shared with the elaborator via
         // `kind::merge_if_branches` so the two can't silently disagree; only
         // the LLVM value construction below is codegen-specific.
-        let merge = crate::kind::merge_if_branches(&then_ty, &else_ty)
-            .map_err(|e| CompileError::ice(e))?;
+        let merge =
+            crate::kind::merge_if_branches(&then_ty, &else_ty).map_err(|e| CompileError::ice(e))?;
 
         let (then_val, else_val, result_ty) = match &merge {
             crate::kind::IfMerge::Same(_) => (then_val_raw, else_val_raw, then_ty),
@@ -335,7 +368,10 @@ impl<'ctx> Compiler<'ctx> {
                 let ev = self.build_tagged_union_value(1, else_val_raw, &else_ty, arms)?;
                 (tv, ev, merge.result_kind())
             }
-            crate::kind::IfMerge::MergeTaggedUnions { merged_arms, else_remap } => {
+            crate::kind::IfMerge::MergeTaggedUnions {
+                merged_arms,
+                else_remap,
+            } => {
                 let Kind::TaggedUnion(then_inner) = &then_ty else {
                     unreachable!("MergeTaggedUnions guarantees a TaggedUnion then-branch")
                 };
@@ -348,12 +384,18 @@ impl<'ctx> Compiler<'ctx> {
 
                 self.builder.position_at_end(else_bb_cur);
                 let old_struct = AggregateValueEnum::StructValue(else_val_raw.into_struct_value());
-                let old_tag = self.builder
+                let old_tag = self
+                    .builder
                     .build_extract_value(old_struct, 0, "tu_merge_tag")
                     .map_err(|e| CompileError::ice(e.to_string()))?
                     .into_int_value();
                 let new_tag = self.remap_tagged_union_tag(old_tag, else_remap)?;
-                let ev = self.rewrap_tagged_union_with_tag(else_val_raw, else_inner, merged_arms, new_tag)?;
+                let ev = self.rewrap_tagged_union_with_tag(
+                    else_val_raw,
+                    else_inner,
+                    merged_arms,
+                    new_tag,
+                )?;
 
                 (tv, ev, merge.result_kind())
             }
@@ -471,7 +513,9 @@ impl<'ctx> Compiler<'ctx> {
                     self.compile_membership(lv.into_int_value(), rhs)?
                 };
                 if op == BinOp::NotIn {
-                    let neg = self.builder.build_not(pred, "not_in")
+                    let neg = self
+                        .builder
+                        .build_not(pred, "not_in")
                         .map_err(|e| CompileError::ice(e.to_string()))?;
                     return Ok((neg.into(), Kind::Bool));
                 }
@@ -504,14 +548,14 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         match op {
-            BinOp::Eq  => cmp_op!(EQ,  "eq"),
-            BinOp::Ne  => cmp_op!(NE,  "ne"),
-            BinOp::Lt  => cmp_op!(SLT, "lt"),
-            BinOp::Le  => cmp_op!(SLE, "le"),
-            BinOp::Gt  => cmp_op!(SGT, "gt"),
-            BinOp::Ge  => cmp_op!(SGE, "ge"),
+            BinOp::Eq => cmp_op!(EQ, "eq"),
+            BinOp::Ne => cmp_op!(NE, "ne"),
+            BinOp::Lt => cmp_op!(SLT, "lt"),
+            BinOp::Le => cmp_op!(SLE, "le"),
+            BinOp::Gt => cmp_op!(SGT, "gt"),
+            BinOp::Ge => cmp_op!(SGE, "ge"),
             BinOp::And => bool_op!(build_and, "and"),
-            BinOp::Or  => bool_op!(build_or,  "or"),
+            BinOp::Or => bool_op!(build_or, "or"),
             BinOp::In | BinOp::NotIn => unreachable!("handled above"),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => unreachable!(
                 "Add/Sub/Mul/Div are dedicated SemExprKind variants, never wrapped in BinOp"
@@ -567,14 +611,16 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         let concat_fn = match &elem_kind {
-            Kind::Int    => "cantor_vec_concat_i64",
-            Kind::Bool   => "cantor_vec_concat_bool",
+            Kind::Int => "cantor_vec_concat_i64",
+            Kind::Bool => "cantor_vec_concat_bool",
             Kind::Vector(_) => "cantor_list_vec_concat",
-            Kind::Tuple(_)  => "cantor_struct_vec_concat",
+            Kind::Tuple(_) => "cantor_struct_vec_concat",
             Kind::TaggedUnion(_) => "cantor_union_vec_concat",
-            other => return Err(CompileError::ice(format!(
-                "TODO: `++` not yet implemented for element kind {other:?}"
-            ))),
+            other => {
+                return Err(CompileError::ice(format!(
+                    "TODO: `++` not yet implemented for element kind {other:?}"
+                )));
+            }
         };
 
         let fn_val = self.module.get_function(concat_fn).ok_or_else(|| {
@@ -582,7 +628,9 @@ impl<'ctx> Compiler<'ctx> {
         })?;
         let lv_i64 = lv.into_int_value();
         let rv_i64 = rv.into_int_value();
-        let result = self.builder.build_call(fn_val, &[lv_i64.into(), rv_i64.into()], "concat")
+        let result = self
+            .builder
+            .build_call(fn_val, &[lv_i64.into(), rv_i64.into()], "concat")
             .map_err(|e| CompileError::ice(e.to_string()))?;
         let result_i64 = result.try_as_basic_value().left().ok_or_else(|| {
             CompileError::ice(format!("`{concat_fn}` returned void unexpectedly"))
@@ -619,15 +667,16 @@ impl<'ctx> Compiler<'ctx> {
         if callee.0 == "size" && args.len() == 1 {
             let (ptr, kind) = self.compile_expr(&args[0], env)?;
             let size_fn = match kind {
-                Kind::Set(SetElemKind::Int)  => "cantor_set_size_i64",
+                Kind::Set(SetElemKind::Int) => "cantor_set_size_i64",
                 Kind::Set(SetElemKind::Bool) => "cantor_set_size_bool",
-                _ => return Err(CompileError::ice(
-                    "size() requires a runtime set argument",
-                )),
+                _ => return Err(CompileError::ice("size() requires a runtime set argument")),
             };
-            let fn_val = self.module.get_function(size_fn)
+            let fn_val = self
+                .module
+                .get_function(size_fn)
                 .ok_or_else(|| CompileError::ice(format!("{size_fn} not declared")))?;
-            let result = self.builder
+            let result = self
+                .builder
                 .build_call(fn_val, &[ptr.into()], "size")
                 .map_err(|e| CompileError::ice(e.to_string()))?
                 .try_as_basic_value()
@@ -642,40 +691,47 @@ impl<'ctx> Compiler<'ctx> {
             return match &kind {
                 Kind::Vector(ek) => {
                     let len_fn = match ek.as_ref() {
-                        Kind::Int  => "cantor_vec_len_i64",
+                        Kind::Int => "cantor_vec_len_i64",
                         Kind::Bool => "cantor_vec_len_bool",
                         Kind::Vector(_) => "cantor_list_vec_len",
                         Kind::Tuple(_) => "cantor_struct_vec_len",
                         Kind::TaggedUnion(_) => "cantor_union_vec_len",
-                        other => return Err(CompileError::ice(format!(
-                            "len() on Vector({other:?}) not yet supported"
-                        ))),
+                        other => {
+                            return Err(CompileError::ice(format!(
+                                "len() on Vector({other:?}) not yet supported"
+                            )));
+                        }
                     };
 
-                    let fn_val = self.module.get_function(len_fn)
+                    let fn_val = self
+                        .module
+                        .get_function(len_fn)
                         .ok_or_else(|| CompileError::ice(format!("{len_fn} not declared")))?;
-                    let result = self.builder
+                    let result = self
+                        .builder
                         .build_call(fn_val, &[ptr.into()], "len")
                         .map_err(|e| CompileError::ice(e.to_string()))?
                         .try_as_basic_value()
                         .left()
                         .ok_or_else(|| CompileError::ice("len fn returned void"))?;
                     Ok((result, Kind::Int))
-                },
+                }
                 Kind::Tuple(inner_eks) => {
                     let length = Vec::len(inner_eks);
                     let v = self.context.i64_type().const_int(length as u64, true);
                     Ok((v.into(), Kind::Int))
-                },
-                _ => Err(CompileError::ice(
-                    "len() requires a vector (X*) argument",
-                )),
+                }
+                _ => Err(CompileError::ice("len() requires a vector (X*) argument")),
             };
         }
 
-        let function = self.module.get_function(&callee.0).ok_or_else(|| {
-            CompileError::UndefinedVariable { name: callee.0.clone(), span }
-        })?;
+        let function =
+            self.module
+                .get_function(&callee.0)
+                .ok_or_else(|| CompileError::UndefinedVariable {
+                    name: callee.0.clone(),
+                    span,
+                })?;
 
         let param_kinds_for_callee = self.fn_param_kinds.get(&callee.0).cloned();
         let mut compiled_args = Vec::with_capacity(args.len());
@@ -714,10 +770,15 @@ impl<'ctx> Compiler<'ctx> {
             // `coerce_call_arg` for why this needs the callee's recorded domain
             // set expression to disambiguate same-Kind `+` arms.
             let (v, arg_kind) = match expected_kind {
-                Some(expected @ Kind::TaggedUnion(_)) if !matches!(arg_kind, Kind::TaggedUnion(_)) => {
+                Some(expected @ Kind::TaggedUnion(_))
+                    if !matches!(arg_kind, Kind::TaggedUnion(_)) =>
+                {
                     self.coerce_call_arg(v, arg_kind, expected, &callee.0, arg_idx)?
                 }
-                Some(expected) if matches!(arg_kind, Kind::TaggedUnion(_)) && !matches!(expected, Kind::TaggedUnion(_)) => {
+                Some(expected)
+                    if matches!(arg_kind, Kind::TaggedUnion(_))
+                        && !matches!(expected, Kind::TaggedUnion(_)) =>
+                {
                     self.coerce_call_arg(v, arg_kind, expected, &callee.0, arg_idx)?
                 }
                 _ => (v, arg_kind),
@@ -726,11 +787,7 @@ impl<'ctx> Compiler<'ctx> {
             // All function parameters are i64 (uniform ABI); widen Bool args.
             let v_i64 = if arg_kind == Kind::Bool {
                 self.builder
-                    .build_int_z_extend(
-                        v.into_int_value(),
-                        self.context.i64_type(),
-                        "arg_bool_ext",
-                    )
+                    .build_int_z_extend(v.into_int_value(), self.context.i64_type(), "arg_bool_ext")
                     .map_err(|e| CompileError::ice(e.to_string()))?
                     .into()
             } else {
@@ -750,7 +807,11 @@ impl<'ctx> Compiler<'ctx> {
             .ok_or_else(|| CompileError::ice("void return in expression position"))?;
 
         // Restore the correct Kind after the call.
-        let return_kind = self.fn_return_kinds.get(&callee.0).cloned().unwrap_or(Kind::Int);
+        let return_kind = self
+            .fn_return_kinds
+            .get(&callee.0)
+            .cloned()
+            .unwrap_or(Kind::Int);
         match &return_kind {
             Kind::Bool => {
                 let i1_val = self
@@ -784,8 +845,7 @@ impl<'ctx> Compiler<'ctx> {
         if elements.is_empty() {
             return Err(CompileError::ice(
                 "empty set literal in value position — element kind cannot be inferred; \
-                 add an explicit annotation (e.g. `s : Set(Int) = {}`)"
-                    ,
+                 add an explicit annotation (e.g. `s : Set(Int) = {}`)",
             ));
         }
 
@@ -802,30 +862,39 @@ impl<'ctx> Compiler<'ctx> {
             if *k != elem_kind {
                 return Err(CompileError::ice(
                     "mixed element kinds in set literal — \
-                     heterogeneous sets not yet supported"
-                        ,
+                     heterogeneous sets not yet supported",
                 ));
             }
         }
 
         let (set_elem_kind, new_fn, insert_fn) = match &elem_kind {
-            Kind::Int  => (SetElemKind::Int,  "cantor_set_new_i64",  "cantor_set_insert_i64"),
-            Kind::Bool => (SetElemKind::Bool, "cantor_set_new_bool", "cantor_set_insert_bool"),
-            Kind::Set(_) => return Err(CompileError::ice(
-                "sets of sets not yet supported",
-            )),
-            Kind::Fail | Kind::Tuple(_) | Kind::TaggedUnion(_) => return Err(CompileError::ice(
-                "sets of fail/tuples/unions not yet supported",
-            )),
+            Kind::Int => (
+                SetElemKind::Int,
+                "cantor_set_new_i64",
+                "cantor_set_insert_i64",
+            ),
+            Kind::Bool => (
+                SetElemKind::Bool,
+                "cantor_set_new_bool",
+                "cantor_set_insert_bool",
+            ),
+            Kind::Set(_) => return Err(CompileError::ice("sets of sets not yet supported")),
+            Kind::Fail | Kind::Tuple(_) | Kind::TaggedUnion(_) => {
+                return Err(CompileError::ice(
+                    "sets of fail/tuples/unions not yet supported",
+                ));
+            }
             Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),
         };
 
         // Allocate an empty set.
-        let new_fn_val = self.module.get_function(new_fn)
-            .ok_or_else(|| CompileError::ice(
-                format!("{new_fn} not declared — was declare_runtime_functions called?"),
-            ))?;
-        let ptr = self.builder
+        let new_fn_val = self.module.get_function(new_fn).ok_or_else(|| {
+            CompileError::ice(format!(
+                "{new_fn} not declared — was declare_runtime_functions called?"
+            ))
+        })?;
+        let ptr = self
+            .builder
             .build_call(new_fn_val, &[], "new_set")
             .map_err(|e| CompileError::ice(e.to_string()))?
             .try_as_basic_value()
@@ -833,10 +902,11 @@ impl<'ctx> Compiler<'ctx> {
             .ok_or_else(|| CompileError::ice("cantor_set_new returned void"))?;
 
         // Insert each element (insert functions return void).
-        let insert_fn_val = self.module.get_function(insert_fn)
-            .ok_or_else(|| CompileError::ice(
-                format!("{insert_fn} not declared — was declare_runtime_functions called?"),
-            ))?;
+        let insert_fn_val = self.module.get_function(insert_fn).ok_or_else(|| {
+            CompileError::ice(format!(
+                "{insert_fn} not declared — was declare_runtime_functions called?"
+            ))
+        })?;
         for (val, k) in compiled {
             let val_i64: BasicValueEnum = if k == Kind::Bool {
                 self.builder
@@ -866,17 +936,20 @@ impl<'ctx> Compiler<'ctx> {
             .collect::<Result<_, _>>()?;
 
         let elem_kinds: Vec<Kind> = compiled.iter().map(|(_, k)| k.clone()).collect();
-        let llvm_types: Vec<_> = elem_kinds.iter().map(|k| self.kind_to_llvm_type(k)).collect();
+        let llvm_types: Vec<_> = elem_kinds
+            .iter()
+            .map(|k| self.kind_to_llvm_type(k))
+            .collect();
         let struct_type = self.context.struct_type(&llvm_types, false);
 
         let mut agg: AggregateValueEnum<'ctx> = struct_type.get_undef().into();
         for (i, (val, _)) in compiled.into_iter().enumerate() {
-            agg = self.builder
+            agg = self
+                .builder
                 .build_insert_value(agg, val, i as u32, "tf")
                 .map_err(|e| CompileError::ice(e.to_string()))?;
         }
 
         Ok((agg.into_struct_value().into(), Kind::Tuple(elem_kinds)))
     }
-
 }

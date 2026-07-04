@@ -8,7 +8,6 @@
 
 use inkwell::{
     AddressSpace,
-    context::Context,
     values::{AggregateValueEnum, BasicValueEnum, FunctionValue},
 };
 
@@ -39,20 +38,19 @@ impl<'ctx> Compiler<'ctx> {
         let fail_code_global = self.module.add_global(i64t, None, "__cantor_fail_code");
         fail_code_global.set_initializer(&i64t.const_int(0, false));
 
-        let runner = self.module.add_function(
-            "__cantor_main_runner",
-            i64t.fn_type(&[], false),
-            None,
-        );
+        let runner =
+            self.module
+                .add_function("__cantor_main_runner", i64t.fn_type(&[], false), None);
 
         let entry_bb = self.context.append_basic_block(runner, "entry");
-        let fail_bb  = self.context.append_basic_block(runner, "fail");
-        let ok_bb    = self.context.append_basic_block(runner, "ok");
+        let fail_bb = self.context.append_basic_block(runner, "fail");
+        let ok_bb = self.context.append_basic_block(runner, "ok");
 
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
 
         self.builder.position_at_end(entry_bb);
-        let call = self.builder
+        let call = self
+            .builder
             .build_call(main_fn, &[], "main_result")
             .map_err(err)?;
         let struct_val = call
@@ -60,14 +58,18 @@ impl<'ctx> Compiler<'ctx> {
             .left()
             .ok_or_else(|| CompileError::ice("main returned void in runner"))?
             .into_struct_value();
-        let flag = self.builder
+        let flag = self
+            .builder
             .build_extract_value(struct_val, 0, "runner_flag")
             .map_err(err)?
             .into_int_value();
-        self.builder.build_conditional_branch(flag, fail_bb, ok_bb).map_err(err)?;
+        self.builder
+            .build_conditional_branch(flag, fail_bb, ok_bb)
+            .map_err(err)?;
 
         self.builder.position_at_end(fail_bb);
-        let error_code = self.builder
+        let error_code = self
+            .builder
             .build_extract_value(struct_val, 1, "runner_err_code")
             .map_err(err)?;
         let fail_code_ptr = fail_code_global.as_pointer_value();
@@ -78,21 +80,21 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.build_return(Some(&sentinel)).map_err(err)?;
 
         self.builder.position_at_end(ok_bb);
-        let payload = self.builder
+        let payload = self
+            .builder
             .build_extract_value(struct_val, 1, "runner_payload")
             .map_err(err)?;
         self.builder.build_return(Some(&payload)).map_err(err)?;
 
         // Emit a getter so Rust can read the error code via JIT without needing
         // inkwell's (missing) `get_global_value_address` API.
-        let getter = self.module.add_function(
-            "__cantor_get_fail_code",
-            i64t.fn_type(&[], false),
-            None,
-        );
+        let getter =
+            self.module
+                .add_function("__cantor_get_fail_code", i64t.fn_type(&[], false), None);
         let getter_bb = self.context.append_basic_block(getter, "entry");
         self.builder.position_at_end(getter_bb);
-        let loaded = self.builder
+        let loaded = self
+            .builder
             .build_load(i64t, fail_code_global.as_pointer_value(), "fail_code")
             .map_err(err)?;
         self.builder.build_return(Some(&loaded)).map_err(err)?;
@@ -118,7 +120,8 @@ impl<'ctx> Compiler<'ctx> {
 
         let out_ptr = trampoline.get_nth_param(0).unwrap().into_pointer_value();
 
-        let call = self.builder
+        let call = self
+            .builder
             .build_call(main_fn, &[], "main_result")
             .map_err(|e| CompileError::ice(e.to_string()))?;
         let result = call
@@ -128,7 +131,12 @@ impl<'ctx> Compiler<'ctx> {
 
         let mut leaf_idx = 0usize;
         Self::trampoline_store_leaves(
-            &self.builder, self.context, result, ret_kind, out_ptr, i64t, &mut leaf_idx,
+            &self.builder,
+            result,
+            ret_kind,
+            out_ptr,
+            i64t,
+            &mut leaf_idx,
         )?;
 
         self.builder
@@ -139,7 +147,6 @@ impl<'ctx> Compiler<'ctx> {
 
     fn trampoline_store_leaves(
         builder: &inkwell::builder::Builder<'ctx>,
-        ctx: &'ctx Context,
         val: BasicValueEnum<'ctx>,
         kind: &Kind,
         out_ptr: inkwell::values::PointerValue<'ctx>,
@@ -149,14 +156,20 @@ impl<'ctx> Compiler<'ctx> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match kind {
             Kind::Bool | Kind::Fail => {
-                let wide = builder.build_int_z_extend(val.into_int_value(), i64t, "bl").map_err(err)?;
+                let wide = builder
+                    .build_int_z_extend(val.into_int_value(), i64t, "bl")
+                    .map_err(err)?;
                 let ptr = if *leaf_idx == 0 {
                     out_ptr
                 } else {
                     let idx = i64t.const_int(*leaf_idx as u64, false);
                     // Safety: GEP into a caller-allocated i64 array; index is in-bounds
                     // because run_main allocates n_leaves elements.
-                    unsafe { builder.build_gep(i64t, out_ptr, &[idx], "gp").map_err(err)? }
+                    unsafe {
+                        builder
+                            .build_gep(i64t, out_ptr, &[idx], "gp")
+                            .map_err(err)?
+                    }
                 };
                 builder.build_store(ptr, wide).map_err(err)?;
                 *leaf_idx += 1;
@@ -167,16 +180,24 @@ impl<'ctx> Compiler<'ctx> {
                 } else {
                     let idx = i64t.const_int(*leaf_idx as u64, false);
                     // Safety: same as above.
-                    unsafe { builder.build_gep(i64t, out_ptr, &[idx], "gp").map_err(err)? }
+                    unsafe {
+                        builder
+                            .build_gep(i64t, out_ptr, &[idx], "gp")
+                            .map_err(err)?
+                    }
                 };
-                builder.build_store(ptr, val.into_int_value()).map_err(err)?;
+                builder
+                    .build_store(ptr, val.into_int_value())
+                    .map_err(err)?;
                 *leaf_idx += 1;
             }
             Kind::Tuple(elem_kinds) => {
                 let sv = AggregateValueEnum::StructValue(val.into_struct_value());
                 for (i, ek) in elem_kinds.iter().enumerate() {
-                    let elem = builder.build_extract_value(sv, i as u32, "te").map_err(err)?;
-                    Self::trampoline_store_leaves(builder, ctx, elem, ek, out_ptr, i64t, leaf_idx)?;
+                    let elem = builder
+                        .build_extract_value(sv, i as u32, "te")
+                        .map_err(err)?;
+                    Self::trampoline_store_leaves(builder, elem, ek, out_ptr, i64t, leaf_idx)?;
                 }
             }
             // TODO: tagged-union IR — emit the raw struct fields for now;
@@ -192,9 +213,15 @@ impl<'ctx> Compiler<'ctx> {
                     out_ptr
                 } else {
                     let idx = i64t.const_int(*leaf_idx as u64, false);
-                    unsafe { builder.build_gep(i64t, out_ptr, &[idx], "gp").map_err(err)? }
+                    unsafe {
+                        builder
+                            .build_gep(i64t, out_ptr, &[idx], "gp")
+                            .map_err(err)?
+                    }
                 };
-                builder.build_store(ptr, val.into_int_value()).map_err(err)?;
+                builder
+                    .build_store(ptr, val.into_int_value())
+                    .map_err(err)?;
                 *leaf_idx += 1;
             }
         }

@@ -10,10 +10,15 @@ fn runtime_set_runs_and_returns_correct_result() {
     //   size({2,3,5,7}) = 4
     //   total = 17 + 2 + 4 = 23
     let out = run_subcommand("runtime_set.cantor");
-    assert_eq!(out.code, 0, "expected exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
     assert!(
         out.stdout.contains("main() = 23"),
-        "expected 'main() = 23' in output:\n{}", out.stdout
+        "expected 'main() = 23' in output:\n{}",
+        out.stdout
     );
 }
 
@@ -25,15 +30,18 @@ fn runtime_set_proves_signature() {
     let out = run_subcommand("runtime_set.cantor");
     assert!(
         out.stdout.contains("  proved  "),
-        "expected proved result in output:\n{}", out.stdout
+        "expected proved result in output:\n{}",
+        out.stdout
     );
     assert!(
         !out.stdout.contains("  counterexample  "),
-        "unexpected counterexample in output:\n{}", out.stdout
+        "unexpected counterexample in output:\n{}",
+        out.stdout
     );
     assert!(
         !out.stdout.contains("  unknown  "),
-        "unexpected unknown in output:\n{}", out.stdout
+        "unexpected unknown in output:\n{}",
+        out.stdout
     );
 }
 
@@ -42,36 +50,56 @@ fn runtime_set_proves_signature() {
 #[test]
 fn set_ops_proof_all_proved() {
     let out = run_file("set_ops_proof.cantor");
-    assert_eq!(out.code, 0, "set_ops_proof.cantor should exit 0\nstdout: {}", out.stdout);
+    assert_eq!(
+        out.code, 0,
+        "set_ops_proof.cantor should exit 0\nstdout: {}",
+        out.stdout
+    );
     assert!(
         out.stdout.contains("3 proved"),
-        "expected '3 proved' in summary:\n{}", out.stdout
+        "expected '3 proved' in summary:\n{}",
+        out.stdout
     );
     assert!(
         !out.stdout.contains("  counterexample  "),
-        "unexpected counterexample:\n{}", out.stdout
+        "unexpected counterexample:\n{}",
+        out.stdout
     );
 }
 
 #[test]
 fn set_ops_proof_shows_set_op_signatures() {
     let out = run_file("set_ops_proof.cantor");
-    assert!(out.stdout.contains("Nat ^ {0} -> NatPos"), "strip_zero sig missing:\n{}", out.stdout);
-    assert!(out.stdout.contains("{0} + NatPos -> Nat"), "accept_nat sig missing:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("Nat ^ {0} -> NatPos"),
+        "strip_zero sig missing:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("{0} + NatPos -> Nat"),
+        "accept_nat sig missing:\n{}",
+        out.stdout
+    );
 }
 
 #[test]
 fn set_ops_bad_overlapping_union_gives_counterexample() {
     // {0, 1} + {1, 2} is invalid because 1 is in both sets.
     let out = run_file("set_ops_bad.cantor");
-    assert_ne!(out.code, 0, "set_ops_bad.cantor should exit non-zero\nstdout: {}", out.stdout);
+    assert_ne!(
+        out.code, 0,
+        "set_ops_bad.cantor should exit non-zero\nstdout: {}",
+        out.stdout
+    );
     assert!(
         out.stdout.contains("  counterexample  "),
-        "expected counterexample result line:\n{}", out.stdout
+        "expected counterexample result line:\n{}",
+        out.stdout
     );
     assert!(
         !out.stdout.contains("  proved  "),
-        "unexpected proved line:\n{}", out.stdout
+        "unexpected proved line:\n{}",
+        out.stdout
     );
 }
 
@@ -80,7 +108,8 @@ fn set_ops_bad_counterexample_mentions_not_disjoint() {
     let out = run_file("set_ops_bad.cantor");
     assert!(
         out.stdout.contains("not disjoint"),
-        "expected 'not disjoint' in counterexample message:\n{}", out.stdout
+        "expected 'not disjoint' in counterexample message:\n{}",
+        out.stdout
     );
 }
 
@@ -92,10 +121,15 @@ fn set_ops_run_produces_correct_output() {
     // and at the call-argument boundary (accept_nat(7) widens the literal
     // into a {0} + NatPos tagged value; `main(x) = x` narrows it back).
     let out = run_subcommand("set_ops_run.cantor");
-    assert_eq!(out.code, 0, "set_ops_run.cantor run should exit 0\nstdout: {}\nstderr: {}", out.stdout, out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "set_ops_run.cantor run should exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
     assert!(
         out.stdout.contains("main() = 10"),
-        "expected 'main() = 10' in output:\n{}", out.stdout
+        "expected 'main() = 10' in output:\n{}",
+        out.stdout
     );
 }
 
@@ -106,13 +140,19 @@ fn kleene_disjoint_union_not_disjoint_counterexample() {
     // skipped the disjointness check — `({0} + Nat)*` (0 is in both arms)
     // used to falsely prove.
     let out = run_file("kleene_disjoint_union.cantor");
-    assert_ne!(out.code, 0, "kleene_disjoint_union.cantor should exit non-zero:\n{}", out.stdout);
+    assert_ne!(
+        out.code, 0,
+        "kleene_disjoint_union.cantor should exit non-zero:\n{}",
+        out.stdout
+    );
     assert!(
         out.stdout.contains("  counterexample  "),
-        "expected counterexample result line:\n{}", out.stdout
+        "expected counterexample result line:\n{}",
+        out.stdout
     );
     assert!(
         out.stdout.contains("not disjoint"),
-        "expected 'not disjoint' in counterexample message:\n{}", out.stdout
+        "expected 'not disjoint' in counterexample message:\n{}",
+        out.stdout
     );
 }

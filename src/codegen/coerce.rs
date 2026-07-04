@@ -11,7 +11,11 @@ use inkwell::{
     values::{AggregateValueEnum, BasicValueEnum},
 };
 
-use crate::{error::CompileError, kind::Kind, semantics::tree::{SemExpr, flatten_disjoint_union}};
+use crate::{
+    error::CompileError,
+    kind::Kind,
+    semantics::tree::{SemExpr, flatten_disjoint_union},
+};
 
 use super::{Compiler, wire::tagged_union_leaf_count};
 
@@ -41,10 +45,12 @@ impl<'ctx> Compiler<'ctx> {
         arm_kind: &Kind,
         all_arms: &[Kind],
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
-        let struct_ty = self.kind_to_llvm_type(&Kind::TaggedUnion(all_arms.to_vec()))
+        let struct_ty = self
+            .kind_to_llvm_type(&Kind::TaggedUnion(all_arms.to_vec()))
             .into_struct_type();
         let mut agg: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
-        agg = self.builder
+        agg = self
+            .builder
             .build_insert_value(agg, tag, 0, "tu_tag")
             .map_err(|e| CompileError::ice(e.to_string()))?;
         let mut field_idx = 1u32;
@@ -65,17 +71,23 @@ impl<'ctx> Compiler<'ctx> {
         new_tag: inkwell::values::IntValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         let old_leaf_count = tagged_union_leaf_count(old_arms);
-        let new_struct_ty = self.kind_to_llvm_type(&Kind::TaggedUnion(new_arms.to_vec()))
+        let new_struct_ty = self
+            .kind_to_llvm_type(&Kind::TaggedUnion(new_arms.to_vec()))
             .into_struct_type();
         let old_struct = AggregateValueEnum::StructValue(val.into_struct_value());
         let mut agg: AggregateValueEnum<'ctx> = new_struct_ty.get_undef().into();
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
-        agg = self.builder.build_insert_value(agg, new_tag, 0, "tu_rw_t").map_err(err)?;
+        agg = self
+            .builder
+            .build_insert_value(agg, new_tag, 0, "tu_rw_t")
+            .map_err(err)?;
         for i in 0..old_leaf_count {
-            let leaf = self.builder
+            let leaf = self
+                .builder
                 .build_extract_value(old_struct, (i + 1) as u32, "tu_rw_l")
                 .map_err(err)?;
-            agg = self.builder
+            agg = self
+                .builder
                 .build_insert_value(agg, leaf, (i + 1) as u32, "tu_rw_li")
                 .map_err(err)?;
         }
@@ -92,7 +104,8 @@ impl<'ctx> Compiler<'ctx> {
         new_arms: &[Kind],
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         let old_struct = AggregateValueEnum::StructValue(val.into_struct_value());
-        let tag = self.builder
+        let tag = self
+            .builder
             .build_extract_value(old_struct, 0, "tu_rw_tag")
             .map_err(|e| CompileError::ice(e.to_string()))?
             .into_int_value();
@@ -113,7 +126,8 @@ impl<'ctx> Compiler<'ctx> {
         let mut current = i32t.const_int(*mapping.last().unwrap() as u64, false);
         // Build selects in reverse order so the chain evaluates correctly.
         for (old_idx, &new_idx) in mapping[..mapping.len() - 1].iter().enumerate().rev() {
-            let is_this = self.builder
+            let is_this = self
+                .builder
                 .build_int_compare(
                     IntPredicate::EQ,
                     old_tag,
@@ -121,7 +135,8 @@ impl<'ctx> Compiler<'ctx> {
                     "tu_tag_eq",
                 )
                 .map_err(err)?;
-            current = self.builder
+            current = self
+                .builder
                 .build_select(
                     is_this,
                     i32t.const_int(new_idx as u64, false),
@@ -146,7 +161,11 @@ impl<'ctx> Compiler<'ctx> {
         function: inkwell::values::FunctionValue<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let fn_name = function.get_name().to_str().unwrap_or("");
-        let expected = self.fn_return_kinds.get(fn_name).cloned().unwrap_or_else(|| val_kind.clone());
+        let expected = self
+            .fn_return_kinds
+            .get(fn_name)
+            .cloned()
+            .unwrap_or_else(|| val_kind.clone());
         let elem_kind = match &expected {
             Kind::Vector(ek) => ek.as_ref().clone(),
             _ => return Ok((val, val_kind)),
@@ -157,7 +176,9 @@ impl<'ctx> Compiler<'ctx> {
                 let elems = elems.clone();
                 self.compile_tuple_as_vector(val, &elems, &elem_kind)
             }
-            Kind::Int | Kind::Bool => self.compile_scalar_as_singleton_vector(val, &val_kind, &elem_kind),
+            Kind::Int | Kind::Bool => {
+                self.compile_scalar_as_singleton_vector(val, &val_kind, &elem_kind)
+            }
             other => Err(CompileError::ice(format!(
                 "coerce_vector_return: cannot convert {other:?} to Vector"
             ))),
@@ -178,7 +199,11 @@ impl<'ctx> Compiler<'ctx> {
         function: inkwell::values::FunctionValue<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let fn_name = function.get_name().to_str().unwrap_or("");
-        let expected = self.fn_return_kinds.get(fn_name).cloned().unwrap_or_else(|| val_kind.clone());
+        let expected = self
+            .fn_return_kinds
+            .get(fn_name)
+            .cloned()
+            .unwrap_or_else(|| val_kind.clone());
         let set_expr = self.fn_ranges.get(fn_name);
         self.coerce_to_kind(val, val_kind, &expected, set_expr)
     }
@@ -196,7 +221,10 @@ impl<'ctx> Compiler<'ctx> {
         callee: &str,
         arg_idx: usize,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
-        let set_expr = self.fn_param_set_exprs.get(callee).and_then(|exprs| exprs.get(arg_idx));
+        let set_expr = self
+            .fn_param_set_exprs
+            .get(callee)
+            .and_then(|exprs| exprs.get(arg_idx));
         self.coerce_to_kind(val, val_kind, expected, set_expr)
     }
 
@@ -218,7 +246,9 @@ impl<'ctx> Compiler<'ctx> {
             Kind::TaggedUnion(a) => a.clone(),
             _ => {
                 return match &val_kind {
-                    Kind::TaggedUnion(val_arms) => self.narrow_tagged_union(val, val_arms, expected),
+                    Kind::TaggedUnion(val_arms) => {
+                        self.narrow_tagged_union(val, val_arms, expected)
+                    }
                     _ => Ok((val, val_kind)),
                 };
             }
@@ -226,7 +256,9 @@ impl<'ctx> Compiler<'ctx> {
         if matches!(&val_kind, Kind::TaggedUnion(a) if a == &arms) {
             return Ok((val, val_kind)); // already the right TaggedUnion
         }
-        let candidates: Vec<usize> = arms.iter().enumerate()
+        let candidates: Vec<usize> = arms
+            .iter()
+            .enumerate()
             .filter(|(_, k)| **k == val_kind)
             .map(|(i, _)| i)
             .collect();
@@ -239,11 +271,14 @@ impl<'ctx> Compiler<'ctx> {
                 Ok((wrapped, expected.clone()))
             }
             _ => {
-                let set_expr = set_expr.ok_or_else(|| CompileError::ice(format!(
-                    "coerce_to_kind: value kind {val_kind:?} matches multiple arms of {arms:?} \
+                let set_expr = set_expr.ok_or_else(|| {
+                    CompileError::ice(format!(
+                        "coerce_to_kind: value kind {val_kind:?} matches multiple arms of {arms:?} \
                      but no set expression was recorded to disambiguate them"
-                )))?;
-                let wrapped = self.select_disjoint_union_arm(val, &val_kind, &arms, &candidates, set_expr)?;
+                    ))
+                })?;
+                let wrapped =
+                    self.select_disjoint_union_arm(val, &val_kind, &arms, &candidates, set_expr)?;
                 Ok((wrapped, expected.clone()))
             }
         }
@@ -295,8 +330,8 @@ impl<'ctx> Compiler<'ctx> {
         val_arms: &[Kind],
         expected: &Kind,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
-        let supported = matches!(expected, Kind::Int | Kind::Bool)
-            && val_arms.iter().all(|k| k == expected);
+        let supported =
+            matches!(expected, Kind::Int | Kind::Bool) && val_arms.iter().all(|k| k == expected);
         if !supported {
             return Err(CompileError::ice(format!(
                 "narrow_tagged_union: cannot narrow a TaggedUnion with arms {val_arms:?} down to \
@@ -306,7 +341,8 @@ impl<'ctx> Compiler<'ctx> {
             )));
         }
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
-        let payload = self.builder
+        let payload = self
+            .builder
             .build_extract_value(val.into_struct_value(), 1, "tu_narrow_payload")
             .map_err(err)?
             .into_int_value();
@@ -342,7 +378,8 @@ impl<'ctx> Compiler<'ctx> {
                 "select_disjoint_union_arm: not yet implemented for a Kind whose TaggedUnion \
                  arms ({}) don't align with a top-level `+` chain in the recorded set \
                  expression ({} parts) — only plain `A + B + …` domains/ranges are supported today",
-                arms.len(), arm_exprs.len()
+                arms.len(),
+                arm_exprs.len()
             )));
         }
 
@@ -350,14 +387,15 @@ impl<'ctx> Compiler<'ctx> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         let val_int = val.into_int_value();
 
-        let (&last, rest) = candidates.split_last().ok_or_else(|| CompileError::ice(
-            "select_disjoint_union_arm: called with no candidate arms"
-        ))?;
+        let (&last, rest) = candidates.split_last().ok_or_else(|| {
+            CompileError::ice("select_disjoint_union_arm: called with no candidate arms")
+        })?;
         let mut tag = i32t.const_int(last as u64, false);
         for &candidate in rest.iter().rev() {
             let in_arm = self.compile_membership(val_int, arm_exprs[candidate])?;
             let candidate_tag = i32t.const_int(candidate as u64, false);
-            tag = self.builder
+            tag = self
+                .builder
                 .build_select(in_arm, candidate_tag, tag, "tu_arm_sel")
                 .map_err(err)?
                 .into_int_value();

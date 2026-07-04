@@ -32,6 +32,10 @@ jobs:
         llvm-18-dev \
         libcvc5-dev
 
+    - name: Check fmt
+      run: cargo fmt --check
+    - name: Clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
     - name: Build
       run: cargo build --verbose
     - name: Run tests
@@ -50,9 +54,3 @@ jobs:
 # This is failing for some reason and I don't know why - fix this later
 #    - name: Deploy to GitHub Pages
 #      uses: actions/deploy-pages@v4
-
-# Future additions, not passing yet
-#    - name: Check fmt
-#      run: cargo fmt --check 
-#    - name: Clippy
-#      run: cargo clippy --all-targets --all-features -- -D warnings

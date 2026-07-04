@@ -6,16 +6,31 @@ use super::helpers::*;
 fn disjoint_union_domain_identity() {
     // x : {0} + NatPos — a TaggedUnion({Int,Int}) param (`+` always tags, even
     // same-kind arms); narrowed back to a plain Nat by dropping the tag.
-    assert_eq!(jit_src_tagged_domain("main : {0} + NatPos -> Nat\nmain(x) = x", 0, 0), 0);
-    assert_eq!(jit_src_tagged_domain("main : {0} + NatPos -> Nat\nmain(x) = x", 1, 5), 5);
-    assert_eq!(jit_src_tagged_domain("main : {0} + NatPos -> Nat\nmain(x) = x", 1, 1), 1);
+    assert_eq!(
+        jit_src_tagged_domain("main : {0} + NatPos -> Nat\nmain(x) = x", 0, 0),
+        0
+    );
+    assert_eq!(
+        jit_src_tagged_domain("main : {0} + NatPos -> Nat\nmain(x) = x", 1, 5),
+        5
+    );
+    assert_eq!(
+        jit_src_tagged_domain("main : {0} + NatPos -> Nat\nmain(x) = x", 1, 1),
+        1
+    );
 }
 
 #[test]
 fn disjoint_union_domain_arithmetic() {
     // x : {0} + NatPos — arithmetic still works on the narrowed payload.
-    assert_eq!(jit_src_tagged_domain("main : {0} + NatPos -> Int\nmain(x) = x + 1", 0, 0), 1);
-    assert_eq!(jit_src_tagged_domain("main : {0} + NatPos -> Int\nmain(x) = x + 1", 1, 9), 10);
+    assert_eq!(
+        jit_src_tagged_domain("main : {0} + NatPos -> Int\nmain(x) = x + 1", 0, 0),
+        1
+    );
+    assert_eq!(
+        jit_src_tagged_domain("main : {0} + NatPos -> Int\nmain(x) = x + 1", 1, 9),
+        10
+    );
 }
 
 #[test]
@@ -25,9 +40,9 @@ fn disjoint_union_domain_membership_in_body() {
 main : {0} + NatPos -> Bool
 main(x) = if x in {0} then true else false
 ";
-    assert_eq!(jit_src_one_arg(src, 0), 1);  // 0 ∈ {0}
-    assert_eq!(jit_src_one_arg(src, 1), 0);  // 1 ∉ {0}
-    assert_eq!(jit_src_one_arg(src, 7), 0);  // 7 ∉ {0}
+    assert_eq!(jit_src_one_arg(src, 0), 1); // 0 ∈ {0}
+    assert_eq!(jit_src_one_arg(src, 1), 0); // 1 ∉ {0}
+    assert_eq!(jit_src_one_arg(src, 7), 0); // 7 ∉ {0}
 }
 
 // ── Disjoint union (`+`) in range ────────────────────────────────────────────
@@ -38,8 +53,14 @@ fn disjoint_union_range_identity() {
     // Kind::Int, so codegen can't pick the tag by Kind alone — it must run a
     // real membership check (x in {0}) to disambiguate the arm at runtime.
     let src = "main : Nat -> {0} + NatPos\nmain(x) = x";
-    assert_eq!(jit_src_tagged_range(src, 0), TaggedScalar { tag: 0, payload: 0 }); // {0} arm
-    assert_eq!(jit_src_tagged_range(src, 3), TaggedScalar { tag: 1, payload: 3 }); // NatPos arm
+    assert_eq!(
+        jit_src_tagged_range(src, 0),
+        TaggedScalar { tag: 0, payload: 0 }
+    ); // {0} arm
+    assert_eq!(
+        jit_src_tagged_range(src, 3),
+        TaggedScalar { tag: 1, payload: 3 }
+    ); // NatPos arm
 }
 
 // ── Symmetric difference (`^`) in domain ─────────────────────────────────────
@@ -47,8 +68,14 @@ fn disjoint_union_range_identity() {
 #[test]
 fn sym_diff_domain_identity() {
     // x : Nat ^ {0} = NatPos — body returns x which is > 0.
-    assert_eq!(jit_src_one_arg("main : Nat ^ {0} -> NatPos\nmain(x) = x", 1),  1);
-    assert_eq!(jit_src_one_arg("main : Nat ^ {0} -> NatPos\nmain(x) = x", 42), 42);
+    assert_eq!(
+        jit_src_one_arg("main : Nat ^ {0} -> NatPos\nmain(x) = x", 1),
+        1
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Nat ^ {0} -> NatPos\nmain(x) = x", 42),
+        42
+    );
 }
 
 #[test]
@@ -58,8 +85,8 @@ fn sym_diff_domain_membership_in_body() {
 main : Nat ^ {0} -> Bool
 main(x) = if x in {0} then true else false
 ";
-    assert_eq!(jit_src_one_arg(src, 1),  0); // 1 ∉ {0}
-    assert_eq!(jit_src_one_arg(src, 5),  0); // 5 ∉ {0}
+    assert_eq!(jit_src_one_arg(src, 1), 0); // 1 ∉ {0}
+    assert_eq!(jit_src_one_arg(src, 5), 0); // 5 ∉ {0}
 }
 
 // ── Symmetric difference (`^`) in range ──────────────────────────────────────
@@ -67,15 +94,27 @@ main(x) = if x in {0} then true else false
 #[test]
 fn sym_diff_range_identity() {
     // f : NatPos -> Nat ^ {0}; f(x) = x — returns NatPos which = Nat ^ {0}.
-    assert_eq!(jit_src_one_arg("main : NatPos -> Nat ^ {0}\nmain(x) = x", 1),  1);
-    assert_eq!(jit_src_one_arg("main : NatPos -> Nat ^ {0}\nmain(x) = x", 10), 10);
+    assert_eq!(
+        jit_src_one_arg("main : NatPos -> Nat ^ {0}\nmain(x) = x", 1),
+        1
+    );
+    assert_eq!(
+        jit_src_one_arg("main : NatPos -> Nat ^ {0}\nmain(x) = x", 10),
+        10
+    );
 }
 
 #[test]
 fn sym_diff_range_arithmetic() {
     // f : NatPos -> Nat ^ {0}; x + 1 ≥ 2, still a valid NatPos / Nat ^ {0} value.
-    assert_eq!(jit_src_one_arg("main : NatPos -> Nat ^ {0}\nmain(x) = x + 1", 1),  2);
-    assert_eq!(jit_src_one_arg("main : NatPos -> Nat ^ {0}\nmain(x) = x + 1", 9), 10);
+    assert_eq!(
+        jit_src_one_arg("main : NatPos -> Nat ^ {0}\nmain(x) = x + 1", 1),
+        2
+    );
+    assert_eq!(
+        jit_src_one_arg("main : NatPos -> Nat ^ {0}\nmain(x) = x + 1", 9),
+        10
+    );
 }
 
 // ── Union (`|`) in domain ─────────────────────────────────────────────────────
@@ -83,21 +122,39 @@ fn sym_diff_range_arithmetic() {
 #[test]
 fn union_domain_int8_range_identity() {
     // Value in Int8 range passed to Int8 | Int16 domain; returned as Int.
-    assert_eq!(jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x", 100), 100);
-    assert_eq!(jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x", -50), -50);
+    assert_eq!(
+        jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x", 100),
+        100
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x", -50),
+        -50
+    );
 }
 
 #[test]
 fn union_domain_int16_range_identity() {
     // Value in Int16 but outside Int8; identity still works.
-    assert_eq!(jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x", 500),  500);
-    assert_eq!(jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x", -500), -500);
+    assert_eq!(
+        jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x", 500),
+        500
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x", -500),
+        -500
+    );
 }
 
 #[test]
 fn union_domain_arithmetic() {
-    assert_eq!(jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x * 2", 50),  100);
-    assert_eq!(jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x * 2", -10), -20);
+    assert_eq!(
+        jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x * 2", 50),
+        100
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Int8 | Int16 -> Int\nmain(x) = x * 2", -10),
+        -20
+    );
 }
 
 #[test]
@@ -107,7 +164,7 @@ fn union_domain_membership_in_body() {
 main : Int8 | Int16 -> Int
 main(x) = if x in Int8 then 1 else 0
 ";
-    assert_eq!(jit_src_one_arg(src, 50),  1); // 50 ∈ Int8
+    assert_eq!(jit_src_one_arg(src, 50), 1); // 50 ∈ Int8
     assert_eq!(jit_src_one_arg(src, 500), 0); // 500 ∉ Int8
 }
 
@@ -126,14 +183,26 @@ main(x) = if x in {0} then 1 else 0
 
 #[test]
 fn union_range_from_int8() {
-    assert_eq!(jit_src_one_arg("main : Int8 -> Int8 | Int16\nmain(x) = x", 42),  42);
-    assert_eq!(jit_src_one_arg("main : Int8 -> Int8 | Int16\nmain(x) = x", -10), -10);
+    assert_eq!(
+        jit_src_one_arg("main : Int8 -> Int8 | Int16\nmain(x) = x", 42),
+        42
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Int8 -> Int8 | Int16\nmain(x) = x", -10),
+        -10
+    );
 }
 
 #[test]
 fn union_range_from_int16() {
-    assert_eq!(jit_src_one_arg("main : Int16 -> Int8 | Int16\nmain(x) = x", 1000),  1000);
-    assert_eq!(jit_src_one_arg("main : Int16 -> Int8 | Int16\nmain(x) = x", -1000), -1000);
+    assert_eq!(
+        jit_src_one_arg("main : Int16 -> Int8 | Int16\nmain(x) = x", 1000),
+        1000
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Int16 -> Int8 | Int16\nmain(x) = x", -1000),
+        -1000
+    );
 }
 
 // ── Set difference (`-`) in domain ───────────────────────────────────────────
@@ -141,28 +210,52 @@ fn union_range_from_int16() {
 #[test]
 fn diff_domain_int_minus_zero_identity() {
     // Int - {0} parameter; returned unchanged.
-    assert_eq!(jit_src_one_arg("main : Int - {0} -> Int\nmain(x) = x",  7),  7);
-    assert_eq!(jit_src_one_arg("main : Int - {0} -> Int\nmain(x) = x", -3), -3);
+    assert_eq!(
+        jit_src_one_arg("main : Int - {0} -> Int\nmain(x) = x", 7),
+        7
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Int - {0} -> Int\nmain(x) = x", -3),
+        -3
+    );
 }
 
 #[test]
 fn diff_domain_int_minus_zero_arithmetic() {
-    assert_eq!(jit_src_one_arg("main : Int - {0} -> Int\nmain(x) = x + x",  5),  10);
-    assert_eq!(jit_src_one_arg("main : Int - {0} -> Int\nmain(x) = x + x", -4),  -8);
+    assert_eq!(
+        jit_src_one_arg("main : Int - {0} -> Int\nmain(x) = x + x", 5),
+        10
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Int - {0} -> Int\nmain(x) = x + x", -4),
+        -8
+    );
 }
 
 #[test]
 fn diff_domain_nat_minus_zero_identity() {
     // Nat - {0} = NatPos; returned as Nat.
-    assert_eq!(jit_src_one_arg("main : Nat - {0} -> Nat\nmain(x) = x", 5), 5);
-    assert_eq!(jit_src_one_arg("main : Nat - {0} -> Nat\nmain(x) = x", 1), 1);
+    assert_eq!(
+        jit_src_one_arg("main : Nat - {0} -> Nat\nmain(x) = x", 5),
+        5
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Nat - {0} -> Nat\nmain(x) = x", 1),
+        1
+    );
 }
 
 #[test]
 fn diff_domain_pred() {
     // x - 1 where x ∈ Nat - {0}; result ≥ 0.
-    assert_eq!(jit_src_one_arg("main : Nat - {0} -> Nat\nmain(x) = x - 1", 3), 2);
-    assert_eq!(jit_src_one_arg("main : Nat - {0} -> Nat\nmain(x) = x - 1", 1), 0);
+    assert_eq!(
+        jit_src_one_arg("main : Nat - {0} -> Nat\nmain(x) = x - 1", 3),
+        2
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Nat - {0} -> Nat\nmain(x) = x - 1", 1),
+        0
+    );
 }
 
 #[test]
@@ -181,15 +274,27 @@ main(x) = if x in NatPos then 1 else 0
 #[test]
 fn diff_range_natpos_passthrough() {
     // NatPos -> Int - {0}; returning x unchanged.
-    assert_eq!(jit_src_one_arg("main : NatPos -> Int - {0}\nmain(x) = x", 5), 5);
-    assert_eq!(jit_src_one_arg("main : NatPos -> Int - {0}\nmain(x) = x", 1), 1);
+    assert_eq!(
+        jit_src_one_arg("main : NatPos -> Int - {0}\nmain(x) = x", 5),
+        5
+    );
+    assert_eq!(
+        jit_src_one_arg("main : NatPos -> Int - {0}\nmain(x) = x", 1),
+        1
+    );
 }
 
 #[test]
 fn diff_range_nat_minus_zero_passthrough() {
     // Nat - {0} -> Nat - {0}; identity.
-    assert_eq!(jit_src_one_arg("main : Nat - {0} -> Nat - {0}\nmain(x) = x", 3), 3);
-    assert_eq!(jit_src_one_arg("main : Nat - {0} -> Nat - {0}\nmain(x) = x", 7), 7);
+    assert_eq!(
+        jit_src_one_arg("main : Nat - {0} -> Nat - {0}\nmain(x) = x", 3),
+        3
+    );
+    assert_eq!(
+        jit_src_one_arg("main : Nat - {0} -> Nat - {0}\nmain(x) = x", 7),
+        7
+    );
 }
 
 // ── Cross-kind: Bool mixed with integer sets ──────────────────────────────────
@@ -213,21 +318,30 @@ fn diff_range_nat_minus_zero_passthrough() {
 #[test]
 fn cross_kind_bool_or_nat_domain_false_value() {
     // false (0) passed through Bool | Nat domain; identity returned as Int.
-    assert_eq!(jit_src_one_arg("main : Bool | Nat -> Int\nmain(x) = x", 0), 0);
+    assert_eq!(
+        jit_src_one_arg("main : Bool | Nat -> Int\nmain(x) = x", 0),
+        0
+    );
 }
 
 #[ignore]
 #[test]
 fn cross_kind_bool_or_nat_domain_true_value() {
     // true (1) passed through Bool | Nat domain.
-    assert_eq!(jit_src_one_arg("main : Bool | Nat -> Int\nmain(x) = x", 1), 1);
+    assert_eq!(
+        jit_src_one_arg("main : Bool | Nat -> Int\nmain(x) = x", 1),
+        1
+    );
 }
 
 #[ignore]
 #[test]
 fn cross_kind_bool_or_nat_domain_nat_value() {
     // A plain Nat value (not a Bool) passed through Bool | Nat domain.
-    assert_eq!(jit_src_one_arg("main : Bool | Nat -> Int\nmain(x) = x", 5), 5);
+    assert_eq!(
+        jit_src_one_arg("main : Bool | Nat -> Int\nmain(x) = x", 5),
+        5
+    );
 }
 
 #[ignore]
@@ -250,16 +364,28 @@ fn cross_kind_bool_to_bool_or_nat_range() {
     // Returning a Bool value (0 or 1) into a Bool | Nat range; Bool is arm 0
     // (unambiguous — no other arm is Kind::Bool, so no membership check needed).
     let src = "main : Bool -> Bool | Nat\nmain(x) = x";
-    assert_eq!(jit_src_tagged_range(src, 0), TaggedScalar { tag: 0, payload: 0 });
-    assert_eq!(jit_src_tagged_range(src, 1), TaggedScalar { tag: 0, payload: 1 });
+    assert_eq!(
+        jit_src_tagged_range(src, 0),
+        TaggedScalar { tag: 0, payload: 0 }
+    );
+    assert_eq!(
+        jit_src_tagged_range(src, 1),
+        TaggedScalar { tag: 0, payload: 1 }
+    );
 }
 
 #[test]
 fn cross_kind_nat_to_bool_or_nat_range() {
     // Returning a Nat value into a Bool | Nat range; Nat is arm 1.
     let src = "main : Nat -> Bool | Nat\nmain(x) = x";
-    assert_eq!(jit_src_tagged_range(src, 3), TaggedScalar { tag: 1, payload: 3 });
-    assert_eq!(jit_src_tagged_range(src, 0), TaggedScalar { tag: 1, payload: 0 });
+    assert_eq!(
+        jit_src_tagged_range(src, 3),
+        TaggedScalar { tag: 1, payload: 3 }
+    );
+    assert_eq!(
+        jit_src_tagged_range(src, 0),
+        TaggedScalar { tag: 1, payload: 0 }
+    );
 }
 
 // Narrowing a mixed-Kind TaggedUnion (Bool | Nat) down to a single arm's Kind
@@ -285,7 +411,6 @@ fn cross_kind_bool_or_nat_domain_narrowed_to_bool_reports_compile_error() {
 // union requires a tagged-union representation ({i1 tag, payload}).  The
 // existing codegen has no such representation, so these tests are #[ignore]
 // until proper tagged-union IR emission is implemented.
-
 
 #[test]
 fn cross_kind_bool_or_tuple_bool_arm() {

@@ -1,6 +1,6 @@
 use cantor::{
     ast::Param,
-    codegen::{compile_file, compile_to_ir, Compiler},
+    codegen::{Compiler, compile_file, compile_to_ir},
     semantics::tree::SemExpr,
 };
 use inkwell::context::Context;
@@ -13,7 +13,9 @@ pub fn jit_eval_fn(params: &[Param], body: SemExpr, args: &[i64]) -> i64 {
     let ctx = Context::create();
     let mut compiler = Compiler::new(&ctx, "test");
     compiler.declare_runtime_functions();
-    compiler.compile_function("__test__", params, &body).unwrap();
+    compiler
+        .compile_function("__test__", params, &body)
+        .unwrap();
     let engine = compiler.into_jit_engine().unwrap();
     unsafe {
         match args.len() {

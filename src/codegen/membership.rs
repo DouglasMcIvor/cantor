@@ -1,4 +1,7 @@
-use inkwell::{IntPredicate, values::{BasicValueEnum, IntValue}};
+use inkwell::{
+    IntPredicate,
+    values::{BasicValueEnum, IntValue},
+};
 
 use crate::{
     ast::BinOp,
@@ -21,8 +24,8 @@ impl<'ctx> Compiler<'ctx> {
         val: IntValue<'ctx>,
         set_expr: &SemExpr,
     ) -> Result<IntValue<'ctx>, CompileError> {
-        let b    = &self.builder;
-        let i64  = self.context.i64_type();
+        let b = &self.builder;
+        let i64 = self.context.i64_type();
         let bool = self.context.bool_type();
 
         match &set_expr.kind {
@@ -40,10 +43,12 @@ impl<'ctx> Compiler<'ctx> {
                         val
                     };
                     let zero = i64.const_int(0, false);
-                    let one  = i64.const_int(1, false);
-                    let eq0 = b.build_int_compare(IntPredicate::EQ, val_i64, zero, "bool_eq0")
+                    let one = i64.const_int(1, false);
+                    let eq0 = b
+                        .build_int_compare(IntPredicate::EQ, val_i64, zero, "bool_eq0")
                         .map_err(|e| CompileError::ice(e.to_string()))?;
-                    let eq1 = b.build_int_compare(IntPredicate::EQ, val_i64, one, "bool_eq1")
+                    let eq1 = b
+                        .build_int_compare(IntPredicate::EQ, val_i64, one, "bool_eq1")
                         .map_err(|e| CompileError::ice(e.to_string()))?;
                     b.build_or(eq0, eq1, "in_bool")
                         .map_err(|e| CompileError::ice(e.to_string()))
@@ -54,10 +59,20 @@ impl<'ctx> Compiler<'ctx> {
                         .build_int_compare(IntPredicate::SGE, val, i64.const_int(0, true), "in_nat")
                         .map_err(|e| CompileError::ice(e.to_string())),
                     IntBound::Positive => b
-                        .build_int_compare(IntPredicate::SGT, val, i64.const_int(0, true), "in_natpos")
+                        .build_int_compare(
+                            IntPredicate::SGT,
+                            val,
+                            i64.const_int(0, true),
+                            "in_natpos",
+                        )
                         .map_err(|e| CompileError::ice(e.to_string())),
                     IntBound::NonZero => b
-                        .build_int_compare(IntPredicate::NE, val, i64.const_int(0, true), "in_nonzero")
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            val,
+                            i64.const_int(0, true),
+                            "in_nonzero",
+                        )
                         .map_err(|e| CompileError::ice(e.to_string())),
                     IntBound::Bounded(min, max) => self.compile_bounded_membership(val, min, max),
                 },
@@ -85,7 +100,7 @@ impl<'ctx> Compiler<'ctx> {
                         .build_int_compare(IntPredicate::EQ, val, elem_val, "set_eq")
                         .map_err(|e| CompileError::ice(e.to_string()))?;
                     acc = Some(match acc {
-                        None       => eq,
+                        None => eq,
                         Some(prev) => b
                             .build_or(prev, eq, "set_or")
                             .map_err(|e| CompileError::ice(e.to_string()))?,
@@ -96,16 +111,21 @@ impl<'ctx> Compiler<'ctx> {
 
             // t ∈ A - B  →  (t ∈ A) && !(t ∈ B)
             SemExprKind::SetDifference(lhs, rhs) => {
-                let in_a  = self.compile_membership(val, lhs)?;
-                let in_b  = self.compile_membership(val, rhs)?;
-                let not_b = b.build_not(in_b, "not_b")
+                let in_a = self.compile_membership(val, lhs)?;
+                let in_b = self.compile_membership(val, rhs)?;
+                let not_b = b
+                    .build_not(in_b, "not_b")
                     .map_err(|e| CompileError::ice(e.to_string()))?;
                 b.build_and(in_a, not_b, "set_diff")
                     .map_err(|e| CompileError::ice(e.to_string()))
             }
 
             // t ∈ A | B  →  (t ∈ A) || (t ∈ B)
-            SemExprKind::BinOp { op: BinOp::Union, lhs, rhs } => {
+            SemExprKind::BinOp {
+                op: BinOp::Union,
+                lhs,
+                rhs,
+            } => {
                 let in_a = self.compile_membership(val, lhs)?;
                 let in_b = self.compile_membership(val, rhs)?;
                 b.build_or(in_a, in_b, "set_union")
@@ -121,7 +141,11 @@ impl<'ctx> Compiler<'ctx> {
             }
 
             // t ∈ A & B  →  (t ∈ A) && (t ∈ B)
-            SemExprKind::BinOp { op: BinOp::Intersect, lhs, rhs } => {
+            SemExprKind::BinOp {
+                op: BinOp::Intersect,
+                lhs,
+                rhs,
+            } => {
                 let in_a = self.compile_membership(val, lhs)?;
                 let in_b = self.compile_membership(val, rhs)?;
                 b.build_and(in_a, in_b, "set_inter")
@@ -129,12 +153,22 @@ impl<'ctx> Compiler<'ctx> {
             }
 
             // t ∈ A ^ B  →  (t ∈ A) XOR (t ∈ B)  =  (a || b) && !(a && b)
-            SemExprKind::BinOp { op: BinOp::SymDiff, lhs, rhs } => {
+            SemExprKind::BinOp {
+                op: BinOp::SymDiff,
+                lhs,
+                rhs,
+            } => {
                 let in_a = self.compile_membership(val, lhs)?;
                 let in_b = self.compile_membership(val, rhs)?;
-                let or_ab  = b.build_or (in_a, in_b, "symdiff_or" ).map_err(|e| CompileError::ice(e.to_string()))?;
-                let and_ab = b.build_and(in_a, in_b, "symdiff_and").map_err(|e| CompileError::ice(e.to_string()))?;
-                let not_and = b.build_not(and_ab, "symdiff_not").map_err(|e| CompileError::ice(e.to_string()))?;
+                let or_ab = b
+                    .build_or(in_a, in_b, "symdiff_or")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                let and_ab = b
+                    .build_and(in_a, in_b, "symdiff_and")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                let not_and = b
+                    .build_not(and_ab, "symdiff_not")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
                 b.build_and(or_ab, not_and, "symdiff_xor")
                     .map_err(|e| CompileError::ice(e.to_string()))
             }
@@ -157,20 +191,23 @@ impl<'ctx> Compiler<'ctx> {
         set_expr: &SemExpr,
     ) -> Result<IntValue<'ctx>, CompileError> {
         let target_kind = &set_expr.kind_of;
-        let arm_idx = arms.iter().position(|k| k == target_kind)
-            .ok_or_else(|| CompileError::ice(format!(
+        let arm_idx = arms.iter().position(|k| k == target_kind).ok_or_else(|| {
+            CompileError::ice(format!(
                 "tagged-union membership: set expression kind {target_kind:?} \
                  does not match any arm in {arms:?}"
-            )))?;
+            ))
+        })?;
 
         let struct_val = val.into_struct_value();
-        let tag = self.builder
+        let tag = self
+            .builder
             .build_extract_value(struct_val, 0, "tu_tag")
             .map_err(|e| CompileError::ice(e.to_string()))?
             .into_int_value();
 
         // Widen i32 tag to i64 for comparison.
-        let tag_i64 = self.builder
+        let tag_i64 = self
+            .builder
             .build_int_z_extend(tag, self.context.i64_type(), "tu_tag64")
             .map_err(|e| CompileError::ice(e.to_string()))?;
 
@@ -193,10 +230,12 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<IntValue<'ctx>, CompileError> {
         let i64t = self.context.i64_type();
         let contains_fn = match elem_kind {
-            SetElemKind::Int  => "cantor_set_contains_i64",
+            SetElemKind::Int => "cantor_set_contains_i64",
             SetElemKind::Bool => "cantor_set_contains_bool",
         };
-        let fn_val = self.module.get_function(contains_fn)
+        let fn_val = self
+            .module
+            .get_function(contains_fn)
             .ok_or_else(|| CompileError::ice(format!("{contains_fn} not declared")))?;
         let val_i64: BasicValueEnum = if val_kind == Kind::Bool {
             self.builder
@@ -206,10 +245,12 @@ impl<'ctx> Compiler<'ctx> {
         } else {
             val
         };
-        let result_i64 = self.builder
+        let result_i64 = self
+            .builder
             .build_call(fn_val, &[set_ptr.into(), val_i64.into()], "contains")
             .map_err(|e| CompileError::ice(e.to_string()))?
-            .try_as_basic_value().left()
+            .try_as_basic_value()
+            .left()
             .ok_or_else(|| CompileError::ice("contains fn returned void"))?
             .into_int_value();
         // Truncate the i64 0/1 result to i1 to match compile_membership's return shape.
@@ -254,14 +295,14 @@ impl<'ctx> Compiler<'ctx> {
         min: i64,
         max: i64,
     ) -> Result<IntValue<'ctx>, CompileError> {
-        let b   = &self.builder;
+        let b = &self.builder;
         let i64 = self.context.i64_type();
-        let lo  = i64.const_int(min as u64, true);
-        let hi  = i64.const_int(max as u64, true);
-        let ge  = b
+        let lo = i64.const_int(min as u64, true);
+        let hi = i64.const_int(max as u64, true);
+        let ge = b
             .build_int_compare(IntPredicate::SGE, val, lo, "ge")
             .map_err(|e| CompileError::ice(e.to_string()))?;
-        let le  = b
+        let le = b
             .build_int_compare(IntPredicate::SLE, val, hi, "le")
             .map_err(|e| CompileError::ice(e.to_string()))?;
         b.build_and(ge, le, "bounded")

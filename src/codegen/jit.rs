@@ -1,4 +1,6 @@
-use inkwell::{OptimizationLevel, context::Context, execution_engine::ExecutionEngine, values::FunctionValue};
+use inkwell::{
+    OptimizationLevel, context::Context, execution_engine::ExecutionEngine, values::FunctionValue,
+};
 
 use crate::{ast::Item, error::CompileError, solver::ConstrainedTree};
 
@@ -18,68 +20,202 @@ impl<'ctx> Compiler<'ctx> {
         // module, so these remain valid after the module is consumed below.
         let mappings: Vec<(FunctionValue<'ctx>, usize)> = {
             let rt: &[(&str, usize)] = &[
-                ("cantor_set_new_i64",       runtime::cantor_set_new_i64       as *const () as usize),
-                ("cantor_set_insert_i64",    runtime::cantor_set_insert_i64    as *const () as usize),
-                ("cantor_set_contains_i64",  runtime::cantor_set_contains_i64  as *const () as usize),
-                ("cantor_set_size_i64",      runtime::cantor_set_size_i64      as *const () as usize),
-                ("cantor_set_get_i64",       runtime::cantor_set_get_i64       as *const () as usize),
-                ("cantor_set_new_bool",      runtime::cantor_set_new_bool      as *const () as usize),
-                ("cantor_set_insert_bool",   runtime::cantor_set_insert_bool   as *const () as usize),
-                ("cantor_set_contains_bool", runtime::cantor_set_contains_bool as *const () as usize),
-                ("cantor_set_size_bool",     runtime::cantor_set_size_bool     as *const () as usize),
-                ("cantor_set_get_bool",      runtime::cantor_set_get_bool      as *const () as usize),
+                (
+                    "cantor_set_new_i64",
+                    runtime::cantor_set_new_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_set_insert_i64",
+                    runtime::cantor_set_insert_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_set_contains_i64",
+                    runtime::cantor_set_contains_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_set_size_i64",
+                    runtime::cantor_set_size_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_set_get_i64",
+                    runtime::cantor_set_get_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_set_new_bool",
+                    runtime::cantor_set_new_bool as *const () as usize,
+                ),
+                (
+                    "cantor_set_insert_bool",
+                    runtime::cantor_set_insert_bool as *const () as usize,
+                ),
+                (
+                    "cantor_set_contains_bool",
+                    runtime::cantor_set_contains_bool as *const () as usize,
+                ),
+                (
+                    "cantor_set_size_bool",
+                    runtime::cantor_set_size_bool as *const () as usize,
+                ),
+                (
+                    "cantor_set_get_bool",
+                    runtime::cantor_set_get_bool as *const () as usize,
+                ),
                 // Vector(Int) — Apache Arrow Int64Array
-                ("cantor_vec_builder_new_i64",    runtime::cantor_vec_builder_new_i64    as *const () as usize),
-                ("cantor_vec_builder_push_i64",   runtime::cantor_vec_builder_push_i64   as *const () as usize),
-                ("cantor_vec_builder_finish_i64", runtime::cantor_vec_builder_finish_i64 as *const () as usize),
-                ("cantor_vec_len_i64",            runtime::cantor_vec_len_i64            as *const () as usize),
-                ("cantor_vec_get_i64",            runtime::cantor_vec_get_i64            as *const () as usize),
-                ("cantor_vec_push_i64",           runtime::cantor_vec_push_i64           as *const () as usize),
+                (
+                    "cantor_vec_builder_new_i64",
+                    runtime::cantor_vec_builder_new_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_vec_builder_push_i64",
+                    runtime::cantor_vec_builder_push_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_vec_builder_finish_i64",
+                    runtime::cantor_vec_builder_finish_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_vec_len_i64",
+                    runtime::cantor_vec_len_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_vec_get_i64",
+                    runtime::cantor_vec_get_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_vec_push_i64",
+                    runtime::cantor_vec_push_i64 as *const () as usize,
+                ),
                 // Vector(Bool) — Apache Arrow BooleanArray
-                ("cantor_vec_builder_new_bool",    runtime::cantor_vec_builder_new_bool    as *const () as usize),
-                ("cantor_vec_builder_push_bool",   runtime::cantor_vec_builder_push_bool   as *const () as usize),
-                ("cantor_vec_builder_finish_bool", runtime::cantor_vec_builder_finish_bool as *const () as usize),
-                ("cantor_vec_len_bool",            runtime::cantor_vec_len_bool            as *const () as usize),
-                ("cantor_vec_get_bool",            runtime::cantor_vec_get_bool            as *const () as usize),
-                ("cantor_vec_push_bool",           runtime::cantor_vec_push_bool           as *const () as usize),
+                (
+                    "cantor_vec_builder_new_bool",
+                    runtime::cantor_vec_builder_new_bool as *const () as usize,
+                ),
+                (
+                    "cantor_vec_builder_push_bool",
+                    runtime::cantor_vec_builder_push_bool as *const () as usize,
+                ),
+                (
+                    "cantor_vec_builder_finish_bool",
+                    runtime::cantor_vec_builder_finish_bool as *const () as usize,
+                ),
+                (
+                    "cantor_vec_len_bool",
+                    runtime::cantor_vec_len_bool as *const () as usize,
+                ),
+                (
+                    "cantor_vec_get_bool",
+                    runtime::cantor_vec_get_bool as *const () as usize,
+                ),
+                (
+                    "cantor_vec_push_bool",
+                    runtime::cantor_vec_push_bool as *const () as usize,
+                ),
                 // Concatenation
-                ("cantor_vec_concat_i64",          runtime::cantor_vec_concat_i64          as *const () as usize),
-                ("cantor_vec_concat_bool",         runtime::cantor_vec_concat_bool         as *const () as usize),
+                (
+                    "cantor_vec_concat_i64",
+                    runtime::cantor_vec_concat_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_vec_concat_bool",
+                    runtime::cantor_vec_concat_bool as *const () as usize,
+                ),
                 // Nested vectors (X** at any depth) — generic CantorListVec
-                ("cantor_list_vec_builder_new",    runtime::cantor_list_vec_builder_new    as *const () as usize),
-                ("cantor_list_vec_builder_push",   runtime::cantor_list_vec_builder_push   as *const () as usize),
-                ("cantor_list_vec_builder_finish", runtime::cantor_list_vec_builder_finish as *const () as usize),
-                ("cantor_list_vec_len",            runtime::cantor_list_vec_len            as *const () as usize),
-                ("cantor_list_vec_get",            runtime::cantor_list_vec_get            as *const () as usize),
-                ("cantor_list_vec_concat",         runtime::cantor_list_vec_concat         as *const () as usize),
+                (
+                    "cantor_list_vec_builder_new",
+                    runtime::cantor_list_vec_builder_new as *const () as usize,
+                ),
+                (
+                    "cantor_list_vec_builder_push",
+                    runtime::cantor_list_vec_builder_push as *const () as usize,
+                ),
+                (
+                    "cantor_list_vec_builder_finish",
+                    runtime::cantor_list_vec_builder_finish as *const () as usize,
+                ),
+                (
+                    "cantor_list_vec_len",
+                    runtime::cantor_list_vec_len as *const () as usize,
+                ),
+                (
+                    "cantor_list_vec_get",
+                    runtime::cantor_list_vec_get as *const () as usize,
+                ),
+                (
+                    "cantor_list_vec_concat",
+                    runtime::cantor_list_vec_concat as *const () as usize,
+                ),
                 // Struct vectors ((A * B)*)
-                ("cantor_struct_vec_builder_new",        runtime::cantor_struct_vec_builder_new        as *const () as usize),
-                ("cantor_struct_vec_builder_push_field", runtime::cantor_struct_vec_builder_push_field as *const () as usize),
-                ("cantor_struct_vec_builder_finish",     runtime::cantor_struct_vec_builder_finish     as *const () as usize),
-                ("cantor_struct_vec_len",                runtime::cantor_struct_vec_len                as *const () as usize),
-                ("cantor_struct_vec_get_field",          runtime::cantor_struct_vec_get_field          as *const () as usize),
-                ("cantor_struct_vec_concat",             runtime::cantor_struct_vec_concat             as *const () as usize),
+                (
+                    "cantor_struct_vec_builder_new",
+                    runtime::cantor_struct_vec_builder_new as *const () as usize,
+                ),
+                (
+                    "cantor_struct_vec_builder_push_field",
+                    runtime::cantor_struct_vec_builder_push_field as *const () as usize,
+                ),
+                (
+                    "cantor_struct_vec_builder_finish",
+                    runtime::cantor_struct_vec_builder_finish as *const () as usize,
+                ),
+                (
+                    "cantor_struct_vec_len",
+                    runtime::cantor_struct_vec_len as *const () as usize,
+                ),
+                (
+                    "cantor_struct_vec_get_field",
+                    runtime::cantor_struct_vec_get_field as *const () as usize,
+                ),
+                (
+                    "cantor_struct_vec_concat",
+                    runtime::cantor_struct_vec_concat as *const () as usize,
+                ),
                 // Union vectors ((A | B)* with at least one Tuple arm)
-                ("cantor_union_vec_builder_new",       runtime::cantor_union_vec_builder_new       as *const () as usize),
-                ("cantor_union_vec_builder_set_arm",   runtime::cantor_union_vec_builder_set_arm   as *const () as usize),
-                ("cantor_union_vec_builder_push_leaf", runtime::cantor_union_vec_builder_push_leaf as *const () as usize),
-                ("cantor_union_vec_builder_finish",    runtime::cantor_union_vec_builder_finish    as *const () as usize),
-                ("cantor_union_vec_len",               runtime::cantor_union_vec_len               as *const () as usize),
-                ("cantor_union_vec_get_tag",           runtime::cantor_union_vec_get_tag           as *const () as usize),
-                ("cantor_union_vec_get_leaf",          runtime::cantor_union_vec_get_leaf          as *const () as usize),
-                ("cantor_union_vec_concat",            runtime::cantor_union_vec_concat            as *const () as usize),
-                ("cantor_overflow_abort",               runtime::cantor_overflow_abort               as *const () as usize),
+                (
+                    "cantor_union_vec_builder_new",
+                    runtime::cantor_union_vec_builder_new as *const () as usize,
+                ),
+                (
+                    "cantor_union_vec_builder_set_arm",
+                    runtime::cantor_union_vec_builder_set_arm as *const () as usize,
+                ),
+                (
+                    "cantor_union_vec_builder_push_leaf",
+                    runtime::cantor_union_vec_builder_push_leaf as *const () as usize,
+                ),
+                (
+                    "cantor_union_vec_builder_finish",
+                    runtime::cantor_union_vec_builder_finish as *const () as usize,
+                ),
+                (
+                    "cantor_union_vec_len",
+                    runtime::cantor_union_vec_len as *const () as usize,
+                ),
+                (
+                    "cantor_union_vec_get_tag",
+                    runtime::cantor_union_vec_get_tag as *const () as usize,
+                ),
+                (
+                    "cantor_union_vec_get_leaf",
+                    runtime::cantor_union_vec_get_leaf as *const () as usize,
+                ),
+                (
+                    "cantor_union_vec_concat",
+                    runtime::cantor_union_vec_concat as *const () as usize,
+                ),
+                (
+                    "cantor_overflow_abort",
+                    runtime::cantor_overflow_abort as *const () as usize,
+                ),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))
                 .collect()
         }; // borrow of self.module ends here
 
-        self.module
-            .verify()
-            .map_err(|e| e.to_string())?;
+        self.module.verify().map_err(|e| e.to_string())?;
 
-        let ee = self.module
+        let ee = self
+            .module
             .create_jit_execution_engine(OptimizationLevel::None)
             .map_err(|e| e.to_string())?;
 
@@ -117,9 +253,12 @@ pub fn compile_constrained<'ctx>(
     src: &str,
 ) -> Result<ExecutionEngine<'ctx>, CompileError> {
     compile_elaborated(
-        ctx, &tree.items, &tree.sem_items,
-        tree.overflow_checks.clone(), Some((path.to_string(), src.to_string())),
+        ctx,
+        &tree.items,
+        &tree.sem_items,
+        tree.overflow_checks.clone(),
+        Some((path.to_string(), src.to_string())),
     )?
-        .into_jit_engine()
-        .map_err(|e| CompileError::ice(e))
+    .into_jit_engine()
+    .map_err(|e| CompileError::ice(e))
 }

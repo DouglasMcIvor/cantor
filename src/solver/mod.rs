@@ -29,6 +29,7 @@ mod sort;
 pub use constrained::ConstrainedTree;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 use cvc5::{Kind, Solver, Term, TermManager};
 
@@ -36,7 +37,10 @@ use crate::{
     ast::{DefKind, Item},
     semantics::{
         elaborate::elaborate,
-        tree::{sem_param_set_exprs, SemExpr, SemFunctionBody, SemFunctionDef, SemFunctionSig, SemItem, SemNameDef},
+        tree::{
+            SemExpr, SemFunctionBody, SemFunctionDef, SemFunctionSig, SemItem, SemNameDef,
+            sem_param_set_exprs,
+        },
     },
     span::{Span, Symbol},
 };
@@ -49,10 +53,13 @@ pub(crate) type NameDefs = HashMap<Symbol, SemNameDef>;
 
 use crate::kind::Kind as ValKind;
 
-use self::encode::{Env, BuiltinObligation, OverflowObligation, decide_overflow_obligations, encode_expr, integer_value, boolean_value, mk_decomposed_tuple};
-use self::sort::set_sort;
-use self::blocks::{encode_block, body_has_unconstrained_loop_var};
+use self::blocks::{body_has_unconstrained_loop_var, encode_block};
+use self::encode::{
+    BuiltinObligation, Env, OverflowObligation, boolean_value, decide_overflow_obligations,
+    encode_expr, integer_value, mk_decomposed_tuple,
+};
 use self::membership::{DistinctInfo, DistinctPreds, Membership, membership_constraint};
+use self::sort::set_sort;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -64,7 +71,11 @@ pub enum CheckResult {
     /// The solver found concrete parameter values that violate a safety
     /// obligation.  `reason` is a human-readable explanation such as
     /// `"not in Nat"` (range violation) or `"division by zero"`.
-    Counterexample { params: HashMap<String, i64>, output: i64, reason: String },
+    Counterexample {
+        params: HashMap<String, i64>,
+        output: i64,
+        reason: String,
+    },
     /// Could not determine (unsupported construct, solver timeout, etc.).
     Unknown(String),
 }
@@ -107,7 +118,8 @@ pub enum CheckOutcome {
 /// no Fail-specific code beyond this registration. See
 /// docs/design-decisions.md §13 ("Solver representation of `Fail`").
 fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs) -> DistinctPreds<'tm> {
-    let user_defined = name_defs.iter()
+    let user_defined = name_defs
+        .iter()
         .filter(|(_, def)| def.kind == DefKind::Distinct)
         .map(|(sym, _)| sym.clone());
     let with_fail = user_defined.chain(std::iter::once(Symbol::new("Fail")));
@@ -120,7 +132,7 @@ fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs) -> Dist
                 &format!("mk_{}", sym.0),
             );
             let from = tm.mk_const(
-                tm.mk_fun_sort(&[sort.clone()], tm.integer_sort()),
+                tm.mk_fun_sort(std::slice::from_ref(&sort), tm.integer_sort()),
                 &format!("from_{}", sym.0),
             );
             (sym, DistinctInfo { sort, mk, from })
@@ -144,7 +156,24 @@ fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs) -> Dist
 /// file resolved to `CheckResult::Proved` — that `ConstrainedTree` is the
 /// only handle `codegen::compile_constrained` accepts, so a program can only
 /// be compiled once this function has verified it in full.
-pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<CheckOutcome, crate::error::CompileError> {
+///
+/// cvc5 is not safe to call concurrently from multiple threads, even when
+/// each thread uses its own independent `TermManager`/`Solver` — the
+/// underlying C++ library has global state that data-races across threads
+/// (observed here as a segfault when `cargo test` ran the solver test suite
+/// in parallel; see e.g. https://github.com/CVC4/CVC4/issues/3456 for the
+/// same failure class upstream). This lock serializes every call through
+/// the one production entry point into cvc5 so callers can still use
+/// ordinary threads/parallel test runners around it safely.
+static CVC5_CALL_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn check_file(
+    items: &[Item],
+    timeout_ms: u64,
+) -> Result<CheckOutcome, crate::error::CompileError> {
+    let _cvc5_guard = CVC5_CALL_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let sem_items = elaborate(items)?;
 
     let fn_env: FunctionEnv<'_> = sem_items
@@ -177,7 +206,8 @@ pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<CheckOutcome, crate
         .iter()
         .filter_map(|item| match item {
             SemItem::FunctionDef(def) => {
-                let results = check_function(def, &fn_env, &name_defs, timeout_ms, &mut overflow_checks);
+                let results =
+                    check_function(def, &fn_env, &name_defs, timeout_ms, &mut overflow_checks);
                 Some(results.map(|r| (def.name.0.clone(), r)))
             }
             SemItem::NameDef(def) => {
@@ -195,7 +225,12 @@ pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<CheckOutcome, crate
         .all(|(_, sig_results)| sig_results.iter().all(|(_, r)| *r == CheckResult::Proved));
 
     if all_proved {
-        Ok(CheckOutcome::Proved(ConstrainedTree { items: items.to_vec(), sem_items, results, overflow_checks }))
+        Ok(CheckOutcome::Proved(ConstrainedTree {
+            items: items.to_vec(),
+            sem_items,
+            results,
+            overflow_checks,
+        }))
     } else {
         Ok(CheckOutcome::NotProved(results))
     }
@@ -221,8 +256,24 @@ pub fn check_function(
         .map(|(i, sig)| {
             let label = sig_label(&def.name.0, i, def.sigs.len());
             let result = match &def.body {
-                SemFunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env, name_defs, timeout_ms, overflow_checks),
-                SemFunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env, name_defs, timeout_ms, overflow_checks),
+                SemFunctionBody::Expr(body) => check_sig(
+                    sig,
+                    &param_names,
+                    body,
+                    fn_env,
+                    name_defs,
+                    timeout_ms,
+                    overflow_checks,
+                ),
+                SemFunctionBody::Block(stmts) => check_block_sig(
+                    sig,
+                    &param_names,
+                    stmts,
+                    fn_env,
+                    name_defs,
+                    timeout_ms,
+                    overflow_checks,
+                ),
             };
             (label, result)
         })
@@ -237,8 +288,16 @@ fn sig_label(name: &str, idx: usize, total: usize) -> String {
     }
 }
 
-fn check_name_def(def: &SemNameDef, ty: &SemExpr, fn_env: &FunctionEnv<'_>, name_defs: &NameDefs, timeout_ms: u64) -> CheckResult {
-    if let Some(result) = validate_disjoint_unions(ty, name_defs, timeout_ms) { return result; }
+fn check_name_def(
+    def: &SemNameDef,
+    ty: &SemExpr,
+    fn_env: &FunctionEnv<'_>,
+    name_defs: &NameDefs,
+    timeout_ms: u64,
+) -> CheckResult {
+    if let Some(result) = validate_disjoint_unions(ty, name_defs, timeout_ms) {
+        return result;
+    }
     let tm = TermManager::new();
     let mut solver = Solver::new(&tm);
     solver.set_logic("ALL");
@@ -247,7 +306,9 @@ fn check_name_def(def: &SemNameDef, ty: &SemExpr, fn_env: &FunctionEnv<'_>, name
     // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
     // for existential goals arising from negated universals (counterexample direction).
     solver.set_option("mbqi", "true");
-    if timeout_ms > 0 { solver.set_option("tlimit", &timeout_ms.to_string()); }
+    if timeout_ms > 0 {
+        solver.set_option("tlimit", &timeout_ms.to_string());
+    }
 
     let distinct_preds = build_distinct_preds(&tm, name_defs);
     let env = Env::new();
@@ -262,18 +323,31 @@ fn check_name_def(def: &SemNameDef, ty: &SemExpr, fn_env: &FunctionEnv<'_>, name
     let top_guard = tm.mk_boolean(true);
 
     let value_term = match encode_expr(
-        &def.value, &env, name_defs, fn_env, &tm, &mut solver,
-        &mut call_counter, &mut builtin_obligs, &mut overflow_obligs, top_guard, &distinct_preds, None,
+        &def.value,
+        &env,
+        name_defs,
+        fn_env,
+        &tm,
+        &mut solver,
+        &mut call_counter,
+        &mut builtin_obligs,
+        &mut overflow_obligs,
+        top_guard,
+        &distinct_preds,
+        None,
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
     };
 
-    let range_obligation = match membership_constraint(&tm, value_term, ty, name_defs, &distinct_preds) {
-        Membership::Unconstrained => None,
-        Membership::Constrained(c) => Some(c),
-        Membership::Unsupported => return CheckResult::Unknown("unsupported set annotation".into()),
-    };
+    let range_obligation =
+        match membership_constraint(&tm, value_term, ty, name_defs, &distinct_preds) {
+            Membership::Unconstrained => None,
+            Membership::Constrained(c) => Some(c),
+            Membership::Unsupported => {
+                return CheckResult::Unknown("unsupported set annotation".into());
+            }
+        };
 
     // Constant values can contain built-in obligations too (`/` divisor,
     // call-site domains, …) — they must be discharged, not dropped.
@@ -329,29 +403,45 @@ fn check_name_def(def: &SemNameDef, ty: &SemExpr, fn_env: &FunctionEnv<'_>, name
 /// Uses a fresh SMT solver per `+` node to avoid polluting the main check's solver state.
 ///
 /// TODO: also validate `+` that appears inside function bodies (e.g. in `in` expressions).
-fn validate_disjoint_unions(set_expr: &SemExpr, name_defs: &NameDefs, timeout_ms: u64) -> Option<CheckResult> {
+fn validate_disjoint_unions(
+    set_expr: &SemExpr,
+    name_defs: &NameDefs,
+    timeout_ms: u64,
+) -> Option<CheckResult> {
     use crate::semantics::tree::SemExprKind;
     match &set_expr.kind {
         SemExprKind::DisjointUnion(lhs, rhs) => {
-            if let Some(err) = validate_disjoint_unions(lhs, name_defs, timeout_ms) { return Some(err); }
-            if let Some(err) = validate_disjoint_unions(rhs, name_defs, timeout_ms) { return Some(err); }
+            if let Some(err) = validate_disjoint_unions(lhs, name_defs, timeout_ms) {
+                return Some(err);
+            }
+            if let Some(err) = validate_disjoint_unions(rhs, name_defs, timeout_ms) {
+                return Some(err);
+            }
 
             let tm = TermManager::new();
             let mut solver = Solver::new(&tm);
             solver.set_logic("ALL");
-            if timeout_ms > 0 { solver.set_option("tlimit", &timeout_ms.to_string()); }
+            if timeout_ms > 0 {
+                solver.set_option("tlimit", &timeout_ms.to_string());
+            }
             let distinct_preds = build_distinct_preds(&tm, name_defs);
             let t = tm.mk_const(tm.integer_sort(), "__disjoint_check");
             let in_a = membership_constraint(&tm, t.clone(), lhs, name_defs, &distinct_preds);
             let in_b = membership_constraint(&tm, t, rhs, name_defs, &distinct_preds);
 
             match (in_a, in_b) {
-                (Membership::Unsupported, _) | (_, Membership::Unsupported) => Some(
-                    CheckResult::Unknown(format!("cannot verify disjointness of `{lhs}` and `{rhs}`"))
-                ),
+                (Membership::Unsupported, _) | (_, Membership::Unsupported) => {
+                    Some(CheckResult::Unknown(format!(
+                        "cannot verify disjointness of `{lhs}` and `{rhs}`"
+                    )))
+                }
                 (ca, cb) => {
-                    if let Membership::Constrained(c) = ca { solver.assert_formula(c); }
-                    if let Membership::Constrained(c) = cb { solver.assert_formula(c); }
+                    if let Membership::Constrained(c) = ca {
+                        solver.assert_formula(c);
+                    }
+                    if let Membership::Constrained(c) = cb {
+                        solver.assert_formula(c);
+                    }
                     let sat = solver.check_sat();
                     if sat.is_unsat() {
                         None // proved disjoint
@@ -372,14 +462,20 @@ fn validate_disjoint_unions(set_expr: &SemExpr, name_defs: &NameDefs, timeout_ms
                 }
             }
         }
-        SemExprKind::SetDifference(lhs, rhs) | SemExprKind::CartesianProduct(lhs, rhs)
-        | SemExprKind::SetQuotient(lhs, rhs) | SemExprKind::BinOp { lhs, rhs, .. } => {
-            if let Some(err) = validate_disjoint_unions(lhs, name_defs, timeout_ms) { return Some(err); }
+        SemExprKind::SetDifference(lhs, rhs)
+        | SemExprKind::CartesianProduct(lhs, rhs)
+        | SemExprKind::SetQuotient(lhs, rhs)
+        | SemExprKind::BinOp { lhs, rhs, .. } => {
+            if let Some(err) = validate_disjoint_unions(lhs, name_defs, timeout_ms) {
+                return Some(err);
+            }
             validate_disjoint_unions(rhs, name_defs, timeout_ms)
         }
         SemExprKind::Call { args, .. } => {
             for arg in args {
-                if let Some(err) = validate_disjoint_unions(arg, name_defs, timeout_ms) { return Some(err); }
+                if let Some(err) = validate_disjoint_unions(arg, name_defs, timeout_ms) {
+                    return Some(err);
+                }
             }
             None
         }
@@ -407,7 +503,9 @@ fn configured_solver<'tm>(tm: &'tm TermManager, timeout_ms: u64) -> Solver<'tm> 
     // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
     // for existential goals arising from negated universals (counterexample direction).
     solver.set_option("mbqi", "true");
-    if timeout_ms > 0 { solver.set_option("tlimit", &timeout_ms.to_string()); }
+    if timeout_ms > 0 {
+        solver.set_option("tlimit", &timeout_ms.to_string());
+    }
     solver
 }
 
@@ -427,20 +525,23 @@ fn build_param_terms<'tm, 'e>(
     distinct_preds: &DistinctPreds<'tm>,
     name_defs: &NameDefs,
 ) -> Result<(Vec<&'e SemExpr>, Vec<Term<'tm>>), CheckResult> {
-    let domain_parts: Vec<&SemExpr> = sem_param_set_exprs(domain, param_names.len())
-        .map_err(CheckResult::Unknown)?;
+    let domain_parts: Vec<&SemExpr> =
+        sem_param_set_exprs(domain, param_names.len()).map_err(CheckResult::Unknown)?;
 
     let mut param_terms: Vec<Term<'_>> = Vec::new();
     for (n, part) in param_names.iter().zip(domain_parts.iter()) {
         let k = part.kind_of.clone();
         if matches!(k, ValKind::Tuple(_)) {
-            let (assembled, leaves) = mk_decomposed_tuple(tm, &n.0, part, distinct_preds, name_defs);
+            let (assembled, leaves) =
+                mk_decomposed_tuple(tm, &n.0, part, distinct_preds, name_defs);
             for (leaf, leaf_set) in leaves {
                 match membership_constraint(tm, leaf, leaf_set, name_defs, distinct_preds) {
                     Membership::Unconstrained => {}
                     Membership::Constrained(c) => solver.assert_formula(c),
                     Membership::Unsupported => {
-                        return Err(CheckResult::Unknown("unsupported domain set expression".into()));
+                        return Err(CheckResult::Unknown(
+                            "unsupported domain set expression".into(),
+                        ));
                     }
                 }
             }
@@ -448,10 +549,12 @@ fn build_param_terms<'tm, 'e>(
         } else {
             let sort = match set_sort(tm, part, distinct_preds, name_defs) {
                 Some(s) => s,
-                None => return Err(CheckResult::Unknown(format!(
-                    "parameter `{}` has an unsupported domain sort (internal error)",
-                    n.0
-                ))),
+                None => {
+                    return Err(CheckResult::Unknown(format!(
+                        "parameter `{}` has an unsupported domain sort (internal error)",
+                        n.0
+                    )));
+                }
             };
             let term = tm.mk_const(sort, &n.0);
             if k != ValKind::Bool {
@@ -459,7 +562,9 @@ fn build_param_terms<'tm, 'e>(
                     Membership::Unconstrained => {}
                     Membership::Constrained(c) => solver.assert_formula(c),
                     Membership::Unsupported => {
-                        return Err(CheckResult::Unknown("unsupported domain set expression".into()));
+                        return Err(CheckResult::Unknown(
+                            "unsupported domain set expression".into(),
+                        ));
                     }
                 }
             }
@@ -481,17 +586,21 @@ fn decode_cex_params<'tm>(
     distinct_preds: &DistinctPreds<'tm>,
 ) -> HashMap<String, i64> {
     let mut cex_params = HashMap::new();
-    for ((name, term), part) in param_names.iter().zip(param_terms.iter()).zip(domain_parts.iter()) {
+    for ((name, term), part) in param_names
+        .iter()
+        .zip(param_terms.iter())
+        .zip(domain_parts.iter())
+    {
         let val = solver.get_value(term.clone());
         let k = part.kind_of.clone();
         let n = if k == ValKind::Bool {
             boolean_value(&val) as i64
-        } else if matches!(k, ValKind::Tuple(_)) {
-            0 // TODO: render tuple model value in counterexample display
-        } else if matches!(k, ValKind::TaggedUnion(_)) {
-            0 // TODO: decode datatype arm for cross-kind union counterexample display
-        } else if matches!(k, ValKind::Vector(_)) {
-            0 // TODO: render vector model value in counterexample display
+        } else if matches!(
+            k,
+            ValKind::Tuple(_) | ValKind::TaggedUnion(_) | ValKind::Vector(_)
+        ) {
+            // TODO: render tuple/datatype-arm/vector model values in counterexample display
+            0
         } else if let Some(info) = distinct_preds.values().find(|i| i.sort == term.sort()) {
             // Parameter has a distinct (uninterpreted) sort — apply `from_D` to
             // recover the underlying integer for the counterexample display.
@@ -525,13 +634,14 @@ fn finish_check<'tm>(
     name_defs: &NameDefs,
     extra_unknown_check: impl FnOnce() -> Option<CheckResult>,
 ) -> CheckResult {
-    let range_obligation = match membership_constraint(tm, body_term.clone(), range, name_defs, distinct_preds) {
-        Membership::Unconstrained => None,
-        Membership::Constrained(c) => Some(c),
-        Membership::Unsupported => {
-            return CheckResult::Unknown("unsupported range set expression".into());
-        }
-    };
+    let range_obligation =
+        match membership_constraint(tm, body_term.clone(), range, name_defs, distinct_preds) {
+            Membership::Unconstrained => None,
+            Membership::Constrained(c) => Some(c),
+            Membership::Unsupported => {
+                return CheckResult::Unknown("unsupported range set expression".into());
+            }
+        };
 
     let builtin_formulas: Vec<Term<'_>> = builtin_obligs
         .iter()
@@ -567,7 +677,14 @@ fn finish_check<'tm>(
         if let Some(early) = extra_unknown_check() {
             return early;
         }
-        let cex_params = decode_cex_params(tm, solver, param_names, param_terms, domain_parts, distinct_preds);
+        let cex_params = decode_cex_params(
+            tm,
+            solver,
+            param_names,
+            param_terms,
+            domain_parts,
+            distinct_preds,
+        );
         let reason = builtin_obligs
             .iter()
             .find(|o| {
@@ -599,17 +716,26 @@ fn check_block_sig(
     timeout_ms: u64,
     overflow_checks: &mut HashMap<Span, bool>,
 ) -> CheckResult {
-    if let Some(dom) = &sig.domain {
-        if let Some(result) = validate_disjoint_unions(dom, name_defs, timeout_ms) { return result; }
+    if let Some(dom) = &sig.domain
+        && let Some(result) = validate_disjoint_unions(dom, name_defs, timeout_ms)
+    {
+        return result;
     }
-    if let Some(result) = validate_disjoint_unions(&sig.range, name_defs, timeout_ms) { return result; }
+    if let Some(result) = validate_disjoint_unions(&sig.range, name_defs, timeout_ms) {
+        return result;
+    }
 
     let tm = TermManager::new();
     let mut solver = configured_solver(&tm, timeout_ms);
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
     let (domain_parts, param_terms) = match build_param_terms(
-        &tm, &mut solver, sig.domain.as_ref(), param_names, &distinct_preds, name_defs,
+        &tm,
+        &mut solver,
+        sig.domain.as_ref(),
+        param_names,
+        &distinct_preds,
+        name_defs,
     ) {
         Ok(v) => v,
         Err(e) => return e,
@@ -629,7 +755,7 @@ fn check_block_sig(
     let mut has_runtime_assert = false;
     let mut immutable_names: HashSet<Symbol> = HashSet::new();
 
-    let result_sort = set_sort(&tm, &sig.range, &distinct_preds, &name_defs);
+    let result_sort = set_sort(&tm, &sig.range, &distinct_preds, name_defs);
     let body_term = match encode_block(
         stmts,
         &mut env,
@@ -676,15 +802,25 @@ fn check_block_sig(
     }
 
     finish_check(
-        &tm, &mut solver, body_term, &sig.range, &builtin_obligs,
-        param_names, &param_terms, &domain_parts, &distinct_preds, name_defs,
+        &tm,
+        &mut solver,
+        body_term,
+        &sig.range,
+        &builtin_obligs,
+        param_names,
+        &param_terms,
+        &domain_parts,
+        &distinct_preds,
+        name_defs,
         || {
-            body_has_unconstrained_loop_var(stmts, &constraint_env, &tm, name_defs, &distinct_preds).then(|| {
-                CheckResult::Unknown(
-                    "while loop: declare all mutable variable constraints \
-                     (`mut name: Set = expr`) to enable counterexample extraction".into()
-                )
-            })
+            body_has_unconstrained_loop_var(stmts, &constraint_env, &tm, name_defs, &distinct_preds)
+                .then(|| {
+                    CheckResult::Unknown(
+                        "while loop: declare all mutable variable constraints \
+                     (`mut name: Set = expr`) to enable counterexample extraction"
+                            .into(),
+                    )
+                })
         },
     )
 }
@@ -700,17 +836,26 @@ fn check_sig(
     timeout_ms: u64,
     overflow_checks: &mut HashMap<Span, bool>,
 ) -> CheckResult {
-    if let Some(dom) = &sig.domain {
-        if let Some(result) = validate_disjoint_unions(dom, name_defs, timeout_ms) { return result; }
+    if let Some(dom) = &sig.domain
+        && let Some(result) = validate_disjoint_unions(dom, name_defs, timeout_ms)
+    {
+        return result;
     }
-    if let Some(result) = validate_disjoint_unions(&sig.range, name_defs, timeout_ms) { return result; }
+    if let Some(result) = validate_disjoint_unions(&sig.range, name_defs, timeout_ms) {
+        return result;
+    }
 
     let tm = TermManager::new();
     let mut solver = configured_solver(&tm, timeout_ms);
     let distinct_preds = build_distinct_preds(&tm, name_defs);
 
     let (domain_parts, param_terms) = match build_param_terms(
-        &tm, &mut solver, sig.domain.as_ref(), param_names, &distinct_preds, name_defs,
+        &tm,
+        &mut solver,
+        sig.domain.as_ref(),
+        param_names,
+        &distinct_preds,
+        name_defs,
     ) {
         Ok(v) => v,
         Err(e) => return e,
@@ -727,8 +872,18 @@ fn check_sig(
     let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
     let body_term = match encode_expr(
-        body, &env, name_defs, fn_env, &tm, &mut solver, &mut call_counter,
-        &mut builtin_obligs, &mut overflow_obligs, top_guard, &distinct_preds, set_sort(&tm, &sig.range, &distinct_preds, &name_defs),
+        body,
+        &env,
+        name_defs,
+        fn_env,
+        &tm,
+        &mut solver,
+        &mut call_counter,
+        &mut builtin_obligs,
+        &mut overflow_obligs,
+        top_guard,
+        &distinct_preds,
+        set_sort(&tm, &sig.range, &distinct_preds, name_defs),
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
@@ -739,8 +894,16 @@ fn check_sig(
     decide_overflow_obligations(&overflow_obligs, &tm, &solver, overflow_checks);
 
     finish_check(
-        &tm, &mut solver, body_term, &sig.range, &builtin_obligs,
-        param_names, &param_terms, &domain_parts, &distinct_preds, name_defs,
+        &tm,
+        &mut solver,
+        body_term,
+        &sig.range,
+        &builtin_obligs,
+        param_names,
+        &param_terms,
+        &domain_parts,
+        &distinct_preds,
+        name_defs,
         || None,
     )
 }

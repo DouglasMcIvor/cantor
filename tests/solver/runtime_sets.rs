@@ -6,7 +6,8 @@ use super::helpers::*;
 // element-kind constraint (x >= 0) is propagated to the loop variable.
 #[test]
 fn set_nat_sum_proves_nat_invariant() {
-    proved("
+    proved(
+        "
 f : -> Nat
 f() {
     mut s   : Set(Nat) = {1, 2, 3}
@@ -16,7 +17,8 @@ f() {
     }
     acc
 }
-");
+",
+    );
 }
 
 // Without element-kind propagation x would be unconstrained, allowing a
@@ -27,7 +29,8 @@ f() {
 // generate a counterexample.)
 #[test]
 fn set_int_sum_into_int_still_proves() {
-    proved("
+    proved(
+        "
 f : -> Int
 f() {
     mut s   : Set(Int) = {1, 2, 3}
@@ -37,13 +40,15 @@ f() {
     }
     acc
 }
-");
+",
+    );
 }
 
 // Set(Nat) element constraint allows proving a Nat-range function.
 #[test]
 fn set_nat_loop_proves_nat_range() {
-    proved("
+    proved(
+        "
 sum_nat : -> Nat
 sum_nat() {
     mut s   : Set(Nat) = {10, 20, 30}
@@ -53,14 +58,16 @@ sum_nat() {
     }
     acc
 }
-");
+",
+    );
 }
 
 // Set(Int - {0}): elements are non-zero, which the solver can use.
 // We just check the function proves — the obligation is return in Int.
 #[test]
 fn set_nonzero_int_proves_int_range() {
-    proved("
+    proved(
+        "
 f : -> Int
 f() {
     mut s   : Set(Int - {0}) = {1, 2, 3}
@@ -70,14 +77,16 @@ f() {
     }
     acc
 }
-");
+",
+    );
 }
 
 // Regression: plain Set(Int) with Int return range was already proved before
 // this change and must remain proved.
 #[test]
 fn runtime_set_int_range_regression() {
-    proved("
+    proved(
+        "
 main : -> Int
 main() {
     mut primes : Set(Int) = {2, 3, 5, 7}
@@ -87,5 +96,6 @@ main() {
     }
     acc
 }
-");
+",
+    );
 }

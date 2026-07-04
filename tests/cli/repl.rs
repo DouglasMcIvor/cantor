@@ -8,7 +8,8 @@ fn no_args_starts_repl_and_exits_cleanly_on_eof() {
     assert_eq!(out.code, 0, "REPL should exit 0 on EOF, got: {out:?}");
     assert!(
         out.stdout.contains("Goodbye"),
-        "expected goodbye message, got stdout: {:?}", out.stdout
+        "expected goodbye message, got stdout: {:?}",
+        out.stdout
     );
 }
 
@@ -23,7 +24,8 @@ fn repl_help_command_shows_commands() {
     let out = run_repl(":help\n:quit\n");
     assert!(
         out.stdout.contains(":quit"),
-        "expected :help to list :quit, got: {:?}", out.stdout
+        "expected :help to list :quit, got: {:?}",
+        out.stdout
     );
 }
 
@@ -34,7 +36,8 @@ fn repl_set_alias_reports_defined() {
     assert_eq!(out.code, 0);
     assert!(
         out.stdout.contains("defined"),
-        "expected 'defined' for set alias, got: {:?}", out.stdout
+        "expected 'defined' for set alias, got: {:?}",
+        out.stdout
     );
 }
 
@@ -46,7 +49,8 @@ fn repl_annotated_definition_shows_proved() {
     assert_eq!(out.code, 0);
     assert!(
         out.stdout.contains("proved"),
-        "expected 'proved' for annotated function, got: {:?}", out.stdout
+        "expected 'proved' for annotated function, got: {:?}",
+        out.stdout
     );
 }
 
@@ -56,7 +60,8 @@ fn repl_expression_evaluation_returns_result() {
     assert_eq!(out.code, 0);
     assert!(
         out.stdout.contains('2'),
-        "expected result 2, got: {:?}", out.stdout
+        "expected result 2, got: {:?}",
+        out.stdout
     );
 }
 
@@ -66,7 +71,8 @@ fn repl_defs_command_lists_definitions() {
     assert_eq!(out.code, 0);
     assert!(
         out.stdout.contains("double"),
-        "expected :defs to list 'double', got: {:?}", out.stdout
+        "expected :defs to list 'double', got: {:?}",
+        out.stdout
     );
 }
 
@@ -76,7 +82,8 @@ fn repl_reset_clears_definitions() {
     assert_eq!(out.code, 0);
     assert!(
         out.stdout.contains("no definitions"),
-        "expected no definitions after :reset, got: {:?}", out.stdout
+        "expected no definitions after :reset, got: {:?}",
+        out.stdout
     );
 }
 
