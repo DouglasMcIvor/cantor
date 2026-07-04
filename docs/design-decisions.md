@@ -288,8 +288,16 @@ implementation detail the developer should not rely on.
     only within a (name, arity) group.
   - Every overload of a given (name, arity) must still agree on the Kind of
     each parameter/return position (same rule multiple-signatures-one-body
-    already had) — relaxing this per overload is deliberately deferred to
-    phase 3's `Int64`/`BigInt` split, the one place it's actually needed.
+    already had). Phase 3's `Int64`/`BigInt` split needs one narrow,
+    compiler-generated exception to this (see int-soundness-plan.md's
+    "Phase 3 — BigInt runtime" section) — **not** a general relaxation for
+    user-written overloads: the exception only works because there's a
+    single canonical Kind every group member converts into at an unresolved
+    call's runtime-dispatch merge point, which the Int64/BigInt pair has
+    (tagged `Int` is canonical, raw `Int64` converts into it) but an
+    arbitrary pair of user-chosen Kinds does not in general. Discussed
+    2026-07-04; general user-facing Kind-polymorphic overloading recorded
+    as a deferred idea in §12 rather than folded into phase 3.
   - Automatic domain-partition inference (compiler infers a good overload
     split rather than requiring hand-declaration) is an explicitly deferred
     future feature.
@@ -1332,10 +1340,29 @@ Other open items (lower priority, not blocking):
   exits as SSA phi-merge paths.
 - **`raise` / `emits` syntax** — see §11.
 - Float, char/string, byte primitive values.
-- BigInt runtime support for unbounded `Int` / `Nat`.
+- BigInt runtime support for unbounded `Int` / `Nat` — design DECIDED, not
+  yet implemented; see int-soundness-plan.md phase 3.
 - Compiled (AOT) binaries; linker integration.
 - Module system (imports, separate checking) — see §7.
 - More containers: ordered sets, vectors, maps; iterators.
+- **General Kind-polymorphic overloading (user-facing)** — let a user-written
+  overload set span multiple `Kind`s (today `check_overload_kind_agreement`
+  rejects this unconditionally; only phase 3's compiler-generated
+  `Int64`/`BigInt` split gets a narrow, structural exception — see §7).
+  Raised 2026-07-04: `Kind` is meant to be invisible to the user (§13 "Value
+  layers"), so rejecting an overload set purely on a `Kind` mismatch is
+  already a `Kind` leak. Generalizing requires a canonical-Kind-plus-
+  conversion mechanism for arbitrary user-chosen Kind pairs (how the
+  canonical Kind is chosen/declared, what conversions the compiler may
+  assume) — phase 3's Int64/BigInt work is the one concrete instance to
+  generalize from once it exists, not a reason to design the general case
+  up front.
+- **Phase 4 idea (wide-intermediate optimization for checked arithmetic)** —
+  see int-soundness-plan.md's "Phase 4" section. Compute unproved checked
+  ops at double width (i128) so a single operation's exact result is always
+  available without heap allocation, promoting to a real `CantorBigInt` only
+  when a value must escape into a genuinely general `Int` position. Raised
+  2026-07-04, deliberately unscoped.
 
 ## 13. Primitive types and numeric tower
 
@@ -1455,6 +1482,17 @@ No implicit coercion between `Bool` and any integer kind exists at any layer.
   at runtime. Now it's a completeness gap instead: a value that doesn't fit
   in `i64` aborts the program rather than running to completion. Closes when
   BigInt lands (int-soundness-plan.md phases 2–3).
+- **BigInt representation (DECIDED, int-soundness-plan phase 3, design only —
+  not yet implemented)**: unbounded `Int`/`Nat` positions become a one-word
+  tagged value (low bit 0 → small int in the upper 63 bits; low bit 1 →
+  pointer to a heap `CantorBigInt`), not an `{i1, i64}` struct. `Int64`
+  overflow's phase-1 abort branch becomes a promotion-to-BigInt branch for
+  unbounded positions; bounded `IntN` overflow keeps aborting (nothing to
+  promote into). `foo : Int -> Int` compiles to an `Int64` raw overload plus
+  a `BigInt = Int - Int64` tagged overload via phase 2's dispatch machinery,
+  so programs whose call sites all prove `Int64` never link `num-bigint`.
+  Full rationale, encode/decode formulas, and step order:
+  int-soundness-plan.md's "Phase 3 — BigInt runtime" section.
 
 ### Narrowing back to IntN
 

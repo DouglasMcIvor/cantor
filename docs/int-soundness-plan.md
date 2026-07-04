@@ -4,7 +4,10 @@
 "Checked arithmetic" entry for the decided semantics table. Phase 2 DONE
 (2026-07-04) — see `docs/design-decisions.md` §7 for the decided details
 (arity as a free dispatch key, disjointness/Kind-agreement scoped to a
-(name, arity) group). Phase 3 not started.
+(name, arity) group). Phase 3 design DECIDED (2026-07-04) — see the
+"Phase 3 — BigInt runtime" section below for the tagged-word representation,
+the `Int64`/`BigInt` overload split, and the step order; implementation not
+started.
 **Executes in three phases; phase 1 alone closes the soundness gap**
 
 ---
@@ -192,36 +195,264 @@ per name, proof-gated static dispatch, membership-test runtime dispatch.
 
 ## Phase 3 — BigInt runtime (closes completeness)
 
-This phase needs its own detailed design doc once phases 1–2 land; the sketch
-below records the intended shape and the open decisions, not a work plan.
+**Status: design DECIDED (2026-07-04), implementation not started.** The two
+open questions from the earlier sketch (representation; what happens inside
+an `Int64`-resolved body) are resolved below. This section is detailed enough
+to work from directly — no separate design doc needed — but it is still a
+large phase; expect it to land as several separate commits (see step order at
+the end of this section), likely across several sessions, not one.
 
-- **Runtime library:** `num-bigint` (mature, pure Rust).
-- **Representation (OPEN — recommendation below):** positions the compiler
-  can bound within `Int64` keep today's raw i64. Positions of unbounded `Int`
-  / `Nat` become a **one-word tagged value**: low bit 0 → small integer in
-  the upper 63 bits; low bit 1 → pointer to a heap BigInt. Keeping every slot
-  physically i64 means Arrow `Int64Array` vectors, struct layouts, the `Fail`
-  wire and `cantor_main_into` stay physically unchanged — only the
-  *interpretation* of unbounded positions changes. The alternative (an
-  `{i1, i64}` struct like the `Fail` wire) is simpler to reason about but
-  changes every layout that embeds an `Int`.
-- **Phase 1's abort branch becomes the promotion branch:** checked op
-  overflows → box into a BigInt and continue on the tagged path, instead of
-  aborting.
-- **The backlog's overload split:** `foo : Int -> Int` compiles to an `Int64`
-  overload (raw calling convention) and a `BigInt = Int - Int64` overload,
-  using phase 2's dispatch machinery. A program whose call sites all prove
-  `Int64` membership never references a bigint symbol, so the library isn't
-  linked — the backlog's goal. This requires relaxing phase 2's
-  same-`Kind`-per-position rule for compiler-generated splits.
-- **Known hard part (flagging now, solving later):** inside the `Int64`
-  overload's body, an intermediate result that isn't proved bounded can still
-  overflow, and its consumers must then handle a tagged value — so raw vs
-  tagged is a per-position property derived from solver-proved bounds, not a
-  per-function property. The overload split buys monomorphic *calling
-  conventions*; it does not eliminate tagged locals inside bodies.
-- `require x not in BigInt` / `assert x not in BigInt` (backlog) fall out of
-  `BigInt` being an ordinary named set once the split exists.
+### Representation (DECIDED): tagged word
+
+- **Runtime library:** `num-bigint` (mature, pure Rust). New `Cargo.toml`
+  dependency, `num-bigint = "0.4"` (matches the existing style of pinning by
+  major version only, e.g. `cvc5 = "0.4"`).
+- Positions the compiler can bound within `Int64` keep today's raw i64,
+  completely unaffected by anything below — this is a `Kind`-level split
+  (see "the overload split" below), not a runtime flag on individual bytes.
+  Only positions whose `Kind` is the unbounded `Int` (equivalently `Nat`, its
+  lower-bounded twin) become a **one-word tagged value**:
+  - low bit `0` → small integer, value = `word >> 1` (arithmetic shift,
+    sign-preserving). Encode: `word = n << 1` (fine for
+    `n ∈ [-2^62, 2^62 - 1]`; outside that range the value must already be
+    boxed — see promotion below).
+  - low bit `1` → pointer to a heap-allocated `CantorBigInt`. Decode:
+    `ptr = word & !1`. Encode: `word = ptr | 1`.
+- **Alignment is load-bearing, not incidental.** The decode above is only
+  safe if every `CantorBigInt` heap allocation is at least 2-byte aligned
+  (so bit 0 is never part of a real address). Rust's allocator guarantees
+  *the type's own* alignment, no more — so `CantorBigInt` must be declared
+  `#[repr(align(8))]` explicitly rather than relying on it incidentally
+  containing a pointer-sized field. This is a one-line annotation, not new
+  machinery.
+- This choice was made over the `{i1, i64}` struct alternative (mirroring
+  the `Fail` wire) specifically because it continues an existing precedent
+  rather than inventing a new one: an i64 slot's meaning is already
+  `Kind`-dependent everywhere a Cantor vector embeds pointers today (e.g.
+  `CantorListVec` elements are "an i64 pointer to an inner vector, or a
+  scalar — codegen alone knows which, via `Kind`", `runtime/mod.rs`
+  lines 409–432). Tagging an unbounded-`Int` slot is the same trick one
+  level down. Consequence: Arrow `Int64Array`-backed vectors, `StructArray`
+  fields, tuple layouts, and the `Fail` wire need **zero** layout changes —
+  only the *interpretation* of unbounded-`Int` slots changes, and only
+  codegen (never the Arrow/runtime layer, which already treats every slot
+  as opaque i64) needs to become tag-aware. The struct alternative would
+  instead force every vector/struct/tuple position holding an unbounded
+  `Int` to grow an extra column, a much larger blast radius on the
+  Arrow-backed vector code for no corresponding benefit here (unlike the
+  `Fail` wire, which needs its flag to be independently inspectable at
+  every call boundary — a tagged `Int` doesn't).
+- **Memory:** a boxed `CantorBigInt` is `Box::into_raw` and never freed,
+  exactly like every other heap object in `runtime/mod.rs` today (sets,
+  vectors — see the file's standing TODO about an arena scoped to the
+  event-handler dispatch boundary). No refcounting/GC is being introduced
+  for this feature specifically; BigInt leaks the same way everything else
+  currently does.
+
+### Phase 1's abort branch becomes the promotion branch
+
+At every arithmetic node where the solver did not prove the `Int64` bound
+(phase 1's `needs_overflow_check` flag — reinterpreted here, not renamed,
+since it's the same obligation with a different codegen consequence once a
+tagged-`Int` position is available to promote into):
+
+- if the position's `Kind` is a bounded `IntN` (no tagged representation
+  exists): unchanged from phase 1 — checked instruction, abort branch, no
+  BigInt involved. Bounded-domain overflow really is a completeness dead
+  end until someone widens the declared bound; nothing to promote into.
+- if the position's `Kind` is the unbounded `Int`: checked instruction, and
+  the overflow branch boxes the wide result into a `CantorBigInt` and
+  continues (tagged-pointer word) instead of calling
+  `cantor_overflow_abort`. New runtime entry points: `cantor_bigint_from_i64`,
+  `cantor_bigint_add/sub/mul/div`, `cantor_bigint_cmp`, `cantor_bigint_to_string`
+  (all take/return tagged words, so codegen never has to case-split between
+  "both small", "both big", "mixed" itself — each runtime function checks its
+  own operands' tag bits and dispatches, matching the existing division of
+  labour where Arrow/heap details stay inside `runtime/mod.rs`).
+- The solver side is unaffected: it already reasons over unbounded ℤ; the
+  `Int` vs `Int64` split is purely a codegen/runtime representation choice,
+  not a change to what's proved.
+
+### The overload split
+
+`foo : Int -> Int` compiles to two `FunctionDef` bodies sharing one name,
+using phase 2's overload machinery:
+- an `Int64` overload — parameters and return declared `Int64`, raw i64
+  calling convention, used when a call site statically proves `Int64`
+  membership for every argument;
+- a `BigInt = Int - Int64` overload — parameters/return use the tagged
+  representation, used otherwise (static proof of non-`Int64` membership,
+  or — the common case — no proof either way, resolved by phase 2's runtime
+  membership-test dispatch).
+
+A program whose call sites all prove `Int64` membership never references a
+BigInt symbol, so `num-bigint` isn't linked into the final artifact — the
+whole point of doing the split at the overload level rather than always
+compiling one BigInt-capable body. This **requires relaxing phase 2's
+same-`Kind`-per-position rule** (`check_overload_kind_agreement`,
+`semantics/elaborate.rs`) specifically for compiler-generated splits: today
+that function only ever sees user-written overload sets and rejects any
+`Kind` mismatch unconditionally. The relaxation needs a marker distinguishing
+"this pair of overloads is a compiler-generated `Int64`/`BigInt` split" from
+an ordinary user-written group, so a genuine user mistake (accidentally
+writing two overloads with different parameter `Kind`s) still errors exactly
+as it does today.
+
+**Why this exception stays narrow (raised and discussed 2026-07-04, decided
+not to generalize yet):** it's tempting to relax `check_overload_kind_agreement`
+generally, since `Kind` is supposed to be an internal representation detail
+invisible to the user (see §13 "Value layers") — rejecting a user's overload
+set purely because of a `Kind` mismatch is already, in a sense, a `Kind`
+leak, and phase 3 doesn't create that tension, it just adds a second,
+compiler-owned instance of it. But the Int64/BigInt split is only tractable
+*because* there's a single canonical Kind (tagged `Int`) that every other
+member of the group converts into — that's what gives an unresolved call's
+runtime-dispatch merge point (the LLVM `phi` across candidate overloads) a
+well-defined target representation to convert into before merging. A general
+user-facing Kind-heterogeneous overload set has no such canonical Kind in
+general (e.g. `Int8 -> Int8` and `Vector(Int) -> Vector(Int)` sharing a
+name) — an unresolved call site would have nothing well-defined to merge
+into, short of adopting the existing `Kind::TaggedUnion` sum machinery for
+every heterogeneous overload group, which raises open questions of its own
+(how the canonical Kind is chosen or declared, what conversions the compiler
+is allowed to assume). That's a substantial standalone feature, not a
+same-sized relaxation as this one. Recorded as a deferred backlog item
+(design-decisions.md §12, "General Kind-polymorphic overloading") rather
+than folded into phase 3 — phase 3's concrete Int64/BigInt work is the
+blueprint to generalize from once it exists, not a reason to generalize
+up front.
+
+One more wrinkle the merge point must handle: converting a *bounded* `Int64`
+result into the *general* tagged representation is not always a bare shift.
+`Int64` is the full i64 range, but the tagged scheme's "small" immediate only
+has 63 bits of magnitude (one bit spent on the tag) — so a raw `Int64` value
+with `|n| > 2^62` already fits in a machine word but still needs boxing the
+moment it crosses into the general `Int` Kind, even though it never
+overflowed anything. This only bites within `(2^62, 2^63)` and its mirror on
+the negative side (a narrow band near the extremes of `Int64`), and only at
+a boundary crossing into the general Kind — a call statically resolved to
+the `Int64` overload that stays within further `Int64`-only computation
+never pays this cost. Worth a dedicated codegen test once implemented (an
+`Int64`-resolved call whose result is exactly, say, `2^62` flowing into a
+`Vector(Int)` boxes correctly rather than corrupting the tag bit).
+
+**Known hard part, still true after the split exists:** inside the `Int64`
+overload's body, an intermediate expression that isn't itself proved bounded
+(e.g. `x*x` where `x : Int64` and the domain doesn't constrain it further)
+still overflows i64 in the mathematical sense, and per the rule above it must
+promote into a tagged/boxed value — even though the overload's *signature*
+says `Int64`. So a local inside an ostensibly-`Int64` body can still be
+tagged; raw-vs-tagged is a per-expression property derived from what the
+solver actually proved at that node, not a per-function property implied by
+the signature. The overload split buys a monomorphic **calling convention**
+at the boundary; it does not eliminate tagged locals inside bodies.
+
+### What phase 3 does *not* need to change
+
+- The solver: already reasons over unbounded ℤ (see above).
+- Arrow-backed vector/struct/tuple layouts: unaffected by construction (see
+  representation section).
+- The `Fail` wire: untouched — a fallible function returning `Int` wraps a
+  tagged word in the existing `{i1, i64}` struct's payload field exactly as
+  it wraps a plain i64 today; the tag lives *inside* the i64, invisible to
+  the `Fail` wire itself.
+
+### Step order (parser → semantics → solver → codegen, per CLAUDE.md, plus a
+runtime-first step since the BigInt arithmetic itself is pure Rust and
+independently unit-testable before any codegen exists)
+
+1. **Runtime** — `CantorBigInt` (wraps `num_bigint::BigInt`), tagged
+   encode/decode helpers, and the `cantor_bigint_*` entry points listed
+   above. Pure Rust, unit-tested directly (no LLVM/CLI involvement yet).
+2. **Semantics** — the compiler-generated-split marker and the
+   `check_overload_kind_agreement` relaxation described above. No user-facing
+   syntax changes; this step alone should be invisible to existing programs.
+3. **Solver** — none needed for the ℤ reasoning itself; only the recorded
+   per-node obligation (today `needs_overflow_check`) needs its consumer
+   (codegen) taught the new promotion behaviour — the obligation itself is
+   unchanged.
+4. **Codegen**:
+   a. emit the compiler-generated `Int64`/`BigInt` overload pair for eligible
+      signatures, reusing phase 2's static/runtime dispatch codegen unchanged;
+   b. tagged encode/decode at every unbounded-`Int` value's construction/
+      consumption site (literals, arithmetic results, vector/struct/tuple
+      element get/set, function parameters/returns, the `Fail` wire's payload
+      field when its success `Kind` is unbounded `Int`);
+   c. replace phase 1's abort branch with the promotion branch at unbounded-
+      `Int` arithmetic nodes (bounded-`IntN` nodes keep the phase 1 abort,
+      unchanged);
+   d. comparisons (`<`, `<=`, `==`, …) and printing on tagged values route
+      through `cantor_bigint_cmp` / `cantor_bigint_to_string` when either
+      operand's tag bit indicates a boxed value — an early tag check lets
+      the common both-small case stay on the raw i64 comparison instruction.
+5. **Tests / docs**: CLI e2e covering (i) a call proved `Int64` compiles to
+   the raw overload with no promotion codegen at all (assert on emitted IR,
+   mirroring phase 1's "proved elides" test); (ii) a call that overflows i64
+   promotes and continues to a correct (if now BigInt-backed) result instead
+   of aborting; (iii) an unresolved call-site dispatches at runtime to
+   whichever overload the argument's membership test picks; (iv)
+   `require`/`assert ... not in BigInt` once `BigInt` is exposed as an
+   ordinary named set (see below). README: retire the "Known incompleteness"
+   call-out entirely — once phase 3 lands, no value can escape
+   representation, closing the gap phase 1 left open. design-decisions.md:
+   promote this section's representation choice from this doc into §7's
+   Integers subsection as DECIDED (small pointer, full detail stays here).
+
+`require x not in BigInt` / `assert x not in BigInt` (backlog) fall out of
+`BigInt` being an ordinary named set once the split exists — no new syntax
+or solver machinery, just `BigInt` needing a definition (`BigInt = Int -
+Int64`) visible to name resolution the same way any other derived set is.
+
+---
+
+## Phase 4 (idea, deferred, not scoped) — wide-intermediate optimization
+
+Raised 2026-07-04 while discussing phase 3, deliberately **not** designed in
+detail now — recorded so the idea isn't lost. Motivating example:
+
+```
+mult_or_error : Int64 * Int64 -> Int64 | Fail
+mult_or_error(x, y) {
+  z = x * y
+  assert z in Int64
+  z
+}
+```
+
+Here `x * y` may overflow i64, but the very next statement narrows straight
+back to `Int64` (via `assert`, which per §"Narrowing back to IntN" in
+design-decisions.md already runtime-checks and routes to `Fail` on failure
+when unproved). Under phase 3 as designed, the overflowing multiply would
+promote `z` to a heap `CantorBigInt` only for the `assert` to immediately
+narrow it back down — real arbitrary-precision storage allocated and thrown
+away in one statement.
+
+The generalizable insight (sharper than just "this one example"): **a single
+checked op's exact mathematical result always fits in double width** — the
+product of two 64-bit signed integers always fits in 127 bits, a sum or
+difference always fits in 65. So arbitrary-precision arithmetic is never
+actually required to compute *one* operation correctly, no matter how it
+overflows i64 — it's only needed once a value that's *already* boxed (i.e.
+already the result of unbounded accumulation across multiple operations,
+such as a loop with no fixed iteration bound) feeds into further arithmetic.
+That suggests every unproved checked op could compute at i128 (cheap on real
+hardware — a single widening multiply/add instruction) and only then decide,
+from the exact i128 value: narrow back down (assert/range-check against the
+i128 directly, no promotion at all) or, if it must escape into a genuinely
+general `Int` position, construct a `CantorBigInt` directly from the i128
+(`from_i128`, still no multi-limb arithmetic — arbitrary precision only
+enters once a *second* boxed operand is later involved). This would also
+subsume phase 1's existing overflow-flag check as a special case (checking
+`Int64` membership on the i128 result is exactly comparing against
+`i64::MIN`/`MAX`).
+
+Deliberately left unscoped: whether this is worth its complexity relative to
+the overflow-intrinsic approach already in place (both are cheap on real
+hardware; the intrinsic is arguably simpler and is already implemented), and
+whether/how to detect the "immediately narrowed, doesn't otherwise escape"
+shape at the `ConstrainedTree` level (a real dataflow question the compiler
+doesn't currently answer anywhere). Revisit once phase 3 is implemented and
+its actual promotion overhead is measurable.
 
 ---
 
@@ -232,14 +463,16 @@ below records the intended shape and the open decisions, not a work plan.
    "silently wrong" into "loudly aborts", and directly feeds phase 3.
 2. **Phase 2 second** — a roadmap feature in its own right, fully designed,
    no dependency on phase 1.
-3. **Phase 3 last** — depends on both; gets its own design doc first.
+3. **Phase 3 last** — depends on both; design is decided (see above), but
+   implementation is its own multi-commit effort.
 
 ## Open questions (for Doug)
 
 1. ~~Phase 1 abort semantics~~ **DECIDED**: process abort with a
    `path:line:col`-prefixed message, implemented as `cantor_overflow_abort`.
-2. Phase 3 representation: tagged word vs `{i1, i64}` struct — deferred to
-   the phase 3 design doc, no need to decide now.
+2. ~~Phase 3 representation: tagged word vs `{i1, i64}` struct~~ **DECIDED
+   (2026-07-04)**: tagged word — see the "Phase 3 — BigInt runtime" section
+   above.
 3. Should phase 1's emitted checks be surfaceable (e.g. a `--list-overflow-checks`
    flag) so a developer can hunt down and prove away hot-path checks?
    Nice-to-have, not in scope unless cheap — still open; not implemented.
