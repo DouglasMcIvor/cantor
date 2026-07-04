@@ -1,0 +1,48 @@
+services:
+  cantor-dev:
+    build:
+      context: .
+      args:
+        HOST_USER: ${HOST_USER}
+        HOST_UID: ${HOST_UID}
+        HOST_GID: ${HOST_GID}
+    image: cantor-dev:latest
+    container_name: cantor-dev
+    volumes:
+      # Project folder - read-write for development
+      # Mounted at the SAME absolute path as on the host (via ${PWD}, which
+      # docker compose resolves correctly even under snap confinement) so
+      # that Claude Code's project trust decision and its project-scoped
+      # memory (keyed by absolute path under ~/.claude/projects/) are shared
+      # between host and container instead of treated as a different project.
+      - .:${PWD}
+      # Shared home directories for persistence & continuity
+      # NOTE: uses ${HOST_HOME} (set in .env) rather than `~` because docker
+      # installed via snap runs strictly confined and resolves `~` against a
+      # fake per-snap $HOME, not the real one.
+      # NOTE: mounted at the SAME path as the host (not /home/dev/...) because
+      # the container user is built to match the host user/uid/gid (see
+      # Dockerfile HOST_USER arg) — some host dotfiles (e.g. the Claude CLI's
+      # own install) contain absolute host-path symlinks that only resolve
+      # if the path matches exactly.
+      - ${HOST_HOME}/.cargo:${HOST_HOME}/.cargo
+      - ${HOST_HOME}/.claude:${HOST_HOME}/.claude
+      - ${HOST_HOME}/.claude.json:${HOST_HOME}/.claude.json
+      - ${HOST_HOME}/.local/bin:${HOST_HOME}/.local/bin
+      - ${HOST_HOME}/.local/share/claude:${HOST_HOME}/.local/share/claude
+      - ${HOST_HOME}/.ssh:${HOST_HOME}/.ssh:ro
+      - ${HOST_HOME}/.gitconfig:${HOST_HOME}/.gitconfig:ro
+      - ${HOST_HOME}/.git-credentials:${HOST_HOME}/.git-credentials:ro
+      # Match the host's timezone instead of defaulting to UTC.
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    working_dir: ${PWD}
+    # Use bash as the entry point for interactive shells
+    stdin_open: true
+    tty: true
+    # Security: read-only root filesystem prevents accidental system changes
+    read_only: true
+    # tmpfs for transient runtime files
+    tmpfs:
+      - /tmp
+      - ${HOST_HOME}/.cache

@@ -16,3 +16,6 @@ target
 # Additional ignores
 *.swp
 .idea/
+
+# Machine-specific docker-compose settings (see docker-compose.yml)
+.env

@@ -680,7 +680,16 @@ Dependencies:
 
 - Rust (edition 2024)
 - LLVM 18 (`llvm-18-dev` on Debian/Ubuntu)
-- cvc5 (`libcvc5-dev` on Debian/Ubuntu)
+- cvc5 1.3.1 — the exact version the `cvc5` crate's C bindings are generated
+  against; older packaged versions (e.g. Debian's `libcvc5-dev` 1.1.2 on
+  trixie) have a renamed/incompatible C API and will fail to build. Ubuntu
+  26.04's `libcvc5-dev` currently matches; elsewhere, install the
+  [prebuilt 1.3.1 release](https://github.com/cvc5/cvc5/releases/tag/cvc5-1.3.1)
+  under `/usr/local` (see `Dockerfile`) instead of using apt. If installed
+  somewhere other than a `libcvc5-dev`-style system path, set
+  `CVC5_LIB_DIR` (e.g. `/usr/local/lib`) so `cvc5-sys`'s build script passes
+  it to the linker — rustc links with its bundled `rust-lld`, which (unlike
+  GNU `ld`) does not search `/usr/local/lib` by default.
 - Apache Arrow (`arrow-array` crate, fetched automatically by Cargo)
 
 ```
