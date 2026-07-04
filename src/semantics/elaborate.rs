@@ -18,11 +18,12 @@
 //! indexing into either always yields the element Kind unchanged (see
 //! `vector_elem_kind`).
 
+mod binop;
+
 use std::collections::HashMap;
 
 use crate::ast::{
-    self, BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDef, NameDefs, Stmt,
-    UnOp,
+    self, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDef, NameDefs, Stmt, UnOp,
 };
 use crate::error::CompileError;
 use crate::kind::{Kind, set_kind};
@@ -619,229 +620,18 @@ fn elaborate_expr(
             })
         }
 
-        ExprKind::BinOp {
-            op: BinOp::Add,
-            lhs,
-            rhs,
-        } => {
-            let (l, r) = (
-                elaborate_expr(lhs, pos, ctx, env)?,
-                elaborate_expr(rhs, pos, ctx, env)?,
-            );
-            let (node, kind_of) = match pos {
-                Position::Value => (SemExprKind::Add(Box::new(l), Box::new(r)), Kind::Int),
-                Position::Set => (
-                    SemExprKind::DisjointUnion(Box::new(l), Box::new(r)),
-                    kind_of_for_set(),
-                ),
-            };
-            Ok(SemExpr {
-                kind: node,
-                kind_of,
+        ExprKind::BinOp { op, lhs, rhs } => binop::elaborate_binop(
+            binop::BinOpNode {
+                expr,
+                op,
+                lhs,
+                rhs,
+                pos,
                 span,
-            })
-        }
-        ExprKind::BinOp {
-            op: BinOp::Sub,
-            lhs,
-            rhs,
-        } => {
-            let (l, r) = (
-                elaborate_expr(lhs, pos, ctx, env)?,
-                elaborate_expr(rhs, pos, ctx, env)?,
-            );
-            let (node, kind_of) = match pos {
-                Position::Value => (SemExprKind::Sub(Box::new(l), Box::new(r)), Kind::Int),
-                Position::Set => (
-                    SemExprKind::SetDifference(Box::new(l), Box::new(r)),
-                    kind_of_for_set(),
-                ),
-            };
-            Ok(SemExpr {
-                kind: node,
-                kind_of,
-                span,
-            })
-        }
-        ExprKind::BinOp {
-            op: BinOp::Mul,
-            lhs,
-            rhs,
-        } => {
-            let (l, r) = (
-                elaborate_expr(lhs, pos, ctx, env)?,
-                elaborate_expr(rhs, pos, ctx, env)?,
-            );
-            let (node, kind_of) = match pos {
-                Position::Value => (SemExprKind::Mul(Box::new(l), Box::new(r)), Kind::Int),
-                Position::Set => (
-                    SemExprKind::CartesianProduct(Box::new(l), Box::new(r)),
-                    kind_of_for_set(),
-                ),
-            };
-            Ok(SemExpr {
-                kind: node,
-                kind_of,
-                span,
-            })
-        }
-        ExprKind::BinOp {
-            op: BinOp::Div,
-            lhs,
-            rhs,
-        } => {
-            let (l, r) = (
-                elaborate_expr(lhs, pos, ctx, env)?,
-                elaborate_expr(rhs, pos, ctx, env)?,
-            );
-            let (node, kind_of) = match pos {
-                Position::Value => (SemExprKind::Div(Box::new(l), Box::new(r)), Kind::Int),
-                Position::Set => (
-                    SemExprKind::SetQuotient(Box::new(l), Box::new(r)),
-                    kind_of_for_set(),
-                ),
-            };
-            Ok(SemExpr {
-                kind: node,
-                kind_of,
-                span,
-            })
-        }
-
-        // `in`/`not in`: the RHS is normally a set *description* regardless of
-        // the position the `in` expression itself appears in (mirrors
-        // compile_membership / membership_constraint). But when the RHS is a
-        // local variable already bound to a genuine runtime `Kind::Set(_)`
-        // value (e.g. `mut s : Set(Int) = {...}`), it's a value lookup
-        // instead — mirrors codegen::compile_binop's own dispatch (env
-        // lookup first, set-description fallback second). Using Position::Set
-        // unconditionally would call `set_kind` on a local name and panic
-        // with "unknown set name".
-        ExprKind::BinOp {
-            op: op @ (BinOp::In | BinOp::NotIn),
-            lhs,
-            rhs,
-        } => {
-            let l = elaborate_expr(lhs, Position::Value, ctx, env)?;
-            let rhs_is_local_set_var = matches!(&rhs.kind, ExprKind::Var(sym)
-                if matches!(env.get(sym), Some(Kind::Set(_))));
-            let rhs_pos = if rhs_is_local_set_var {
-                Position::Value
-            } else {
-                Position::Set
-            };
-            let r = elaborate_expr(rhs, rhs_pos, ctx, env)?;
-            Ok(SemExpr {
-                kind: SemExprKind::BinOp {
-                    op: *op,
-                    lhs: Box::new(l),
-                    rhs: Box::new(r),
-                },
-                kind_of: Kind::Bool,
-                span,
-            })
-        }
-
-        ExprKind::BinOp {
-            op: op @ (BinOp::Union | BinOp::Intersect | BinOp::SymDiff),
-            lhs,
-            rhs,
-        } => {
-            let (l, r) = (
-                elaborate_expr(lhs, pos, ctx, env)?,
-                elaborate_expr(rhs, pos, ctx, env)?,
-            );
-            let kind_of = match pos {
-                Position::Set => kind_of_for_set(),
-                // codegen::compile_binop rejects these outright in value
-                // position today ("set operations not yet implemented").
-                Position::Value => {
-                    return Err(not_yet_implemented(
-                        &format!("`{op}` in value position"),
-                        span,
-                    ));
-                }
-            };
-            Ok(SemExpr {
-                kind: SemExprKind::BinOp {
-                    op: *op,
-                    lhs: Box::new(l),
-                    rhs: Box::new(r),
-                },
-                kind_of,
-                span,
-            })
-        }
-
-        ExprKind::BinOp {
-            op: BinOp::Concat,
-            lhs,
-            rhs,
-        } => {
-            let l = elaborate_expr(lhs, Position::Value, ctx, env)?;
-            let r = elaborate_expr(rhs, Position::Value, ctx, env)?;
-            let (_, kind_of) = crate::kind::merge_concat_kinds(&l.kind_of, &r.kind_of)
-                .map_err(|e| CompileError::ice(e))?;
-            Ok(SemExpr {
-                kind: SemExprKind::BinOp {
-                    op: BinOp::Concat,
-                    lhs: Box::new(l),
-                    rhs: Box::new(r),
-                },
-                kind_of,
-                span,
-            })
-        }
-
-        ExprKind::BinOp { op, lhs, rhs } => {
-            // Remaining operators: comparisons and logical and/or — single
-            // meaning (Bool) regardless of position.
-            let l = elaborate_expr(lhs, pos, ctx, env)?;
-            let r = elaborate_expr(rhs, pos, ctx, env)?;
-            // Operand-kind agreement, value position only (in set position the
-            // operands are set descriptions, reserved for subset comparisons).
-            // Without this check the mismatch reaches cvc5 as an ill-sorted
-            // term and aborts the whole process with a raw C++ error.
-            if pos == Position::Value {
-                match op {
-                    BinOp::Eq | BinOp::Ne if l.kind_of != r.kind_of => {
-                        return Err(CompileError::ice(format!(
-                            "`{op}` requires both operands from the same value family, \
-                             got {:?} and {:?} — e.g. Bool and Int are disjoint in \
-                             Cantor's value model (`true` is not `1`); convert \
-                             explicitly with `if b then 1 else 0` if that is what \
-                             you meant",
-                            l.kind_of, r.kind_of
-                        )));
-                    }
-                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
-                        if l.kind_of != Kind::Int || r.kind_of != Kind::Int =>
-                    {
-                        let chained_hint = if l.kind_of == Kind::Bool {
-                            " (a chain like `a < b < c` parses as `(a < b) < c`; \
-                             write `a < b and b < c` instead)"
-                        } else {
-                            ""
-                        };
-                        return Err(CompileError::ice(format!(
-                            "`{op}` compares integers, got {:?} and {:?} — Bool is \
-                             not ordered{chained_hint}",
-                            l.kind_of, r.kind_of
-                        )));
-                    }
-                    _ => {}
-                }
-            }
-            Ok(SemExpr {
-                kind: SemExprKind::BinOp {
-                    op: *op,
-                    lhs: Box::new(l),
-                    rhs: Box::new(r),
-                },
-                kind_of: Kind::Bool,
-                span,
-            })
-        }
+            },
+            ctx,
+            env,
+        ),
 
         ExprKind::UnOp {
             op: UnOp::Not,
