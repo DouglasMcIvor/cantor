@@ -1,8 +1,10 @@
 # Closing the i64 soundness gap: plan
 
 **Status:** phase 1 DONE (2026-07-04) — see `docs/design-decisions.md`'s
-"Checked arithmetic" entry for the decided semantics table. Phases 2–3 not
-started.
+"Checked arithmetic" entry for the decided semantics table. Phase 2 DONE
+(2026-07-04) — see `docs/design-decisions.md` §7 for the decided details
+(arity as a free dispatch key, disjointness/Kind-agreement scoped to a
+(name, arity) group). Phase 3 not started.
 **Executes in three phases; phase 1 alone closes the soundness gap**
 
 ---
@@ -122,6 +124,20 @@ becomes the BigInt promotion branch and the completeness caveat disappears.
 ---
 
 ## Phase 2 — Function overloading with multiple bodies
+
+**DONE (2026-07-04).** Implemented in the 5-step order below, each its own
+commit. One design point came up during implementation and was resolved with
+Doug rather than assumed: **arity is a free dispatch key** — overloads of one
+name may have different parameter counts (not just different domains at one
+arity), since a call's argument count is always known at parse time and
+needs no solver call to resolve. Kind-agreement and the disjointness
+obligation are scoped to a (name, arity) group accordingly; see
+design-decisions.md §7 for the decided details. Also fixed a latent
+`main.rs` reporting bug along the way (`item_by_name` collapsed same-named
+items via a last-wins `HashMap` and indexed `def.sigs[i]` against whichever
+one survived — harmless before phase 2 since no name ever repeated, but
+would have panicked or mis-displayed as soon as overload sets, or the new
+disjointness-check result entries, existed).
 
 The design is already **DECIDED** in design-decisions.md §7; this phase
 implements it. Today "overloading" means multiple signatures sharing one body;

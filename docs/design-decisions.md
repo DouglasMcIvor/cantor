@@ -263,18 +263,33 @@ implementation detail the developer should not rely on.
 - Libraries expose an **interface**: function signatures with domain, range,
   inferred `raises` set, inferred `emits` set — all are part of the public,
   black-boxed contract. Implementations are hidden from external callers.
-- **Function overloading over disjoint sub-domains** is supported, even when
-  multiple declared signatures share one underlying implementation.
-  - Compiler verifies the shared implementation independently satisfies
-    each declared overload's domain/range (reuses ordinary domain/range
-    checker, no new machinery).
+- **Function overloading over disjoint sub-domains** is supported (**IMPLEMENTED** —
+  int-soundness-plan phase 2), both when multiple declared signatures share
+  one underlying implementation and — as of phase 2 — when multiple
+  `FunctionDef`s share one name, each with its own implementation.
+  - Compiler verifies each implementation independently satisfies its own
+    declared overload's domain/range (reuses ordinary domain/range checker,
+    no new machinery).
   - Overload resolution at call sites is itself a proof obligation
-    (static-proof-first, runtime-tag-check fallback, same pattern as
-    everywhere else).
+    (static-proof-first, runtime membership-test-dispatch fallback, same
+    pattern as everywhere else). Resolving statically is purely an
+    optimization — an unresolved call always falls back to the (always
+    correct) runtime dispatch chain, never a compile error.
   - **Overlapping overload domains are forbidden — disjointness is
-    required, checked at compile time, overlap is a compile error.** (Not
-    resolved by most-specific-wins or similar — avoids developer confusion
-    over resolution rules.)
+    required, checked at compile time, overlap is a compile error with a
+    witness value.** (Not resolved by most-specific-wins or similar —
+    avoids developer confusion over resolution rules.)
+  - **Arity is a free dispatch key (DECIDED during phase 2 implementation)**:
+    overloads of one name may have different arity as well as different
+    domains at the same arity. A call's argument count is always known at
+    parse time, so arity-based dispatch needs no solver call and no
+    disjointness proof between differently-arity overloads; the
+    Kind-agreement rule below and the disjointness obligation both apply
+    only within a (name, arity) group.
+  - Every overload of a given (name, arity) must still agree on the Kind of
+    each parameter/return position (same rule multiple-signatures-one-body
+    already had) — relaxing this per overload is deliberately deferred to
+    phase 3's `Int64`/`BigInt` split, the one place it's actually needed.
   - Automatic domain-partition inference (compiler infers a good overload
     split rather than requiring hand-declaration) is an explicitly deferred
     future feature.
