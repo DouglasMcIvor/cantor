@@ -30,3 +30,5 @@ mod bool_ops;
 mod if_else;
 #[path = "solver/blocks.rs"]
 mod blocks;
+#[path = "solver/overflow.rs"]
+mod overflow;

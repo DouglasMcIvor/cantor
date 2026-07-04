@@ -4,7 +4,9 @@
 //! resolved to `CheckResult::Proved`. Its existence *is* the proof — there's
 //! no way to obtain one that skips checking.
 
-use crate::{ast::Item, semantics::tree::SemItem, solver::CheckResult};
+use std::collections::HashMap;
+
+use crate::{ast::Item, semantics::tree::SemItem, solver::CheckResult, span::Span};
 
 /// An elaborated file that has been fully verified: every signature's
 /// domain/range obligations proved, no unproved constructs anywhere.
@@ -20,4 +22,11 @@ pub struct ConstrainedTree {
     /// around so callers can still display a per-signature proof report
     /// without recomputing anything.
     pub results: Vec<(String, Vec<(String, CheckResult)>)>,
+    /// int-soundness-plan phase 1: per-arithmetic-node-span "result fits in
+    /// Int64" verdicts. Deliberately *not* part of the proof this type
+    /// represents — an absent or `false` entry means codegen must emit a
+    /// checked instruction + runtime abort, never a compile error. Keyed by
+    /// the arithmetic expression's own span (`Add`/`Sub`/`Mul`/`Div`/unary
+    /// `Neg`); consulted only by `codegen::compile_constrained`.
+    pub overflow_checks: HashMap<Span, bool>,
 }

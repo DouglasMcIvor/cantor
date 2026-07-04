@@ -38,7 +38,7 @@ use crate::{
         elaborate::elaborate,
         tree::{sem_param_set_exprs, SemExpr, SemFunctionBody, SemFunctionDef, SemFunctionSig, SemItem, SemNameDef},
     },
-    span::Symbol,
+    span::{Span, Symbol},
 };
 
 /// Map from name to its elaborated `SemNameDef` — built once per `check_file`
@@ -49,7 +49,7 @@ pub(crate) type NameDefs = HashMap<Symbol, SemNameDef>;
 
 use crate::kind::Kind as ValKind;
 
-use self::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value, mk_decomposed_tuple};
+use self::encode::{Env, BuiltinObligation, OverflowObligation, decide_overflow_obligations, encode_expr, integer_value, boolean_value, mk_decomposed_tuple};
 use self::sort::set_sort;
 use self::blocks::{encode_block, body_has_unconstrained_loop_var};
 use self::membership::{DistinctInfo, DistinctPreds, Membership, membership_constraint};
@@ -163,11 +163,21 @@ pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<CheckOutcome, crate
         })
         .collect();
 
+    // Overflow-check outcomes (int-soundness-plan phase 1) live entirely
+    // outside `results`/`CheckResult`/`all_proved` below — an unproved one
+    // must not block compilation (that's the whole point of phase 1: a
+    // counterexample/unknown overflow claim degrades to a runtime check, not
+    // a compile error). One map shared across every function in the file;
+    // spans are unique per source location so there's no cross-function
+    // collision. Only meaningful (and only consulted by codegen) once the
+    // file is otherwise `Proved` — see below.
+    let mut overflow_checks: HashMap<Span, bool> = HashMap::new();
+
     let results: Vec<(String, Vec<(String, CheckResult)>)> = sem_items
         .iter()
         .filter_map(|item| match item {
             SemItem::FunctionDef(def) => {
-                let results = check_function(def, &fn_env, &name_defs, timeout_ms);
+                let results = check_function(def, &fn_env, &name_defs, timeout_ms, &mut overflow_checks);
                 Some(results.map(|r| (def.name.0.clone(), r)))
             }
             SemItem::NameDef(def) => {
@@ -185,7 +195,7 @@ pub fn check_file(items: &[Item], timeout_ms: u64) -> Result<CheckOutcome, crate
         .all(|(_, sig_results)| sig_results.iter().all(|(_, r)| *r == CheckResult::Proved));
 
     if all_proved {
-        Ok(CheckOutcome::Proved(ConstrainedTree { items: items.to_vec(), sem_items, results }))
+        Ok(CheckOutcome::Proved(ConstrainedTree { items: items.to_vec(), sem_items, results, overflow_checks }))
     } else {
         Ok(CheckOutcome::NotProved(results))
     }
@@ -200,6 +210,7 @@ pub fn check_function(
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs,
     timeout_ms: u64,
+    overflow_checks: &mut HashMap<Span, bool>,
 ) -> Result<Vec<(String, CheckResult)>, crate::error::CompileError> {
     let param_names: Vec<Symbol> = def.params.iter().map(|p| p.name.clone()).collect();
 
@@ -210,8 +221,8 @@ pub fn check_function(
         .map(|(i, sig)| {
             let label = sig_label(&def.name.0, i, def.sigs.len());
             let result = match &def.body {
-                SemFunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env, name_defs, timeout_ms),
-                SemFunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env, name_defs, timeout_ms),
+                SemFunctionBody::Expr(body) => check_sig(sig, &param_names, body, fn_env, name_defs, timeout_ms, overflow_checks),
+                SemFunctionBody::Block(stmts) => check_block_sig(sig, &param_names, stmts, fn_env, name_defs, timeout_ms, overflow_checks),
             };
             (label, result)
         })
@@ -242,11 +253,17 @@ fn check_name_def(def: &SemNameDef, ty: &SemExpr, fn_env: &FunctionEnv<'_>, name
     let env = Env::new();
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
+    // Top-level `name : Set = value` constants are constant-folded by
+    // codegen's separate `eval_const` pass, never compiled through
+    // `compile_arith` — so there's no codegen site to consult an overflow
+    // verdict here. Collected (encode_expr requires the accumulator
+    // unconditionally) but deliberately never decided/merged anywhere.
+    let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
 
     let value_term = match encode_expr(
         &def.value, &env, name_defs, fn_env, &tm, &mut solver,
-        &mut call_counter, &mut builtin_obligs, top_guard, &distinct_preds, None,
+        &mut call_counter, &mut builtin_obligs, &mut overflow_obligs, top_guard, &distinct_preds, None,
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
@@ -572,6 +589,7 @@ fn finish_check<'tm>(
 
 // ── Block body checker ────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn check_block_sig(
     sig: &SemFunctionSig,
     param_names: &[Symbol],
@@ -579,6 +597,7 @@ fn check_block_sig(
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs,
     timeout_ms: u64,
+    overflow_checks: &mut HashMap<Span, bool>,
 ) -> CheckResult {
     if let Some(dom) = &sig.domain {
         if let Some(result) = validate_disjoint_unions(dom, name_defs, timeout_ms) { return result; }
@@ -604,6 +623,7 @@ fn check_block_sig(
 
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
+    let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
     let mut ssa_counter = 0usize;
     let mut constraint_env: HashMap<Symbol, SemExpr> = HashMap::new();
     let mut has_runtime_assert = false;
@@ -619,6 +639,7 @@ fn check_block_sig(
         &mut solver,
         &mut call_counter,
         &mut builtin_obligs,
+        &mut overflow_obligs,
         &mut ssa_counter,
         param_names,
         &param_terms,
@@ -626,6 +647,7 @@ fn check_block_sig(
         &mut has_runtime_assert,
         &mut immutable_names,
         &distinct_preds,
+        overflow_checks,
         result_sort,
     ) {
         Ok(Some(t)) => t,
@@ -634,6 +656,14 @@ fn check_block_sig(
         }
         Err(early) => return early,
     };
+
+    // Decide this signature's flat-statement overflow obligations now, against
+    // `solver` as it stands — before `finish_check` asserts the negated
+    // correctness goal, which (once proved) would leave `solver` inconsistent
+    // and every later query vacuously "proved". Loop bodies already decided
+    // their own overflow obligations inline (see `loops.rs`), directly into
+    // `overflow_checks`, since they run on an isolated temp solver.
+    decide_overflow_obligations(&overflow_obligs, &tm, &solver, overflow_checks);
 
     if has_runtime_assert && !crate::semantics::tree::range_contains_fail(&sig.range) {
         return CheckResult::Counterexample {
@@ -668,6 +698,7 @@ fn check_sig(
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs,
     timeout_ms: u64,
+    overflow_checks: &mut HashMap<Span, bool>,
 ) -> CheckResult {
     if let Some(dom) = &sig.domain {
         if let Some(result) = validate_disjoint_unions(dom, name_defs, timeout_ms) { return result; }
@@ -693,14 +724,19 @@ fn check_sig(
 
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
+    let mut overflow_obligs: Vec<OverflowObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
     let body_term = match encode_expr(
         body, &env, name_defs, fn_env, &tm, &mut solver, &mut call_counter,
-        &mut builtin_obligs, top_guard, &distinct_preds, set_sort(&tm, &sig.range, &distinct_preds, &name_defs),
+        &mut builtin_obligs, &mut overflow_obligs, top_guard, &distinct_preds, set_sort(&tm, &sig.range, &distinct_preds, &name_defs),
     ) {
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
     };
+
+    // See `check_block_sig`'s identical comment: must run before `finish_check`'s
+    // negated-goal assertion.
+    decide_overflow_obligations(&overflow_obligs, &tm, &solver, overflow_checks);
 
     finish_check(
         &tm, &mut solver, body_term, &sig.range, &builtin_obligs,

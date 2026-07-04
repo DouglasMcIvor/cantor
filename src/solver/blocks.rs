@@ -7,13 +7,13 @@ use cvc5::{Kind, Solver, Sort, Term, TermManager};
 use crate::{
     kind::Kind as ValKind,
     semantics::tree::{collect_loop_modified, SemExpr, SemExprKind, SemFunctionDef, SemStmt},
-    span::Symbol,
+    span::{Span, Symbol},
 };
 
 use super::NameDefs;
 use super::CheckResult;
 use super::loops::{check_inductive_step, check_for_inductive_step};
-use super::encode::{Env, BuiltinObligation, encode_expr, integer_value, proj_from_tuple, tuple_arity};
+use super::encode::{Env, BuiltinObligation, OverflowObligation, encode_expr, integer_value, proj_from_tuple, tuple_arity};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 
 // ── Loop predicate ────────────────────────────────────────────────────────────
@@ -81,6 +81,7 @@ fn stmts_contain_return(stmts: &[SemStmt]) -> bool {
 /// Returns `Ok(Some(term))` where `term` is the last `SemStmt::Expr` value,
 /// `Ok(None)` if there was no return expression, or `Err(result)` for an
 /// early exit (require failure, unsupported construct, etc.).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_block<'tm>(
     stmts: &[SemStmt],
     env: &mut Env<'tm>,
@@ -90,6 +91,7 @@ pub(crate) fn encode_block<'tm>(
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
     builtin_obligs: &mut Vec<BuiltinObligation<'tm>>,
+    overflow_obligs: &mut Vec<OverflowObligation<'tm>>,
     ssa_counter: &mut usize,
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
@@ -97,6 +99,13 @@ pub(crate) fn encode_block<'tm>(
     has_runtime_assert: &mut bool,
     immutable_names: &mut HashSet<Symbol>,
     distinct_preds: &DistinctPreds<'tm>,
+    // Decided (proved/not) overflow-check outcomes for `While`/`ForIn` loop
+    // bodies, which run on their own isolated inductive-step solver and so
+    // can't defer to `overflow_obligs` (that vec is only decided once, back
+    // in the enclosing `check_sig`/`check_block_sig`, against the *outer*
+    // solver) — `check_inductive_step`/`check_for_inductive_step` decide and
+    // write directly into this map instead.
+    overflow_checks: &mut HashMap<Span, bool>,
     // Expected sort for the block's result expression.  Passed to `encode_expr`
     // for `SemStmt::Expr` so cross-kind union if/else bodies can be coerced.
     result_sort: Option<Sort<'tm>>,
@@ -136,7 +145,7 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::Let { name, constraint, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
+                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -192,7 +201,7 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::MutLet { name, constraint, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
+                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -225,7 +234,7 @@ pub(crate) fn encode_block<'tm>(
 
                 let rhs_term = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
+                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
                 ).map_err(CheckResult::Unknown)?;
 
                 // Optional tuple-level constraint (e.g. `x, y : Int * Nat = ...`).
@@ -335,7 +344,7 @@ pub(crate) fn encode_block<'tm>(
 
                 let rhs_term = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
+                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
                 ).map_err(CheckResult::Unknown)?;
 
                 // `DestructAssign` only understands a tuple-shaped RHS (the same
@@ -442,7 +451,7 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::Assign { name, value, .. } => {
                 let val = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
+                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 let ssa_name = format!("{}_{}", name.0, ssa_counter);
@@ -483,7 +492,7 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::Assume { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
+                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
                 solver.assert_formula(pred.clone());
@@ -492,7 +501,7 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::Require { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
+                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
 
@@ -507,7 +516,7 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::Assert { predicate, .. } => {
                 let pred = encode_expr(
                     predicate, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None,
+                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None,
                 )
                 .map_err(CheckResult::Unknown)?;
 
@@ -555,7 +564,7 @@ pub(crate) fn encode_block<'tm>(
                 // reached — returning right away is sound, not an approximation.
                 let t = encode_expr(
                     value, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds,
                     result_sort.clone(),
                 )
                 .map_err(CheckResult::Unknown)?;
@@ -565,7 +574,7 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::Expr(e) => {
                 let t = encode_expr(
                     e, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, top_guard.clone(), distinct_preds,
+                    call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds,
                     result_sort.clone(),
                 )
                 .map_err(CheckResult::Unknown)?;
@@ -575,10 +584,10 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::Block(inner) => {
                 last_expr = encode_block(
                     inner, env, name_defs, fn_env, tm, solver,
-                    call_counter, builtin_obligs, ssa_counter,
+                    call_counter, builtin_obligs, overflow_obligs, ssa_counter,
                     param_names, param_terms,
                     constraint_env, has_runtime_assert, immutable_names, distinct_preds,
-                    result_sort.clone(),
+                    overflow_checks, result_sort.clone(),
                 )?;
             }
 
@@ -594,7 +603,7 @@ pub(crate) fn encode_block<'tm>(
                     cond, body, &modified, constraint_env,
                     env, solver, name_defs, fn_env, tm,
                     ssa_counter, param_names, param_terms, immutable_names, distinct_preds,
-                    has_runtime_assert,
+                    has_runtime_assert, overflow_checks,
                 ) {
                     return Err(step_err);
                 }
@@ -621,7 +630,7 @@ pub(crate) fn encode_block<'tm>(
                 }
 
                 match encode_expr(cond, env, name_defs, fn_env, tm, solver,
-                                  call_counter, builtin_obligs, top_guard.clone(), distinct_preds, None) {
+                                  call_counter, builtin_obligs, overflow_obligs, top_guard.clone(), distinct_preds, None) {
                     Ok(cond_term) => {
                         let not_cond = tm.mk_term(Kind::Not, &[cond_term]);
                         solver.assert_formula(not_cond.clone());
@@ -651,7 +660,7 @@ pub(crate) fn encode_block<'tm>(
                     var, set, body, &modified, constraint_env,
                     env, solver, name_defs, fn_env, tm,
                     ssa_counter, param_names, param_terms, immutable_names, distinct_preds,
-                    has_runtime_assert,
+                    has_runtime_assert, overflow_checks,
                 ) {
                     return Err(step_err);
                 }

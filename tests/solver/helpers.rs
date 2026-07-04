@@ -1,9 +1,21 @@
 use cantor::{
     parser::parse_file,
-    solver::{CheckOutcome, check_file},
+    solver::{CheckOutcome, ConstrainedTree, check_file},
 };
 
 pub use cantor::solver::CheckResult;
+
+/// Parse and fully check `src`, returning the `ConstrainedTree` — panics if
+/// the file isn't fully `Proved`. Used by tests that need to inspect
+/// tree-level data (e.g. `overflow_checks`) rather than just per-signature
+/// `CheckResult`s.
+pub fn check_tree(src: &str) -> ConstrainedTree {
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    match check_file(&items, 60_000).unwrap_or_else(|e| panic!("check error: {e}")) {
+        CheckOutcome::Proved(tree) => tree,
+        CheckOutcome::NotProved(results) => panic!("expected file to be fully proved, got: {results:?}"),
+    }
+}
 
 /// Parse `src`, build the full function environment, and return the results
 /// for every function in the file — regardless of whether the file as a

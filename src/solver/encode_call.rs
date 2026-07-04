@@ -21,7 +21,7 @@ use super::membership::{DistinctPreds, Membership, membership_constraint};
 use super::sort::{extract_success_value, is_product_range, maybe_coerce, set_sort, success_arm_of_range};
 use super::NameDefs;
 
-use super::encode::{Env, BuiltinObligation, encode_expr, mk_decomposed_tuple};
+use super::encode::{Env, BuiltinObligation, OverflowObligation, encode_expr, mk_decomposed_tuple};
 
 // ── Call encoder ──────────────────────────────────────────────────────────────
 
@@ -36,6 +36,7 @@ pub(crate) fn encode_call<'tm>(
     solver: &mut Solver<'tm>,
     call_counter: &mut usize,
     builtin_obligs: &mut Vec<BuiltinObligation<'tm>>,
+    overflow_obligs: &mut Vec<OverflowObligation<'tm>>,
     path_cond: Term<'tm>,
     distinct_preds: &DistinctPreds<'tm>,
     coerce_to: Option<cvc5::Sort<'tm>>,
@@ -46,7 +47,7 @@ pub(crate) fn encode_call<'tm>(
     macro_rules! enc {
         ($e:expr) => {
             encode_expr($e, env, name_defs, fn_env, tm, solver, call_counter,
-                        builtin_obligs, path_cond.clone(), distinct_preds, None)
+                        builtin_obligs, overflow_obligs, path_cond.clone(), distinct_preds, None)
         };
     }
 

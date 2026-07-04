@@ -6,12 +6,12 @@ use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
     semantics::tree::{SemExpr, SemExprKind, SemFunctionDef, SemStmt},
-    span::Symbol,
+    span::{Span, Symbol},
 };
 
 use super::{CheckResult, NameDefs};
-use super::blocks::{encode_block};
-use super::encode::{Env, BuiltinObligation, encode_expr, integer_value, boolean_value};
+use super::blocks::encode_block;
+use super::encode::{Env, BuiltinObligation, OverflowObligation, decide_overflow_obligations, encode_expr, integer_value, boolean_value};
 use super::membership::{DistinctPreds, Membership, membership_constraint};
 
 // ── Inductive step checking ───────────────────────────────────────────────────
@@ -28,6 +28,7 @@ use super::membership::{DistinctPreds, Membership, membership_constraint};
 /// dropping them instead was a false-proof hole.
 ///
 /// Returns `None` when UNSAT (step proved); `Some(result)` otherwise.
+#[allow(clippy::too_many_arguments)]
 fn check_loop_inductive_step<'tm, F>(
     body: &[SemStmt],
     modified: &HashSet<Symbol>,
@@ -44,6 +45,7 @@ fn check_loop_inductive_step<'tm, F>(
     outer_immutable_names: &HashSet<Symbol>,
     distinct_preds: &DistinctPreds<'tm>,
     has_runtime_assert: &mut bool,
+    overflow_checks: &mut HashMap<Span, bool>,
     add_loop_entry: F,
 ) -> Option<CheckResult>
 where
@@ -51,6 +53,7 @@ where
         &mut Solver<'tm>,
         &mut Env<'tm>,
         &mut usize,
+        &mut Vec<OverflowObligation<'tm>>,
     ) -> Option<CheckResult>,
 {
     // Even when no modified variable carries an invariant, the body must still
@@ -90,8 +93,14 @@ where
         ind_env.insert(name.clone(), fresh);
     }
 
+    // Collects overflow obligations from both the loop-entry closure (e.g. the
+    // `while` condition) and the body below — decided together in one pass
+    // against `tmp` once encoding finishes, before the correctness check's
+    // negated-goal assertion makes `tmp` inconsistent (see below).
+    let mut overflow_obligs: Vec<OverflowObligation<'tm>> = Vec::new();
+
     // Loop-specific setup: assert the condition / introduce the loop variable.
-    if let Some(err) = add_loop_entry(&mut tmp, &mut ind_env, ssa_counter) {
+    if let Some(err) = add_loop_entry(&mut tmp, &mut ind_env, ssa_counter, &mut overflow_obligs) {
         return Some(err);
     }
 
@@ -108,14 +117,21 @@ where
     // like one in a flat block — the flag must reach the function-level check.
     match encode_block(
         body, &mut body_env, name_defs, fn_env, tm, &mut tmp,
-        &mut cc, &mut obligs, &mut step_ssa,
+        &mut cc, &mut obligs, &mut overflow_obligs, &mut step_ssa,
         param_names, param_terms, &mut empty_cenv, has_runtime_assert,
-        &mut step_imm, distinct_preds, None,
+        &mut step_imm, distinct_preds, overflow_checks, None,
     ) {
         Ok(_) => {}
         Err(e) => return Some(e),
     }
     *ssa_counter = step_ssa;
+
+    // Decide overflow obligations from this body iteration now, against `tmp`
+    // as it stands (hypothesis vars + loop entry + body facts) — before the
+    // correctness check below asserts the negated goal onto `tmp`, which
+    // would make its assertion set inconsistent and every later query
+    // vacuously "proved".
+    decide_overflow_obligations(&overflow_obligs, tm, &tmp, overflow_checks);
 
     // Every constrained var's post-iteration value must satisfy its invariant.
     let mut step_obligs: Vec<Term<'tm>> = Vec::new();
@@ -218,16 +234,17 @@ pub(super) fn check_inductive_step<'tm>(
     immutable_names: &HashSet<Symbol>,
     distinct_preds: &DistinctPreds<'tm>,
     has_runtime_assert: &mut bool,
+    overflow_checks: &mut HashMap<Span, bool>,
 ) -> Option<CheckResult> {
     check_loop_inductive_step(
         body, modified, constraint_env, env, outer_solver,
         name_defs, fn_env, tm, ssa_counter, param_names, param_terms,
-        "loop invariant", immutable_names, distinct_preds, has_runtime_assert,
-        |tmp, ind_env, _ssa| {
+        "loop invariant", immutable_names, distinct_preds, has_runtime_assert, overflow_checks,
+        |tmp, ind_env, _ssa, overflow_obligs| {
             let mut cc = 0usize;
             let mut obligs = Vec::new();
             match encode_expr(cond, ind_env, name_defs, fn_env, tm, tmp,
-                              &mut cc, &mut obligs, tm.mk_boolean(true), distinct_preds, None) {
+                              &mut cc, &mut obligs, overflow_obligs, tm.mk_boolean(true), distinct_preds, None) {
                 Ok(c) => { tmp.assert_formula(c.clone()); None }
                 Err(_) => Some(CheckResult::Unknown(
                     "cannot verify inductive step: loop condition uses syntax not yet \
@@ -255,6 +272,7 @@ pub(super) fn check_for_inductive_step<'tm>(
     immutable_names: &HashSet<Symbol>,
     distinct_preds: &DistinctPreds<'tm>,
     has_runtime_assert: &mut bool,
+    overflow_checks: &mut HashMap<Span, bool>,
 ) -> Option<CheckResult> {
     // If `set` is a runtime set variable, extract its element-kind expression
     // from the Set(ElemKind) constraint (e.g. Set(Nat) → Nat, Set(Int-{0}) →
@@ -275,8 +293,8 @@ pub(super) fn check_for_inductive_step<'tm>(
     check_loop_inductive_step(
         body, modified, constraint_env, env, outer_solver,
         name_defs, fn_env, tm, ssa_counter, param_names, param_terms,
-        "for-loop invariant", immutable_names, distinct_preds, has_runtime_assert,
-        |tmp, ind_env, ssa| {
+        "for-loop invariant", immutable_names, distinct_preds, has_runtime_assert, overflow_checks,
+        |tmp, ind_env, ssa, _overflow_obligs| {
             let var_fresh_name = format!("{}_iter_{}", var.0, ssa);
             *ssa += 1;
             let var_fresh = tm.mk_const(tm.integer_sort(), &var_fresh_name);
