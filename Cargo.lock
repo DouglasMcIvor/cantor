@@ -141,6 +141,7 @@ dependencies = [
  "cvc5",
  "inkwell",
  "llvm-sys",
+ "num-bigint",
  "rustyline",
 ]
 
