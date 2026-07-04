@@ -284,20 +284,63 @@ tagged-`Int` position is available to promote into):
 
 ### The overload split
 
-`foo : Int -> Int` compiles to two `FunctionDef` bodies sharing one name,
-using phase 2's overload machinery:
+**Corrected 2026-07-04 (raised while starting step 4a — the original text
+below the line was unsound as stated; see "Why solver-gated" below for the
+counterexample and fix).** `foo : Int -> Int` *may* compile to two
+`FunctionDef` bodies sharing one name, using phase 2's overload machinery —
+but only when the solver additionally proves it's safe to, not
+unconditionally for every unbounded-`Int` signature:
 - an `Int64` overload — parameters and return declared `Int64`, raw i64
   calling convention, used when a call site statically proves `Int64`
-  membership for every argument;
+  membership for every argument. Generated **only if** the solver proves
+  the narrower whole-body claim `args ∈ Int64 → result ∈ Int64` — i.e.
+  literally the same check the compiler would run had the developer written
+  `foo : Int64 -> Int64` by hand over the same body. This is not new proof
+  machinery: it's the existing signature/range-checker, re-run once against
+  a synthesized narrower signature.
 - a `BigInt = Int - Int64` overload — parameters/return use the tagged
   representation, used otherwise (static proof of non-`Int64` membership,
   or — the common case — no proof either way, resolved by phase 2's runtime
-  membership-test dispatch).
+  membership-test dispatch). Present only when the `Int64` overload above
+  was generated; otherwise the function stays a single, ordinary `Kind::Int`
+  body, and its correctness comes entirely from the separate per-node
+  promotion mechanism described above (the "Phase 1's abort branch becomes
+  the promotion branch" section) — **not** from this split.
 
-A program whose call sites all prove `Int64` membership never references a
-BigInt symbol, so `num-bigint` isn't linked into the final artifact — the
-whole point of doing the split at the overload level rather than always
-compiling one BigInt-capable body. This **requires relaxing phase 2's
+**Why solver-gated, not unconditional (the bug this corrects):** the
+original sketch generated an `Int64 -> Int64` overload for *every*
+unbounded-`Int` signature unconditionally. That's unsound in general:
+`foo : Int -> Int` with `foo(x) = x*x` restricted to an `Int64` *domain*
+does not make its *range* `Int64` — `x*x` for `x` near `i64::MAX` vastly
+exceeds `i64::MAX`. Phase 2 resolves a call to an overload purely by
+argument-domain membership, so a caller who proves `x ∈ Int64` would
+dispatch to this overload regardless of what the body computes — and a
+body declared `Int64 -> Int64` has, by definition, no tag bit to promote
+an out-of-range result into (see the previous section: `Kind::Int64`
+never has a tagged representation). It could only wrap silently or abort,
+either of which breaks the original `Int -> Int` contract's promise of a
+correct result for every input. Gating generation on the solver actually
+proving the narrower range claim closes this: when it proves, the
+`Int64` overload is *by construction* fully sound end-to-end with zero
+tagging anywhere in it (phase 1's existing "proved ⇒ plain instruction"
+path applies throughout, unconditionally correct); when it doesn't prove,
+no split is generated, and the function relies solely on the always-correct
+per-node mechanism instead. There is no in-between case, and consequently
+no "known hard part" of tagged locals living inside an otherwise-`Int64`
+body — a function either qualifies for a fully-raw split or it doesn't, and
+if it doesn't, the split doesn't exist for it at all. Net effect: this
+optimization now applies to range-preserving functions (identity, min/max,
+bounded arithmetic already provably within range, …), not to every
+unbounded-`Int` signature — genuinely-growing functions (`x*x`, naive
+Fibonacci, …) still get full completeness from the per-node mechanism,
+just without this extra boundary-conversion speedup. Confirmed with Doug:
+combined with the tagged-word representation, the common case (values that
+never approach the tag boundary) costs nothing beyond one predictable,
+never-taken branch per checked operation and zero allocation — matches the
+existing phase 1 "proved ⇒ zero cost" character, just gated per-function
+here instead of per-node.
+
+This **requires relaxing phase 2's
 same-`Kind`-per-position rule** (`check_overload_kind_agreement`,
 `semantics/elaborate.rs`) specifically for compiler-generated splits: today
 that function only ever sees user-written overload sets and rejects any
@@ -305,7 +348,10 @@ that function only ever sees user-written overload sets and rejects any
 "this pair of overloads is a compiler-generated `Int64`/`BigInt` split" from
 an ordinary user-written group, so a genuine user mistake (accidentally
 writing two overloads with different parameter `Kind`s) still errors exactly
-as it does today.
+as it does today. **(DONE — step 2, 2026-07-04; unaffected by this
+correction, since the exception itself was always correctly scoped to
+`Kind::Int`/`Kind::Int64` pairs regardless of how eligibility for
+generating such a pair is decided.)**
 
 **Why this exception stays narrow (raised and discussed 2026-07-04, decided
 not to generalize yet):** it's tempting to relax `check_overload_kind_agreement`
@@ -345,16 +391,15 @@ never pays this cost. Worth a dedicated codegen test once implemented (an
 `Int64`-resolved call whose result is exactly, say, `2^62` flowing into a
 `Vector(Int)` boxes correctly rather than corrupting the tag bit).
 
-**Known hard part, still true after the split exists:** inside the `Int64`
-overload's body, an intermediate expression that isn't itself proved bounded
-(e.g. `x*x` where `x : Int64` and the domain doesn't constrain it further)
-still overflows i64 in the mathematical sense, and per the rule above it must
-promote into a tagged/boxed value — even though the overload's *signature*
-says `Int64`. So a local inside an ostensibly-`Int64` body can still be
-tagged; raw-vs-tagged is a per-expression property derived from what the
-solver actually proved at that node, not a per-function property implied by
-the signature. The overload split buys a monomorphic **calling convention**
-at the boundary; it does not eliminate tagged locals inside bodies.
+**Superseded by the solver-gating correction above:** this section used to
+describe a "known hard part" where an `Int64` overload's body could still
+need tagged locals internally (e.g. `x*x`). That scenario can no longer
+arise: generating the `Int64` overload now *requires* the solver to have
+proved the whole body stays within `Int64`, so every node inside it is
+already known bounded — there is nothing left to tag. A body like `x*x`
+that can't clear that bar simply never gets an `Int64` overload generated
+for it in the first place, and relies entirely on the per-node mechanism
+instead (a single, ordinary `Kind::Int` body, no split involved).
 
 ### What phase 3 does *not* need to change
 
@@ -440,9 +485,27 @@ independently unit-testable before any codegen exists)
    the normal `check_file` pipeline) will be the first thing to actually
    exercise it — building the fixture-based plumbing step 2 used, purely to
    cover an unreachable branch in isolation, wasn't judged worth it here.
-4. **Codegen**:
-   a. emit the compiler-generated `Int64`/`BigInt` overload pair for eligible
-      signatures, reusing phase 2's static/runtime dispatch codegen unchanged;
+4. **Codegen** (4a is really a pre-codegen semantics/solver pass — it decides
+   *whether* a split exists at all before any of 4b–4d's codegen work
+   applies — but stays numbered under step 4 since it only matters once
+   codegen is the consumer):
+   a. **Split-generation pass**, inserted between `elaborate()` and
+      `check_file`'s main per-function loop. For each user
+      `SemFunctionDef` whose declared domain and range are *both* the
+      unbounded `Int` (MVP scope: single parameter, single signature,
+      `Int -> Int` exactly — multi-param Cartesian domains and mixed
+      Int/non-Int positions are a fast-follow, not this first cut):
+      synthesize an `Int64 -> Int64` narrowed signature over the *same*
+      body and check it in isolation via the ordinary existing
+      signature/range-checker (no new proof machinery). If it proves:
+      replace the original item with **two** `SemFunctionDef`s, both
+      `compiler_generated_split = true` — the `Int64` one just checked,
+      and a `BigInt = Int - Int64`-domain-restricted copy of the
+      original — and let every downstream step (disjointness, per-function
+      checking, codegen dispatch) treat them as an ordinary phase 2
+      overload pair, unchanged. If it doesn't prove: leave the original
+      `SemFunctionDef` exactly as-is, untouched — no split, no
+      `compiler_generated_split` marker, single ordinary `Kind::Int` body.
    b. tagged encode/decode at every unbounded-`Int` value's construction/
       consumption site (literals, arithmetic results, vector/struct/tuple
       element get/set, function parameters/returns, the `Fail` wire's payload
