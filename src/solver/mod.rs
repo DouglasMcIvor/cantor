@@ -365,6 +365,7 @@ fn validate_disjoint_unions(set_expr: &SemExpr, name_defs: &NameDefs, timeout_ms
             }
             None
         }
+        SemExprKind::KleeneStar(inner) => validate_disjoint_unions(inner, name_defs, timeout_ms),
         _ => None,
     }
 }

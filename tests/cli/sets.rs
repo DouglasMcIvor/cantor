@@ -98,3 +98,21 @@ fn set_ops_run_produces_correct_output() {
         "expected 'main() = 10' in output:\n{}", out.stdout
     );
 }
+
+#[test]
+fn kleene_disjoint_union_not_disjoint_counterexample() {
+    // `validate_disjoint_unions` used to have no `KleeneStar` case, so a `+`
+    // nested inside `X*` fell through to the wildcard `_ => None` arm and
+    // skipped the disjointness check — `({0} + Nat)*` (0 is in both arms)
+    // used to falsely prove.
+    let out = run_file("kleene_disjoint_union.cantor");
+    assert_ne!(out.code, 0, "kleene_disjoint_union.cantor should exit non-zero:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("  counterexample  "),
+        "expected counterexample result line:\n{}", out.stdout
+    );
+    assert!(
+        out.stdout.contains("not disjoint"),
+        "expected 'not disjoint' in counterexample message:\n{}", out.stdout
+    );
+}

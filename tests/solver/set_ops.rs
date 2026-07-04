@@ -363,6 +363,43 @@ bad(x) = x
 ");
 }
 
+// ── Disjoint union (+) nested inside a Kleene star (X*) ──────────────────────
+//
+// `validate_disjoint_unions` recurses into `DisjointUnion`/`SetDifference`/
+// `CartesianProduct`/`BinOp`/`Call` but used to have no case for `KleeneStar`,
+// so a `+` inside `(A + B)*` fell through the wildcard `_ => None` arm and
+// skipped the disjointness check entirely — `({0} + Nat)*`, whose arms
+// plainly overlap on 0, used to falsely report Proved instead of the
+// spurious-but-caught-elsewhere "not disjoint" Counterexample.
+
+// {0} and NatPos are genuinely disjoint — the Kleene-star case must still
+// let a correct disjoint union through.
+#[test]
+fn disjoint_union_in_kleene_star_domain_proved() {
+    proved("
+f : ({0} + NatPos)* -> Nat
+f(xs) = 0
+");
+}
+
+// {0} and Nat overlap on 0 — must be caught even nested inside `X*`.
+#[test]
+fn disjoint_union_in_kleene_star_domain_not_disjoint_counterexample() {
+    counterexample("
+f : ({0} + Nat)* -> Nat
+f(xs) = 0
+");
+}
+
+// Same check in range position.
+#[test]
+fn disjoint_union_in_kleene_star_range_not_disjoint_counterexample() {
+    counterexample("
+f : -> ({0} + Nat)*
+f() = []
+");
+}
+
 // ── Cross-operator combinations ───────────────────────────────────────────────
 
 // (Nat - {0}) | {0} = Nat; identity into Nat proved.

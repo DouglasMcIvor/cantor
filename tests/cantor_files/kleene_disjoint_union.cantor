@@ -1,0 +1,5 @@
+-- `+` (disjoint union) nested inside a Kleene star (X*). {0} and Nat overlap
+-- at 0 — `validate_disjoint_unions` used to skip KleeneStar entirely, so this
+-- falsely proved instead of reporting "not disjoint".
+f : ({0} + Nat)* -> Nat
+f(xs) = 0
