@@ -1,6 +1,8 @@
 # Closing the i64 soundness gap: plan
 
-**Status:** draft for review (2026-07-04) — not yet started
+**Status:** phase 1 DONE (2026-07-04) — see `docs/design-decisions.md`'s
+"Checked arithmetic" entry for the decided semantics table. Phases 2–3 not
+started.
 **Executes in three phases; phase 1 alone closes the soundness gap**
 
 ---
@@ -218,11 +220,10 @@ below records the intended shape and the open decisions, not a work plan.
 
 ## Open questions (for Doug)
 
-1. Phase 1 abort semantics: process abort with message is the recommendation.
-   The alternatives — routing through `Fail` (changes every range containing
-   arithmetic) or keeping wrap (the bug) — both look worse.
+1. ~~Phase 1 abort semantics~~ **DECIDED**: process abort with a
+   `path:line:col`-prefixed message, implemented as `cantor_overflow_abort`.
 2. Phase 3 representation: tagged word vs `{i1, i64}` struct — deferred to
    the phase 3 design doc, no need to decide now.
 3. Should phase 1's emitted checks be surfaceable (e.g. a `--list-overflow-checks`
    flag) so a developer can hunt down and prove away hot-path checks?
-   Nice-to-have, not in scope unless cheap.
+   Nice-to-have, not in scope unless cheap — still open; not implemented.

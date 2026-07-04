@@ -1406,14 +1406,40 @@ No implicit coercion between `Bool` and any integer kind exists at any layer.
   mathematical fallback. Same cap applies to the other arithmetic operators.
 - `/` is integer division (truncates toward zero). Domain excludes zero in
   the denominator — standard domain-check machinery handles this.
-- **KNOWN UNSOUNDNESS (v0)**: the runtime stores every integer in an `i64`
-  while the solver reasons in unbounded ℤ, so proved arithmetic can wrap
-  silently at runtime past ±2⁶³ (e.g. `f : Int * Int -> Int` with
-  `f(x, y) = x * y` is proved, yet the JIT can return a negative product of
-  two positive inputs). This is the one standing violation of the "never
-  silently assume" principle; it closes when BigInt lands. Interim
-  mitigations under consideration: trapping arithmetic, or bounding what
-  ranges are provable.
+  <!-- TODO(int-soundness-plan phase 1): the solver encodes `/` via CVC5's
+  `Kind::IntsDivision` (SMT-LIB `div`, Euclidean — remainder always
+  non-negative), which disagrees with the truncating-toward-zero semantics
+  stated above for negative operands. Flagged during phase 1 as a likely
+  pre-existing correctness gap, deliberately left unfixed (out of phase 1's
+  scope, which is overflow only) — see the same TODO at the `Kind::IntsDivision`
+  mapping in `src/solver/encode.rs`. -->
+- **Checked arithmetic (DECIDED, int-soundness-plan phase 1)**: every
+  `+ - * /`/unary `-` on integers carries an implicit compiler-generated
+  claim that its result (computed in ℤ) lies in `Int64`, checked by the
+  solver under the function's domain constraints:
+
+  | Solver outcome | Codegen |
+  |---|---|
+  | proved | plain instruction — zero cost, exactly as before |
+  | unknown | checked instruction (`llvm.{sadd,ssub,smul}.with.overflow.i64`, or an explicit `i64::MIN / -1` guard for `/`) + runtime abort branch |
+  | counterexample | same as unknown — **not** a compile error |
+
+  Counterexample must not be a compile error: `f : Int * Int -> Int` with
+  `f(x, y) = x * y` is a theorem in ℤ and stays a valid Cantor program;
+  overflow is a *representation* limitation of the current i64-only runtime,
+  not a domain violation by the developer (contrast the divisor-nonzero
+  obligation on `/`, which stays a hard compile-time proof gate — dividing
+  by zero is meaningless in ℤ itself). The abort message is
+  `path:line:col`-prefixed and never routes through the `Fail` wire (that
+  would force `| Fail` onto every range containing arithmetic). This closes
+  the soundness gap described below; phase 1 does not attempt completeness
+  (see the incompleteness note below and docs/int-soundness-plan.md).
+- **KNOWN INCOMPLETENESS**: the runtime stores every integer in an `i64`
+  while the solver reasons in unbounded ℤ. Before checked arithmetic
+  (above), this was a soundness gap — a proved claim could be silently false
+  at runtime. Now it's a completeness gap instead: a value that doesn't fit
+  in `i64` aborts the program rather than running to completion. Closes when
+  BigInt lands (int-soundness-plan.md phases 2–3).
 
 ### Narrowing back to IntN
 

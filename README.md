@@ -82,13 +82,16 @@ Every check has one of three outcomes:
 `counterexample` is a bug report with a witness.
 `unknown` is honest: the compiler tells you what it couldn't verify, and gives you the option of letting the program still run with a runtime guard in place.
 
-> **Known unsoundness (v0):** the solver reasons in unbounded ℤ, but the runtime
-> currently stores every integer in a 64-bit machine word. A claim like
-> `f : Int * Int -> Int` with `f(x, y) = x * y` is proved mathematically, yet the
-> JIT wraps silently past ±2⁶³ — so a proved theorem can be visibly false at
-> runtime near the i64 boundary. This gap closes when BigInt support lands (see
-> roadmap); until then it is the one place the compiler silently assumes
-> something it hasn't proved.
+> **Known incompleteness:** the solver reasons in unbounded ℤ, but the runtime
+> currently stores every integer in a 64-bit machine word. Every `+ - * /`/`-`
+> carries an implicit "result fits in a 64-bit integer" obligation: proved →
+> a plain instruction, anything else → a checked instruction that aborts at
+> runtime rather than wrapping. A claim like `f : Int * Int -> Int` with
+> `f(x, y) = x * y` is proved mathematically — and stays proved — but a value
+> escaping the i64 range aborts the program instead of running to completion,
+> since the runtime can't yet represent it. This closes when BigInt support
+> lands (see roadmap); until then it's a completeness gap, not a soundness
+> one — a proved claim can no longer be silently false at runtime.
 
 ## Examples
 
