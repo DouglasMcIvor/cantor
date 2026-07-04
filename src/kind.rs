@@ -34,8 +34,21 @@ pub enum SetElemKind {
 /// `.clone()` where a copy was previously implicit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
-    /// i64 — integers, all named integer subsets (Nat, NatPos, Int8 … Int64, …)
+    /// i64 — integers, all named integer subsets (Nat, NatPos, Int8 … Int64, …).
+    /// int-soundness-plan phase 3: once the BigInt split exists, this becomes
+    /// the tagged/general representation; see `Kind::Int64` below.
     Int,
+    /// i64, raw/untagged — **reserved for the int-soundness-plan phase 3
+    /// compiler-generated `Int64`/`BigInt` overload split (step 4); nothing
+    /// produces this variant yet.** Ordinary elaboration of the `Int64`
+    /// named set still yields `Kind::Int`, exactly as every other named
+    /// integer subset does (`semantics::builtins::lookup`) — introducing
+    /// this variant now is step 2's foundation, not a behaviour change for
+    /// existing programs. Every match on `Kind` added before step 4 exists
+    /// should treat this identically to `Kind::Int` (same wire type, same
+    /// solver sort); the one place it's meant to diverge is
+    /// `check_overload_kind_agreement`'s compiler-generated-split exception.
+    Int64,
     /// i1 — the two-element Bool set {true, false}, disjoint from all integers
     Bool,
     /// i1 — the `fail` singleton; always has value 1 when constructed.

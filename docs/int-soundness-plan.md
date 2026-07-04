@@ -8,8 +8,12 @@
 "Phase 3 — BigInt runtime" section below for the tagged-word representation,
 the `Int64`/`BigInt` overload split, and the step order. Implementation
 step 1 (runtime — `CantorBigInt`, tagged encode/decode, `cantor_bigint_*`)
-DONE (2026-07-04); steps 2–5 (semantics, solver, codegen, tests/docs) not
-started — no LLVM/codegen/JIT wiring exists yet.
+DONE (2026-07-04). Step 2 (semantics — `Kind::Int64` variant,
+`compiler_generated_split` marker, `check_overload_kind_agreement`
+exception) DONE (2026-07-04) — see that step's entry below for a correction
+found while implementing it (the original sketch assumed `Int64` already
+had a distinct `Kind`; it didn't). Steps 3–5 (solver, codegen, tests/docs)
+not started — no LLVM/codegen/JIT wiring exists yet.
 **Executes in three phases; phase 1 alone closes the soundness gap**
 
 ---
@@ -369,9 +373,39 @@ independently unit-testable before any codegen exists)
    `src/runtime/mod.rs`, unit-tested directly in `tests/runtime.rs` (no
    LLVM/CLI involvement — not yet declared in `runtime_decls.rs` or
    registered in `jit.rs`, that's step 4).
-2. **Semantics** — the compiler-generated-split marker and the
-   `check_overload_kind_agreement` relaxation described above. No user-facing
-   syntax changes; this step alone should be invisible to existing programs.
+2. **Semantics — DONE (2026-07-04).** the compiler-generated-split marker and
+   the `check_overload_kind_agreement` relaxation described above. No
+   user-facing syntax changes; this step is invisible to existing programs
+   (confirmed by a regression test — see below).
+
+   **Correction found while implementing (the original sketch above assumed
+   this without checking): `Int64` and unbounded `Int` elaborated to the
+   exact same `Kind::Int` before this step** (`semantics/builtins.rs`,
+   `kind.rs`) — there was no `Kind`-level mismatch for
+   `check_overload_kind_agreement` to reject in the first place, so
+   "relaxing" it would have been a no-op. Added `Kind::Int64` as a genuinely
+   new variant (`kind.rs`) to make the split real: reserved for the phase 3
+   split alone, not produced by ordinary elaboration of the `Int64` named
+   set (that still yields `Kind::Int`, unaffected) — nothing produces
+   `Kind::Int64` anywhere until step 4's generator exists. Every exhaustive
+   match on `Kind` across solver/codegen (7 sites: `codegen/expr.rs`,
+   `expr_vec.rs`, `trampoline.rs`, `wire.rs`, `mod.rs` ×2, `solver/sort.rs`,
+   plus 2 in `main.rs`) now treats `Int64` identically to `Int` — same wire
+   type (i64), same CVC5 sort/constructor (`ck_Int`), since the solver
+   reasons over unbounded ℤ regardless of raw-vs-tagged representation. The
+   `compiler_generated_split` marker (`SemFunctionDef`, `semantics/tree.rs`)
+   is `false` for everything elaborated from real source; the exception in
+   `check_overload_kind_agreement` requires *both* overloads in a mismatched
+   pair to be marked, and only excuses the specific `Kind::Int`/`Kind::Int64`
+   pairing at a position (`kinds_agree_for_split`) — an unrelated mismatch
+   (say `Int` vs `Bool`) between two marked overloads still errors. Tested
+   directly against hand-built `SemFunctionDef` fixtures in
+   `tests/semantics/elaborate_tests.rs` (no producer exists yet to test
+   through real source), covering: the exception firing, the exception
+   *not* firing for a non-Int/Int64 mismatch, the exception requiring both
+   sides marked, per-position mixing of the exception with ordinary exact
+   agreement, and a regression guard that ordinary elaboration never sets
+   the marker.
 3. **Solver** — none needed for the ℤ reasoning itself; only the recorded
    per-node obligation (today `needs_overflow_check`) needs its consumer
    (codegen) taught the new promotion behaviour — the obligation itself is

@@ -14,7 +14,7 @@ pub use crate::kind::range_kind;
 /// Bool and Int each occupy one slot; Tuple recurses into its element kinds.
 pub fn leaf_count(kind: &Kind) -> usize {
     match kind {
-        Kind::Bool | Kind::Int | Kind::Set(_) | Kind::Fail => 1,
+        Kind::Bool | Kind::Int | Kind::Int64 | Kind::Set(_) | Kind::Fail => 1,
         Kind::Tuple(elems) => elems.iter().map(leaf_count).sum(),
         Kind::TaggedUnion(arms) => 1 + tagged_union_leaf_count(arms),
         // Vector is an i64 pointer (like Set) — one leaf.

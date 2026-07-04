@@ -4,11 +4,14 @@
 //! product while `a * b` in a body means multiplication, `{0} + NatPos` must
 //! stay tagged (forced-disjoint), and aliases must resolve transparently.
 
-use cantor::ast::Item;
+use cantor::ast::{Item, Param};
 use cantor::kind::Kind;
 use cantor::parser::parse_file;
-use cantor::semantics::elaborate::elaborate;
-use cantor::semantics::tree::{SemExprKind, SemFunctionBody, SemItem, SemStmt};
+use cantor::semantics::elaborate::{check_overload_kind_agreement, elaborate};
+use cantor::semantics::tree::{
+    SemExpr, SemExprKind, SemFunctionBody, SemFunctionDef, SemFunctionSig, SemItem, SemStmt,
+};
+use cantor::span::{Span, Symbol};
 
 fn elaborate_src(src: &str) -> Vec<SemItem> {
     let items: Vec<Item> = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
@@ -525,4 +528,119 @@ fn overloads_with_different_arity_need_no_kind_agreement() {
         elaborate(&items).is_ok(),
         "differing-arity overloads must not be treated as one Kind-agreement group"
     );
+}
+
+// ── `compiler_generated_split` exception (int-soundness-plan phase 3, step 2) ─
+//
+// Nothing produces `compiler_generated_split = true` anywhere in the real
+// pipeline yet — no source syntax sets it, and step 4 (the actual
+// `Int64`/`BigInt` split generator) doesn't exist yet either. These tests
+// exercise `check_overload_kind_agreement` directly against hand-built
+// `SemFunctionDef` fixtures, the same way step 4's generator will one day
+// feed it, to prove the exception is exactly as narrow as intended ahead of
+// having a real producer to test against.
+
+fn dummy_expr(kind_of: Kind) -> SemExpr {
+    SemExpr {
+        kind: SemExprKind::IntLit(0),
+        kind_of,
+        span: Span::dummy(),
+    }
+}
+
+fn dummy_sig(param_kinds: Vec<Kind>, return_kind: Kind) -> SemFunctionSig {
+    SemFunctionSig {
+        domain: None,
+        range: dummy_expr(return_kind.clone()),
+        param_kinds,
+        return_kind,
+        span: Span::dummy(),
+    }
+}
+
+fn dummy_def(
+    name: &str,
+    param_kinds: Vec<Kind>,
+    return_kind: Kind,
+    compiler_generated_split: bool,
+) -> SemItem {
+    let params = (0..param_kinds.len())
+        .map(|i| Param::new(&format!("p{i}")))
+        .collect();
+    SemItem::FunctionDef(SemFunctionDef {
+        name: Symbol::new(name),
+        sigs: vec![dummy_sig(param_kinds.clone(), return_kind.clone())],
+        params,
+        body: SemFunctionBody::Expr(dummy_expr(return_kind.clone())),
+        param_kinds,
+        return_kind,
+        span: Span::dummy(),
+        compiler_generated_split,
+    })
+}
+
+#[test]
+fn compiler_generated_int64_bigint_split_bypasses_kind_agreement() {
+    let items = vec![
+        dummy_def("foo", vec![Kind::Int], Kind::Int, true),
+        dummy_def("foo", vec![Kind::Int64], Kind::Int64, true),
+    ];
+    assert!(
+        check_overload_kind_agreement(&items).is_ok(),
+        "a compiler-generated Int64/BigInt pair must be allowed to disagree on Kind"
+    );
+}
+
+#[test]
+fn compiler_generated_split_exception_is_specific_to_int_and_int64() {
+    // Both marked, but the mismatch isn't the Int/Int64 pairing — still an error.
+    let items = vec![
+        dummy_def("foo", vec![Kind::Int], Kind::Int, true),
+        dummy_def("foo", vec![Kind::Bool], Kind::Bool, true),
+    ];
+    assert!(
+        check_overload_kind_agreement(&items).is_err(),
+        "the compiler_generated_split marker must not excuse arbitrary Kind mismatches"
+    );
+}
+
+#[test]
+fn only_one_overload_marked_compiler_generated_split_still_errors() {
+    // The exception requires *both* members marked — a stray/incomplete
+    // marker on just one side must not silently widen it.
+    let items = vec![
+        dummy_def("foo", vec![Kind::Int], Kind::Int, true),
+        dummy_def("foo", vec![Kind::Int64], Kind::Int64, false),
+    ];
+    assert!(
+        check_overload_kind_agreement(&items).is_err(),
+        "a Kind mismatch must still error when only one overload is marked as the split"
+    );
+}
+
+#[test]
+fn compiler_generated_split_allows_int64_mix_alongside_exact_agreement() {
+    // A multi-param signature where one position is the Int/Int64 exception
+    // and another position matches exactly (Bool) — both must be handled
+    // per-position, not as an all-or-nothing check on the whole group.
+    let items = vec![
+        dummy_def("foo", vec![Kind::Int, Kind::Bool], Kind::Int, true),
+        dummy_def("foo", vec![Kind::Int64, Kind::Bool], Kind::Int64, true),
+    ];
+    assert!(
+        check_overload_kind_agreement(&items).is_ok(),
+        "the Int/Int64 exception must apply per-position alongside ordinary exact agreement"
+    );
+}
+
+#[test]
+fn no_source_syntax_sets_compiler_generated_split() {
+    // Regression guard: ordinary elaboration of real source must never set
+    // the marker, since nothing should be able to reach the exception
+    // without going through the (not yet implemented) step 4 generator.
+    let items = elaborate_src("f : Int -> Int\nf(x) = x");
+    let SemItem::FunctionDef(def) = items.into_iter().next().unwrap() else {
+        panic!("expected a FunctionDef item");
+    };
+    assert!(!def.compiler_generated_split);
 }

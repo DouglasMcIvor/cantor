@@ -174,7 +174,7 @@ impl<'ctx> Compiler<'ctx> {
                 builder.build_store(ptr, wide).map_err(err)?;
                 *leaf_idx += 1;
             }
-            Kind::Int | Kind::Set(_) => {
+            Kind::Int | Kind::Int64 | Kind::Set(_) => {
                 let ptr = if *leaf_idx == 0 {
                     out_ptr
                 } else {

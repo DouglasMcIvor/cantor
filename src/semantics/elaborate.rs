@@ -105,11 +105,18 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
 /// there's nothing to agree on there). Within a same-name-same-arity group,
 /// every member must still agree on the Kind of each parameter position and
 /// on the return Kind, exactly as today's multiple-signatures-one-body
-/// feature already requires within a single `FunctionDef` — relaxing
-/// per-overload Kinds is deliberately deferred (see design-decisions.md §7
-/// and docs/int-soundness-plan.md phase 3's `Int64`/`BigInt` split, the one
-/// place that will need it).
-fn check_overload_kind_agreement(sem_items: &[SemItem]) -> Result<(), CompileError> {
+/// feature already requires within a single `FunctionDef`.
+///
+/// int-soundness-plan phase 3 (step 2): one narrow, structural exception —
+/// a position may disagree between `Kind::Int` and `Kind::Int64` when
+/// *both* overloads are marked `compiler_generated_split`
+/// (`kinds_agree_for_split`). This is not a general relaxation: nothing
+/// produces `compiler_generated_split = true` yet (step 4 will, generating
+/// exactly this `Int64`/`BigInt` pair from one unbounded-`Int` signature —
+/// see design-decisions.md §7 and int-soundness-plan.md's "Phase 3"
+/// section), so every mismatch reaching this function today still errors
+/// exactly as it did before this exception existed.
+pub fn check_overload_kind_agreement(sem_items: &[SemItem]) -> Result<(), CompileError> {
     let mut groups: HashMap<(Symbol, usize), Vec<&SemFunctionDef>> = HashMap::new();
     for item in sem_items {
         if let SemItem::FunctionDef(def) = item {
@@ -124,20 +131,45 @@ fn check_overload_kind_agreement(sem_items: &[SemItem]) -> Result<(), CompileErr
             continue;
         };
         for other in rest {
-            if other.return_kind != first.return_kind || other.param_kinds != first.param_kinds {
-                return Err(CompileError::OverloadKindMismatch {
-                    name: other.name.0.clone(),
-                    detail: format!(
-                        "an earlier overload has param kinds {:?} and return kind {:?}, \
-                         but this one has {:?} and {:?}",
-                        first.param_kinds, first.return_kind, other.param_kinds, other.return_kind
-                    ),
-                    span: other.span,
-                });
+            let mismatched =
+                other.return_kind != first.return_kind || other.param_kinds != first.param_kinds;
+            if !mismatched {
+                continue;
             }
+            if first.compiler_generated_split
+                && other.compiler_generated_split
+                && kinds_agree_for_split(&first.return_kind, &other.return_kind)
+                && first.param_kinds.len() == other.param_kinds.len()
+                && first
+                    .param_kinds
+                    .iter()
+                    .zip(&other.param_kinds)
+                    .all(|(a, b)| kinds_agree_for_split(a, b))
+            {
+                continue;
+            }
+            return Err(CompileError::OverloadKindMismatch {
+                name: other.name.0.clone(),
+                detail: format!(
+                    "an earlier overload has param kinds {:?} and return kind {:?}, \
+                     but this one has {:?} and {:?}",
+                    first.param_kinds, first.return_kind, other.param_kinds, other.return_kind
+                ),
+                span: other.span,
+            });
         }
     }
     Ok(())
+}
+
+/// True when `a` and `b` are the same Kind, or are exactly the one pairing
+/// int-soundness-plan phase 3 needs at a single position: `Kind::Int`
+/// (tagged/general) paired with `Kind::Int64` (raw), order-independent.
+/// Never true for any other pair of differing Kinds — this is the full
+/// extent of the exception `check_overload_kind_agreement` grants compiler-
+/// generated overload pairs; every other mismatch still errors.
+fn kinds_agree_for_split(a: &Kind, b: &Kind) -> bool {
+    a == b || matches!((a, b), (Kind::Int, Kind::Int64) | (Kind::Int64, Kind::Int))
 }
 
 /// `codegen::compile_call`'s built-in identity/cardinality calls — never
@@ -215,6 +247,8 @@ fn elaborate_function_def(def: &FunctionDef, ctx: &Ctx) -> Result<SemFunctionDef
         param_kinds,
         return_kind,
         span: def.span,
+        // Only the (not-yet-implemented) phase 3 split generator sets this.
+        compiler_generated_split: false,
     })
 }
 

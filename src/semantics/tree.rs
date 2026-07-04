@@ -209,6 +209,18 @@ pub struct SemFunctionDef {
     pub param_kinds: Vec<Kind>,
     pub return_kind: Kind,
     pub span: Span,
+    /// int-soundness-plan phase 3: true only for the `Int64`/`BigInt`
+    /// overload pair the compiler will synthesize from a single unbounded-
+    /// `Int` signature — never set for anything elaborated from user source
+    /// (`elaborate_function_def` always sets this to `false`). Nothing
+    /// produces `true` here yet; step 4 (codegen) is what will generate
+    /// such a pair. `check_overload_kind_agreement` is the only place this
+    /// is read: a Kind mismatch between two members of the same (name,
+    /// arity) group is allowed *only* when both are marked, keeping the
+    /// exception narrow and structural rather than a general relaxation —
+    /// see design-decisions.md §7 and int-soundness-plan.md's "Phase 3"
+    /// section for why this stays scoped to the compiler's own split.
+    pub compiler_generated_split: bool,
 }
 
 #[derive(Debug, Clone)]

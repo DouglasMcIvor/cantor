@@ -288,16 +288,21 @@ implementation detail the developer should not rely on.
     only within a (name, arity) group.
   - Every overload of a given (name, arity) must still agree on the Kind of
     each parameter/return position (same rule multiple-signatures-one-body
-    already had). Phase 3's `Int64`/`BigInt` split needs one narrow,
-    compiler-generated exception to this (see int-soundness-plan.md's
-    "Phase 3 — BigInt runtime" section) — **not** a general relaxation for
-    user-written overloads: the exception only works because there's a
-    single canonical Kind every group member converts into at an unresolved
-    call's runtime-dispatch merge point, which the Int64/BigInt pair has
-    (tagged `Int` is canonical, raw `Int64` converts into it) but an
-    arbitrary pair of user-chosen Kinds does not in general. Discussed
-    2026-07-04; general user-facing Kind-polymorphic overloading recorded
-    as a deferred idea in §12 rather than folded into phase 3.
+    already had). Phase 3's `Int64`/`BigInt` split gets one narrow,
+    compiler-generated exception to this (**IMPLEMENTED** — int-soundness-plan
+    phase 3 step 2, 2026-07-04; see that doc's "Phase 3 — BigInt runtime"
+    section) — **not** a general relaxation for user-written overloads: the
+    exception only works because there's a single canonical Kind every group
+    member converts into at an unresolved call's runtime-dispatch merge point,
+    which the Int64/BigInt pair has (tagged `Int` is canonical, raw `Int64`
+    converts into it) but an arbitrary pair of user-chosen Kinds does not in
+    general. Discussed 2026-07-04; general user-facing Kind-polymorphic
+    overloading recorded as a deferred idea in §12 rather than folded into
+    phase 3. Implementing this required adding `Kind::Int64` as a genuinely
+    new variant (§13) — `Int64` and unbounded `Int` collapsed to the same
+    `Kind::Int` before this step, so there was no mismatch to except in the
+    first place; `Kind::Int64` is reserved for the phase 3 split alone and
+    isn't produced by ordinary elaboration of the `Int64` named set.
   - Automatic domain-partition inference (compiler infers a good overload
     split rather than requiring hand-declaration) is an explicitly deferred
     future feature.
@@ -1384,6 +1389,14 @@ Every value in Cantor passes through three distinct conceptual layers:
    `Kind` is derived from the set via a deterministic `set_kind(set_expr) -> Kind` lookup.
    `distinct` does not create a new Kind — `Litre` maps to `Kind::Float` just as `Float` does;
    the solver enforces their distinctness without codegen needing to know.
+   `Kind::Int64` (added int-soundness-plan phase 3 step 2) is the one
+   exception to "one named set → one Kind": it's reserved for the phase 3
+   `Int64`/`BigInt` overload split alone, not produced by ordinary
+   elaboration of the `Int64` named set (which still maps to `Kind::Int`,
+   like every other named integer subset). Solver-facing code (CVC5 sort,
+   constructor naming) treats it identically to `Kind::Int` — the solver
+   reasons over unbounded ℤ regardless of raw-vs-tagged codegen
+   representation.
 
 **Consequence for aliases:** `alias Metre = Float` is a transparent rename at the set layer.
 Error messages show the name at the point of the error (Clang-style), not the underlying set.

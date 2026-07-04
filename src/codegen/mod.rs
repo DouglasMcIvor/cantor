@@ -190,7 +190,7 @@ impl<'ctx> Compiler<'ctx> {
     /// TaggedUnion → `{ i32 tag, i64, …, i64 }` with enough i64 slots for the widest arm.
     pub(crate) fn kind_to_llvm_type(&self, kind: &Kind) -> BasicTypeEnum<'ctx> {
         match kind {
-            Kind::Int | Kind::Set(_) => self.context.i64_type().into(),
+            Kind::Int | Kind::Int64 | Kind::Set(_) => self.context.i64_type().into(),
             Kind::Bool | Kind::Fail => self.context.bool_type().into(),
             Kind::Tuple(elems) => {
                 let types: Vec<BasicTypeEnum<'ctx>> =
@@ -233,7 +233,7 @@ impl<'ctx> Compiler<'ctx> {
         let i64t = self.context.i64_type();
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match arm_kind {
-            Kind::Int | Kind::Set(_) => {
+            Kind::Int | Kind::Int64 | Kind::Set(_) => {
                 *agg = self
                     .builder
                     .build_insert_value(*agg, val.into_int_value(), *field_idx, "tu_l")

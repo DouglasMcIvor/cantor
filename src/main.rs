@@ -336,7 +336,7 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
 
 fn count_kind_leaves(kind: &Kind) -> usize {
     match kind {
-        Kind::Int | Kind::Bool | Kind::Fail | Kind::Set(_) => 1,
+        Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail | Kind::Set(_) => 1,
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
         // TODO: tagged-union IR — count tag field + widest arm
         Kind::TaggedUnion(_) => 1,
@@ -355,7 +355,7 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
             *offset += 1;
             "fail".to_string()
         }
-        Kind::Int | Kind::Set(_) => {
+        Kind::Int | Kind::Int64 | Kind::Set(_) => {
             let v = buf[*offset];
             *offset += 1;
             format!("{v}")

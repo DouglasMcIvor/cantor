@@ -885,7 +885,10 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let (set_elem_kind, new_fn, insert_fn) = match &elem_kind {
-            Kind::Int => (
+            // Kind::Int64 is reserved for the not-yet-implemented phase 3
+            // split (see kind.rs); nothing produces it yet, but it's the
+            // same wire type as Kind::Int wherever it does show up.
+            Kind::Int | Kind::Int64 => (
                 SetElemKind::Int,
                 "cantor_set_new_i64",
                 "cantor_set_insert_i64",

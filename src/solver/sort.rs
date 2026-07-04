@@ -29,7 +29,10 @@ use super::membership::DistinctPreds;
 /// exactly.
 pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
     match k {
-        ValKind::Int => "ck_Int".to_string(),
+        // The solver reasons over unbounded ℤ regardless of raw-vs-tagged
+        // codegen representation (int-soundness-plan phase 3) — Int64 is
+        // just Int as far as CVC5 sorts/constructors are concerned.
+        ValKind::Int | ValKind::Int64 => "ck_Int".to_string(),
         ValKind::Bool => "ck_Bool".to_string(),
         ValKind::Fail => "ck_Fail".to_string(),
         ValKind::Set(_) => "ck_Set".to_string(),
