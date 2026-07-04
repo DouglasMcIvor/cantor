@@ -1,0 +1,5 @@
+mul : Int * Int -> Int
+mul(x, y) = x * y
+
+main : -> Int
+main() = mul(4611686018427387904, 2)

@@ -1,0 +1,5 @@
+safe_div : Int * (Int - {0}) -> Int
+safe_div(x, y) = x / y
+
+main : -> Int
+main() = safe_div(10, 3)

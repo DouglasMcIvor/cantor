@@ -1,0 +1,5 @@
+mul32 : Int32 * Int32 -> Int
+mul32(x, y) = x * y
+
+main : -> Int
+main() = mul32(2147483647, 2147483647)

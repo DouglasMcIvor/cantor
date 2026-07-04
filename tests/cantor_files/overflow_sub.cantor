@@ -1,0 +1,5 @@
+sub : Int * Int -> Int
+sub(x, y) = x - y
+
+main : -> Int
+main() = sub(-9223372036854775807, 2)

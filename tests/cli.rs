@@ -22,3 +22,5 @@ mod vectors_nested;
 mod cli_flags;
 #[path = "cli/soundness_diagnostics.rs"]
 mod soundness_diagnostics;
+#[path = "cli/overflow.rs"]
+mod overflow;

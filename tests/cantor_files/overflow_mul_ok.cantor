@@ -1,0 +1,5 @@
+mul : Int * Int -> Int
+mul(x, y) = x * y
+
+main : -> Int
+main() = mul(21, 2)

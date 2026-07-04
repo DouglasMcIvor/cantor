@@ -1,0 +1,5 @@
+add : Int * Int -> Int
+add(x, y) = x + y
+
+main : -> Int
+main() = add(9223372036854775807, 1)

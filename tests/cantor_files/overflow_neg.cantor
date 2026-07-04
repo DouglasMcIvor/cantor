@@ -1,0 +1,5 @@
+neg : Int -> Int
+neg(x) = -x
+
+main : -> Int
+main() = neg(-9223372036854775807 - 1)
