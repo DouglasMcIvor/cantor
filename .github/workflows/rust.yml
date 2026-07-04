@@ -47,8 +47,9 @@ jobs:
       uses: actions/upload-pages-artifact@v3
       with:
         path: target/llvm-cov/html
-    - name: Deploy to GitHub Pages
-      uses: actions/deploy-pages@v4
+# This is failing for some reason and I don't know why - fix this later
+#    - name: Deploy to GitHub Pages
+#      uses: actions/deploy-pages@v4
 
 # Future additions, not passing yet
 #    - name: Check fmt
