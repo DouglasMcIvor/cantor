@@ -177,5 +177,13 @@ impl<'ctx> Compiler<'ctx> {
         // (the caller emits `unreachable` right after the call).
         self.module
             .add_function("cantor_overflow_abort", void.fn_type(i, false), None);
+
+        // int-soundness-plan phase 2: runtime overload-dispatch trap — reached
+        // only if no candidate's domain matched at runtime, which the solver
+        // proved can't happen (union coverage). A loud trap rather than a
+        // silent `unreachable`, in case that proof is ever wrong. Same shape
+        // as `cantor_overflow_abort`.
+        self.module
+            .add_function("cantor_dispatch_unreachable", void.fn_type(i, false), None);
     }
 }

@@ -87,6 +87,38 @@ pub struct Compiler<'ctx> {
     /// (`compile_items`/`compile_file` — see the REPL's own note on why
     /// span→line:col can't be trusted there).
     overflow_ctx: Option<(String, String)>,
+    /// int-soundness-plan phase 2: one entry per name that has more than one
+    /// `FunctionDef` in the file (an overload set) — absent for every
+    /// ordinary, non-overloaded name (the overwhelming common case, compiled
+    /// exactly as before). Indexed the same way
+    /// `ConstrainedTree::overload_resolution` is: position in file order
+    /// among this name's `FunctionDef`s.
+    overload_dispatch: HashMap<String, Vec<OverloadEntry>>,
+    /// Per-call-node-span statically-resolved overload index, from
+    /// `ConstrainedTree::overload_resolution`. Empty via
+    /// `compile_items`/`compile_file`/REPL/`llvm-ir` (no solver-verified
+    /// tree), same "no tree ⇒ conservative" default as `overflow_checks`.
+    overload_resolution: HashMap<Span, usize>,
+}
+
+/// One candidate in an overload set — see `Compiler::overload_dispatch`.
+struct OverloadEntry {
+    /// The LLVM function name this candidate was declared under
+    /// (`{name}__ov{index}`).
+    mangled_name: String,
+    arity: usize,
+    /// This candidate's first declared signature's per-parameter domain
+    /// (used for the runtime dispatch chain's membership tests).
+    ///
+    /// TODO: a candidate with more than one of its own signatures (today's
+    /// existing multiple-signatures-one-body feature, combined with
+    /// overloading) only has its *first* signature's domain checked at
+    /// runtime here — matches this codebase's existing precedent
+    /// (`Compiler::fn_param_set_exprs` has always stored only the first
+    /// signature's domain, even before overloading existed) but is worth
+    /// widening to an OR-across-signatures check if that combination shows
+    /// up in practice.
+    domain_parts: Vec<SemExpr>,
 }
 
 impl<'ctx> Compiler<'ctx> {
@@ -105,6 +137,8 @@ impl<'ctx> Compiler<'ctx> {
             fn_param_kinds: HashMap::new(),
             overflow_checks: HashMap::new(),
             overflow_ctx: None,
+            overload_dispatch: HashMap::new(),
+            overload_resolution: HashMap::new(),
         }
     }
 
@@ -578,7 +612,7 @@ pub(super) fn compile_items<'ctx>(
     items: &[Item],
 ) -> Result<Compiler<'ctx>, CompileError> {
     let sem_items = elaborate(items)?;
-    compile_elaborated(ctx, items, &sem_items, HashMap::new(), None)
+    compile_elaborated(ctx, items, &sem_items, HashMap::new(), None, HashMap::new())
 }
 
 /// Compile an already-elaborated file — the shared core of `compile_items`
@@ -592,16 +626,21 @@ pub(super) fn compile_items<'ctx>(
 /// `overflow_checks`/`overflow_ctx` come from a verified `ConstrainedTree`
 /// (`compile_constrained`) or are empty/`None` (`compile_items` — no solver
 /// verification ran, so every arithmetic op is conservatively unproved).
+/// `overload_resolution` is the same story for int-soundness-plan phase 2:
+/// from a verified `ConstrainedTree`, or empty (every overloaded call falls
+/// back to runtime dispatch).
 pub(super) fn compile_elaborated<'ctx>(
     ctx: &'ctx Context,
     items: &[Item],
     sem_items: &[SemItem],
     overflow_checks: HashMap<Span, bool>,
     overflow_ctx: Option<(String, String)>,
+    overload_resolution: HashMap<Span, usize>,
 ) -> Result<Compiler<'ctx>, CompileError> {
     let mut compiler = Compiler::new(ctx, "cantor");
     compiler.overflow_checks = overflow_checks;
     compiler.overflow_ctx = overflow_ctx;
+    compiler.overload_resolution = overload_resolution;
     compiler.declare_runtime_functions();
 
     // Pass 0 — evaluate scalar constants and build a shared env of inlined values.
@@ -659,15 +698,40 @@ pub(super) fn compile_elaborated<'ctx>(
         })
         .collect();
 
+    // int-soundness-plan phase 2: how many `FunctionDef`s share each name —
+    // a count of 1 (the overwhelming common case) keeps today's plain LLVM
+    // name; more than 1 is an overload set, mangled below so `add_function`
+    // is never called twice under the same name (LLVM would otherwise
+    // silently rename the second and nothing would ever call it).
+    let mut overload_counts: HashMap<Symbol, usize> = HashMap::new();
+    for item in sem_items {
+        if let SemItem::FunctionDef(def) = item {
+            *overload_counts.entry(def.name.clone()).or_insert(0) += 1;
+        }
+    }
+
     // Pass 1 — declare all function signatures so forward calls resolve.
     // Param and return Kinds come from the elaborator's first-signature
-    // computation; overloaded functions must agree on the Kind of each position.
+    // computation; overloaded functions must agree on the Kind of each
+    // position within a (name, arity) group (enforced during elaboration).
+    let mut next_overload_index: HashMap<Symbol, usize> = HashMap::new();
     let decls: Vec<(FunctionValue<'ctx>, &crate::semantics::tree::SemFunctionDef)> = sem_items
         .iter()
         .filter_map(|item| match item {
             SemItem::FunctionDef(def) => {
+                let is_overloaded = overload_counts[&def.name] > 1;
+                let index = next_overload_index.entry(def.name.clone()).or_insert(0);
+                let overload_index = *index;
+                *index += 1;
+
+                let llvm_name = if is_overloaded {
+                    format!("{}__ov{overload_index}", def.name.0)
+                } else {
+                    def.name.0.clone()
+                };
+
                 let fn_val = compiler.declare_function(
-                    &def.name.0,
+                    &llvm_name,
                     &def.params,
                     &def.param_kinds,
                     def.return_kind.clone(),
@@ -677,7 +741,7 @@ pub(super) fn compile_elaborated<'ctx>(
                 if let Some(sig) = def.sigs.first() {
                     compiler
                         .fn_ranges
-                        .insert(def.name.0.clone(), sig.range.clone());
+                        .insert(llvm_name.clone(), sig.range.clone());
                     // Record per-parameter domain set expressions so `coerce_call_arg`
                     // can disambiguate which arm of a `+`-typed parameter a scalar
                     // call argument belongs to.
@@ -685,9 +749,34 @@ pub(super) fn compile_elaborated<'ctx>(
                         sig.domain.as_ref(),
                         def.params.len(),
                     ) {
+                        let parts: Vec<SemExpr> = parts.into_iter().cloned().collect();
+                        if is_overloaded {
+                            compiler
+                                .overload_dispatch
+                                .entry(def.name.0.clone())
+                                .or_default()
+                                .push(OverloadEntry {
+                                    mangled_name: llvm_name.clone(),
+                                    arity: def.params.len(),
+                                    domain_parts: parts.clone(),
+                                });
+                        }
+                        compiler.fn_param_set_exprs.insert(llvm_name.clone(), parts);
+                    } else if is_overloaded {
+                        // Domain didn't decompose (arity mismatch shouldn't
+                        // happen here since this is the def's own params
+                        // count) — still register the candidate so dispatch
+                        // knows about it, with an empty (always-Trivial)
+                        // domain-parts list rather than dropping it silently.
                         compiler
-                            .fn_param_set_exprs
-                            .insert(def.name.0.clone(), parts.into_iter().cloned().collect());
+                            .overload_dispatch
+                            .entry(def.name.0.clone())
+                            .or_default()
+                            .push(OverloadEntry {
+                                mangled_name: llvm_name.clone(),
+                                arity: def.params.len(),
+                                domain_parts: Vec::new(),
+                            });
                     }
                 }
                 Some((fn_val, def))

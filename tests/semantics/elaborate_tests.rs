@@ -481,7 +481,10 @@ fn two_same_name_function_defs_both_survive_elaboration_untouched() {
         .iter()
         .filter(|item| matches!(item, SemItem::FunctionDef(def) if def.name.0 == "f"))
         .count();
-    assert_eq!(count, 2, "expected both overloads of `f` to survive elaboration");
+    assert_eq!(
+        count, 2,
+        "expected both overloads of `f` to survive elaboration"
+    );
 }
 
 /// Two same-name, same-arity `FunctionDef`s that disagree on the Kind of a

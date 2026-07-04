@@ -1,0 +1,8 @@
+over : Int -> Int
+over(x) = x
+
+over : Nat -> Int
+over(x) = x + 1
+
+main : -> Int
+main() = over(3)

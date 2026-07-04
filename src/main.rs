@@ -149,22 +149,38 @@ fn main() {
     let mut n_counter = 0usize;
     let mut n_unknown = 0usize;
 
-    // Build a name → item map so we can look up the full signature display for
-    // each result without relying on positional alignment (unannotated NameDefs
-    // produce no check result, so zipping items with all_results is unsafe).
-    let item_by_name: HashMap<&str, &Item> = items
-        .iter()
-        .map(|item| match item {
-            Item::FunctionDef(def) => (def.name.0.as_str(), item),
-            Item::NameDef(def) => (def.name.0.as_str(), item),
-        })
-        .collect();
+    // Build a name → items map so we can look up the full signature display
+    // for each result without relying on a single positional zip against
+    // `items` (unannotated NameDefs produce no check result at all, and
+    // int-soundness-plan phase 2 means a name can have more than one
+    // `FunctionDef`, plus synthetic disjointness-check entries with no
+    // backing item of their own — see `next_item_idx` below).
+    let mut items_by_name: HashMap<&str, Vec<&Item>> = HashMap::new();
+    for item in &items {
+        let name = match item {
+            Item::FunctionDef(def) => def.name.0.as_str(),
+            Item::NameDef(def) => def.name.0.as_str(),
+        };
+        items_by_name.entry(name).or_default().push(item);
+    }
+    // `all_results` lists every function/name's check results in file order,
+    // followed by the disjointness-check entries appended at the very end
+    // (see `check_overload_disjointness`) — so consuming one item per
+    // same-named entry, in order, correctly pairs each genuine entry with
+    // its `FunctionDef`/`NameDef` and leaves the trailing disjointness
+    // entries (whose name's items are already exhausted) with `None`.
+    let mut next_item_idx: HashMap<&str, usize> = HashMap::new();
 
     for (name, sig_results) in all_results {
-        let item = item_by_name.get(name.as_str());
+        let idx = next_item_idx.entry(name.as_str()).or_insert(0);
+        let item = items_by_name.get(name.as_str()).and_then(|v| v.get(*idx));
+        *idx += 1;
         for (i, (label, result)) in sig_results.iter().enumerate() {
             let sig_display = match item {
-                Some(Item::FunctionDef(def)) => format!("{} : {}", def.name, def.sigs[i]),
+                Some(Item::FunctionDef(def)) => match def.sigs.get(i) {
+                    Some(sig) => format!("{} : {}", def.name, sig),
+                    None => label.clone(),
+                },
                 Some(Item::NameDef(_)) | None => label.clone(),
             };
 

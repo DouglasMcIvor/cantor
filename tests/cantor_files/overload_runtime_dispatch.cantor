@@ -1,0 +1,11 @@
+classify : Nat -> Int
+classify(x) = x
+
+classify : Int - Nat -> Int
+classify(x) = -x
+
+helper : Int -> Int
+helper(x) = classify(x)
+
+main : -> Int
+main() = helper(7) + helper(-4)

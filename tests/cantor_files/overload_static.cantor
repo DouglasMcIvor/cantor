@@ -1,0 +1,8 @@
+classify : Nat -> Int
+classify(x) = x
+
+classify : Int - Nat -> Int
+classify(x) = -x
+
+main : -> Int
+main() = classify(5)

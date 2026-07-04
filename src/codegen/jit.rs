@@ -206,6 +206,10 @@ impl<'ctx> Compiler<'ctx> {
                     "cantor_overflow_abort",
                     runtime::cantor_overflow_abort as *const () as usize,
                 ),
+                (
+                    "cantor_dispatch_unreachable",
+                    runtime::cantor_dispatch_unreachable as *const () as usize,
+                ),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))
@@ -258,6 +262,7 @@ pub fn compile_constrained<'ctx>(
         &tree.sem_items,
         tree.overflow_checks.clone(),
         Some((path.to_string(), src.to_string())),
+        tree.overload_resolution.clone(),
     )?
     .into_jit_engine()
     .map_err(|e| CompileError::ice(e))

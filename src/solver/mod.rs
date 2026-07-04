@@ -291,9 +291,15 @@ pub fn check_function(
                 overload_resolutions,
             };
             let result = match &def.body {
-                SemFunctionBody::Expr(body) => {
-                    check_sig(sig, &param_names, body, fn_env, name_defs, timeout_ms, &mut channels)
-                }
+                SemFunctionBody::Expr(body) => check_sig(
+                    sig,
+                    &param_names,
+                    body,
+                    fn_env,
+                    name_defs,
+                    timeout_ms,
+                    &mut channels,
+                ),
                 SemFunctionBody::Block(stmts) => check_block_sig(
                     sig,
                     &param_names,

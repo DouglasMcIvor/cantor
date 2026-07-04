@@ -113,7 +113,15 @@ pub(crate) fn encode_call<'tm>(
     push_call_domain_obligation(callee, &candidates, args, &arg_terms, ctx, &path_cond)?;
 
     if candidates.len() > 1 {
-        push_overload_call_obligation(callee, &candidates, args, &arg_terms, ctx, &path_cond, call_span)?;
+        push_overload_call_obligation(
+            callee,
+            &candidates,
+            args,
+            &arg_terms,
+            ctx,
+            &path_cond,
+            call_span,
+        )?;
     }
 
     let fresh = format!("_call_{}", *ctx.call_counter);
@@ -378,7 +386,10 @@ fn push_overload_call_obligation<'tm>(
 ) -> Result<(), String> {
     let mut terms = Vec::with_capacity(candidates.len());
     for (idx, def) in candidates {
-        terms.push((*idx, candidate_domain_term(def, args, arg_terms, callee, ctx)?));
+        terms.push((
+            *idx,
+            candidate_domain_term(def, args, arg_terms, callee, ctx)?,
+        ));
     }
     ctx.overload_obligs.push(OverloadCallObligation {
         call_span,

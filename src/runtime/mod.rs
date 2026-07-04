@@ -734,3 +734,19 @@ pub extern "C" fn cantor_overflow_abort(msg_ptr: i64) {
     eprintln!("{}", msg.to_string_lossy());
     std::process::exit(1);
 }
+
+// ── Overload runtime dispatch (int-soundness-plan phase 2) ────────────────────
+
+/// Print a message and exit nonzero. Called from an overload runtime-dispatch
+/// chain's final else-arm — reached only if no candidate's domain matched,
+/// which the solver proved can't happen; codegen emits `unreachable`
+/// immediately after the call, so this never needs to return control.
+///
+/// `msg_ptr` points at a null-terminated string baked into the module as a
+/// global constant at compile time.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_dispatch_unreachable(msg_ptr: i64) {
+    let msg = unsafe { std::ffi::CStr::from_ptr(msg_ptr as *const i8) };
+    eprintln!("{}", msg.to_string_lossy());
+    std::process::exit(1);
+}

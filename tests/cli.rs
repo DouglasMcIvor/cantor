@@ -10,6 +10,8 @@ mod error_handling;
 mod helpers;
 #[path = "cli/overflow.rs"]
 mod overflow;
+#[path = "cli/overloads.rs"]
+mod overloads;
 #[path = "cli/repl.rs"]
 mod repl;
 #[path = "cli/sets.rs"]

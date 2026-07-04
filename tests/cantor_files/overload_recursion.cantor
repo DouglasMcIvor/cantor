@@ -1,0 +1,8 @@
+count_down : {0} -> Nat
+count_down(x) = 0
+
+count_down : NatPos -> Nat
+count_down(x) = 1 + count_down(x - 1)
+
+main : -> Nat
+main() = count_down(5)
