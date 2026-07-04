@@ -11,8 +11,7 @@ use cantor::{
     codegen::{compile_constrained, compile_to_ir},
     error::CompileError,
     kind::Kind,
-    names::check_names,
-    parser::parse_file,
+    pipeline::{FrontendError, parse_and_check_names, results_of},
     semantics::tree::SemItem,
     solver::{CheckOutcome, CheckResult, ConstrainedTree, check_file},
 };
@@ -99,10 +98,16 @@ fn main() {
         }
     };
 
-    let items = match parse_file(&src) {
+    let items = match parse_and_check_names(&src) {
         Ok(items) => items,
-        Err(e) => {
+        Err(FrontendError::Parse(e)) => {
             print_compile_error(path, &e, &src);
+            process::exit(1);
+        }
+        Err(FrontendError::Naming(errors)) => {
+            for e in &errors {
+                print_compile_error(path, e, &src);
+            }
             process::exit(1);
         }
     };
@@ -110,14 +115,6 @@ fn main() {
     if items.is_empty() {
         println!("{path}: no definitions found");
         return;
-    }
-
-    let naming_errors = check_names(&items);
-    if !naming_errors.is_empty() {
-        for e in &naming_errors {
-            print_compile_error(path, e, &src);
-        }
-        process::exit(1);
     }
 
     // `llvm-ir` is a pure codegen debugging tool: skip the SMT solver
@@ -146,10 +143,7 @@ fn main() {
 
     // Display works identically whether or not the file was fully proved —
     // only `do_run` below cares about which `CheckOutcome` arm this is.
-    let all_results: &[(String, Vec<(String, CheckResult)>)] = match &outcome {
-        CheckOutcome::Proved(tree) => &tree.results,
-        CheckOutcome::NotProved(results) => results,
-    };
+    let all_results = results_of(&outcome);
 
     let mut n_proved = 0usize;
     let mut n_counter = 0usize;

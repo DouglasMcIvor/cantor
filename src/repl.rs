@@ -7,7 +7,8 @@ use cantor::{
     error::CompileError,
     names::check_names,
     parser::{parse_expr, parse_file},
-    solver::{CheckOutcome, CheckResult, check_file},
+    pipeline::results_of,
+    solver::{CheckResult, check_file},
     span::{Span, Symbol},
 };
 
@@ -206,10 +207,7 @@ fn add_definitions(state: &mut ReplState, new_items: Vec<Item>, src: &str) {
             // exactly as before this Kind existed — only a genuine
             // CompileError (below) rolls a definition back. Display doesn't
             // care whether the *whole* file ended up fully proved.
-            let results: &[(String, Vec<(String, CheckResult)>)] = match &outcome {
-                CheckOutcome::Proved(tree) => &tree.results,
-                CheckOutcome::NotProved(results) => results,
-            };
+            let results = results_of(&outcome);
             let mut any_result = false;
             for new_item in &new_items {
                 let name = item_name(new_item);

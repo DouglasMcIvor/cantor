@@ -4,6 +4,7 @@ pub mod error;
 pub mod kind;
 pub mod names;
 pub mod parser;
+pub mod pipeline;
 pub mod runtime;
 pub mod semantics;
 pub mod solver;

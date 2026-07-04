@@ -1,5 +1,6 @@
 use cantor::{
     parser::parse_file,
+    pipeline::results_of,
     solver::{CheckOutcome, ConstrainedTree, check_file},
 };
 
@@ -25,10 +26,8 @@ pub fn check_tree(src: &str) -> ConstrainedTree {
 /// either way, not the `ConstrainedTree` gate).
 pub fn check_all(src: &str) -> Vec<(String, Vec<(String, CheckResult)>)> {
     let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
-    match check_file(&items, 60_000).unwrap_or_else(|e| panic!("check error: {e}")) {
-        CheckOutcome::Proved(tree) => tree.results,
-        CheckOutcome::NotProved(results) => results,
-    }
+    let outcome = check_file(&items, 60_000).unwrap_or_else(|e| panic!("check error: {e}"));
+    results_of(&outcome).to_vec()
 }
 
 /// Parse a single-function source, check it, and return its signature results.
