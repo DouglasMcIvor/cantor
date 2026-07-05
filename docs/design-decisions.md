@@ -873,12 +873,18 @@ it genuinely belongs to the symmetric difference too. See the semantics writeup
 at the top of `tests/solver/set_ops.rs`'s cross-sort section for the full
 derivation and worked examples.
 
-*Codegen*: not yet implemented. `kind::set_kind` already merges `^`'s arms into a
-generic `Kind::TaggedUnion` (same as `|`/`+`), which is sufficient to *prove*
-signatures over cross-sort `^` domains/ranges, but actually executing a function
-that indexes into a sequence-bridged arm (e.g. `Nat* ^ Int`) currently hits an
-internal compiler error — codegen doesn't yet know how to vector-index through
-the tagged wrapper for this case. See `tests/cantor_files/cross_sort_sym_diff_proof.cantor`.
+*Codegen*: implemented. `kind::set_kind` merges `^`'s arms into a generic
+`Kind::TaggedUnion` (same as `|`/`+`); `kind::sequence_unification_elem_kind`
+recognises the specific "every arm is `Vector(ek)` or bare `ek`" shape this
+produces and `.N`/`[i]` indexing dispatches on the runtime tag — a real
+vector-get for the `Vector` arm, the scalar itself (standing in for its
+implicit singleton sequence `[x]`) for the scalar arm. Indexing the scalar
+arm past position 0 is only reachable for values a domain proof has already
+excluded (same trust model as a proved-safe division skipping a runtime
+zero check). Array-literal arguments/returns into a `Vector` arm of such a
+union are also coerced automatically (`coerce::coerce_value_to_vector`).
+See `tests/cantor_files/cross_sort_sym_diff_proof.cantor`, which both proves
+and runs `kleene_sym_diff`.
 
 **Desugaring**: `X * N *` (Kleene star of a repeated product) correctly desugars the
 inner `X * N` → `X * … * X` before wrapping in `KleeneStar`.
@@ -1218,12 +1224,14 @@ while cond { stmts }
 ```
 
 **`for x in S` loops** — iterates over a set, binding `x` to each element.
-Works for both compile-time set literals and runtime `Set(T)` values.
-Loop invariant semantics are identical to `while`.
+Works for compile-time set literals, comprehensions, runtime `Set(T)` values,
+and runtime `Vector(T)` (`X*`) values. Loop invariant semantics are identical
+to `while`.
 
 ```
 for x in {1, 2, 3} { acc := acc + x }
 for x in runtime_set { acc := acc + x }
+for x in a_sequence { acc := acc + x }
 ```
 
 Naming the loop variable with an uppercase letter (`for X in S`) promises

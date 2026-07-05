@@ -165,6 +165,28 @@ pub fn is_scalar_word_kind(kind: &Kind) -> bool {
     matches!(kind, Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail)
 }
 
+/// If `arms` has exactly the shape `^`/`|` produces when bridging a
+/// `Vector(ek)` arm with a scalar `ek` arm sharing its element Kind (e.g.
+/// `Nat* ^ Int` → `TaggedUnion([Vector(Int), Int])`) — every arm is either
+/// `Vector(ek)` or bare `ek`, for one shared `ek` — return that `ek`.
+///
+/// `.N`/`[i]` indexing a bare `TaggedUnion` uses this to choose between two
+/// interpretations: this "sequence unification" one (the scalar arm stands
+/// in for an implicit singleton sequence `[x]`) when it matches, or the
+/// older raw-leaf-projection one (`.N` = LLVM struct field N) otherwise —
+/// see `codegen::expr_vec::compile_tagged_union_seq_index`. Returns `None`
+/// for any union that isn't this shape.
+pub fn sequence_unification_elem_kind(arms: &[Kind]) -> Option<Kind> {
+    let elem_kind = arms.iter().find_map(|k| match k {
+        Kind::Vector(ek) => Some(ek.as_ref().clone()),
+        _ => None,
+    })?;
+    let all_match = arms
+        .iter()
+        .all(|k| matches!(k, Kind::Vector(ek) if **ek == elem_kind) || *k == elem_kind);
+    all_match.then_some(elem_kind)
+}
+
 /// The set-position interpretation of each `BinOp`; only reached via
 /// `set_kind`, so `Add`/`Sub`/`Mul`/`Div` here are always the set-operation
 /// reading (disjoint union/difference/Cartesian product/quotient) — the

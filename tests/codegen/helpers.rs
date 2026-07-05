@@ -115,6 +115,19 @@ pub fn jit_src_one_arg(src: &str, arg: i64) -> i64 {
     }
 }
 
+pub fn jit_src_two_args(src: &str, a: i64, b: i64) -> i64 {
+    use cantor::parser::parse_file;
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let ctx = Context::create();
+    let engine = compile_file(&ctx, &items).unwrap_or_else(|e| panic!("compile error: {e}"));
+    unsafe {
+        let f = engine
+            .get_function::<unsafe extern "C" fn(i64, i64) -> i64>("main")
+            .unwrap();
+        f.call(a, b)
+    }
+}
+
 pub fn jit_src_zero_arg(src: &str) -> i64 {
     use cantor::parser::parse_file;
     let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));

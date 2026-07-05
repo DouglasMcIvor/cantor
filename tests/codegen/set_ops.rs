@@ -400,9 +400,9 @@ fn cross_kind_bool_or_nat_domain_narrowed_to_bool_reports_compile_error() {
 
 // ── Cross-kind: tuples mixed with scalar sets ─────────────────────────────────
 // A * B is an {i64, i64} struct in LLVM IR; mixing it with Bool or Nat in a
-// union requires a tagged-union representation ({i1 tag, payload}).  The
-// existing codegen has no such representation, so these tests are #[ignore]
-// until proper tagged-union IR emission is implemented.
+// union requires a tagged-union representation ({i32 tag, i64 leaf...}).
+// That representation exists and is exercised below (and further down, in
+// the "tagged-union return values" and "three-arm union" sections).
 
 #[test]
 fn cross_kind_bool_or_tuple_bool_arm() {

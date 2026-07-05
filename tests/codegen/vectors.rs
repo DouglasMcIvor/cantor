@@ -1,4 +1,4 @@
-use super::helpers::{jit_src_one_arg, jit_src_zero_arg};
+use super::helpers::{jit_src_one_arg, jit_src_two_args, jit_src_zero_arg};
 
 // Helper for three-argument functions (not yet in the shared helpers).
 fn jit_src_three_args(src: &str, a: i64, b: i64, c: i64) -> i64 {
@@ -44,20 +44,12 @@ fn repeated_product_three_nat_params_multiply() {
     );
 }
 
-// Int * 2 domain (two-arg); needs a jit_src_two_args helper that doesn't exist yet.
+// Int * 2 domain (two-arg).
 #[test]
-#[ignore = "needs jit_src_two_args helper — update once added"]
 fn repeated_product_two_params_diff() {
     assert_eq!(
-        jit_src_one_arg(
-            "main : Int * 2 -> Int\nmain(x, y) = x - y",
-            5 // but we need two args — this test uses the wrong helper;
-              // keep as a reminder that jit_src_two_args should be added
-        ),
-        // Placeholder: this test will be updated once jit_src_two_args exists.
-        // For now we test that `Int * 2` compiles with the standard 1-arg helper
-        // by only using x and ignoring y.
-        5, // main(x, _) = x
+        jit_src_two_args("main : Int * 2 -> Int\nmain(x, y) = x - y", 5, 3),
+        2,
     );
 }
 
@@ -390,7 +382,6 @@ main() {
 
 // Sum all elements of a Nat* with a for-in loop.
 #[test]
-#[ignore = "for over sequences not yet implemented"]
 fn kleene_sum_via_loop() {
     assert_eq!(
         jit_src_zero_arg(

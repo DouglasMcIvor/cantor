@@ -170,17 +170,32 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Vector(ek) => ek.as_ref().clone(),
             _ => return Ok((val, val_kind)),
         };
+        self.coerce_value_to_vector(val, val_kind, &elem_kind)
+    }
+
+    /// Convert `val : val_kind` (an already-compiled scalar, tuple, or vector)
+    /// into a `Vector(elem_kind)` value — shared by `coerce_vector_return`
+    /// (the function-return boundary) and `coerce_to_kind` (the call-argument
+    /// and tagged-union-arm boundary), which both need to turn an array
+    /// literal's `Kind::Tuple` (or a bare scalar, via sequence unification)
+    /// into the vector representation a `X*` destination expects.
+    fn coerce_value_to_vector(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_kind: Kind,
+        elem_kind: &Kind,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         match &val_kind {
             Kind::Vector(_) => Ok((val, val_kind)), // already a vector
             Kind::Tuple(elems) => {
                 let elems = elems.clone();
-                self.compile_tuple_as_vector(val, &elems, &elem_kind)
+                self.compile_tuple_as_vector(val, &elems, elem_kind)
             }
             Kind::Int | Kind::Bool => {
-                self.compile_scalar_as_singleton_vector(val, &val_kind, &elem_kind)
+                self.compile_scalar_as_singleton_vector(val, &val_kind, elem_kind)
             }
             other => Err(CompileError::ice(format!(
-                "coerce_vector_return: cannot convert {other:?} to Vector"
+                "coerce_value_to_vector: cannot convert {other:?} to Vector"
             ))),
         }
     }
@@ -288,12 +303,46 @@ impl<'ctx> Compiler<'ctx> {
         if matches!(&val_kind, Kind::TaggedUnion(a) if a == &arms) {
             return Ok((val, val_kind)); // already the right TaggedUnion
         }
-        let candidates: Vec<usize> = arms
+
+        let mut candidates: Vec<usize> = arms
             .iter()
             .enumerate()
             .filter(|(_, k)| **k == val_kind)
             .map(|(i, _)| i)
             .collect();
+
+        // An array literal like `[1, 2, 3]` (or a bare scalar, via sequence
+        // unification) compiles to `Kind::Tuple`/`Kind::Int`/`Kind::Bool`
+        // before it's known whether the destination wants a `Vector` (X*)
+        // arm — e.g. `Nat* ^ Int`. When nothing matched directly above,
+        // convert up front so the wrap below sees a `Kind::Vector` value.
+        // Only when the union has exactly one Vector arm: with more than one
+        // it's ambiguous which element kind to target, and that's not
+        // something either the scalar/tuple caller or `+`'s disjointness
+        // proof helps disambiguate.
+        let (val, val_kind) = if candidates.is_empty()
+            && !matches!(val_kind, Kind::Vector(_) | Kind::TaggedUnion(_))
+        {
+            let vector_arms: Vec<&Kind> = arms
+                .iter()
+                .filter(|k| matches!(k, Kind::Vector(_)))
+                .collect();
+            match vector_arms.as_slice() {
+                [Kind::Vector(ek)] => {
+                    let (val, val_kind) = self.coerce_value_to_vector(val, val_kind, ek)?;
+                    candidates = arms
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, k)| **k == val_kind)
+                        .map(|(i, _)| i)
+                        .collect();
+                    (val, val_kind)
+                }
+                _ => (val, val_kind),
+            }
+        } else {
+            (val, val_kind)
+        };
         match candidates.as_slice() {
             [] => Err(CompileError::ice(format!(
                 "coerce_to_kind: value kind {val_kind:?} does not match any arm of {arms:?}"

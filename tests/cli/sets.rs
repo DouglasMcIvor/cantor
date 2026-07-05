@@ -136,12 +136,13 @@ fn set_ops_run_produces_correct_output() {
 // ── Cross-sort symmetric difference (^) ──────────────────────────────────────
 // `Nat* ^ Int` (sequence-unification bridge) and `Bool ^ Nat` (genuinely
 // disjoint kinds, tagged-union DT) — see tests/solver/set_ops.rs for the full
-// semantics writeup. Proof-only (`run_file`, not `run_subcommand`): codegen
-// doesn't yet support executing functions over cross-sort `^` domains/ranges,
-// only proving their signatures — see the TODO in cross_sort_sym_diff_proof.cantor.
+// semantics writeup. Runs `main` (not just `run_file`'s proof-only path) to
+// exercise codegen for cross-sort `^`: indexing into a Vector/scalar
+// sequence-unification union (`xs[0] + xs[1]` on `Nat* ^ Int`) and returning
+// a genuinely-disjoint-kind union (`Bool ^ Nat`).
 #[test]
-fn cross_sort_sym_diff_proof_all_proved() {
-    let out = run_file("cross_sort_sym_diff_proof.cantor");
+fn cross_sort_sym_diff_proof_all_proved_and_runs() {
+    let out = run_subcommand("cross_sort_sym_diff_proof.cantor");
     assert_eq!(
         out.code, 0,
         "cross_sort_sym_diff_proof.cantor should exit 0\nstdout: {}",
@@ -155,6 +156,13 @@ fn cross_sort_sym_diff_proof_all_proved() {
     assert!(
         !out.stdout.contains("  counterexample  "),
         "unexpected counterexample:\n{}",
+        out.stdout
+    );
+    // kleene_sym_diff([1, 2, 3]) = 1 + 2 = 3; pick_bool()/pick_nat() each add
+    // their check's bonus (10, 100) since both are in their claimed arm.
+    assert!(
+        out.stdout.contains("main() = 113"),
+        "expected 'main() = 113' in output:\n{}",
         out.stdout
     );
 }

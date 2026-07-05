@@ -11,6 +11,7 @@ use crate::{
     span::{Span, Symbol},
 };
 
+use super::expr_vec::vector_len_fn_name;
 use super::overload_dispatch::CallTarget;
 use super::{Compiler, Env};
 
@@ -554,18 +555,7 @@ impl<'ctx> Compiler<'ctx> {
             let (ptr, kind) = self.compile_expr(&args[0], env)?;
             return match &kind {
                 Kind::Vector(ek) => {
-                    let len_fn = match ek.as_ref() {
-                        Kind::Int => "cantor_vec_len_i64",
-                        Kind::Bool => "cantor_vec_len_bool",
-                        Kind::Vector(_) => "cantor_list_vec_len",
-                        Kind::Tuple(_) => "cantor_struct_vec_len",
-                        Kind::TaggedUnion(_) => "cantor_union_vec_len",
-                        other => {
-                            return Err(CompileError::ice(format!(
-                                "len() on Vector({other:?}) not yet supported"
-                            )));
-                        }
-                    };
+                    let len_fn = vector_len_fn_name(ek)?;
 
                     let fn_val = self
                         .module

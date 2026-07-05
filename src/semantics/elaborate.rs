@@ -26,7 +26,7 @@ use crate::ast::{
     self, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, Item, NameDef, NameDefs, Stmt, UnOp,
 };
 use crate::error::CompileError;
-use crate::kind::{Kind, set_kind};
+use crate::kind::{self, Kind, set_kind};
 use crate::semantics::tree::*;
 use crate::span::{Span, Symbol};
 
@@ -933,9 +933,14 @@ fn elaborate_expr(
         ExprKind::Index { base, index } => {
             let b = elaborate_expr(base, pos, ctx, env)?;
             let i = elaborate_expr(index, Position::Value, ctx, env)?;
-            let kind_of = match &b.kind_of {
-                Kind::Vector(ek) => vector_elem_kind(ek)?,
-                other => {
+            let seq_unification_ek = match &b.kind_of {
+                Kind::TaggedUnion(arms) => kind::sequence_unification_elem_kind(arms),
+                _ => None,
+            };
+            let kind_of = match (&b.kind_of, seq_unification_ek) {
+                (Kind::Vector(ek), _) => vector_elem_kind(ek)?,
+                (_, Some(ek)) => ek,
+                (other, None) => {
                     return Err(CompileError::ice(format!(
                         "`[i]` requires a vector (X*) base, got {other:?}"
                     )));
@@ -981,8 +986,12 @@ fn proj_kind(base_kind: &Kind, index: usize) -> Result<Kind, CompileError> {
                 elems.len()
             ))
         }),
-        // TaggedUnion's raw LLVM leaves are always plain i64 (Kind::Int).
-        Kind::TaggedUnion(_) => Ok(Kind::Int),
+        // A sequence-unification union (e.g. `Nat* ^ Int`) reinterprets `.N`
+        // as sequence indexing; any other TaggedUnion falls back to raw LLVM
+        // leaf N (the union's leaves are always plain i64/`Kind::Int`).
+        Kind::TaggedUnion(arms) => {
+            Ok(kind::sequence_unification_elem_kind(arms).unwrap_or(Kind::Int))
+        }
         Kind::Vector(ek) => vector_elem_kind(ek),
         other => Err(CompileError::ice(format!(
             "projection `.{index}` applied to non-tuple value {other:?}"

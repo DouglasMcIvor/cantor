@@ -701,8 +701,8 @@ f(x, y) = x / y
 
 // ── Cross-kind: Bool ∩ integer-valued sets ────────────────────────────────────
 // Bool maps to CVC5's boolean sort; integer sets map to CVC5's integer sort.
-// Intersection (`&`) is handled correctly today; union (`|`) causes a fatal CVC5
-// "expecting a Boolean subexpression" error and is marked #[ignore] until fixed.
+// Both intersection (`&`) and union (`|`) are handled correctly today — see
+// `cross_kind_bool_or_nat_*` below for the union cases.
 
 // Bool & Nat: Bool = {0,1} ⊆ Nat so Bool & Nat = Bool.
 // Identity back into Bool is proved.

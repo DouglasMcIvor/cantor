@@ -12,6 +12,7 @@ use crate::{
     span::Symbol,
 };
 
+use super::expr_vec::vector_len_fn_name;
 use super::{Compiler, Env};
 
 /// The comprehension shape `compile_for_in_comprehension` compiles: `var in
@@ -153,8 +154,9 @@ impl<'ctx> Compiler<'ctx> {
     /// Emit LLVM IR for `for x in S { body }`.
     ///
     /// Supports set literals `{e1, e2, …}` and comprehensions `{out for v in {…} if pred}`
-    /// as iterables.  Both are unrolled at compile time over their source elements.
-    /// Named/generative sets need a runtime set representation that doesn't exist yet.
+    /// as iterables — both are unrolled at compile time over their source elements —
+    /// plus runtime `Set(_)` and `Vector(_)` (`X*`) values, which are indexed at
+    /// runtime via their respective `_size`/`_len` and `_get` entry points.
     pub(super) fn compile_for_in(
         &mut self,
         var: &Symbol,
@@ -208,9 +210,11 @@ impl<'ctx> Compiler<'ctx> {
                     Kind::Set(elem_kind) => {
                         self.compile_for_in_runtime_set(var, ptr, elem_kind, body, env, alloca_map)
                     }
+                    Kind::Vector(elem_kind) => self
+                        .compile_for_in_runtime_vector(var, ptr, elem_kind, body, env, alloca_map),
                     _ => Err(CompileError::ice(
                         "for loop: iterable must be a set literal, comprehension, \
-                         or a variable of `Set(…)` kind",
+                         or a variable of `Set(…)` or `Vector(…)` kind",
                     )),
                 }
             }
@@ -403,6 +407,174 @@ impl<'ctx> Compiler<'ctx> {
                 )));
             }
         };
+
+        let mut body_env = loop_env;
+        body_env.insert(var.clone(), (elem_val, elem_k));
+        self.compile_stmts(body, &mut body_env, &inner_alloca_map)?;
+
+        // Reload i from the alloca (safe after any inner loops the body may contain).
+        let i_curr = self
+            .builder
+            .build_load(i64t, i_ptr, "i_curr")
+            .map_err(|e| CompileError::ice(e.to_string()))?
+            .into_int_value();
+        let i_next = self
+            .builder
+            .build_int_add(i_curr, i64t.const_int(1, false), "i_next")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        self.builder
+            .build_store(i_ptr, i_next)
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(cond_bb)
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+
+        // ── After block: propagate final alloca values back into caller's env ───
+        self.builder.position_at_end(after_bb);
+        for (name, &ptr) in &inner_alloca_map {
+            let val = self
+                .builder
+                .build_load(i64t, ptr, &format!("{}_final", name.0))
+                .map_err(|e| CompileError::ice(e.to_string()))?;
+            let original_kind = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
+            let entry = if original_kind == Kind::Bool {
+                let i1 = self
+                    .builder
+                    .build_int_truncate(
+                        val.into_int_value(),
+                        self.context.bool_type(),
+                        "final_bool",
+                    )
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                (i1.into(), Kind::Bool)
+            } else {
+                (val, original_kind)
+            };
+            env.insert(name.clone(), entry);
+        }
+
+        Ok(())
+    }
+
+    /// Emit LLVM IR for `for var in <runtime-vector> { body }`.
+    ///
+    /// Iterates 0..len, calling `compile_vector_elem_get` each time to bind `var`.
+    /// Same alloca-based body-variable strategy as `compile_for_in_runtime_set`;
+    /// unlike sets, vector storage is representation-agnostic on read (see
+    /// `compile_vector_elem_get`'s doc comment), so no tagging special-case is needed.
+    fn compile_for_in_runtime_vector(
+        &mut self,
+        var: &Symbol,
+        vec_ptr: BasicValueEnum<'ctx>,
+        elem_kind: &Kind,
+        body: &[SemStmt],
+        env: &mut Env<'ctx>,
+        outer_alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
+    ) -> Result<(), CompileError> {
+        let i64t = self.context.i64_type();
+
+        // Build alloca map for body-modified variables (same pattern as compile_while).
+        let modified = collect_loop_modified(body);
+        let mut inner_alloca_map: HashMap<Symbol, PointerValue<'ctx>> = outer_alloca_map.clone();
+        for name in &modified {
+            if inner_alloca_map.contains_key(name) {
+                continue;
+            }
+            if let Some(&(val, ref ty)) = env.get(name) {
+                let ptr = self
+                    .builder
+                    .build_alloca(i64t, &name.0)
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                let val_i64: IntValue<'ctx> = if *ty == Kind::Bool {
+                    self.builder
+                        .build_int_z_extend(val.into_int_value(), i64t, "bool_ext")
+                        .map_err(|e| CompileError::ice(e.to_string()))?
+                } else {
+                    val.into_int_value()
+                };
+                self.builder
+                    .build_store(ptr, val_i64)
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                inner_alloca_map.insert(name.clone(), ptr);
+            }
+        }
+
+        // Get vector length once before the loop.
+        let len_fn_name = vector_len_fn_name(elem_kind)?;
+        let len_fn = self
+            .module
+            .get_function(len_fn_name)
+            .ok_or_else(|| CompileError::ice(format!("{len_fn_name} not declared")))?;
+        let n = self
+            .builder
+            .build_call(len_fn, &[vec_ptr.into()], "vec_n")
+            .map_err(|e| CompileError::ice(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::ice("len fn returned void"))?
+            .into_int_value();
+
+        // Alloca for the loop counter.
+        let i_ptr = self
+            .builder
+            .build_alloca(i64t, "vec_i")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        self.builder
+            .build_store(i_ptr, i64t.const_int(0, false))
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+
+        let function = self
+            .current_fn
+            .ok_or_else(|| CompileError::ice("for-in loop outside a function"))?;
+
+        let cond_bb = self.context.append_basic_block(function, "for_vec_cond");
+        let body_bb = self.context.append_basic_block(function, "for_vec_body");
+        let after_bb = self.context.append_basic_block(function, "for_vec_after");
+
+        self.builder
+            .build_unconditional_branch(cond_bb)
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+
+        // ── Condition block: reload alloca vars, test i < n ────────────────────
+        self.builder.position_at_end(cond_bb);
+        let mut loop_env = env.clone();
+        for (name, &ptr) in &inner_alloca_map {
+            let val = self
+                .builder
+                .build_load(i64t, ptr, &name.0)
+                .map_err(|e| CompileError::ice(e.to_string()))?;
+            let original_kind = env.get(name).map(|(_, k)| k.clone()).unwrap_or(Kind::Int);
+            let entry = if original_kind == Kind::Bool {
+                let i1 = self
+                    .builder
+                    .build_int_truncate(
+                        val.into_int_value(),
+                        self.context.bool_type(),
+                        "reload_bool",
+                    )
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                (i1.into(), Kind::Bool)
+            } else {
+                (val, original_kind)
+            };
+            loop_env.insert(name.clone(), entry);
+        }
+        let i_val = self
+            .builder
+            .build_load(i64t, i_ptr, "i_val")
+            .map_err(|e| CompileError::ice(e.to_string()))?
+            .into_int_value();
+        let cond = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, i_val, n, "for_cond")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(cond, body_bb, after_bb)
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+
+        // ── Body block: fetch element, bind var, compile body, increment i ──────
+        self.builder.position_at_end(body_bb);
+        let (elem_val, elem_k) = self.compile_vector_elem_get(vec_ptr, elem_kind, i_val.into())?;
 
         let mut body_env = loop_env;
         body_env.insert(var.clone(), (elem_val, elem_k));

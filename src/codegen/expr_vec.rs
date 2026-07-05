@@ -11,7 +11,11 @@
 ///   • `compile_union_vec_index`       — `xs[i]` for TaggedUnion element kind (NEW)
 ///   • `compile_scalar_as_singleton_vector`
 ///   • `compile_struct_vec_index`
-use inkwell::values::{AggregateValueEnum, BasicValueEnum};
+///   • `vector_len_fn_name`             — dispatch table for the `len(xs)` runtime call
+use inkwell::{
+    IntPredicate,
+    values::{AggregateValueEnum, BasicValueEnum},
+};
 
 use crate::{error::CompileError, kind::Kind, semantics::tree::SemExpr};
 
@@ -56,6 +60,24 @@ fn vec_builder_fns(
     }
 }
 
+/// Runtime function name for `len(xs)` where `xs : ek*`, keyed by element kind.
+/// Shared by the `len()` builtin (`expr.rs`) and `for x in xs` vector iteration
+/// (`loops.rs`), which both need the vector's element count.
+pub(crate) fn vector_len_fn_name(ek: &Kind) -> Result<&'static str, CompileError> {
+    Ok(match ek {
+        Kind::Int => "cantor_vec_len_i64",
+        Kind::Bool => "cantor_vec_len_bool",
+        Kind::Vector(_) => "cantor_list_vec_len",
+        Kind::Tuple(_) => "cantor_struct_vec_len",
+        Kind::TaggedUnion(_) => "cantor_union_vec_len",
+        other => {
+            return Err(CompileError::ice(format!(
+                "len() on Vector({other:?}) not yet supported"
+            )));
+        }
+    })
+}
+
 impl<'ctx> Compiler<'ctx> {
     pub(crate) fn compile_index(
         &self,
@@ -66,31 +88,36 @@ impl<'ctx> Compiler<'ctx> {
         let (base_val, base_kind) = self.compile_expr(base, env)?;
         let (idx_val, _idx_kind) = self.compile_expr(index, env)?;
 
-        let (get_fn, elem_kind) = match &base_kind {
-            Kind::Vector(ek) => {
-                let fn_name = match ek.as_ref() {
-                    Kind::Int => "cantor_vec_get_i64",
-                    Kind::Bool => "cantor_vec_get_bool",
-                    Kind::Vector(_) => "cantor_list_vec_get",
-                    Kind::Tuple(field_kinds) => {
-                        let fk = field_kinds.clone();
-                        return self.compile_struct_vec_index(base_val, idx_val, &fk);
-                    }
-                    Kind::TaggedUnion(arms) => {
-                        let arms = arms.clone();
-                        return self.compile_union_vec_index(base_val, idx_val, &arms);
-                    }
-                    other => {
-                        return Err(CompileError::ice(format!(
-                            "TODO: `xs[i]` not yet implemented for element kind {other:?}"
-                        )));
-                    }
-                };
-                (fn_name, ek.as_ref().clone())
+        match &base_kind {
+            Kind::Vector(ek) => self.compile_vector_elem_get(base_val, ek, idx_val),
+            Kind::TaggedUnion(arms) => self.compile_tagged_union_seq_index(base_val, arms, idx_val),
+            other => Err(CompileError::ice(format!(
+                "`xs[i]` requires a vector (X*) base, got {other:?}"
+            ))),
+        }
+    }
+
+    /// Emit the get call for `xs[i]` where `xs : ek*` — shared by `compile_index`
+    /// (expression-position indexing) and `for x in xs` runtime-vector iteration.
+    pub(crate) fn compile_vector_elem_get(
+        &self,
+        base_val: BasicValueEnum<'ctx>,
+        ek: &Kind,
+        idx_val: BasicValueEnum<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let get_fn = match ek {
+            Kind::Int => "cantor_vec_get_i64",
+            Kind::Bool => "cantor_vec_get_bool",
+            Kind::Vector(_) => "cantor_list_vec_get",
+            Kind::Tuple(field_kinds) => {
+                return self.compile_struct_vec_index(base_val, idx_val, field_kinds);
+            }
+            Kind::TaggedUnion(arms) => {
+                return self.compile_union_vec_index(base_val, idx_val, arms);
             }
             other => {
                 return Err(CompileError::ice(format!(
-                    "`xs[i]` requires a vector (X*) base, got {other:?}"
+                    "TODO: `xs[i]` not yet implemented for element kind {other:?}"
                 )));
             }
         };
@@ -112,7 +139,119 @@ impl<'ctx> Compiler<'ctx> {
         // `compile_tuple_as_vector`'s comment) — whatever representation an
         // element was pushed in (tagged or raw) is exactly what comes back,
         // no decode/re-encode needed.
-        Ok((result_val, elem_kind))
+        Ok((result_val, ek.clone()))
+    }
+
+    /// Emit `xs[i]` where `xs : TaggedUnion(arms)` is a "sequence-unification"
+    /// union — every arm is either `Vector(ek)` or a bare scalar `ek`, for one
+    /// shared `ek` — produced when `^`/`|` bridges a `X*` arm with a scalar
+    /// sharing its element Kind (e.g. `Nat* ^ Int`; see the domain comment in
+    /// `tests/cantor_files/cross_sort_sym_diff_proof.cantor`). The scalar arm
+    /// stands in for an implicit singleton sequence `[x]`.
+    ///
+    /// Every arm here is single-leaf (`Vector` and scalar Kinds are both one
+    /// leaf — see `wire::leaf_count`), so the struct is always `{i32 tag, i64
+    /// leaf0}` regardless of which arm is live. `leaf0` decoded per-arm (a
+    /// real vector-get for the `Vector` arm, the raw leaf for the scalar arm)
+    /// feeds a tag-selected `select` chain.
+    ///
+    /// Indexing the scalar arm at any index other than 0 only happens for
+    /// values a domain proof has already ruled out (e.g. `- Int` above
+    /// excludes the scalar arm from ever reaching `xs[1]`) — same trust model
+    /// as proved-safe division skipping a runtime zero check, so no bounds
+    /// check is emitted here.
+    pub(crate) fn compile_tagged_union_seq_index(
+        &self,
+        base_val: BasicValueEnum<'ctx>,
+        arms: &[Kind],
+        idx_val: BasicValueEnum<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let elem_kind = arms.iter().find_map(|k| match k {
+            Kind::Vector(ek) => Some(ek.as_ref().clone()),
+            _ => None,
+        });
+        let elem_kind = elem_kind.ok_or_else(|| {
+            CompileError::ice(
+                "TODO: indexing (`.N` / `[i]`) into a `TaggedUnion` is only supported \
+                 for a Vector/scalar sequence-unification bridge (e.g. `Nat* ^ Int`); \
+                 this union has no `Vector(_)` arm",
+            )
+        })?;
+        if !matches!(elem_kind, Kind::Int | Kind::Bool) {
+            return Err(CompileError::ice(format!(
+                "TODO: indexing (`.N` / `[i]`) into a `TaggedUnion` sequence-unification \
+                 bridge only supports scalar element kind Int/Bool, got {elem_kind:?}"
+            )));
+        }
+        for k in arms {
+            let ok = matches!(k, Kind::Vector(ek) if **ek == elem_kind) || *k == elem_kind;
+            if !ok {
+                return Err(CompileError::ice(format!(
+                    "TODO: indexing (`.N` / `[i]`) into a `TaggedUnion` only supports \
+                     sequence-unification shapes (every arm `Vector({elem_kind:?})` or \
+                     `{elem_kind:?}`); found arm {k:?}"
+                )));
+            }
+        }
+
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+        let base_struct = AggregateValueEnum::StructValue(base_val.into_struct_value());
+        let tag = self
+            .builder
+            .build_extract_value(base_struct, 0, "seq_idx_tag")
+            .map_err(err)?
+            .into_int_value();
+        let leaf0 = self
+            .builder
+            .build_extract_value(base_struct, 1, "seq_idx_leaf0")
+            .map_err(err)?;
+
+        let per_arm_values = arms
+            .iter()
+            .map(|k| -> Result<BasicValueEnum<'ctx>, CompileError> {
+                match k {
+                    Kind::Vector(_) => {
+                        Ok(self.compile_vector_elem_get(leaf0, &elem_kind, idx_val)?.0)
+                    }
+                    _ if elem_kind == Kind::Bool => Ok(self
+                        .builder
+                        .build_int_truncate(
+                            leaf0.into_int_value(),
+                            self.context.bool_type(),
+                            "seq_idx_scalar_bool",
+                        )
+                        .map_err(err)?
+                        .into()),
+                    _ => Ok(leaf0),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let i32t = self.context.i32_type();
+        let mut result = *per_arm_values
+            .last()
+            .expect("TaggedUnion always has at least one arm");
+        for (idx, val) in per_arm_values[..per_arm_values.len() - 1]
+            .iter()
+            .enumerate()
+            .rev()
+        {
+            let is_this = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    tag,
+                    i32t.const_int(idx as u64, false),
+                    "seq_idx_tag_eq",
+                )
+                .map_err(err)?;
+            result = self
+                .builder
+                .build_select(is_this, *val, result, "seq_idx_sel")
+                .map_err(err)?;
+        }
+
+        Ok((result, elem_kind))
     }
 
     /// Compile `base.N` (or `base[N]` with a literal N) — extract element N.
@@ -128,59 +267,28 @@ impl<'ctx> Compiler<'ctx> {
         let (base_val, base_kind) = self.compile_expr(base, env)?;
 
         if let Kind::Vector(ek) = &base_kind {
-            match ek.as_ref() {
-                Kind::Tuple(field_kinds) => {
-                    let idx_val = self
-                        .context
-                        .i64_type()
-                        .const_int(index as u64, false)
-                        .into();
-                    let fk = field_kinds.clone();
-                    return self.compile_struct_vec_index(base_val, idx_val, &fk);
-                }
-                Kind::TaggedUnion(arms) => {
-                    let idx_val = self
-                        .context
-                        .i64_type()
-                        .const_int(index as u64, false)
-                        .into();
-                    let arms = arms.clone();
-                    return self.compile_union_vec_index(base_val, idx_val, &arms);
-                }
-                _ => {
-                    let idx_val = self.context.i64_type().const_int(index as u64, false);
-                    let (get_fn, elem_kind) = match ek.as_ref() {
-                        Kind::Int => ("cantor_vec_get_i64", Kind::Int),
-                        Kind::Bool => ("cantor_vec_get_bool", Kind::Bool),
-                        Kind::Vector(inner) => ("cantor_list_vec_get", Kind::Vector(inner.clone())),
-                        other => {
-                            return Err(CompileError::ice(format!(
-                                "xs[N]: unsupported element kind {other:?}"
-                            )));
-                        }
-                    };
-                    let fn_val = self.module.get_function(get_fn).ok_or_else(|| {
-                        CompileError::ice(format!("runtime function `{get_fn}` not declared"))
-                    })?;
-                    let base_i64 = base_val.into_int_value();
-                    let result = self
-                        .builder
-                        .build_call(fn_val, &[base_i64.into(), idx_val.into()], "vec_proj")
-                        .map_err(|e| CompileError::ice(e.to_string()))?;
-                    let result_val = result.try_as_basic_value().left().ok_or_else(|| {
-                        CompileError::ice(format!("`{get_fn}` returned void unexpectedly"))
-                    })?;
-                    // See the matching comment in `compile_index` —
-                    // `Vector(Int)` storage is representation-agnostic, no
-                    // decode/re-encode needed on read.
-                    return Ok((result_val, elem_kind));
-                }
-            }
+            let idx_val = self
+                .context
+                .i64_type()
+                .const_int(index as u64, false)
+                .into();
+            return self.compile_vector_elem_get(base_val, ek, idx_val);
         }
 
-        // TaggedUnion LLVM struct: { i32 tag, i64 leaf_0, … }.  Projection .N
-        // extracts field N directly; leaves are raw i64 (Kind::Int).
-        if let Kind::TaggedUnion(_) = &base_kind {
+        // A sequence-unification union (`Nat* ^ Int`-shaped; see
+        // `compile_tagged_union_seq_index`) reinterprets `.N` as sequence
+        // indexing. Any other `TaggedUnion` falls back to the raw LLVM leaf
+        // N — `{ i32 tag, i64 leaf_0, … }`, so `.1` is leaf 0, `.2` is leaf
+        // 1, etc.; leaves are always plain i64 (`Kind::Int`).
+        if let Kind::TaggedUnion(arms) = &base_kind {
+            if crate::kind::sequence_unification_elem_kind(arms).is_some() {
+                let idx_val = self
+                    .context
+                    .i64_type()
+                    .const_int(index as u64, false)
+                    .into();
+                return self.compile_tagged_union_seq_index(base_val, arms, idx_val);
+            }
             let field_val = self
                 .builder
                 .build_extract_value(
