@@ -83,7 +83,19 @@ fn membership_constraint_for_dt<'tm>(
     distinct_preds: &DistinctPreds<'tm>,
 ) -> Membership<'tm> {
     let dt = t.sort().datatype();
-    let arm_exprs = flatten_any_union(set_expr);
+    // `^` (SymDiff) builds its cross-kind DT with exactly `[lhs, rhs]` as the two
+    // constructor arms (see `set_sort`) rather than going through the recursive
+    // Union/DisjointUnion flattening — the two sides are provably disjoint in
+    // exactly the situations where a DT is built for `^`, so OR-of-arms (what
+    // this function computes) already equals the true XOR.
+    let arm_exprs: Vec<&SemExpr> = match &set_expr.kind {
+        SemExprKind::BinOp {
+            op: BinOp::SymDiff,
+            lhs,
+            rhs,
+        } => vec![lhs.as_ref(), rhs.as_ref()],
+        _ => flatten_any_union(set_expr),
+    };
 
     let mut disjuncts: Vec<Term<'_>> = Vec::new();
     for arm_expr in arm_exprs {

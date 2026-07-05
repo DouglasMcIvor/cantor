@@ -847,6 +847,39 @@ dispatch to the same `cantor_vec_get_*` path as runtime indices.
 - General sequence-literal set elements (`{[1, 2]}`, `{[3]}`).
 - Products whose components are sequences (correctness currently limited to simple cases).
 
+**Cross-sort symmetric difference (`^`)** (solver complete; codegen not yet supported):
+
+`set_sort` computes a CVC5 sort for `A ^ B` even when `A` and `B` have different
+natural sorts, splitting into two cases:
+
+1. **Sequence-bridged**: exactly one side is a Kleene-star `X*` whose element sort
+   matches the other side's natural sort (scalar) or all of its tuple components
+   (product) — e.g. `Nat* ^ Int`, `(Nat * Nat) ^ Int`. The declared sort is just the
+   sequence's; the existing sequence-unification bridges above already make
+   membership correct with no further changes.
+2. **Genuinely disjoint**: everything else (`Bool ^ Nat`, a bare tuple vs a scalar
+   with no Kleene-star in sight, two sequences with different element sorts, a
+   distinct sort vs anything). These pairs can never share a representable value
+   under any existing coercion, so `A ^ B` is provably equal to `A ∪ B` (XOR of
+   disjoint sets = OR) and reuses the same cross-kind tagged datatype as `|`
+   (`membership_constraint_for_dt` treats `^`'s two arms as `[lhs, rhs]` directly,
+   rather than going through the recursive `flatten_any_union` used by `|`/`+`).
+
+Sequence unification is a coercion, not an embedding of the whole scalar domain: a
+length-1 sequence only equals the scalar it holds when that scalar is itself in the
+Kleene-star's element set. So `Nat* ^ Int` is *not* simply "sequences of length ≠
+1" — `[-3]` (length 1, negative) is excluded from `Nat*` but present in `Int`, so
+it genuinely belongs to the symmetric difference too. See the semantics writeup
+at the top of `tests/solver/set_ops.rs`'s cross-sort section for the full
+derivation and worked examples.
+
+*Codegen*: not yet implemented. `kind::set_kind` already merges `^`'s arms into a
+generic `Kind::TaggedUnion` (same as `|`/`+`), which is sufficient to *prove*
+signatures over cross-sort `^` domains/ranges, but actually executing a function
+that indexes into a sequence-bridged arm (e.g. `Nat* ^ Int`) currently hits an
+internal compiler error — codegen doesn't yet know how to vector-index through
+the tagged wrapper for this case. See `tests/cantor_files/cross_sort_sym_diff_proof.cantor`.
+
 **Desugaring**: `X * N *` (Kleene star of a repeated product) correctly desugars the
 inner `X * N` → `X * … * X` before wrapping in `KleeneStar`.
 

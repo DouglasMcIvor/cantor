@@ -261,9 +261,6 @@ pub(crate) fn set_sort<'tm>(
         }
         // Symmetric diff (`^`): the result contains elements from EITHER side.
         // When both sides have the same CVC5 sort, that sort suffices.
-        // When they differ (e.g. `Nat* ^ Int` mixes sequences and integers), building
-        // the correct cross-kind sort requires a datatype — not yet implemented.
-        // TODO: support cross-sort SymDiff (requires same DT machinery as cross-kind Union).
         SemExprKind::BinOp {
             op: BinOp::SymDiff,
             lhs,
@@ -274,11 +271,40 @@ pub(crate) fn set_sort<'tm>(
             if lhs_sort == rhs_sort {
                 return Some(lhs_sort);
             }
-            panic!(
-                "TODO: symmetric difference of sets with different CVC5 sorts is not yet \
-                 supported — LHS and RHS must belong to the same value space. \
-                 Use `(A - B) | (B - A)` as an explicit workaround."
-            );
+            // Exactly one side is a Kleene-star sequence whose *element* sort matches
+            // the other side's natural sort (scalar) or all of its tuple components
+            // (product) — the existing sequence-unification bridges
+            // (`lift_sequence_into_atomic` / scalar-coercion in `membership_constraint`)
+            // already make the other side representable as a length/element check on
+            // the sequence, so the sequence sort alone suffices — no wrapper datatype.
+            // e.g. `Nat* ^ Int` → `Seq Int` (Int embeds as length-1 sequences);
+            // `(Nat * Nat) ^ Int` → `Seq Int` (both sides embed via their Int leaves).
+            if lhs_sort.is_sequence() != rhs_sort.is_sequence() {
+                let (seq_sort, other_sort) = if lhs_sort.is_sequence() {
+                    (&lhs_sort, &rhs_sort)
+                } else {
+                    (&rhs_sort, &lhs_sort)
+                };
+                let elem = seq_sort.sequence_element_sort();
+                let bridges = *other_sort == elem
+                    || (other_sort.is_tuple()
+                        && other_sort.tuple_element_sorts().iter().all(|s| *s == elem));
+                if bridges {
+                    return Some(seq_sort.clone());
+                }
+            }
+            // Otherwise the two sides can never share a representable value under any
+            // existing coercion (Bool vs Int-family, a distinct sort vs anything, a
+            // tuple vs a scalar with no Kleene-star in sight, or two sequences with
+            // different element sorts) — so they're provably disjoint and `A ^ B`
+            // literally equals `A ∪ B` (XOR of disjoint sets = OR). Reuse the same
+            // cross-kind tagged datatype as `|`.
+            return Some(build_union_datatype_sort(
+                tm,
+                &[lhs.as_ref(), rhs.as_ref()],
+                distinct_preds,
+                name_defs,
+            ));
         }
         // Union (`|`) and disjoint union (`+`).
         // Cross-kind (tuple arm ∪ scalar, sequence arm ∪ non-same-sequence,

@@ -133,6 +133,32 @@ fn set_ops_run_produces_correct_output() {
     );
 }
 
+// ── Cross-sort symmetric difference (^) ──────────────────────────────────────
+// `Nat* ^ Int` (sequence-unification bridge) and `Bool ^ Nat` (genuinely
+// disjoint kinds, tagged-union DT) — see tests/solver/set_ops.rs for the full
+// semantics writeup. Proof-only (`run_file`, not `run_subcommand`): codegen
+// doesn't yet support executing functions over cross-sort `^` domains/ranges,
+// only proving their signatures — see the TODO in cross_sort_sym_diff_proof.cantor.
+#[test]
+fn cross_sort_sym_diff_proof_all_proved() {
+    let out = run_file("cross_sort_sym_diff_proof.cantor");
+    assert_eq!(
+        out.code, 0,
+        "cross_sort_sym_diff_proof.cantor should exit 0\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("4 proved"),
+        "expected '4 proved' in summary:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  "),
+        "unexpected counterexample:\n{}",
+        out.stdout
+    );
+}
+
 #[test]
 fn kleene_disjoint_union_not_disjoint_counterexample() {
     // `validate_disjoint_unions` used to have no `KleeneStar` case, so a `+`

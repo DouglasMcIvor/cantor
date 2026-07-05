@@ -1,0 +1,27 @@
+-- Cross-sort symmetric difference (^): the LHS and RHS may have genuinely
+-- different CVC5 sorts. See tests/solver/set_ops.rs for the full semantics
+-- writeup; both cases exercised here should be proved.
+--
+-- TODO: solver-only for now — actually *running* `kleene_sym_diff` (the `cantor
+-- run` subcommand, which triggers codegen/JIT) currently hits an internal
+-- compiler error, since codegen's generic `TaggedUnion` Kind for `^` doesn't
+-- know how to vector-index into the Nat* arm. Proving is sound and complete;
+-- executing cross-sort `^` is a separate, not-yet-implemented codegen piece.
+
+-- Nat* ^ Int: a Kleene-star sequence bridged with a scalar sharing its
+-- element kind via sequence unification. Subtracting Int removes every
+-- length-1 sequence (the only ones with an Int interpretation), and {[]}
+-- removes the length-0 case, leaving length >= 2 — safe for xs[0] + xs[1].
+kleene_sym_diff : (Nat* ^ Int) - Int - {[]} -> Nat
+kleene_sym_diff(xs) = xs[0] + xs[1]
+
+-- Bool and Nat share no representable value (no implicit 0/1 conversion), so
+-- `Bool ^ Nat` is a tagged union exactly like `Bool | Nat`.
+pick_bool : -> Bool ^ Nat
+pick_bool() = true
+
+pick_nat : -> Bool ^ Nat
+pick_nat() = 5
+
+main : -> Int
+main() = 0

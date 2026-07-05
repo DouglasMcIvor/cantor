@@ -495,90 +495,173 @@ f(x) = x
     );
 }
 
-// ── Cross-sort symmetric difference (^) — NOT YET SUPPORTED ─────────────────
-// When the LHS and RHS of `^` have different CVC5 sorts (e.g. Seq(Int) vs Int,
-// or tuple sort vs Int), `set_sort` currently panics with a TODO.
-// These tests document the intended semantics.  Un-ignore once `set_sort` builds
-// the cross-kind union sort for SymDiff (same DT machinery as cross-kind `|`).
+// ── Cross-sort symmetric difference (^) ──────────────────────────────────────
+// When the LHS and RHS of `^` have different CVC5 sorts, `set_sort` builds one
+// of two things depending on whether the sides can share a representable value:
 //
-// Semantics under sequence unification:
-//   Nat* ^ Int = (Nat* - Int) ∪ (Int - Nat*)
-//             = (sequences of length ≠ 1) ∪ ∅    -- Int ⊆ Nat* so Int - Nat* = ∅
-//             = sequences of length ≠ 1
+//   1. One side is a Kleene-star `X*` whose element sort matches the other
+//      side's natural sort (scalar) or all of its tuple components (product):
+//      the existing sequence-unification bridges (`lift_sequence_into_atomic`
+//      in membership.rs) already make membership correct once `t` is declared
+//      with the sequence's CVC5 sort — no wrapper datatype needed.
+//      e.g. `Nat* ^ Int`, `(Nat * Nat) ^ Int`.
 //
-//   (Nat * Nat) ^ Int = (Nat*Nat - Int) ∪ (Int - Nat*Nat)
-//                     = (2-element sequences) ∪ ∅   -- Nat*Nat ⊆ Nat* and Int ⊆ Nat*;
-//                                                        Int has length 1 ≠ 2, so disjoint
-//                     = length-2 sequences with Nat elements
+//   2. Otherwise the two sides can never share a representable value under any
+//      existing coercion (Bool vs Int-family, tuple vs scalar with no
+//      Kleene-star involved, …) — they are provably disjoint, so `A ^ B`
+//      literally equals `A ∪ B` (XOR of disjoint sets = OR). This reuses the
+//      same cross-kind tagged datatype as `|`.
+//      e.g. `Bool ^ Nat`.
 //
-//   Bool ^ Nat = (Bool - Nat) ∪ (Nat - Bool) -- Bool and Nat are disjoint (no
-//              implicit 0/1 conversion), so Bool - Nat = Bool and Nat - Bool = Nat
-//              = Bool | Nat (a tagged union, same as `+`)
-//   NOTE: the two tests below (`cross_sort_sym_diff_bool_nat_*`) predate this
-//   correction and still assume the old "Bool ⊆ Nat" semantics in their bodies
-//   (`x + 1` on a possibly-Bool-sorted `x`) — they'll need rewriting, not just
-//   un-ignoring, once cross-sort SymDiff is implemented.
+// Sequence unification is a *coercion* that applies to bare scalars checked
+// against a Kleene-star set, not to bracket-literal values: `[n]` elaborates
+// to a concrete fixed-length tuple/vector term (checked against `Nat*` via
+// per-child projection) and is never a member of a plain scalar set like `Int`
+// (there's no established tuple-to-scalar bridge outside of Kleene-star
+// targets) — so e.g. `[1, 2]` is in `Nat* ^ Int` only via its `Nat*` arm.
+// The Int arm only actually contributes *new* (non-Nat*) values through a bare
+// scalar *parameter*, which CVC5 represents symbolically and which the
+// scalar-coercion rule (`t ∈ X* ⟺ t ∈ X`) applies to directly: a scalar `x` is
+// `∈ Nat* ^ Int` iff exactly one of (`x ∈ Nat`, `x ∈ Int`) holds — `x ∈ Int` is
+// always true, so this reduces to `x ∉ Nat`, i.e. `x < 0`. (An earlier,
+// pre-implementation draft of these tests assumed "Int ⊆ Nat*" unconditionally
+// and derived "sequences of length ≠ 1" — that's wrong on both counts, as
+// corrected here against the actual solver output.)
 
-// Nat* ^ Int = sequences of length ≠ 1.
-// xs[0] + xs[1] is safe because domain guarantees length ≥ 2 (combining with non-empty).
-// TODO: requires cross-sort SymDiff in set_sort.
+// [1, 2]: a genuine 2-element Nat* sequence; never an Int member (no
+// tuple-to-scalar bridge), so it's in the symdiff via its Nat* arm.
 #[test]
-#[ignore = "TODO: cross-sort SymDiff (Seq(Int) ^ Int) — set_sort panics; \
-            implement cross-kind union sort for SymDiff"]
+fn cross_sort_sym_diff_kleene_int_len2_proved() {
+    proved(
+        "
+f : -> Nat* ^ Int
+f() = [1, 2]
+",
+    );
+}
+
+// A negative scalar is never in Nat* (even via coercion, since it's not in
+// Nat) but always in Int — in the symdiff via its Int arm.
+#[test]
+fn cross_sort_sym_diff_kleene_int_negative_scalar_proved() {
+    proved(
+        "
+f : Int - Nat -> Nat* ^ Int
+f(x) = x
+",
+    );
+}
+
+// A non-negative scalar is in *both* Nat* (via coercion) and Int, so it's
+// excluded from the symmetric difference.
+#[test]
+fn cross_sort_sym_diff_kleene_int_nonneg_scalar_counterexample() {
+    counterexample(
+        "
+bad : Nat -> Nat* ^ Int
+bad(x) = x
+",
+    );
+}
+
+// Subtracting `Int` removes every length-1 sequence (the only ones with an
+// `Int` interpretation) and `{[]}` removes the length-0 case, leaving exactly
+// "length ≥ 2 sequences of naturals" — safe for xs[0] + xs[1].
+#[test]
 fn cross_sort_sym_diff_kleene_minus_scalar_proved() {
     proved(
         "
-h : (Nat* ^ Int) - {[]} -> Nat
+h : (Nat* ^ Int) - Int - {[]} -> Nat
 h(xs) = xs[0] + xs[1]
 ",
     );
 }
 
-// Nat* ^ Int = sequences of length ≠ 1; identity back into Nat* is proved.
+// Once length-1 sequences are excluded the same way, every remaining member is
+// a genuine (possibly empty) sequence of naturals — identity into Nat* holds.
 #[test]
-#[ignore = "TODO: cross-sort SymDiff (Seq(Int) ^ Int) — set_sort panics"]
 fn cross_sort_sym_diff_kleene_scalar_identity_proved() {
     proved(
         "
-f : Nat* ^ Int -> Nat*
+f : (Nat* ^ Int) - Int -> Nat*
 f(xs) = xs
 ",
     );
 }
 
-// (Nat * Nat) ^ Int = length-2 Nat sequences; both xs[0] and xs[1] safe.
+// (2, 3): a genuine 2-tuple, never an `Int` (no tuple/scalar coercion exists
+// outside of Kleene-star sequences) — so it's in the tagged-union symdiff via
+// its (Nat * Nat) arm.
 #[test]
-#[ignore = "TODO: cross-sort SymDiff (tuple sort ^ Int) — set_sort panics"]
-fn cross_sort_sym_diff_tuple_scalar_proved() {
+fn cross_sort_sym_diff_tuple_scalar_tuple_arm_proved() {
     proved(
         "
-f : (Nat * Nat) ^ Int -> Nat
-f(t) = t[0] + t[1]
+f : -> (Nat * Nat) ^ Int
+f() = (2, 3)
 ",
     );
 }
 
-// Bool ^ Nat = Nat - {0, 1} = integers ≥ 2.
-// x + 1 ≥ 3 is in NatPos; proved.
+// 5: a genuine scalar, in the symdiff via its Int arm.
 #[test]
-#[ignore = "TODO: cross-sort SymDiff (Bool sort ^ Int sort) — set_sort panics"]
-fn cross_sort_sym_diff_bool_nat_succ_proved() {
+fn cross_sort_sym_diff_tuple_scalar_int_arm_proved() {
     proved(
         "
-f : Bool ^ Nat -> NatPos
-f(x) = x + 1
+f : -> (Nat * Nat) ^ Int
+f() = 5
 ",
     );
 }
 
-// Bool ^ Nat = integers ≥ 2; 0 is not in that set.
+// (-1, 2): not in (Nat * Nat) (−1 ∉ Nat) and, being a tuple, never in Int
+// either — in neither arm, so not a member of the symdiff.
 #[test]
-#[ignore = "TODO: cross-sort SymDiff (Bool sort ^ Int sort) — set_sort panics"]
-fn cross_sort_sym_diff_bool_nat_zero_counterexample() {
+fn cross_sort_sym_diff_tuple_scalar_neither_arm_counterexample() {
     counterexample(
         "
-bad : NatPos -> Bool ^ Nat
-bad(x) = 0
+bad : -> (Nat * Nat) ^ Int
+bad() = (-1, 2)
+",
+    );
+}
+
+// Bool and Nat are genuinely disjoint (no implicit 0/1 conversion — see
+// docs/design-decisions.md), so `Bool ^ Nat` is a tagged union exactly like
+// `Bool | Nat`: a value is either a real Bool or a real Nat, never both.
+// (An earlier draft of this test wrote `x + 1` on the union argument directly,
+// which assumed the old, incorrect "Bool ⊆ Nat" identification — arithmetic on
+// an un-narrowed union value isn't meaningful, so these test construction into
+// the range instead, like the analogous `Nat* | Int` tests in vectors.rs.)
+
+// true: a genuine Bool, in the symdiff via its Bool arm.
+#[test]
+fn cross_sort_sym_diff_bool_nat_bool_arm_proved() {
+    proved(
+        "
+f : -> Bool ^ Nat
+f() = true
+",
+    );
+}
+
+// 5: a genuine Nat, in the symdiff via its Nat arm.
+#[test]
+fn cross_sort_sym_diff_bool_nat_nat_arm_proved() {
+    proved(
+        "
+f : -> Bool ^ Nat
+f() = 5
+",
+    );
+}
+
+// -1: not a Bool, and not a Nat (Nat is non-negative) — in neither arm.
+#[test]
+fn cross_sort_sym_diff_bool_nat_neither_arm_counterexample() {
+    counterexample(
+        "
+bad : -> Bool ^ Nat
+bad() = -1
 ",
     );
 }
