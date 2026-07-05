@@ -14,8 +14,19 @@ docker compose up -d
 # can actually write its registry/git caches. This container mirrors host
 # paths (see docker-compose.yml's volume comments), so the host's own $HOME
 # is the same path the container mounts read-write.
+#
+# TZ is forwarded (rather than bind-mounting /etc/localtime) because
+# /etc/localtime is itself a symlink on most hosts: bind-mounting it onto the
+# container's own /etc/localtime symlink writes through to the resolved
+# target (e.g. .../zoneinfo/Etc/UTC), silently corrupting that zoneinfo file
+# while leaving the symlink's name unchanged — glibc then computes correct
+# UTC offsets from the clobbered file, but Node/ICU still reports the zone as
+# "UTC" because it reads the zone ID from the symlink name, not the file
+# contents. Setting TZ avoids all of this; every timezone-aware library
+# checks it before consulting /etc/localtime.
 exec docker compose exec \
   -e "TERM=${TERM:-xterm-256color}" \
   -e "COLORTERM=${COLORTERM:-}" \
   -e "CARGO_HOME=${HOME}/.cargo" \
+  -e "TZ=${TZ:-$(cat /etc/timezone 2>/dev/null || echo UTC)}" \
   cantor-dev bash

@@ -33,9 +33,6 @@ services:
       - ${HOST_HOME}/.ssh:${HOST_HOME}/.ssh:ro
       - ${HOST_HOME}/.gitconfig:${HOST_HOME}/.gitconfig:ro
       - ${HOST_HOME}/.git-credentials:${HOST_HOME}/.git-credentials:ro
-      # Match the host's timezone instead of defaulting to UTC.
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
     working_dir: ${PWD}
     # Use bash as the entry point for interactive shells
     stdin_open: true
