@@ -355,6 +355,11 @@ fn check_name_def(
     // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
     // for existential goals arising from negated universals (counterexample direction).
     solver.set_option("mbqi", "true");
+    // nl-cov (libpoly-based covering/CAD) replaces cvc5's default heuristic
+    // nonlinear-arithmetic engine, which can hang for minutes on self-multiplication
+    // bounds checks (`x * x` against an Int32/Int64-sized range) — see
+    // docs/design-decisions.md's nl-cov note.
+    solver.set_option("nl-cov", "true");
     if timeout_ms > 0 {
         solver.set_option("tlimit", &timeout_ms.to_string());
     }
@@ -466,6 +471,8 @@ fn configured_solver<'tm>(tm: &'tm TermManager, timeout_ms: u64) -> Solver<'tm> 
     // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
     // for existential goals arising from negated universals (counterexample direction).
     solver.set_option("mbqi", "true");
+    // See the matching comment in `check_name_def` above — same nl-cov rationale.
+    solver.set_option("nl-cov", "true");
     if timeout_ms > 0 {
         solver.set_option("tlimit", &timeout_ms.to_string());
     }
@@ -767,6 +774,7 @@ fn check_block_sig(
         immutable_names: &mut immutable_names,
         overflow_checks: channels.overflow_checks,
         overload_resolutions: channels.overload_resolutions,
+        timeout_ms,
     };
     let body_term = match encode_block(stmts, &mut env, &mut block_ctx, result_sort) {
         Ok(Some(t)) => t,
@@ -782,12 +790,19 @@ fn check_block_sig(
     // and every later query vacuously "proved". Loop bodies already decided
     // their own overflow obligations inline (see `loops.rs`), directly into
     // `overflow_checks`, since they run on an isolated temp solver.
-    decide_overflow_obligations(&overflow_obligs, &tm, &solver, channels.overflow_checks);
+    decide_overflow_obligations(
+        &overflow_obligs,
+        &tm,
+        &solver,
+        channels.overflow_checks,
+        timeout_ms,
+    );
     decide_overload_resolutions(
         &overload_obligs,
         &tm,
         &solver,
         channels.overload_resolutions,
+        timeout_ms,
     );
 
     if has_runtime_assert && !crate::semantics::tree::range_contains_fail(&sig.range) {
@@ -896,12 +911,19 @@ fn check_sig(
 
     // See `check_block_sig`'s identical comment: must run before `finish_check`'s
     // negated-goal assertion.
-    decide_overflow_obligations(&overflow_obligs, &tm, &solver, channels.overflow_checks);
+    decide_overflow_obligations(
+        &overflow_obligs,
+        &tm,
+        &solver,
+        channels.overflow_checks,
+        timeout_ms,
+    );
     decide_overload_resolutions(
         &overload_obligs,
         &tm,
         &solver,
         channels.overload_resolutions,
+        timeout_ms,
     );
 
     let mut check_ctx = CheckCtx {

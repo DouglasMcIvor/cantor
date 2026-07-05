@@ -82,6 +82,7 @@ pub(crate) fn decide_overflow_obligations<'tm>(
     tm: &'tm TermManager,
     solver: &Solver<'tm>,
     overflow_checks: &mut HashMap<Span, bool>,
+    timeout_ms: u64,
 ) {
     for ob in overflow_obligs {
         let implication = if ob.path_cond.to_string().trim() == "true" {
@@ -93,7 +94,7 @@ pub(crate) fn decide_overflow_obligations<'tm>(
             )
         };
         let proved = matches!(
-            check_require(implication, tm, solver, &[], &[]),
+            check_require(implication, tm, solver, &[], &[], timeout_ms),
             CheckResult::Proved
         );
         overflow_checks
@@ -122,6 +123,7 @@ pub(crate) fn decide_overload_resolutions<'tm>(
     tm: &'tm TermManager,
     solver: &Solver<'tm>,
     overload_resolutions: &mut HashMap<Span, Option<usize>>,
+    timeout_ms: u64,
 ) {
     for ob in overload_obligs {
         let mut resolved: Option<usize> = None;
@@ -132,7 +134,7 @@ pub(crate) fn decide_overload_resolutions<'tm>(
                 tm.mk_term(Kind::Implies, &[ob.path_cond.clone(), candidate.clone()])
             };
             if matches!(
-                check_require(implication, tm, solver, &[], &[]),
+                check_require(implication, tm, solver, &[], &[], timeout_ms),
                 CheckResult::Proved
             ) {
                 resolved = Some(*idx);

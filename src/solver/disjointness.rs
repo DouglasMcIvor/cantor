@@ -44,6 +44,8 @@ pub(super) fn validate_disjoint_unions(
             let tm = TermManager::new();
             let mut solver = Solver::new(&tm);
             solver.set_logic("ALL");
+            // See `check_name_def`'s comment in mod.rs for the nl-cov rationale.
+            solver.set_option("nl-cov", "true");
             if timeout_ms > 0 {
                 solver.set_option("tlimit", &timeout_ms.to_string());
             }

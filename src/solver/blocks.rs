@@ -100,6 +100,11 @@ pub(crate) struct BlockCtx<'a, 'tm> {
     /// Same rationale as `overflow_checks`, for int-soundness-plan phase 2's
     /// overload call-resolution side-channel.
     pub(crate) overload_resolutions: &'a mut HashMap<Span, Option<usize>>,
+    /// Threaded to every `check_require`/loop-inductive-step solver this block
+    /// (or a loop nested inside it) constructs, so `--timeout` actually bounds
+    /// them — see the review note on `check_require`'s previously-missing
+    /// `tlimit`.
+    pub(crate) timeout_ms: u64,
 }
 
 /// Process a sequence of statements, threading the SSA environment.
@@ -475,6 +480,7 @@ pub(crate) fn encode_block<'tm>(
                                 ctx.encode.solver,
                                 ctx.param_names,
                                 ctx.param_terms,
+                                ctx.timeout_ms,
                             ) {
                                 CheckResult::Proved => {
                                     ctx.encode.solver.assert_formula(c.clone());
@@ -519,6 +525,7 @@ pub(crate) fn encode_block<'tm>(
                                 ctx.encode.solver,
                                 ctx.param_names,
                                 ctx.param_terms,
+                                ctx.timeout_ms,
                             ) {
                                 CheckResult::Proved => {
                                     ctx.encode.solver.assert_formula(c.clone());
@@ -586,6 +593,7 @@ pub(crate) fn encode_block<'tm>(
                         ctx.encode.solver,
                         ctx.param_names,
                         ctx.param_terms,
+                        ctx.timeout_ms,
                     ) {
                         CheckResult::Proved => {
                             ctx.encode.solver.assert_formula(c.clone());
@@ -622,6 +630,7 @@ pub(crate) fn encode_block<'tm>(
                     ctx.encode.solver,
                     ctx.param_names,
                     ctx.param_terms,
+                    ctx.timeout_ms,
                 ) {
                     CheckResult::Proved => {
                         ctx.encode.solver.assert_formula(pred.clone());
@@ -640,6 +649,7 @@ pub(crate) fn encode_block<'tm>(
                     ctx.encode.solver,
                     ctx.param_names,
                     ctx.param_terms,
+                    ctx.timeout_ms,
                 ) {
                     CheckResult::Proved => {
                         // Statically proved — no runtime check needed.
@@ -659,6 +669,7 @@ pub(crate) fn encode_block<'tm>(
                             ctx.encode.solver,
                             ctx.param_names,
                             ctx.param_terms,
+                            ctx.timeout_ms,
                         ) {
                             CheckResult::Proved => {
                                 return Err(CheckResult::Counterexample {
@@ -741,6 +752,7 @@ pub(crate) fn encode_block<'tm>(
                     has_runtime_assert: ctx.has_runtime_assert,
                     overflow_checks: ctx.overflow_checks,
                     overload_resolutions: ctx.overload_resolutions,
+                    timeout_ms: ctx.timeout_ms,
                 };
                 if let Some(step_err) =
                     check_inductive_step(cond, body, &modified, env, &mut loop_ctx)
@@ -818,6 +830,7 @@ pub(crate) fn encode_block<'tm>(
                     has_runtime_assert: ctx.has_runtime_assert,
                     overflow_checks: ctx.overflow_checks,
                     overload_resolutions: ctx.overload_resolutions,
+                    timeout_ms: ctx.timeout_ms,
                 };
                 if let Some(step_err) =
                     check_for_inductive_step(var, set, body, &modified, env, &mut loop_ctx)
@@ -876,10 +889,16 @@ pub(crate) fn check_require<'tm>(
     solver: &Solver<'tm>,
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
+    timeout_ms: u64,
 ) -> CheckResult {
     let mut tmp = Solver::new(tm);
     tmp.set_logic("ALL");
     tmp.set_option("produce-models", "true");
+    // See `check_name_def`'s comment in mod.rs for the nl-cov rationale.
+    tmp.set_option("nl-cov", "true");
+    if timeout_ms > 0 {
+        tmp.set_option("tlimit", &timeout_ms.to_string());
+    }
 
     for fact in solver.get_assertions() {
         tmp.assert_formula(fact);

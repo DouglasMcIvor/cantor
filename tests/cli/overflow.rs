@@ -146,55 +146,37 @@ fn bounded_multiply_at_extreme_values_runs_correctly() {
     );
 }
 
-// ── Known issues (found in review, 2026-07-05) ──────────────────────────────
+// ── Self-multiplication (nl-cov fix, review 2026-07-05) ─────────────────────
 //
-// int-soundness-plan.md's phase 3 writeup already flags one instance of this
-// as a "known issue": bounding `int64_split`'s own `Int64 -> Int64` trial to
-// self-multiplication (`x * x`, as opposed to `x * y`) made cvc5 hang past a
-// 2000ms `tlimit`, confirmed past 90+ seconds of wall-clock time -- mitigated
-// there only by having `try_split` skip any candidate whose body contains a
-// `Mul` at all (`body_contains_mul`).
+// int-soundness-plan.md's phase 3 writeup already flagged one instance of
+// this as a "known issue": bounding `int64_split`'s own `Int64 -> Int64`
+// trial to self-multiplication (`x * x`, as opposed to `x * y`) made cvc5
+// hang past a 2000ms `tlimit`, confirmed past 90+ seconds of wall-clock time
+// -- mitigated there only by having `try_split` skip any candidate whose
+// body contains a `Mul` at all (`body_contains_mul`).
 //
-// That framing undersells the scope. This review reproduced the hang with
-// *no* `int64_split` involvement whatsoever -- plain, ordinary phase-1
+// A later review found that framing undersold the scope: the hang reproduced
+// with *no* `int64_split` involvement whatsoever -- plain, ordinary phase-1
 // overflow-obligation checking (predates phase 3 entirely) on the most
-// natural nonlinear expression a user could write:
-//
-//   f : Int32 -> Int32   -- also reproduces with Int64, and with the bare
-//   f(x) = x * x         -- unbounded Int builtin -- domain size isn't it.
-//
-// Confirmed (outside the test suite, since this hangs indefinitely):
-// `cantor --timeout 2 run` on the Int32 case above still hadn't returned
-// after 20 real seconds -- cvc5 does not honor `tlimit` for this query shape
-// at all, so the CLI's own documented escape hatch doesn't help a user who
-// hits this. `Int16 -> Int16` (a smaller bound) returns a real counterexample
-// in ~2.7s; `Int8 -> Int8` in ~0.05s -- so it's specifically the *bound's
-// magnitude*, not the self-multiplication pattern alone, that pushes cvc5
-// into this non-terminating (or at least extremely slow, past 90s) state.
-// Given the CLI has no working timeout for this, and `int64_split`'s
-// mitigation only covers its own internal trial, this is a live, easily-hit
-// hang in the shipped compiler for any function whose body squares one of
-// its own bounded (Int32/Int64-ish) parameters -- not just a narrow
-// compiler-internal corner case.
+// natural nonlinear expression a user could write (`f : Int32 -> Int32; f(x)
+// = x * x`), and cvc5 did not honor `tlimit` for this query shape at all.
+// Root cause: cvc5's default heuristic nonlinear-arithmetic engine doesn't
+// terminate quickly on `x ∈ [lo, hi] ∧ (x*x < lo ∨ x*x > hi)` once the bound
+// reaches Int32/Int64 size. Fixed by switching every solver construction
+// site to the `nl-cov` (libpoly covering/CAD) nonlinear procedure instead --
+// see docs/design-decisions.md for the rationale distinguishing this from
+// the pre-existing `mbqi` option.
 //
 // These use `run_subcommand_with_deadline` (not the plain `run_subcommand`
-// every other test in this file uses) specifically so that if/when this is
-// fixed, removing `#[ignore]` makes the test assert real, fast, correct
-// behaviour rather than merely "didn't hang" -- and so that running these
-// under `cargo test -- --ignored` before a fix lands fails cleanly instead of
-// wedging the test binary.
-mod known_issues {
+// every other test in this file uses) as a regression guard: if a future
+// change regresses back to the slow engine, this fails clean (deadline hit)
+// rather than wedging the test binary.
+mod self_multiplication {
     use std::time::Duration;
 
     use super::*;
 
     #[test]
-    #[ignore = "cvc5 hangs (confirmed past 90+ seconds, --timeout has no \
-                effect) on a bounded self-multiplication existential -- see \
-                this module's doc comment. f : Int32 -> Int32; f(x) = x * x \
-                should report a counterexample (x = 46341 squares to \
-                2147488281, outside Int32) in well under a second, the way \
-                the analogous Int16 case already does."]
     fn bounded_self_multiplication_does_not_hang_cvc5() {
         let out = run_subcommand_with_deadline("self_mult_int32.cantor", Duration::from_secs(10))
             .expect(
@@ -213,11 +195,6 @@ mod known_issues {
     }
 
     #[test]
-    #[ignore = "the original int-soundness-plan.md repro, verbatim: cvc5 \
-                hangs on f : Int -> Int; f(x) = x * x even though the domain \
-                is the bare, fully-unconstrained Int builtin -- see this \
-                module's doc comment for why this rules out \"it's about the \
-                huge bounded existential specifically\" as the root cause."]
     fn unconstrained_self_multiplication_does_not_hang_cvc5() {
         let out =
             run_subcommand_with_deadline("self_mult_unconstrained.cantor", Duration::from_secs(10))

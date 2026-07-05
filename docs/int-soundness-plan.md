@@ -665,7 +665,7 @@ independently unit-testable before any codegen exists)
       phase 2's ordinary static-resolution machinery unchanged.
 
       **Known issue found while implementing (pre-existing, not part of
-      this step, deliberately not fixed here):** bounding a `Mul` node to
+      this step) — fixed 2026-07-05, see below.** Bounding a `Mul` node to
       `Int64` in the trial check was found to make cvc5 run for 90+ seconds
       past even a 2000ms `tlimit` — investigating further showed this isn't
       actually specific to `Int64` or to this step at all: `f : Nat -> Int;
@@ -674,22 +674,36 @@ independently unit-testable before any codegen exists)
       while `f(x) = x * y` (two independent variables, already covered by
       existing tests) is fast. So cvc5 apparently struggles specifically
       with a *self*-multiplication (`x * x`) under a bounded existential,
-      regardless of which bound. This is a real, shippable-today bug
-      (anyone writing `x * x` in a domain-bounded function can already hang
-      the compiler) that predates phase 3 entirely and was only surfaced
-      here by chance (no existing test happened to self-multiply a
-      variable). Mitigated *for this step only* by skipping the trial
-      check entirely whenever a candidate's body contains any `Mul` node
-      (`int64_split.rs`'s `body_contains_mul`) — a background-thread
-      watchdog was considered and rejected: cvc5 isn't thread-safe even
-      with per-thread `TermManager`/`Solver` instances (`CVC5_CALL_LOCK`'s
-      doc comment), so racing a second concurrent cvc5 call while
-      abandoning a hung one risks a segfault, not just wasted time. Logged
-      here rather than fixed now, per Doug — candidate next steps once
-      picked up: try cvc5's `--nl-ext`-family options, or encode `x * x` as
-      a fresh term with an asserted non-negativity fact rather than a raw
-      product. Whoever picks this up should also lift step 4a's `Mul`
-      restriction once it's resolved.
+      regardless of which bound. This was a real, shippable-today bug
+      (anyone writing `x * x` in a domain-bounded function could already
+      hang the compiler) that predated phase 3 entirely and was only
+      surfaced here by chance (no existing test happened to self-multiply a
+      variable). Mitigated *for this step only*, at the time, by skipping
+      the trial check entirely whenever a candidate's body contains any
+      `Mul` node (`int64_split.rs`'s `body_contains_mul`) — a
+      background-thread watchdog was considered and rejected: cvc5 isn't
+      thread-safe even with per-thread `TermManager`/`Solver` instances
+      (`CVC5_CALL_LOCK`'s doc comment), so racing a second concurrent cvc5
+      call while abandoning a hung one risks a segfault, not just wasted
+      time.
+      
+      **The actual fix (2026-07-05 review):** a later review found the hang
+      is much broader than this step's own trial check — it reproduces on
+      plain phase-1 overflow checking with zero `int64_split` involvement,
+      e.g. `f : Int32 -> Int32; f(x) = x * x`, and is caused by cvc5's
+      *default* nonlinear-arithmetic decision procedure, which doesn't
+      terminate quickly on `x ∈ [lo, hi] ∧ (x*x < lo ∨ x*x > hi)` once
+      `lo..hi` reaches Int32/Int64 size — confirmed independent of `tlimit`.
+      Fixed by switching every solver-construction site (including this
+      step's trial check) to cvc5's `nl-cov` (libpoly covering/CAD)
+      nonlinear procedure instead, which resolves every case tried in
+      1–5ms with the correct verdict — see docs/design-decisions.md for the
+      rationale. `body_contains_mul`'s restriction is very likely no longer
+      needed now that `nl-cov` covers this step's own trial the same way it
+      covers everything else, but that hasn't been separately verified —
+      left as a candidate follow-up (lifting the guard and re-running this
+      step's eligibility check) rather than bundled into the `nl-cov` fix
+      itself.
    b. **Attempted 2026-07-04, reverted mid-session — "scalar only, defer
       call boundaries" is not a viable slice boundary.** Original plan:
       tagged encode/decode at every unbounded-`Int` value's construction/

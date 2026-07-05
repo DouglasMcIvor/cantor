@@ -1292,6 +1292,20 @@ Other open items (lower priority, not blocking):
   every fresh solver instance.  A timed-out check returns `Unknown`.  Per-check
   resource limits (`rlimit`) are available in cvc5 but not yet exposed — they
   are deterministic (unaffected by system load) but harder to reason about.
+- **cvc5 `nl-cov` nonlinear-arithmetic option** — decided (2026-07-05): every
+  solver instance also sets `nl-cov`, which switches cvc5 from its default
+  heuristic nonlinear-arithmetic engine to the libpoly-based covering/CAD
+  procedure. Found necessary because the default engine does not terminate
+  quickly (confirmed hung past 90+ seconds, `tlimit` had no effect) on
+  self-multiplication bounds checks — `x ∈ [lo, hi] ∧ (x*x < lo ∨ x*x > hi)`
+  — once `lo..hi` reaches Int32/Int64 magnitude; the most natural trigger is
+  simply `f : Int32 -> Int32; f(x) = x * x`. `nl-cov` resolves every case
+  tried in 1–5ms with the correct verdict in both directions, no regressions
+  on the common bounded-arithmetic case. This is unrelated to `mbqi` above:
+  `mbqi` is quantifier instantiation for sequence-membership goals; `nl-cov`
+  is cvc5's separate nonlinear (NIA) module, exercised even by
+  quantifier-free overflow obligations. See docs/int-soundness-plan.md step
+  4a for the fuller incident writeup.
 - **`emits` and multithreading** — if concurrent IO threads share `emits`
   channels, synchronisation is needed. Defer until threading model is decided.
 - **Codegen/solver representation parity for `Fail`** — the solver now

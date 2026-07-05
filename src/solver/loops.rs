@@ -39,6 +39,7 @@ pub(super) struct LoopCtx<'a, 'tm> {
     pub(super) has_runtime_assert: &'a mut bool,
     pub(super) overflow_checks: &'a mut HashMap<Span, bool>,
     pub(super) overload_resolutions: &'a mut HashMap<Span, Option<usize>>,
+    pub(super) timeout_ms: u64,
 }
 
 // ── Inductive step checking ───────────────────────────────────────────────────
@@ -82,6 +83,11 @@ where
     let mut tmp = Solver::new(ctx.tm);
     tmp.set_logic("ALL");
     tmp.set_option("produce-models", "true");
+    // See `check_name_def`'s comment in mod.rs for the nl-cov rationale.
+    tmp.set_option("nl-cov", "true");
+    if ctx.timeout_ms > 0 {
+        tmp.set_option("tlimit", &ctx.timeout_ms.to_string());
+    }
 
     // Seed from everything asserted on the enclosing solver so far — not just
     // a separately-threaded fact list — so call contracts established before
@@ -169,6 +175,7 @@ where
             immutable_names: &mut step_imm,
             overflow_checks: ctx.overflow_checks,
             overload_resolutions: ctx.overload_resolutions,
+            timeout_ms: ctx.timeout_ms,
         };
         encode_block(body, &mut body_env, &mut block_ctx, None)
     };
@@ -183,8 +190,20 @@ where
     // correctness check below asserts the negated goal onto `tmp`, which
     // would make its assertion set inconsistent and every later query
     // vacuously "proved".
-    decide_overflow_obligations(&overflow_obligs, ctx.tm, &tmp, ctx.overflow_checks);
-    decide_overload_resolutions(&overload_obligs, ctx.tm, &tmp, ctx.overload_resolutions);
+    decide_overflow_obligations(
+        &overflow_obligs,
+        ctx.tm,
+        &tmp,
+        ctx.overflow_checks,
+        ctx.timeout_ms,
+    );
+    decide_overload_resolutions(
+        &overload_obligs,
+        ctx.tm,
+        &tmp,
+        ctx.overload_resolutions,
+        ctx.timeout_ms,
+    );
 
     // Every constrained var's post-iteration value must satisfy its invariant.
     let mut step_obligs: Vec<Term<'tm>> = Vec::new();
