@@ -48,7 +48,9 @@ pub fn check(src: &str) -> Vec<(String, CheckResult)> {
         1,
         "expected exactly one function name, got {all:?}"
     );
-    all.into_iter().flat_map(|(_, sig_results)| sig_results).collect()
+    all.into_iter()
+        .flat_map(|(_, sig_results)| sig_results)
+        .collect()
 }
 
 /// Assert that the first (usually only) signature of a single-function source is Proved.

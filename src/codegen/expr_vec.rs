@@ -112,7 +112,8 @@ impl<'ctx> Compiler<'ctx> {
         // i64 (see `compile_tuple_as_vector`'s comment) but every consumer
         // downstream expects `Kind::Int` to mean tagged — re-tag on read.
         let result_val = if elem_kind == Kind::Int {
-            self.ensure_tagged(result_val.into_int_value(), &Kind::Int64)?.into()
+            self.ensure_tagged(result_val.into_int_value(), &Kind::Int64)?
+                .into()
         } else {
             result_val
         };
@@ -178,7 +179,8 @@ impl<'ctx> Compiler<'ctx> {
                     // comment in `compile_index` — `Vector(Int)` storage is
                     // raw, re-tag on read.
                     let result_val = if elem_kind == Kind::Int {
-                        self.ensure_tagged(result_val.into_int_value(), &Kind::Int64)?.into()
+                        self.ensure_tagged(result_val.into_int_value(), &Kind::Int64)?
+                            .into()
                     } else {
                         result_val
                     };
@@ -297,9 +299,9 @@ impl<'ctx> Compiler<'ctx> {
                 // docs/int-soundness-plan.md) — it stores plain raw i64
                 // elements exactly as before, so a tagged element must be
                 // decoded first.
-                (Kind::Int, Kind::Int) => {
-                    self.ensure_raw_int64(elem.into_int_value(), outer_ek)?.into()
-                }
+                (Kind::Int, Kind::Int) => self
+                    .ensure_raw_int64(elem.into_int_value(), outer_ek)?
+                    .into(),
                 _ => elem,
             };
             self.builder
@@ -661,7 +663,8 @@ impl<'ctx> Compiler<'ctx> {
                 .map_err(err)?
                 .into()
         } else if *elem_kind == Kind::Int && *val_kind == Kind::Int {
-            self.ensure_raw_int64(val.into_int_value(), val_kind)?.into()
+            self.ensure_raw_int64(val.into_int_value(), val_kind)?
+                .into()
         } else {
             val
         };

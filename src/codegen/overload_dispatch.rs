@@ -152,7 +152,9 @@ impl<'ctx> Compiler<'ctx> {
                     let real_kind = candidate_param_kinds.as_ref().and_then(|ks| ks.get(i));
                     match real_kind {
                         Some(Kind::Int64) if canonical_param_kinds.get(i) == Some(&Kind::Int) => {
-                            Ok(self.ensure_raw_int64(val.into_int_value(), &Kind::Int)?.into())
+                            Ok(self
+                                .ensure_raw_int64(val.into_int_value(), &Kind::Int)?
+                                .into())
                         }
                         _ => Ok(val.into()),
                     }

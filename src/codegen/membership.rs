@@ -73,11 +73,15 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 Some(builtin) => match builtin.bound {
                     IntBound::Any => Ok(bool.const_int(1, false)),
-                    IntBound::NonNeg => self.compile_int_cmp_const(val, 0, IntPredicate::SGE, tagged),
+                    IntBound::NonNeg => {
+                        self.compile_int_cmp_const(val, 0, IntPredicate::SGE, tagged)
+                    }
                     IntBound::Positive => {
                         self.compile_int_cmp_const(val, 0, IntPredicate::SGT, tagged)
                     }
-                    IntBound::NonZero => self.compile_int_cmp_const(val, 0, IntPredicate::NE, tagged),
+                    IntBound::NonZero => {
+                        self.compile_int_cmp_const(val, 0, IntPredicate::NE, tagged)
+                    }
                     IntBound::Bounded(min, max) => {
                         self.compile_bounded_membership(val, min, max, tagged)
                     }
@@ -315,7 +319,8 @@ impl<'ctx> Compiler<'ctx> {
                 .map_err(|e| CompileError::ice(e.to_string()))?
                 .into()
         } else if val_kind == Kind::Int {
-            self.ensure_raw_int64(val.into_int_value(), &val_kind)?.into()
+            self.ensure_raw_int64(val.into_int_value(), &val_kind)?
+                .into()
         } else {
             val
         };

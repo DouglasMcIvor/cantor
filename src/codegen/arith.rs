@@ -11,7 +11,13 @@ use inkwell::{
     values::{AggregateValueEnum, BasicValueEnum, IntValue},
 };
 
-use crate::{ast::{BinOp, UnOp}, error::CompileError, kind::Kind, semantics::tree::SemExpr, span::Span};
+use crate::{
+    ast::{BinOp, UnOp},
+    error::CompileError,
+    kind::Kind,
+    semantics::tree::SemExpr,
+    span::Span,
+};
 
 use super::{Compiler, Env};
 

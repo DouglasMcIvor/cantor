@@ -2,6 +2,8 @@
 # Drop into an interactive bash shell inside the running cantor-dev container.
 set -euo pipefail
 
+docker compose up -d
+
 # Forward the calling terminal's color-capability signal — `docker compose
 # exec` does not inherit the host shell's environment, so without this the
 # container sees TERM unset/dumb and tools fall back to no/reduced color.

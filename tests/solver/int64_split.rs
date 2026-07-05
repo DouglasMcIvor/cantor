@@ -17,7 +17,10 @@ fn names_for(results: &[(String, Vec<(String, CheckResult)>)], name: &str) -> us
     results
         .iter()
         .filter(|(n, sig_results)| {
-            n == name && !sig_results.iter().any(|(label, _)| label.contains("disjointness"))
+            n == name
+                && !sig_results
+                    .iter()
+                    .any(|(label, _)| label.contains("disjointness"))
         })
         .count()
 }

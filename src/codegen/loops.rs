@@ -358,7 +358,8 @@ impl<'ctx> Compiler<'ctx> {
             // docs/int-soundness-plan.md), but every consumer downstream
             // expects `Kind::Int` to mean tagged — re-tag on read.
             SetElemKind::Int => (
-                self.ensure_tagged(elem_raw.into_int_value(), &Kind::Int64)?.into(),
+                self.ensure_tagged(elem_raw.into_int_value(), &Kind::Int64)?
+                    .into(),
                 Kind::Int,
             ),
             SetElemKind::Bool => {

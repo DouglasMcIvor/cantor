@@ -181,9 +181,13 @@ impl<'ctx> Compiler<'ctx> {
             crate::kind::IfMerge::Same(_) => (then_val_raw, else_val_raw, then_ty),
             crate::kind::IfMerge::CoerceInt64ToInt => {
                 self.builder.position_at_end(then_bb_cur);
-                let tv = self.ensure_tagged(then_val_raw.into_int_value(), &then_ty)?.into();
+                let tv = self
+                    .ensure_tagged(then_val_raw.into_int_value(), &then_ty)?
+                    .into();
                 self.builder.position_at_end(else_bb_cur);
-                let ev = self.ensure_tagged(else_val_raw.into_int_value(), &else_ty)?.into();
+                let ev = self
+                    .ensure_tagged(else_val_raw.into_int_value(), &else_ty)?
+                    .into();
                 (tv, ev, merge.result_kind())
             }
             crate::kind::IfMerge::CoerceToFailStruct => {
@@ -535,7 +539,9 @@ impl<'ctx> Compiler<'ctx> {
             // int-soundness-plan phase 3 step 4b: `cantor_set_size_i64`
             // returns a raw i64 count, but this builtin's result is an
             // ordinary `Kind::Int` (tagged) value like any other — tag it.
-            let result = self.ensure_tagged(result.into_int_value(), &Kind::Int64)?.into();
+            let result = self
+                .ensure_tagged(result.into_int_value(), &Kind::Int64)?
+                .into();
             return Ok((result, Kind::Int));
         }
 
@@ -571,7 +577,9 @@ impl<'ctx> Compiler<'ctx> {
                     // int-soundness-plan phase 3 step 4b: same reasoning as
                     // `size()` above — the runtime function returns a raw
                     // count, tag it before it's used as a `Kind::Int` value.
-                    let result = self.ensure_tagged(result.into_int_value(), &Kind::Int64)?.into();
+                    let result = self
+                        .ensure_tagged(result.into_int_value(), &Kind::Int64)?
+                        .into();
                     Ok((result, Kind::Int))
                 }
                 Kind::Tuple(inner_eks) => {
@@ -606,7 +614,13 @@ impl<'ctx> Compiler<'ctx> {
         let param_kinds_for_callee = self.fn_param_kinds.get(&lookup_key).map(|ks| {
             if matches!(target, CallTarget::Dispatch(_)) {
                 ks.iter()
-                    .map(|k| if *k == Kind::Int64 { Kind::Int } else { k.clone() })
+                    .map(|k| {
+                        if *k == Kind::Int64 {
+                            Kind::Int
+                        } else {
+                            k.clone()
+                        }
+                    })
                     .collect()
             } else {
                 ks.clone()
@@ -670,12 +684,14 @@ impl<'ctx> Compiler<'ctx> {
             // or a Step-A-promoted call's raw result passed into an
             // ordinary tagged one.
             let (v, arg_kind) = match expected_kind {
-                Some(Kind::Int64) if arg_kind == Kind::Int => {
-                    (self.ensure_raw_int64(v.into_int_value(), &arg_kind)?.into(), Kind::Int64)
-                }
-                Some(Kind::Int) if arg_kind == Kind::Int64 => {
-                    (self.ensure_tagged(v.into_int_value(), &arg_kind)?.into(), Kind::Int)
-                }
+                Some(Kind::Int64) if arg_kind == Kind::Int => (
+                    self.ensure_raw_int64(v.into_int_value(), &arg_kind)?.into(),
+                    Kind::Int64,
+                ),
+                Some(Kind::Int) if arg_kind == Kind::Int64 => (
+                    self.ensure_tagged(v.into_int_value(), &arg_kind)?.into(),
+                    Kind::Int,
+                ),
                 _ => (v, arg_kind),
             };
 

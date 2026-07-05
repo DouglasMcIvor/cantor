@@ -228,12 +228,14 @@ impl<'ctx> Compiler<'ctx> {
         let expected = self.fn_return_kinds.get(fn_name);
         match (&val_kind, expected) {
             (Kind::Int, Some(Kind::Int64)) => Ok((
-                self.ensure_raw_int64(val.into_int_value(), &val_kind)?.into(),
+                self.ensure_raw_int64(val.into_int_value(), &val_kind)?
+                    .into(),
                 Kind::Int64,
             )),
-            (Kind::Int64, Some(Kind::Int)) => {
-                Ok((self.ensure_tagged(val.into_int_value(), &val_kind)?.into(), Kind::Int))
-            }
+            (Kind::Int64, Some(Kind::Int)) => Ok((
+                self.ensure_tagged(val.into_int_value(), &val_kind)?.into(),
+                Kind::Int,
+            )),
             _ => Ok((val, val_kind)),
         }
     }
@@ -355,9 +357,10 @@ impl<'ctx> Compiler<'ctx> {
             return Ok(i64t.const_int(((n as i128) << 1) as u64, true));
         }
         let raw = i64t.const_int(n as u64, true);
-        let from_i64 = self.module.get_function("cantor_bigint_from_i64").ok_or_else(|| {
-            CompileError::ice("cantor_bigint_from_i64 not declared")
-        })?;
+        let from_i64 = self
+            .module
+            .get_function("cantor_bigint_from_i64")
+            .ok_or_else(|| CompileError::ice("cantor_bigint_from_i64 not declared"))?;
         let call = self
             .builder
             .build_call(from_i64, &[raw.into()], "lit_box")
@@ -387,9 +390,10 @@ impl<'ctx> Compiler<'ctx> {
         match kind {
             Kind::Int => Ok(val),
             Kind::Int64 => {
-                let from_i64 = self.module.get_function("cantor_bigint_from_i64").ok_or_else(|| {
-                    CompileError::ice("cantor_bigint_from_i64 not declared")
-                })?;
+                let from_i64 = self
+                    .module
+                    .get_function("cantor_bigint_from_i64")
+                    .ok_or_else(|| CompileError::ice("cantor_bigint_from_i64 not declared"))?;
                 let call = self
                     .builder
                     .build_call(from_i64, &[val.into()], "tag_i64")

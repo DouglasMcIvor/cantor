@@ -408,9 +408,7 @@ fn stmt_contains_mul(stmt: &SemStmt) -> bool {
             tuple_constraint,
             value,
             ..
-        } => {
-            tuple_constraint.as_ref().is_some_and(expr_contains_mul) || expr_contains_mul(value)
-        }
+        } => tuple_constraint.as_ref().is_some_and(expr_contains_mul) || expr_contains_mul(value),
         SemStmt::Require { predicate, .. } | SemStmt::Assume { predicate, .. } => {
             expr_contains_mul(predicate)
         }
@@ -461,9 +459,7 @@ fn expr_contains_mul(expr: &SemExpr) -> bool {
             then_expr,
             else_expr,
         } => {
-            expr_contains_mul(cond)
-                || expr_contains_mul(then_expr)
-                || expr_contains_mul(else_expr)
+            expr_contains_mul(cond) || expr_contains_mul(then_expr) || expr_contains_mul(else_expr)
         }
         SemExprKind::SetLit(exprs) | SemExprKind::Tuple(exprs) => {
             exprs.iter().any(expr_contains_mul)
@@ -482,8 +478,6 @@ fn expr_contains_mul(expr: &SemExpr) -> bool {
                 || filter.as_deref().is_some_and(expr_contains_mul)
         }
         SemExprKind::Proj { base, .. } => expr_contains_mul(base),
-        SemExprKind::Index { base, index } => {
-            expr_contains_mul(base) || expr_contains_mul(index)
-        }
+        SemExprKind::Index { base, index } => expr_contains_mul(base) || expr_contains_mul(index),
     }
 }

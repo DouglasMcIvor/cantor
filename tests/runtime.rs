@@ -229,7 +229,17 @@ fn cmp_orders_boxed_values_and_mixed_small_and_boxed() {
 
 #[test]
 fn to_i64_round_trips_through_from_i64_for_small_and_boxed_values() {
-    for n in [0i64, 1, -1, 42, -42, i64::MAX, i64::MIN, 1 << 62, -(1 << 62)] {
+    for n in [
+        0i64,
+        1,
+        -1,
+        42,
+        -42,
+        i64::MAX,
+        i64::MIN,
+        1 << 62,
+        -(1 << 62),
+    ] {
         assert_eq!(cantor_bigint_to_i64(cantor_bigint_from_i64(n)), n);
     }
 }
