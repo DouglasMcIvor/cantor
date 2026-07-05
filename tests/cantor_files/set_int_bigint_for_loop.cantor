@@ -1,0 +1,18 @@
+-- for-in over a Set(Int) containing a boxed element -- the tagged set's
+-- get_i64 must hand back the element in its existing (possibly boxed)
+-- representation, no decode step, so downstream arithmetic sees the real
+-- BigInt-backed value rather than a corrupted raw word.
+huge : -> Int
+huge() = 9223372036854775807 + 1000000000000000000
+
+main : -> Int
+main() {
+    mut s : Set(Int) = {1, huge(), 2}
+
+    mut acc : Int = 0
+    for x in s {
+        acc := acc + x
+    }
+
+    acc
+}

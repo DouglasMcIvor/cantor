@@ -29,6 +29,26 @@ impl<'ctx> Compiler<'ctx> {
         self.module
             .add_function("cantor_set_get_i64", i64t.fn_type(ii, false), None);
 
+        // Set(Int) ABI, tagged variant — used instead of the plain `_i64`
+        // family above whenever `tagging_active()`, since a boxed element
+        // needs magnitude-aware (not raw bit-pattern) dedup/ordering.
+        self.module
+            .add_function("cantor_tagged_set_new_i64", i64t.fn_type(&[], false), None);
+        self.module.add_function(
+            "cantor_tagged_set_insert_i64",
+            void.fn_type(ii, false),
+            None,
+        );
+        self.module.add_function(
+            "cantor_tagged_set_contains_i64",
+            i64t.fn_type(ii, false),
+            None,
+        );
+        self.module
+            .add_function("cantor_tagged_set_size_i64", i64t.fn_type(i, false), None);
+        self.module
+            .add_function("cantor_tagged_set_get_i64", i64t.fn_type(ii, false), None);
+
         // Set(Bool) ABI — booleans passed as i64 (0/1) at the boundary
         self.module
             .add_function("cantor_set_new_bool", i64t.fn_type(&[], false), None);

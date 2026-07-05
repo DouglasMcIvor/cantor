@@ -90,10 +90,9 @@ Every check has one of three outcomes:
 > can *prove* stay within `Int64` — most declared-bounded functions, e.g.
 > `Int8`/`Int16`/`Int32` domains — compile to plain, zero-overhead machine
 > arithmetic exactly as before; only genuinely-unbounded positions pay the
-> tagging cost.) The remaining gap: `Vector(Int)`/`Set(Int)` elements still
-> store plain 64-bit words only — a value that doesn't fit aborts loudly
-> rather than corrupting a set's membership semantics. This closes in a
-> future pass (see int-soundness-plan.md's phase 3 "Step 4b" write-up).
+> tagging cost.) `Vector(Int)` and `Set(Int)` elements support the same
+> arbitrary-precision values as scalars (see int-soundness-plan.md's phase 3
+> "Step 4b" write-up).
 
 ## Examples
 

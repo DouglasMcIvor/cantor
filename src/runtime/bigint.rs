@@ -227,3 +227,79 @@ pub extern "C" fn cantor_bigint_to_string(a: i64) -> i64 {
     let c_string = std::ffi::CString::new(s).expect("BigInt decimal string has no interior NUL");
     c_string.into_raw() as i64
 }
+
+// ── Tagged Int set (`Set(Int)` with a possibly-boxed element) ──────────────
+//
+// `CantorIntSet` (mod.rs) dedups/orders by raw i64 value — correct only when
+// every element is a plain untagged word. That breaks the moment a tagged
+// `Kind::Int` element can be boxed: two different heap allocations holding
+// the same integer are not `==` as raw pointers, and a boxed pointer's
+// numeric value bears no relationship to the value it encodes, so both
+// dedup and ordering would be nonsense. `CantorTaggedIntSet` instead orders
+// by `tagged_cmp` (the same small/boxed logic `cantor_bigint_cmp` uses) —
+// cheap for the common all-small case, correct once a boxed value enters
+// the set: two boxed allocations of equal value collapse to one entry
+// (`insert`'s `Ok(_)` arm keeps the existing entry and drops the redundant
+// allocation, consistent with this file's "never freed" memory model).
+//
+// Only ever call these on genuinely tagged words. A raw, untagged `Int64`
+// value's low bit is not a reliable tag — a plain odd i64 would be
+// misread as "boxed" and `as_bigint` would dereference garbage. Codegen is
+// responsible for routing `Kind::Int64` (never boxed) through the plain
+// `cantor_set_*_i64` family instead, exactly as it already does for scalar
+// `ensure_tagged`/`ensure_raw_int64`.
+#[derive(Default)]
+pub struct CantorTaggedIntSet {
+    elements: Vec<i64>,
+}
+
+impl CantorTaggedIntSet {
+    pub fn insert(&mut self, val: i64) {
+        match self
+            .elements
+            .binary_search_by(|probe| tagged_cmp(*probe, val))
+        {
+            Ok(_) => {}
+            Err(pos) => self.elements.insert(pos, val),
+        }
+    }
+
+    pub fn contains(&self, val: i64) -> bool {
+        self.elements
+            .binary_search_by(|probe| tagged_cmp(*probe, val))
+            .is_ok()
+    }
+
+    pub fn size(&self) -> i64 {
+        self.elements.len() as i64
+    }
+
+    pub fn get(&self, idx: i64) -> i64 {
+        self.elements[idx as usize]
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_tagged_set_new_i64() -> i64 {
+    Box::into_raw(Box::new(CantorTaggedIntSet::default())) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_tagged_set_insert_i64(set: i64, val: i64) {
+    unsafe { &mut *(set as *mut CantorTaggedIntSet) }.insert(val);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_tagged_set_contains_i64(set: i64, val: i64) -> i64 {
+    unsafe { &*(set as *const CantorTaggedIntSet) }.contains(val) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_tagged_set_size_i64(set: i64) -> i64 {
+    unsafe { &*(set as *const CantorTaggedIntSet) }.size()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_tagged_set_get_i64(set: i64, idx: i64) -> i64 {
+    unsafe { &*(set as *const CantorTaggedIntSet) }.get(idx)
+}

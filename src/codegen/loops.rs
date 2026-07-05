@@ -259,8 +259,15 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
+        // See `CantorTaggedIntSet`'s doc comment (runtime/bigint.rs) — a
+        // `Set(Int)` built while tagging is active is a tagged set and must
+        // be iterated via the `_tagged_` entry points instead of the plain
+        // raw-ordered ones.
+        let int_is_tagged = elem_kind == SetElemKind::Int && self.tagging_active();
+
         // Get set size once before the loop.
         let size_fn_name = match elem_kind {
+            SetElemKind::Int if int_is_tagged => "cantor_tagged_set_size_i64",
             SetElemKind::Int => "cantor_set_size_i64",
             SetElemKind::Bool => "cantor_set_size_bool",
         };
@@ -338,6 +345,7 @@ impl<'ctx> Compiler<'ctx> {
         // ── Body block: fetch element, bind var, compile body, increment i ──────
         self.builder.position_at_end(body_bb);
         let get_fn_name = match elem_kind {
+            SetElemKind::Int if int_is_tagged => "cantor_tagged_set_get_i64",
             SetElemKind::Int => "cantor_set_get_i64",
             SetElemKind::Bool => "cantor_set_get_bool",
         };
@@ -353,10 +361,11 @@ impl<'ctx> Compiler<'ctx> {
             .left()
             .ok_or_else(|| CompileError::ice("get fn returned void"))?;
         let (elem_val, elem_k): (BasicValueEnum<'ctx>, Kind) = match elem_kind {
-            // int-soundness-plan phase 3 step 4b: runtime `Set(Int)` storage
-            // is raw i64 (out of scope for tagging in this pass — see
-            // docs/int-soundness-plan.md), but every consumer downstream
-            // expects `Kind::Int` to mean tagged — re-tag on read.
+            // A tagged set's stored word is already in `Kind::Int`'s
+            // representation — no decode needed. The plain raw-ordered set
+            // stores a raw i64, so it needs re-tagging on read (every
+            // consumer downstream expects `Kind::Int` to mean tagged).
+            SetElemKind::Int if int_is_tagged => (elem_raw, Kind::Int),
             SetElemKind::Int => (
                 self.ensure_tagged(elem_raw.into_int_value(), &Kind::Int64)?
                     .into(),

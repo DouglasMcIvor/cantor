@@ -809,10 +809,19 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
+        // `Kind::Int` under `tagging_active()` can carry a boxed element, which
+        // needs magnitude-aware (not raw bit-pattern) dedup/ordering — see
+        // `CantorTaggedIntSet`'s doc comment. `Kind::Int64` is always raw
+        // (never boxed by construction — reserved for the not-yet-implemented
+        // phase 3 split, see kind.rs) and stays on the plain path even when
+        // tagging is active elsewhere in the program.
+        let int_is_tagged = elem_kind == Kind::Int && self.tagging_active();
         let (set_elem_kind, new_fn, insert_fn) = match &elem_kind {
-            // Kind::Int64 is reserved for the not-yet-implemented phase 3
-            // split (see kind.rs); nothing produces it yet, but it's the
-            // same wire type as Kind::Int wherever it does show up.
+            Kind::Int if int_is_tagged => (
+                SetElemKind::Int,
+                "cantor_tagged_set_new_i64",
+                "cantor_tagged_set_insert_i64",
+            ),
             Kind::Int | Kind::Int64 => (
                 SetElemKind::Int,
                 "cantor_set_new_i64",
@@ -858,10 +867,10 @@ impl<'ctx> Compiler<'ctx> {
                     .build_int_z_extend(val.into_int_value(), i64t, "elem_bool_ext")
                     .map_err(|e| CompileError::ice(e.to_string()))?
                     .into()
-            } else if k == Kind::Int {
-                // int-soundness-plan phase 3 step 4b: runtime `Set(Int)`
-                // storage stays raw i64 (out of scope for tagging in this
-                // pass — see docs/int-soundness-plan.md).
+            } else if k == Kind::Int && !int_is_tagged {
+                // Not routed through the tagged set (either `Kind::Int64`, or
+                // `Kind::Int` with tagging inactive program-wide) — decode to
+                // the plain raw-ordered set's expected representation.
                 self.ensure_raw_int64(val.into_int_value(), &k)?.into()
             } else {
                 val

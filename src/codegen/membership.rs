@@ -307,7 +307,14 @@ impl<'ctx> Compiler<'ctx> {
         elem_kind: SetElemKind,
     ) -> Result<IntValue<'ctx>, CompileError> {
         let i64t = self.context.i64_type();
+        // See `CantorTaggedIntSet`'s doc comment (runtime/bigint.rs): a
+        // `Set(Int)` built while tagging is active can hold a boxed element,
+        // which needs magnitude-aware dedup/ordering, so it's built (by
+        // `compile_set_lit_value`) and must be queried via the `_tagged_`
+        // entry points instead of the plain raw-ordered ones.
+        let int_is_tagged = elem_kind == SetElemKind::Int && self.tagging_active();
         let contains_fn = match elem_kind {
+            SetElemKind::Int if int_is_tagged => "cantor_tagged_set_contains_i64",
             SetElemKind::Int => "cantor_set_contains_i64",
             SetElemKind::Bool => "cantor_set_contains_bool",
         };
@@ -315,24 +322,17 @@ impl<'ctx> Compiler<'ctx> {
             .module
             .get_function(contains_fn)
             .ok_or_else(|| CompileError::ice(format!("{contains_fn} not declared")))?;
-        // int-soundness-plan phase 3 step 4b: runtime `Set(Int)` storage is
-        // out of scope for tagging in this pass (see docs/int-soundness-plan.md) —
-        // it stores plain raw i64 elements exactly as before, so a tagged
-        // `Kind::Int` value must be decoded first. Sound because
-        // `ensure_raw_int64` aborts loudly (never silently truncates) if the
-        // value doesn't actually fit, rather than corrupting set membership —
-        // TODO: the abort message it uses ("compiler invariant violated") is
-        // written for the call-boundary use case, where not-fitting really
-        // would mean a compiler bug; here a genuinely-huge value hitting an
-        // unsupported `Set(Int)` isn't a compiler bug, just an unimplemented
-        // feature, and deserves its own clearer message if this becomes a
-        // real usability complaint.
         let val_i64: BasicValueEnum = if val_kind == Kind::Bool {
             self.builder
                 .build_int_z_extend(val.into_int_value(), i64t, "val_bool_ext")
                 .map_err(|e| CompileError::ice(e.to_string()))?
                 .into()
-        } else if val_kind == Kind::Int {
+        } else if val_kind == Kind::Int && !int_is_tagged {
+            // Not routed through the tagged set — decode to the plain
+            // raw-ordered set's expected representation. Sound because
+            // `ensure_raw_int64` aborts loudly (never silently truncates) if
+            // the value doesn't actually fit, rather than corrupting set
+            // membership.
             self.ensure_raw_int64(val.into_int_value(), &val_kind)?
                 .into()
         } else {

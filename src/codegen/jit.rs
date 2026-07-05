@@ -41,6 +41,26 @@ impl<'ctx> Compiler<'ctx> {
                     runtime::cantor_set_get_i64 as *const () as usize,
                 ),
                 (
+                    "cantor_tagged_set_new_i64",
+                    runtime::cantor_tagged_set_new_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_tagged_set_insert_i64",
+                    runtime::cantor_tagged_set_insert_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_tagged_set_contains_i64",
+                    runtime::cantor_tagged_set_contains_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_tagged_set_size_i64",
+                    runtime::cantor_tagged_set_size_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_tagged_set_get_i64",
+                    runtime::cantor_tagged_set_get_i64 as *const () as usize,
+                ),
+                (
                     "cantor_set_new_bool",
                     runtime::cantor_set_new_bool as *const () as usize,
                 ),

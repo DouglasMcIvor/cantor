@@ -774,7 +774,7 @@ independently unit-testable before any codegen exists)
    directly on emitted IR — not blocking, fast-follow coverage. README:
    retire the "Known incompleteness" call-out for *scalar* `Int`/`Nat` —
    closed by this step — but add a narrower one for `Vector(Int)`/`Set(Int)`
-   (see below, still open). design-decisions.md: promote this section's representation choice
+   (see below; closed 2026-07-05, README updated). design-decisions.md: promote this section's representation choice
    from this doc into §7's Integers subsection as DECIDED (small pointer,
    full detail stays here) — not yet done.
 
@@ -857,15 +857,16 @@ at all, and a stray one would break the very `TaggedUnion`-arm matching
   its *real* declared Kind (`fn_param_kinds`) immediately before its call;
   each candidate's result is re-encoded to tagged before the `phi`.
 - **`Vector(Int)`/`Set(Int)`/runtime-`Set` `for`-loop storage — deliberately
-  stayed raw, decode-on-read/encode-on-write at the boundary; `Vector(Int)`
-  fixed 2026-07-05 (post-review), `Set(Int)`/runtime-`Set` still open.**
-  This was an explicit, documented scope line, not an oversight: making
-  container *elements* genuinely arbitrary-precision needs a canonical
-  (i.e. never-duplicated) tagged representation for `Set` dedup/equality —
-  two *different* boxed heap allocations holding the same integer are not
-  `==` as raw pointers, so `cantor_set_insert_i64`/`cantor_set_contains_i64`
-  would silently break set semantics the moment a boxed value entered a
-  set. `Vector(Int)` has no such problem — it's an ordered sequence, no
+  stayed raw, decode-on-read/encode-on-write at the boundary; both fixed
+  2026-07-05 (post-review).** This was an explicit, documented scope line,
+  not an oversight: making container *elements* genuinely arbitrary-precision
+  needs a canonical (i.e. never-duplicated) tagged representation for `Set`
+  dedup/equality — two *different* boxed heap allocations holding the same
+  integer are not `==` as raw pointers, so `cantor_set_insert_i64`/
+  `cantor_set_contains_i64` would silently break set semantics the moment a
+  boxed value entered a set.
+
+  `Vector(Int)` has no such problem — it's an ordered sequence, no
   dedup/equality involved — so a review found the raw decode/re-encode at
   its four construction/read sites (`compile_tuple_as_vector`,
   `compile_scalar_as_singleton_vector`, `compile_index`/`compile_proj`) was
@@ -874,11 +875,30 @@ at all, and a stray one would break the very `TaggedUnion`-arm matching
   round-trips through it correctly with zero runtime changes — exactly
   like `Tuple`/`TaggedUnion` payload leaves already did, which never needed
   this dance in the first place. Fixed by deleting the coercion calls at
-  those four sites. `Set(Int)`/`compile_set_lit_value`/
-  `compile_runtime_contains`/`compile_for_in`'s runtime-set loop remain on
-  the raw path for now — `ensure_raw_int64`'s "compiler invariant violated"
-  abort (imprecise wording for this specific case, noted as a TODO) still
-  fires for a `Set(Int)` element that doesn't fit raw `Int64`.
+  those four sites.
+
+  `Set(Int)` needed the canonical representation after all: a new
+  `CantorTaggedIntSet` (`runtime/bigint.rs`) orders/dedups by *decoded*
+  magnitude (`tagged_cmp`, factored out of and shared with
+  `cantor_bigint_cmp` — cheap `both_small` fast path, `BigInt` comparison
+  once either side is boxed) instead of raw i64 value, so two boxed
+  allocations of equal value correctly collapse to one set entry (the
+  redundant allocation is simply dropped/leaked, consistent with this
+  runtime's existing "never freed" memory model). New entry points
+  (`cantor_tagged_set_{new,insert,contains,size,get}_i64`) mirror the plain
+  `cantor_set_*_i64` family exactly; `compile_set_lit_value`,
+  `compile_runtime_contains`, and `compile_for_in`'s runtime-set loop each
+  dispatch to the tagged family instead of the plain one whenever
+  `elem_kind == Kind::Int && tagging_active()` — `Kind::Int64` (never
+  boxed) always stays on the plain, raw-ordered path, matching how
+  `ensure_tagged`/`ensure_raw_int64` already distinguish the two. No
+  `Kind`-level change needed: since `tagging_active()` is a whole-program
+  static flag, a `Set(Int)`'s literal-construction site and every site that
+  later queries/iterates it always agree on which family it used. Solver
+  reasoning is unaffected — this is a pure codegen/runtime change.
+  `runtime/mod.rs` was split into `runtime/mod.rs` + a new
+  `runtime/bigint.rs` first, as a pure-refactor commit, to stay under the
+  repo's 1000-line file guideline.
 - **Domain/range membership checks** (`codegen/membership.rs`): every
   `IntBound` arm (`NonNeg`/`Positive`/`NonZero`/`Bounded`) and the
   named-set/set-literal equality arms now route through a new

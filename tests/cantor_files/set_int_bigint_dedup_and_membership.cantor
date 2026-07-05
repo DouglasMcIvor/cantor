@@ -1,0 +1,20 @@
+-- Set(Int) with boxed (BigInt) elements: two calls to `huge()` compute the
+-- same value via two independent heap allocations (each call re-runs the
+-- overflowing addition) -- dedup must be by decoded value, not by raw
+-- pointer, or this set would wrongly report size 3 instead of 2.
+huge : -> Int
+huge() = 9223372036854775807 + 1000000000000000000
+
+another_huge : -> Int
+another_huge() = 9223372036854775807 + 2000000000000000000
+
+main : -> Int
+main() {
+    mut s : Set(Int) = {huge(), huge(), another_huge()}
+
+    mut checks : Int = 0
+    checks := if huge() in s then checks + 1 else checks
+    checks := if another_huge() in s then checks + 1 else checks
+
+    checks + size(s)
+}

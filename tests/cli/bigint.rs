@@ -208,18 +208,25 @@ mod small_value_membership_regression {
     }
 }
 
-// ── Container elements (found in review, 2026-07-05; Vector(Int) fixed) ────
+// ── Container elements (found in review, 2026-07-05; now fixed) ─────────────
 //
 // `Vector(Int)`/`Set(Int)` elements were documented as out of scope for
 // BigInt (int-soundness-plan.md step 4b): a boxed element aborted via
-// `ensure_raw_int64` rather than computing the correct answer. Fixed for
-// `Vector(Int)` by no longer decoding/re-encoding at the vector push/read
-// boundary at all — `Int64Array` storage is representation-agnostic, so a
-// tagged (possibly boxed) word round-trips through it unchanged; `Tuple`/
-// `TaggedUnion` element storage already worked this way. `Set(Int)` needs a
-// canonical/deduped comparison (two different boxed allocations holding the
-// same value must still dedup to one set entry) and is still open — see
-// `int64_split`'s sibling module or int-soundness-plan.md for that follow-up.
+// `ensure_raw_int64` rather than computing the correct answer.
+//
+// `Vector(Int)` was fixed by no longer decoding/re-encoding at the vector
+// push/read boundary at all — `Int64Array` storage is representation-
+// agnostic, so a tagged (possibly boxed) word round-trips through it
+// unchanged; `Tuple`/`TaggedUnion` element storage already worked this way.
+//
+// `Set(Int)` needed more: a canonical/deduped comparison, since two
+// different boxed allocations holding the same value must still dedup to
+// one set entry (they're not `==` as raw pointers). Fixed with a new
+// `CantorTaggedIntSet` (runtime/bigint.rs) that orders/dedups by decoded
+// magnitude (`tagged_cmp`, shared with `cantor_bigint_cmp`) instead of raw
+// i64 value, used instead of the plain `cantor_set_*_i64` family whenever
+// `tagging_active()` — see `compile_set_lit_value`/`compile_runtime_contains`/
+// `compile_for_in`'s runtime-set loop.
 #[test]
 fn vector_of_int_holding_a_boxed_element_reads_back_correctly() {
     let out = run_subcommand("vector_int_bigint_element.cantor");
@@ -231,6 +238,39 @@ fn vector_of_int_holding_a_boxed_element_reads_back_correctly() {
     assert!(
         out.stdout.contains("main() = 9223372036854775808"),
         "expected the boxed element to read back exactly:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn set_of_int_dedups_two_boxed_allocations_of_the_same_value() {
+    // huge() is called three times (twice for the same value, once for a
+    // different value) — each call is a fresh heap allocation, so this only
+    // passes if the set dedups by decoded value, not by pointer identity.
+    let out = run_subcommand("set_int_bigint_dedup_and_membership.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 4"),
+        "expected size 2 (deduped) + 2 true membership checks = 4:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn for_in_over_set_of_int_reads_a_boxed_element_correctly() {
+    let out = run_subcommand("set_int_bigint_for_loop.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 10223372036854775810"),
+        "expected 1 + 2 + huge() to read back and sum exactly:\n{}",
         out.stdout
     );
 }
