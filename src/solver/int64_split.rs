@@ -1,55 +1,62 @@
-//! int-soundness-plan phase 3, step 4a: the compiler-generated `Int64`/
-//! `BigInt` overload split.
+//! int-soundness-plan phase 3: two compiler-generated transforms that let a
+//! function's params/return be represented as raw, untagged `Kind::Int64`
+//! instead of the tagged `Kind::Int` step 4b introduces for every other
+//! integer position.
 //!
-//! **Solver-gated, not unconditional** (corrected 2026-07-04 — see
-//! docs/int-soundness-plan.md's "The overload split" section for the
-//! counterexample that ruled out the original unconditional design): a
-//! function is only split when the solver *additionally* proves the
-//! narrower whole-body claim `args ∈ Int64 → result ∈ Int64`, by re-running
-//! the ordinary existing signature checker (`check_function`) against a
-//! synthesized `Int64 -> Int64` narrowing of the same body — no new proof
-//! machinery. When it proves, the `Int64` overload is sound end-to-end with
-//! zero tagging anywhere inside it (every node was just proved bounded).
-//! When it doesn't, no split is generated at all; the function stays a
-//! single ordinary `Kind::Int` body relying on the separate per-node
-//! promotion mechanism (steps 4b–4d) for correctness.
+//! **Step A — whole-function promotion (`try_promote_to_int64`).** Most
+//! existing Cantor functions already declare a domain that's a genuine
+//! subset of `Int64` (`Int8`, `Int16`, `Int32`, a bounded custom set, …) —
+//! for these there's no "otherwise" case a caller could ever hit (the
+//! ordinary domain-membership proof obligation at every call site already
+//! guarantees it), so the whole function can be promoted in place to
+//! `Kind::Int64`, with no sibling overload and no runtime dispatch. This is
+//! what keeps the overwhelming common case exactly as cheap as it is today
+//! once step 4b starts tagging plain `Kind::Int` — see
+//! docs/int-soundness-plan.md's "Tagging scope" discussion for why this
+//! step exists at all (blanket tagging would otherwise tax every integer
+//! operation in the language, not just genuinely-unbounded ones).
 //!
-//! **MVP eligibility (deliberately narrow — see int-soundness-plan.md):**
-//! exactly one parameter, exactly one signature, declared domain *and*
-//! range both the bare unbounded `Int` builtin, and a body containing no
-//! `*` (value-position `Mul`) anywhere. Multi-parameter Cartesian domains
-//! and signatures mixing `Int` with other Kinds are a fast-follow, not this
-//! first cut.
+//! **Step 4a — the `Int64`/`BigInt` overload split (`try_split`).** For a
+//! function whose domain is *not* already bounded (the bare unbounded `Int`
+//! builtin) but whose body still happens to stay within `Int64` for
+//! whatever argument it's given, split it into two overloads: an `Int64`
+//! fast path used when a call site can prove its argument fits, and a
+//! `BigInt = Int - Int64` fallback. See below for this mechanism's own doc
+//! comment.
 //!
-//! **The `Mul` restriction is a safety measure, not a design choice** — see
-//! int-soundness-plan.md's "Phase 3" section for the full story: bounding a
-//! nonlinear (`*`) term to the *finite but huge* `Int64` range
-//! (`∃x ∈ [i64::MIN, i64::MAX]. x*x ∉ [i64::MIN, i64::MAX]`) was found to
-//! make cvc5 run past its configured `tlimit` for a very long time (90+s
-//! observed with `tlimit` set as low as 2000ms) — the *same* overflow
-//! question over an *unconstrained* `x`/`y` (phase 1's existing per-node
-//! check) returns fast, so the huge-but-finite bound specifically seems to
-//! push cvc5 into a much harder code path. A background-thread watchdog
-//! isn't a safe mitigation here: cvc5 isn't thread-safe even with
-//! per-thread `TermManager`/`Solver` instances (see `CVC5_CALL_LOCK`'s doc
-//! comment) — racing a second concurrent cvc5 call while abandoning a
-//! hung one is a real segfault risk, not just slow. So for now, a body
-//! containing multiplication is never attempted, regardless of whether it
-//! would actually be Int64-preserving (e.g. `f(x) = x * 0` is skipped too,
-//! even though it trivially would prove).
+//! Both are **solver-gated, not unconditional** (corrected 2026-07-04 for
+//! step 4a — see docs/int-soundness-plan.md's "The overload split" section
+//! for the counterexample that ruled out an earlier unconditional design):
+//! promotion/splitting only happens when the solver proves it's sound.
+//!
+//! **What "proves it's sound" requires, precisely.** It is *not* enough for
+//! the outer `domain → range` contract alone to prove — two's-complement
+//! `+`/`-`/`*`/`neg` are exact ring operations mod 2^64, so a chain of only
+//! those is safe under raw wraparound hardware as long as the *final*
+//! result is proved in range, but `/` breaks that argument: dividing an
+//! intermediate value that already wrapped can produce a genuinely wrong
+//! quotient even when the true final answer would have been in range. So
+//! both mechanisms require every individual arithmetic node's own overflow
+//! obligation (phase 1's per-node `Int64`-boundedness side channel) to also
+//! prove `true` for the trial signature — see `trial_fully_proves_int64`.
 
 use std::collections::HashMap;
+
+use cvc5::{Kind as CvcKind, TermManager};
 
 use crate::kind::Kind;
 use crate::semantics::tree::{
     SemAssertElse, SemExpr, SemExprKind, SemFunctionBody, SemFunctionDef, SemFunctionSig, SemItem,
-    SemStmt,
+    SemStmt, sem_param_set_exprs,
 };
 use crate::span::{Span, Symbol};
 
-use super::{CheckResult, FunctionEnv, NameDefs, check_function};
+use super::membership::{Membership, membership_constraint};
+use super::{
+    CheckResult, FunctionEnv, NameDefs, build_distinct_preds, check_function, configured_solver,
+};
 
-/// Runs the split pass over every function in the file. Items that aren't
+/// Runs both transforms over every function in the file. Items that aren't
 /// `FunctionDef`s, or don't qualify, or don't prove, pass through unchanged.
 pub(super) fn generate_int64_bigint_splits(
     sem_items: Vec<SemItem>,
@@ -58,8 +65,8 @@ pub(super) fn generate_int64_bigint_splits(
 ) -> Vec<SemItem> {
     // The real, file-wide contracts — used so a candidate body's calls to
     // any *other* function resolve against their genuine signatures during
-    // the trial check below. Only the candidate's own entry is overridden,
-    // per candidate, inside `try_split`.
+    // the trial checks below. Only the candidate's own entry is overridden,
+    // per candidate, inside `try_promote_to_int64`/`try_split`.
     let mut fn_env: FunctionEnv<'_> = FunctionEnv::new();
     for item in &sem_items {
         if let SemItem::FunctionDef(def) = item {
@@ -70,15 +77,17 @@ pub(super) fn generate_int64_bigint_splits(
     let mut out = Vec::with_capacity(sem_items.len());
     for item in &sem_items {
         match item {
-            // MVP scope: only split a name that has *no* other FunctionDef
-            // in the file already — i.e. leave any pre-existing user
-            // overload set (phase 2) entirely alone. This isn't a
-            // fundamental limit (the split's two synthesized domains are
-            // still checked for disjointness against any sibling overload,
-            // same as any other phase 2 group), it just keeps step 4a from
-            // also having to reason about interactions with user-declared
+            // MVP scope for both transforms: only touch a name that has *no*
+            // other FunctionDef in the file already — i.e. leave any
+            // pre-existing user overload set (phase 2) entirely alone. This
+            // isn't a fundamental limit, it just keeps this pass from also
+            // having to reason about interactions with user-declared
             // overloading in this first cut.
             SemItem::FunctionDef(def) if fn_env.get(&def.name).is_some_and(|v| v.len() == 1) => {
+                if let Some(promoted) = try_promote_to_int64(def, &fn_env, name_defs, timeout_ms) {
+                    out.push(SemItem::FunctionDef(promoted));
+                    continue;
+                }
                 match try_split(def, &fn_env, name_defs, timeout_ms) {
                     Some((int64_def, bigint_def)) => {
                         out.push(SemItem::FunctionDef(int64_def));
@@ -91,6 +100,172 @@ pub(super) fn generate_int64_bigint_splits(
         }
     }
     out
+}
+
+/// Run `check_function` for a trial signature and return `true` only if the
+/// `domain → range` contract proves *and* every arithmetic node inside also
+/// proves it stays within `Int64` — see this module's doc comment for why
+/// the weaker "final result in range" check alone isn't sound once the body
+/// can contain `/`. The trial's own `overflow_checks`/`overload_resolutions`
+/// side-channel entries are scratch — thrown away either way, never merged
+/// into the file's real maps (if the transform fires, the real per-function
+/// loop in `check_file` checks the replacement item again from scratch and
+/// populates those maps correctly then).
+fn trial_fully_proves_int64<'a>(
+    trial_def: &'a SemFunctionDef,
+    trial_env: &FunctionEnv<'a>,
+    name_defs: &NameDefs,
+    timeout_ms: u64,
+) -> bool {
+    let mut scratch_overflow = HashMap::new();
+    let mut scratch_resolutions = HashMap::new();
+    let Ok(results) = check_function(
+        trial_def,
+        trial_env,
+        name_defs,
+        timeout_ms,
+        &mut scratch_overflow,
+        &mut scratch_resolutions,
+    ) else {
+        return false;
+    };
+    let contract_proved = results.iter().all(|(_, r)| *r == CheckResult::Proved);
+    contract_proved && scratch_overflow.values().all(|&proved| proved)
+}
+
+/// `true` iff the solver proves `part ⊆ Int64` (no witness value satisfies
+/// `part` but not `Int64`). `false` on `Unknown`/unsupported syntax as well
+/// as a genuine counterexample — this is an eligibility gate for an
+/// optimization, not a proof obligation, so declining silently (leaving the
+/// function as an ordinary `Kind::Int` body) is always the safe fallback.
+fn domain_within_int64(part: &SemExpr, name_defs: &NameDefs, timeout_ms: u64) -> bool {
+    let tm = TermManager::new();
+    let mut solver = configured_solver(&tm, timeout_ms);
+    let distinct_preds = build_distinct_preds(&tm, name_defs);
+    let t = tm.mk_const(tm.integer_sort(), "__int64_promote_check");
+    let int64_expr = var_expr("Int64", Kind::Int64, part.span);
+
+    let in_part = membership_constraint(&tm, t.clone(), part, name_defs, &distinct_preds);
+    let in_int64 = membership_constraint(&tm, t, &int64_expr, name_defs, &distinct_preds);
+
+    if matches!(in_part, Membership::Unsupported) || matches!(in_int64, Membership::Unsupported) {
+        return false;
+    }
+    if let Membership::Constrained(c) = in_part {
+        solver.assert_formula(c);
+    }
+    match in_int64 {
+        // Int64 imposes no constraint at all (shouldn't happen for the real
+        // Int64 builtin, but handled defensively): everything is trivially
+        // in Int64, so `part ⊆ Int64` holds unconditionally — force unsat.
+        Membership::Unconstrained => solver.assert_formula(tm.mk_boolean(false)),
+        Membership::Constrained(c) => {
+            let not_c = tm.mk_term(CvcKind::Not, &[c]);
+            solver.assert_formula(not_c);
+        }
+        Membership::Unsupported => unreachable!("handled above"),
+    }
+    solver.check_sat().is_unsat()
+}
+
+/// Step A: promote a whole function to raw `Kind::Int64` in place, with no
+/// sibling overload, when every parameter's declared domain component is
+/// already provably `⊆ Int64` and the (unchanged) body proves sound under
+/// `trial_fully_proves_int64`. Declines (returns `None`, leaving `def`
+/// untouched) for anything not already scalar-`Int`-typed throughout —
+/// `Bool`/`Tuple`/`Vector`/`TaggedUnion` positions never need this, and a
+/// signature mixing `Int` with another Kind is a fast-follow, not this
+/// first cut.
+///
+/// MVP eligibility, deliberately narrow like `try_split`: exactly one
+/// signature, no pre-existing overload sibling (checked by the caller). No
+/// restriction on arity or on `Mul` — unlike `try_split`, this doesn't
+/// synthesize a *narrower* domain than what's already declared, so there's
+/// no new nonlinear-arithmetic bound for cvc5 to struggle with beyond
+/// whatever the function's own declared domain already required it to
+/// handle.
+fn try_promote_to_int64<'a>(
+    def: &'a SemFunctionDef,
+    fn_env: &FunctionEnv<'a>,
+    name_defs: &NameDefs,
+    timeout_ms: u64,
+) -> Option<SemFunctionDef> {
+    if def.sigs.len() != 1 {
+        return None;
+    }
+    if def.return_kind != Kind::Int || def.param_kinds.iter().any(|k| *k != Kind::Int) {
+        return None;
+    }
+    let sig = &def.sigs[0];
+    // MVP scope: a fallible function's `return_kind` names only its success
+    // Kind (`Fail`-ness lives in the `Fail`-wire `{i1, i64}` struct, built
+    // separately at the codegen boundary) — promoting one is a fast-follow,
+    // not this first cut, since the success payload's raw-vs-tagged
+    // representation inside that wire isn't threaded through yet.
+    if crate::semantics::tree::range_contains_fail(&sig.range) {
+        return None;
+    }
+    let parts = sem_param_set_exprs(sig.domain.as_ref(), def.params.len()).ok()?;
+    if parts
+        .iter()
+        .any(|part| !domain_within_int64(part, name_defs, timeout_ms))
+    {
+        return None;
+    }
+
+    let n = def.params.len();
+
+    // The trial candidate: same body and *declared domain* (already proved
+    // `⊆ Int64` above, so it doesn't need narrowing the way `try_split`'s
+    // does — unlike `synth_def`, which always narrows both), but `range`
+    // narrowed to `Int64` — this is the actual claim being tested. Distinct
+    // from the permanent result below: narrowing this trial's range doesn't
+    // weaken the function's real, permanent contract.
+    let trial = SemFunctionDef {
+        name: def.name.clone(),
+        sigs: vec![SemFunctionSig {
+            domain: sig.domain.clone(),
+            range: var_expr("Int64", Kind::Int64, def.span),
+            param_kinds: vec![Kind::Int64; n],
+            return_kind: Kind::Int64,
+            span: sig.span,
+        }],
+        params: def.params.clone(),
+        body: def.body.clone(),
+        param_kinds: vec![Kind::Int64; n],
+        return_kind: Kind::Int64,
+        span: def.span,
+        compiler_generated_split: false,
+    };
+
+    let mut trial_env = fn_env.clone();
+    trial_env.insert(trial.name.clone(), vec![&trial]);
+    let proved = trial_fully_proves_int64(&trial, &trial_env, name_defs, timeout_ms);
+    drop(trial_env);
+    if !proved {
+        return None;
+    }
+
+    // The real, permanent result: original domain *and* range untouched
+    // (weakening a bounded function's declared range to the broader
+    // `Int64` would regress provability for its own callers) — only the
+    // Kind labels change, to the raw representation.
+    Some(SemFunctionDef {
+        name: def.name.clone(),
+        sigs: vec![SemFunctionSig {
+            domain: sig.domain.clone(),
+            range: sig.range.clone(),
+            param_kinds: vec![Kind::Int64; n],
+            return_kind: Kind::Int64,
+            span: sig.span,
+        }],
+        params: def.params.clone(),
+        body: def.body.clone(),
+        param_kinds: vec![Kind::Int64; n],
+        return_kind: Kind::Int64,
+        span: def.span,
+        compiler_generated_split: false,
+    })
 }
 
 /// `true` when `expr` is a bare reference to the named builtin set (`Var`
@@ -174,15 +349,6 @@ fn try_split<'a>(
         Kind::Int64,
     );
 
-    // Throwaway side-channels: this is a probe, not the real check. Its
-    // per-span verdicts must never reach the file's real `overflow_checks`/
-    // `overload_resolutions` maps — if the split is generated below, the
-    // normal `check_file` main loop checks `int64_def` again as an ordinary
-    // item and populates those maps correctly then; if it isn't, `def`
-    // alone continues through the normal loop untouched.
-    let mut scratch_overflow = HashMap::new();
-    let mut scratch_resolutions = HashMap::new();
-
     // Override just this name's entry so a recursive self-call is checked
     // against the *narrower* Int64 contract as its own induction
     // hypothesis (this can prove strictly more than reusing the original
@@ -191,17 +357,7 @@ fn try_split<'a>(
     let mut trial_env = fn_env.clone();
     trial_env.insert(int64_def.name.clone(), vec![&int64_def]);
 
-    let results = check_function(
-        &int64_def,
-        &trial_env,
-        name_defs,
-        timeout_ms,
-        &mut scratch_overflow,
-        &mut scratch_resolutions,
-    )
-    .ok()?;
-    let proved = results.iter().all(|(_, r)| *r == CheckResult::Proved);
-    if !proved {
+    if !trial_fully_proves_int64(&int64_def, &trial_env, name_defs, timeout_ms) {
         return None;
     }
 
