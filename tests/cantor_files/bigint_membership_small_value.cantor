@@ -1,0 +1,14 @@
+-- Same underlying bug as int64_membership_small_value.cantor, via the
+-- complementary named set: `BigInt = Int - Int64` is `IntBound::Outside`,
+-- built from the same buggy tag-unaware constant comparison. An ordinary
+-- small value should never be `in BigInt`.
+--
+-- `Int -> Bool` (not `Int -> Int`) deliberately avoids `int64_split`'s
+-- auto-split eligibility shape, unlike tests/cantor_files/bigint_named_set*.cantor
+-- (both `Int -> Int`, which happen to get auto-split and so never actually
+-- exercise this code path -- see tests/cli/bigint.rs's `known_issues` section).
+check : Int -> Bool
+check(x) = x in BigInt
+
+main : -> Bool
+main() = check(100)

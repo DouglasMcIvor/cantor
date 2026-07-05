@@ -1,6 +1,7 @@
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 pub fn cantor() -> Command {
     Command::new(env!("CARGO_BIN_EXE_cantor"))
@@ -69,6 +70,59 @@ pub fn run_subcommand(name: &str) -> Output {
 pub fn run_llvm_ir(name: &str) -> Output {
     let path = fixture(name);
     run(&["llvm-ir", path.to_str().unwrap()])
+}
+
+/// Like `run_subcommand`, but kills the child and returns `None` instead of
+/// blocking forever if it doesn't exit within `timeout` — cvc5 is known not
+/// to honor the CLI's own `--timeout` (`tlimit`) for some nonlinear-arithmetic
+/// query shapes (see `known_issues.rs`'s module doc), so a genuinely-hanging
+/// fixture would otherwise wedge the whole test binary. Reads stdout/stderr
+/// on background threads while polling so a full pipe buffer can't deadlock
+/// the wait.
+pub fn run_subcommand_with_deadline(name: &str, timeout: Duration) -> Option<Output> {
+    let path = fixture(name);
+    let mut child = cantor()
+        .arg("run")
+        .arg(&path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cantor binary");
+
+    let mut stdout_pipe = child.stdout.take().expect("child stdout not piped");
+    let mut stderr_pipe = child.stderr.take().expect("child stderr not piped");
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buf);
+        buf
+    });
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("failed to poll child") {
+            break Some(status);
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    let stdout_buf = stdout_thread.join().expect("stdout reader thread panicked");
+    let stderr_buf = stderr_thread.join().expect("stderr reader thread panicked");
+    let status = status?;
+    Some(Output {
+        stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
+        code: status.code().unwrap_or(-1),
+    })
 }
 
 /// Assert that `cantor run` refused to execute (the `ConstrainedTree` proof

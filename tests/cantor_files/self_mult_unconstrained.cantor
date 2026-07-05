@@ -1,0 +1,9 @@
+-- The original int-soundness-plan.md "known issue" reproduction, verbatim:
+-- self-multiplication (`x * x`, not `x * y`) makes cvc5 hang, seemingly
+-- regardless of the domain's size -- see tests/cli/overflow.rs's
+-- `known_issues` section.
+f : Int -> Int
+f(x) = x * x
+
+main : -> Int
+main() = f(3)

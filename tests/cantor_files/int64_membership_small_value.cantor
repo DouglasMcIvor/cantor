@@ -1,0 +1,16 @@
+-- Known bug (see tests/cli/bigint.rs's `known_issues` section): under
+-- tagging, `x in Int64` is checked by comparing `x`'s tagged bit pattern
+-- against a *runtime-boxed* encoding of i64::MIN/i64::MAX (both are outside
+-- the tagged scheme's small-int range), but the comparison only switches to
+-- the tag-aware `cantor_bigint_cmp` path when `x` itself is boxed --
+-- an ordinary small `x` wrongly takes the raw bit-pattern branch instead,
+-- comparing its shifted small-int encoding directly against a heap pointer.
+--
+-- `Int -> Bool` (not `Int -> Int`) deliberately avoids `int64_split`'s
+-- auto-split eligibility shape (which requires a bare `Int -> Int` signature)
+-- so this exercises the ordinary, non-split tagged path.
+check : Int -> Bool
+check(x) = x in Int64
+
+main : -> Bool
+main() = check(100)

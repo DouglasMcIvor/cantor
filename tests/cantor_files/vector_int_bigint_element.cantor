@@ -1,0 +1,18 @@
+-- Aspirational: Vector(Int)/Set(Int) elements are documented as deliberately
+-- out of scope for arbitrary-precision support (int-soundness-plan.md, step
+-- 4b's "Vector(Int)/Set(Int)/runtime-Set for-loop storage" entry) -- an
+-- element that doesn't fit raw i64 currently aborts loudly via
+-- `ensure_raw_int64` rather than corrupting anything, but it does abort
+-- rather than compute the correct (BigInt-backed) answer. See
+-- tests/cli/bigint.rs's `known_issues` section.
+big : -> Int
+big() = 4611686018427387904 * 2
+
+get0 : (Int* - Int - {[]}) -> Int
+get0(xs) = xs[0]
+
+make_vec : -> (Int* - Int - {[]})
+make_vec() = [big(), 1]
+
+main : -> Int
+main() = get0(make_vec())

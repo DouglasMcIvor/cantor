@@ -1,0 +1,9 @@
+-- Same cvc5 self-multiplication hang as self_mult_unconstrained.cantor, but
+-- over an ordinary bounded, everyday-sized domain (Int32) rather than the
+-- bare unbounded Int builtin -- confirms the hang isn't specific to
+-- unbounded domains. See tests/cli/overflow.rs's `known_issues` section.
+f : Int32 -> Int32
+f(x) = x * x
+
+main : -> Int32
+main() = f(3)
