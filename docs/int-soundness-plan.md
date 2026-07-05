@@ -58,6 +58,11 @@ returned or passed through a raw value while claiming the now-tagged
 `Kind::Int` label). `expr.rs` crossed 1000 lines again during this work;
 split into `codegen/arith.rs` (checked/tagged `+ - * /` and unary `-`) as
 a same-session pure-refactor, mirroring the project's established pattern.
+
+**`BigInt` exposed as an ordinary named set DONE (2026-07-05)** — same day
+as step 4b — so `assert`/`require x not in BigInt` now work; see the
+"`BigInt` as an ordinary named set" entry under phase 3's step 5 below for
+the (small) implementation.
 **Executes in three phases; phase 1 alone closes the soundness gap**
 
 ---
@@ -743,20 +748,19 @@ independently unit-testable before any codegen exists)
       *in codegen* before calling it) was **not** done — deferred as a minor
       follow-up since it doesn't affect correctness, only shaves one
       avoidable call on an already-not-statically-elided check.
-5. **Tests / docs — DONE (2026-07-05) for the core surface**: CLI e2e
-   covering (ii) a call that overflows i64 promotes and continues to a
-   correct (if now BigInt-backed) result instead of aborting
+5. **Tests / docs — DONE (2026-07-05) for the core surface, (iv) also DONE
+   same day**: CLI e2e covering (ii) a call that overflows i64 promotes and
+   continues to a correct (if now BigInt-backed) result instead of aborting
    (`tests/cli/overflow.rs`, rewritten from phase 1's abort-expecting
    originals); comparisons, call boundaries, runtime dispatch mixing an
-   Int64/BigInt split, and domain-membership checks on boxed values
-   (`tests/cli/bigint.rs`, new). **Still open:** (i) a call proved `Int64`
+   Int64/BigInt split, and domain-membership checks on boxed values, plus
+   `BigInt` itself as a named set (`tests/cli/bigint.rs`, new, and
+   `tests/solver/membership.rs`). **Still open:** (i) a call proved `Int64`
    compiles to the raw overload with no promotion codegen at all, asserted
-   directly on emitted IR; (iv) `require`/`assert ... not in BigInt` once
-   `BigInt` is exposed as an ordinary named set (see below) — neither is
-   blocking, both are fast-follow coverage. README: retire the "Known
-   incompleteness" call-out for *scalar* `Int`/`Nat` — closed by this step
-   — but add a narrower one for `Vector(Int)`/`Set(Int)` (see below, still
-   open). design-decisions.md: promote this section's representation choice
+   directly on emitted IR — not blocking, fast-follow coverage. README:
+   retire the "Known incompleteness" call-out for *scalar* `Int`/`Nat` —
+   closed by this step — but add a narrower one for `Vector(Int)`/`Set(Int)`
+   (see below, still open). design-decisions.md: promote this section's representation choice
    from this doc into §7's Integers subsection as DECIDED (small pointer,
    full detail stays here) — not yet done.
 
@@ -895,16 +899,37 @@ at all, and a stray one would break the very `TaggedUnion`-arm matching
   plain, exactly as before this step.
 
 **What's still open, deliberately deferred:** the emitted-IR assertion for
-a proved-`Int64` call eliding all promotion codegen; `require`/
-`assert ... not in BigInt` (needs `BigInt` exposed as an ordinary named
-set, `BigInt = Int - Int64`, itself deferred); the both-small early-exit
-codegen optimization for `cantor_bigint_cmp` call sites; a clearer abort
-message for the `Set`/`Vector(Int)` "doesn't fit raw i64" boundary case.
+a proved-`Int64` call eliding all promotion codegen; the both-small
+early-exit codegen optimization for `cantor_bigint_cmp` call sites; a
+clearer abort message for the `Set`/`Vector(Int)` "doesn't fit raw i64"
+boundary case.
 
-`require x not in BigInt` / `assert x not in BigInt` (backlog) fall out of
-`BigInt` being an ordinary named set once the split exists — no new syntax
-or solver machinery, just `BigInt` needing a definition (`BigInt = Int -
-Int64`) visible to name resolution the same way any other derived set is.
+**`BigInt` as an ordinary named set — DONE (2026-07-05).** `require`/
+`assert x not in BigInt` now work, exactly as predicted above: no new
+syntax or solver machinery needed, `BigInt` just needed to be resolvable
+by name. Landed as `IntBound::Outside(min, max)` (`t < min || t > max`,
+the logical complement of the existing `Bounded(min, max)`) in
+`semantics::builtins`'s canonical registry — `"BigInt" =>
+int(IntBound::Outside(i64::MIN, i64::MAX))` — plus one new match arm each
+in `solver::membership` (an `outside` helper mirroring `bounded`) and
+`codegen::membership` (`compile_outside_membership`, built from the
+existing tag-aware `compile_int_cmp_const`). Both consumers already
+exhaustively matched `IntBound`, so the compiler forced both new arms
+before this could even build — no risk of a silently-wrong case. Nothing
+else needed touching: `Kind`/domain/range handling for `BigInt` in a
+function signature was already fully generic (it's exactly the same
+`Int - Int64` shape step 4a's own compiler-generated split already uses
+as a domain internally). Tests: `tests/solver/membership.rs` (disjointness
+of `Int64`/`BigInt`, their union covering all of `Int`, both directions of
+membership) and `tests/cli/bigint.rs` (`in`/`not in BigInt` at runtime for
+both a boxed and a small value) — one solver test initially gave a
+confusing false pass/fail pair, traced to an unrelated confound: its
+function shape (single-param, bare `Int -> Int`) happened to also match
+step 4a's own split-eligibility criteria, and the naive test helper
+(`counterexample()`) only inspects the first of the two resulting split
+entries. Fixed by using `Nat` as the domain instead (still unbounded,
+doesn't match `try_split`'s literal-`"Int"` eligibility check) rather than
+changing any production code.
 
 ---
 

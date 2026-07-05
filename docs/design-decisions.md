@@ -1345,14 +1345,13 @@ Other open items (lower priority, not blocking):
   exits as SSA phi-merge paths.
 - **`raise` / `emits` syntax** — see §11.
 - Float, char/string, byte primitive values.
-- BigInt runtime support for unbounded `Int` / `Nat` — DONE 2026-07-05 for
-  scalar positions (literals, arithmetic, comparisons, call boundaries,
-  overload dispatch, domain/range membership checks, output display); see
-  int-soundness-plan.md phase 3 and its "Step 4b" writeup for the full
-  account. `Vector(Int)`/`Set(Int)` elements deliberately still stay raw
-  `Int64` only (a value that doesn't fit aborts loudly rather than
-  corrupting `Set` dedup/equality, which needs a canonical tagged
-  representation this pass didn't build) — this remains open.
+- `Vector(Int)`/`Set(Int)` arbitrary-precision elements — the one remaining
+  piece of BigInt runtime support (scalar positions are DONE, see
+  "Integers" above and int-soundness-plan.md phase 3's "Step 4b"). Needs a
+  canonical (deduplicated) tagged representation so `Set` membership/
+  equality doesn't break once two different boxed allocations can hold the
+  same integer; until then, a value that doesn't fit a raw `i64` aborts
+  loudly rather than corrupting anything.
 - Compiled (AOT) binaries; linker integration.
 - Module system (imports, separate checking) — see §7.
 - More containers: ordered sets, vectors, maps; iterators.
@@ -1452,10 +1451,27 @@ No implicit coercion between `Bool` and any integer kind exists at any layer.
   `Int16 = { n ∈ ℤ | -32768 ≤ n ≤ 32767 }`, and analogously for other
   widths. These are not distinct types — they are named generative sets
   used as domain/range annotations.
-- At runtime, a value whose domain is proven ⊆ `IntN` is stored in the
-  corresponding LLVM integer type (`i8`, `i16`, `i32`, `i64`) for
-  performance. Domain is `Int` (unbounded) → `i64` for v0; full BigInt
-  is deferred.
+- **`BigInt`** — `Int - Int64`, the part of `Int` a raw 64-bit word can't
+  represent. An ordinary named set exposed purely for `in`/`not in` checks
+  (`assert x not in BigInt`); it isn't a runtime representation choice
+  itself — see the representation entry below.
+- **Runtime representation (DECIDED, int-soundness-plan phase 3, DONE
+  2026-07-05 for scalars):** a value whose domain the solver proves
+  `⊆ Int64` (most declared-bounded functions — `Int8`/`Int16`/`Int32`/
+  `Int64` domains, and by extension any function a compiler-generated
+  Step A promotion or step 4a `Int64`/`BigInt` split resolves to the raw
+  arm) is stored as a plain LLVM `i64`, exactly as always — zero
+  representation overhead, no change from pre-phase-3 behaviour. A
+  genuinely-unbounded position (declared `Int`/`Nat` with no provable
+  `Int64` bound) is stored as a **tagged word**: low bit `0` → small
+  integer (`word >> 1`, one bit narrower than `Int64`'s own range), low
+  bit `1` → pointer to a heap-allocated, arbitrary-precision
+  `CantorBigInt`. See int-soundness-plan.md's "Phase 3 — BigInt runtime"
+  section for the full representation rationale and "Step 4b" for the
+  codegen account. **Not yet covered:** `Vector(Int)`/`Set(Int)` elements
+  still store a plain `i64` only — extending them needs a canonical
+  (deduplicated) tagged form so `Set` membership/equality doesn't break
+  once two different boxed allocations can hold the same integer.
 
 ### Arithmetic widening
 
