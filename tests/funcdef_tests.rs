@@ -527,14 +527,15 @@ fn array_lit_in_body_parses_as_tuple() {
 #[test]
 fn array_lit_used_in_set_position_parses_as_tuple_domain() {
     // `[Int]` in domain position parses as Tuple([Var("Int")]) — syntactically
-    // allowed, but semantically invalid (a set expression cannot be a Tuple literal).
-    // The error surfaces at the solver/codegen stage, not at parse time.
-    // TODO: add a parse-time check that rejects Tuple in set-expression positions.
+    // allowed at parse time, but semantically invalid (a set expression cannot
+    // be a Tuple literal). The rejection happens during elaboration — see
+    // `cantor::error::CompileError::InvalidSetExpression` and
+    // `array_lit_in_domain_position_reports_clean_error` in tests/cli/.
     let def = parse_one("f : [Int] -> Int\nf(xs) = 0");
     let sig = &def.sigs[0];
     let domain = sig.domain.as_ref().expect("expected a domain");
     assert!(
         matches!(&domain.kind, ExprKind::Tuple(_)),
-        "domain parsed as Tuple (semantic check deferred to solver)"
+        "domain parsed as Tuple (semantic rejection happens during elaboration, not parsing)"
     );
 }

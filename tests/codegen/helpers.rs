@@ -87,6 +87,21 @@ pub fn jit_src_tagged_range(src: &str, arg: i64) -> TaggedScalar {
     }
 }
 
+/// Call `main` where both the parameter and the return are the same
+/// single-leaf `TaggedUnion` (e.g. a `Bool | Nat -> Bool | Nat` identity).
+pub fn jit_src_tagged_identity(src: &str, tag: i32, payload: i64) -> TaggedScalar {
+    use cantor::parser::parse_file;
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let ctx = Context::create();
+    let engine = compile_file(&ctx, &items).unwrap_or_else(|e| panic!("compile error: {e}"));
+    unsafe {
+        let f = engine
+            .get_function::<unsafe extern "C" fn(TaggedScalar) -> TaggedScalar>("main")
+            .unwrap();
+        f.call(TaggedScalar { tag, payload })
+    }
+}
+
 pub fn jit_src_one_arg(src: &str, arg: i64) -> i64 {
     use cantor::parser::parse_file;
     let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));

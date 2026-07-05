@@ -67,6 +67,14 @@ pub enum CompileError {
         feature: String,
         span: Span,
     },
+    /// A tuple/array literal (`(a, b, c)` or `[a, b, c]`) was used where a set
+    /// expression was expected (a function's domain/range, a `let`
+    /// constraint, …). Tuple/array literal syntax is value-position only —
+    /// set-expression products are written with `*` (e.g. `Int * Int`).
+    InvalidSetExpression {
+        detail: String,
+        span: Span,
+    },
     // Future: DomainViolation, RangeViolation (driven by cvc5 unsat core)
     /// A compiler invariant was violated — a bug in Cantor's compiler
     /// itself, not something the developer can fix by editing their
@@ -95,6 +103,9 @@ impl std::fmt::Display for CompileError {
                 write!(f, "overloads of `{name}` disagree: {detail}")
             }
             Self::Unsupported { feature, .. } => write!(f, "not yet supported: {feature}"),
+            Self::InvalidSetExpression { detail, .. } => {
+                write!(f, "invalid set expression: {detail}")
+            }
             Self::Ice {
                 detail,
                 rust_location,
@@ -144,6 +155,7 @@ impl CompileError {
             Self::NamingConvention { span, .. } => Some(*span),
             Self::OverloadKindMismatch { span, .. } => Some(*span),
             Self::Unsupported { span, .. } => Some(*span),
+            Self::InvalidSetExpression { span, .. } => Some(*span),
             Self::Ice { .. } => None,
         }
     }

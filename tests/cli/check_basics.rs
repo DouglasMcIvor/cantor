@@ -91,6 +91,37 @@ fn set_op_in_value_position_reports_location_not_ice() {
     );
 }
 
+#[test]
+fn array_lit_in_domain_position_reports_clean_error() {
+    // array_lit_in_domain_position.cantor: `f : [Int] -> Int` — `[Int]` parses
+    // as a Tuple literal, which is never a valid set expression (products in
+    // set position use `*`, e.g. `Int * Int`). This used to reach the solver
+    // and panic via `unreachable!()` in src/solver/sort.rs (looked like an
+    // ICE for what's really a user mistake); elaboration now rejects it
+    // directly as `CompileError::InvalidSetExpression`.
+    let out = run_file("array_lit_in_domain_position.cantor");
+    assert_ne!(
+        out.code, 0,
+        "expected non-zero exit\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("invalid set expression"),
+        "expected an invalid-set-expression diagnostic on stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains(":1:"),
+        "expected the diagnostic to point at line 1:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("internal compiler error"),
+        "a user's own mistake must never be reported as an ICE:\n{}",
+        out.stderr
+    );
+}
+
 // ── Good file: all proved ─────────────────────────────────────────────────────
 
 #[test]

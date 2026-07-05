@@ -780,9 +780,12 @@ fn elaborate_expr(
         }
 
         ExprKind::SetLit(elements) => {
+            // Elements of `{v1, v2, ...}` are concrete member *values* (e.g.
+            // `{[]}`'s `[]` is the empty-vector value, not a set expression),
+            // regardless of whether the SetLit itself sits in set position.
             let sem_elements = elements
                 .iter()
-                .map(|e| elaborate_expr(e, pos, ctx, env))
+                .map(|e| elaborate_expr(e, Position::Value, ctx, env))
                 .collect::<Result<Vec<_>, _>>()?;
             let kind_of = match pos {
                 Position::Set => kind_of_for_set(),
@@ -879,6 +882,15 @@ fn elaborate_expr(
         }
 
         ExprKind::Tuple(elements) => {
+            if pos == Position::Set {
+                return Err(CompileError::InvalidSetExpression {
+                    detail: "a tuple/array literal `(a, b, ...)` / `[a, b, ...]` cannot be \
+                             used as a set expression here — write a Cartesian product with \
+                             `*` instead (e.g. `Int * Int`)"
+                        .to_string(),
+                    span,
+                });
+            }
             let sem_elements = elements
                 .iter()
                 .map(|e| elaborate_expr(e, pos, ctx, env))

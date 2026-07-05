@@ -4,7 +4,6 @@ use super::helpers::*;
 //   1. Repeated products  — `X * N` is sugar for `X * ... * X` (N copies)
 //   2. Homogeneous arrays — `[1, 2, 3]` value literal with compile-time kind check
 //   3. Kleene-star sets   — `X*` = `{} | X | X*X | X*X*X | ...`
-// TODO: remove all #[ignore] gates in this file once the features are solver-ready.
 
 // ── Repeated products (`X * N`) ───────────────────────────────────────────────
 

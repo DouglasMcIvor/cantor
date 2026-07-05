@@ -304,59 +304,51 @@ fn diff_range_nat_minus_zero_passthrough() {
 // i64 for everything, so these may pass "accidentally"; they become the baseline
 // to regression-test once proper tagged-union IR is emitted.
 
-// TODO: these four `domain`/`body_membership` tests predate proper TaggedUnion
-// codegen for cross-kind domains. They were written against a raw-i64 value
-// (jit_src_one_arg takes a single i64 and assumes `fn(i64) -> i64`), but a
-// `Bool | Nat` *parameter* now compiles to a real `{i32 tag, i64 payload}`
-// struct, and `x in Bool` is now a tag check (compile_tagged_union_membership),
-// not a value-range check. There is no single i64 input that exercises both
-// "this is genuinely the Bool arm" and "this is genuinely the Nat arm" the way
-// these tests assume — they'd need rewriting to construct an explicit
-// (tag, payload) pair via `jit_src_tagged_domain`, like the `disjoint_union_*`
-// tests above, with assertions on tag-driven behaviour rather than raw value.
-#[ignore]
+// `Bool | Nat` compiles its parameter to a real `{i32 tag, i64 payload}`
+// TaggedUnion struct — tag 0 is the Bool arm, tag 1 is the Nat arm (arm order
+// follows source declaration order). Narrowing this union down to a plain
+// `Int`/`Bool` return is unsound (Bool and Int/Nat are disjoint — see
+// `cross_kind_bool_or_nat_domain_narrowed_to_bool_reports_compile_error`
+// below) and the compiler now rejects it, so identity here has to keep the
+// range as `Bool | Nat` too and round-trip through `jit_src_tagged_identity`.
 #[test]
 fn cross_kind_bool_or_nat_domain_false_value() {
-    // false (0) passed through Bool | Nat domain; identity returned as Int.
+    // false (tag 0, payload 0) passed through Bool | Nat identity.
     assert_eq!(
-        jit_src_one_arg("main : Bool | Nat -> Int\nmain(x) = x", 0),
-        0
+        jit_src_tagged_identity("main : Bool | Nat -> Bool | Nat\nmain(x) = x", 0, 0),
+        TaggedScalar { tag: 0, payload: 0 }
     );
 }
 
-#[ignore]
 #[test]
 fn cross_kind_bool_or_nat_domain_true_value() {
-    // true (1) passed through Bool | Nat domain.
+    // true (tag 0, payload 1) passed through Bool | Nat identity.
     assert_eq!(
-        jit_src_one_arg("main : Bool | Nat -> Int\nmain(x) = x", 1),
-        1
+        jit_src_tagged_identity("main : Bool | Nat -> Bool | Nat\nmain(x) = x", 0, 1),
+        TaggedScalar { tag: 0, payload: 1 }
     );
 }
 
-#[ignore]
 #[test]
 fn cross_kind_bool_or_nat_domain_nat_value() {
-    // A plain Nat value (not a Bool) passed through Bool | Nat domain.
+    // A plain Nat value (tag 1, not a Bool) passed through Bool | Nat identity.
     assert_eq!(
-        jit_src_one_arg("main : Bool | Nat -> Int\nmain(x) = x", 5),
-        5
+        jit_src_tagged_identity("main : Bool | Nat -> Bool | Nat\nmain(x) = x", 1, 5),
+        TaggedScalar { tag: 1, payload: 5 }
     );
 }
 
-#[ignore]
 #[test]
 fn cross_kind_bool_or_nat_body_membership() {
-    // Membership check distinguishes Bool arm from Nat-only arm.
-    // 0 and 1 are in Bool; 2, 3, … are in Nat but not Bool.
+    // Membership check distinguishes Bool arm from Nat arm by tag, not value.
     let src = "
 main : Bool | Nat -> Int
 main(x) = if x in Bool then 1 else 0
 ";
-    assert_eq!(jit_src_one_arg(src, 0), 1); // false ∈ Bool
-    assert_eq!(jit_src_one_arg(src, 1), 1); // true  ∈ Bool
-    assert_eq!(jit_src_one_arg(src, 2), 0); // 2 ∉ Bool
-    assert_eq!(jit_src_one_arg(src, 5), 0); // 5 ∉ Bool
+    assert_eq!(jit_src_tagged_domain(src, 0, 0), 1); // false ∈ Bool
+    assert_eq!(jit_src_tagged_domain(src, 0, 1), 1); // true  ∈ Bool
+    assert_eq!(jit_src_tagged_domain(src, 1, 2), 0); // 2 ∉ Bool
+    assert_eq!(jit_src_tagged_domain(src, 1, 5), 0); // 5 ∉ Bool
 }
 
 #[test]
