@@ -208,10 +208,15 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let tagged_k = self.compile_tagged_i64_const(k)?;
-        let small_result = self
-            .builder
-            .build_int_compare(predicate, val, tagged_k, "cmp_const_small")
-            .map_err(err)?;
+
+        // Whether `k` itself needs boxing is knowable at compile time (`k` is a
+        // plain `i64`, not a runtime value) — unlike `val`'s tag bit. When `k`
+        // requires boxing, `tagged_k` is a heap pointer with no numeric
+        // relationship to `k`'s magnitude, so the raw/`select` path below
+        // (which is only ever correct when both sides are small) must be
+        // skipped entirely: use `cantor_bigint_cmp` unconditionally.
+        let k_is_small =
+            (crate::runtime::TAG_SMALL_MIN..=crate::runtime::TAG_SMALL_MAX).contains(&k);
 
         let cmp_fn = self
             .module
@@ -229,6 +234,15 @@ impl<'ctx> Compiler<'ctx> {
         let boxed_result = self
             .builder
             .build_int_compare(predicate, cmp, zero, "cmp_const_boxed")
+            .map_err(err)?;
+
+        if !k_is_small {
+            return Ok(boxed_result);
+        }
+
+        let small_result = self
+            .builder
+            .build_int_compare(predicate, val, tagged_k, "cmp_const_small")
             .map_err(err)?;
 
         let one = i64t.const_int(1, false);

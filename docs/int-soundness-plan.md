@@ -945,6 +945,24 @@ entries. Fixed by using `Nat` as the domain instead (still unbounded,
 doesn't match `try_split`'s literal-`"Int"` eligibility check) rather than
 changing any production code.
 
+**Correctness bug found and fixed 2026-07-05 (post-review):** both existing
+`bigint.rs` tests above use a bare `Int -> Int` `classify` signature, which
+(unbeknownst to those tests) matches `int64_split`'s auto-split eligibility
+shape, so the call site's literal argument always statically resolved to
+one specific overload — neither test actually exercised the tagged,
+non-split membership-check codegen path they were meant to cover. A
+non-splittable `Int -> Bool` shape surfaced a real bug in
+`compile_int_cmp_const` (`src/codegen/membership.rs`): it decided whether
+to use the raw bit-pattern comparison or the tag-aware `cantor_bigint_cmp`
+one by checking only the *value being tested*'s tag bit, never whether the
+*constant* it's compared against (`Int64`'s/`BigInt`'s bound, both outside
+the tagged scheme's small-int range and so always boxed) itself needed
+boxing — so `x in Int64` silently returned the wrong boolean for ordinary
+small values (`x = 100` reported `false`). Fixed by branching on the
+constant's own small/boxed status (knowable at compile time) and using
+`cantor_bigint_cmp` unconditionally whenever it's boxed. New regression
+tests: `tests/cli/bigint.rs`'s `small_value_membership_regression` module.
+
 ---
 
 ## Phase 4 (idea, deferred, not scoped) — wide-intermediate optimization
