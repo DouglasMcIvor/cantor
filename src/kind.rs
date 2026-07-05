@@ -17,13 +17,6 @@ use crate::ast::{
 use crate::error::CompileError;
 use crate::semantics::builtins;
 
-/// The element kind of a homogeneous runtime set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SetElemKind {
-    Int,
-    Bool,
-}
-
 /// All the possible fundamental Cantor values
 ///
 /// `Copy` was intentionally dropped when `Tuple(Vec<Kind>)` was added; use
@@ -50,8 +43,15 @@ pub enum Kind {
     /// i1 — the `fail` singleton; always has value 1 when constructed.
     /// Used as the flag field in `{i1, i64}` fallible-function return structs.
     Fail,
-    /// i64 (pointer-as-i64) — heap-allocated sorted array; element kind tracked for dispatch.
-    Set(SetElemKind),
+    /// i64 (pointer-as-i64) — heap-allocated sorted array of the boxed
+    /// element Kind. Only single-i64-word Kinds (`Int`, `Int64`, `Bool`,
+    /// `Fail`) can appear here today — `set_kind`'s `Set(X)` arm is the
+    /// single place that enforces this; see `is_scalar_word_kind`.
+    /// Anything else (`Tuple`, `TaggedUnion`, `Vector`, a nested `Set`)
+    /// would need genuine structural equality/ordering to dedup and sort
+    /// by value, which nothing in the compiler implements yet — not even
+    /// `==` on a `Tuple`.
+    Set(Box<Kind>),
     /// LLVM struct — anonymous product type `(A, B, …)`.
     Tuple(Vec<Kind>),
     /// `{ i32 tag, i64 leaf_0, …, i64 leaf_N }`
@@ -92,14 +92,20 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileEr
         }
         ExprKind::BinOp { op, lhs, rhs } => binop_kind(op, lhs, rhs, name_defs)?,
         ExprKind::UnOp { op, expr, .. } => unop_kind(op, expr, name_defs)?,
-        // `Set(Int)` / `Set(Bool)` — the power set of the given element set.
+        // `Set(Int)` / `Set(Bool)` / … — the power set of the given element set.
         ExprKind::Call { callee, args } => {
             if callee.0 == builtins::SET_CONSTRUCTOR && args.len() == 1 {
-                // TODO replace SetElemKind with just a nested Kind
-                match set_kind(&args[0], name_defs)? {
-                    Kind::Bool => Kind::Set(SetElemKind::Bool),
-                    Kind::Int => Kind::Set(SetElemKind::Int),
-                    _ => unreachable!("{}", format!("Unexpected set element kind {set_expr:?}")),
+                let elem_kind = set_kind(&args[0], name_defs)?;
+                if is_scalar_word_kind(&elem_kind) {
+                    Kind::Set(Box::new(elem_kind))
+                } else {
+                    return Err(CompileError::Unsupported {
+                        feature: format!(
+                            "Set({elem_kind:?}) — runtime sets can only hold scalar \
+                             elements (Int, Bool, Fail, and their named subsets) today"
+                        ),
+                        span: set_expr.span,
+                    });
                 }
             } else {
                 return Err(CompileError::UndefinedFunction {
@@ -148,6 +154,15 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileEr
         ExprKind::Index { base, .. } => set_kind(base, name_defs)?,
         ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner, name_defs)?)),
     })
+}
+
+/// Whether `kind` is representable as a single raw i64 word — the only
+/// element kinds a runtime `Set(_)` can hold today. `Tuple`/`TaggedUnion`
+/// (multi-leaf) and `Vector`/`Set` (pointer identity ≠ value equality) would
+/// need genuine structural equality/ordering to dedup and sort by value,
+/// which nothing in the compiler implements yet.
+pub fn is_scalar_word_kind(kind: &Kind) -> bool {
+    matches!(kind, Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail)
 }
 
 /// The set-position interpretation of each `BinOp`; only reached via

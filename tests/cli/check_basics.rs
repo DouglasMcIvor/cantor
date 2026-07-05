@@ -153,6 +153,36 @@ fn unknown_compile_time_function_in_domain_reports_location_not_ice() {
 }
 
 #[test]
+fn set_of_tuple_reports_location_not_ice() {
+    // set_of_tuple_unsupported.cantor: `f : Set(Int * Int) -> Int` — a Tuple
+    // element kind needs structural equality/ordering the compiler doesn't
+    // implement yet, so this is a `CompileError::Unsupported`, not a panic.
+    // Regression test for `kind::set_kind`'s `Set(X)` arm, which used to
+    // `unreachable!()` for any element kind other than bare Int/Bool.
+    let out = run_file("set_of_tuple_unsupported.cantor");
+    assert_ne!(
+        out.code, 0,
+        "expected non-zero exit\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("not yet supported"),
+        "expected an 'unsupported' diagnostic on stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains(":1:"),
+        "expected the diagnostic to point at line 1:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("internal compiler error"),
+        "an unsupported Set element kind must never be reported as an ICE:\n{}",
+        out.stderr
+    );
+}
+
+#[test]
 fn array_lit_in_domain_position_reports_clean_error() {
     // array_lit_in_domain_position.cantor: `f : [Int] -> Int` — `[Int]` parses
     // as a Tuple literal, which is never a valid set expression (products in

@@ -1,0 +1,2 @@
+f : Set(Int * Int) -> Int
+f(x) = 0

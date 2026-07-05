@@ -6,7 +6,7 @@ use inkwell::{
 use crate::{
     ast::BinOp,
     error::CompileError,
-    kind::{Kind, SetElemKind},
+    kind::Kind,
     semantics::tree::{SemExpr, SemExprKind},
     span::{Span, Symbol},
 };
@@ -307,8 +307,8 @@ impl<'ctx> Compiler<'ctx> {
                     // Tagged-union values: check the tag against the matching arm.
                     self.compile_tagged_union_membership(lv, arms, rhs)?
                 } else if let SemExprKind::Var(sym) = &rhs.kind {
-                    if let Some(&(set_ptr, Kind::Set(ek))) = env.get(sym) {
-                        self.compile_runtime_contains(lv, lk, set_ptr, ek)?
+                    if let Some((set_ptr, Kind::Set(ek))) = env.get(sym) {
+                        self.compile_runtime_contains(lv, lk, *set_ptr, ek)?
                     } else {
                         self.compile_membership(lv.into_int_value(), rhs, tagged)?
                     }
@@ -520,9 +520,13 @@ impl<'ctx> Compiler<'ctx> {
         // `size(s)` — built-in cardinality function for runtime sets.
         if callee.0 == "size" && args.len() == 1 {
             let (ptr, kind) = self.compile_expr(&args[0], env)?;
-            let size_fn = match kind {
-                Kind::Set(SetElemKind::Int) => "cantor_set_size_i64",
-                Kind::Set(SetElemKind::Bool) => "cantor_set_size_bool",
+            let size_fn = match &kind {
+                // Cardinality is representation-agnostic (every backing
+                // struct is a plain `Vec<i64>` under the hood, tagged or
+                // not), so the raw-vs-tagged split that `contains`/`for`
+                // need doesn't matter here.
+                Kind::Set(elem) if **elem == Kind::Bool => "cantor_set_size_bool",
+                Kind::Set(_) => "cantor_set_size_i64",
                 _ => return Err(CompileError::ice("size() requires a runtime set argument")),
             };
             let fn_val = self
@@ -812,33 +816,24 @@ impl<'ctx> Compiler<'ctx> {
         // `Kind::Int` under `tagging_active()` can carry a boxed element, which
         // needs magnitude-aware (not raw bit-pattern) dedup/ordering — see
         // `CantorTaggedIntSet`'s doc comment. `Kind::Int64` is always raw
-        // (never boxed by construction — reserved for the not-yet-implemented
-        // phase 3 split, see kind.rs) and stays on the plain path even when
-        // tagging is active elsewhere in the program.
+        // (never boxed by construction) and stays on the plain path even when
+        // tagging is active elsewhere in the program. `Bool`/`Fail` are both
+        // wire-`i1`, always 0/1-valued, so they share the same bool-backed
+        // runtime pair. Anything else isn't a legal `Set(_)` element kind —
+        // `kind::is_scalar_word_kind` already rejects it during elaboration,
+        // so reaching here is a compiler bug, not a user-reachable gap.
         let int_is_tagged = elem_kind == Kind::Int && self.tagging_active();
-        let (set_elem_kind, new_fn, insert_fn) = match &elem_kind {
-            Kind::Int if int_is_tagged => (
-                SetElemKind::Int,
-                "cantor_tagged_set_new_i64",
-                "cantor_tagged_set_insert_i64",
-            ),
-            Kind::Int | Kind::Int64 => (
-                SetElemKind::Int,
-                "cantor_set_new_i64",
-                "cantor_set_insert_i64",
-            ),
-            Kind::Bool => (
-                SetElemKind::Bool,
-                "cantor_set_new_bool",
-                "cantor_set_insert_bool",
-            ),
-            Kind::Set(_) => return Err(CompileError::ice("sets of sets not yet supported")),
-            Kind::Fail | Kind::Tuple(_) | Kind::TaggedUnion(_) => {
-                return Err(CompileError::ice(
-                    "sets of fail/tuples/unions not yet supported",
-                ));
+        let (new_fn, insert_fn) = match &elem_kind {
+            Kind::Int if int_is_tagged => {
+                ("cantor_tagged_set_new_i64", "cantor_tagged_set_insert_i64")
             }
-            Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in codegen"),
+            Kind::Int | Kind::Int64 => ("cantor_set_new_i64", "cantor_set_insert_i64"),
+            Kind::Bool | Kind::Fail => ("cantor_set_new_bool", "cantor_set_insert_bool"),
+            other => {
+                return Err(CompileError::ice(format!(
+                    "Set({other:?}) is not a legal runtime set element kind"
+                )));
+            }
         };
 
         // Allocate an empty set.
@@ -862,7 +857,7 @@ impl<'ctx> Compiler<'ctx> {
             ))
         })?;
         for (val, k) in compiled {
-            let val_i64: BasicValueEnum = if k == Kind::Bool {
+            let val_i64: BasicValueEnum = if matches!(k, Kind::Bool | Kind::Fail) {
                 self.builder
                     .build_int_z_extend(val.into_int_value(), i64t, "elem_bool_ext")
                     .map_err(|e| CompileError::ice(e.to_string()))?
@@ -880,7 +875,7 @@ impl<'ctx> Compiler<'ctx> {
                 .map_err(|e| CompileError::ice(e.to_string()))?;
         }
 
-        Ok((ptr, Kind::Set(set_elem_kind)))
+        Ok((ptr, Kind::Set(Box::new(elem_kind))))
     }
 
     /// Compile `(e0, e1, …)` into an LLVM struct value.

@@ -472,8 +472,7 @@ fn elaborate_stmt(stmt: &Stmt, ctx: &Ctx, env: &mut Env) -> Result<SemStmt, Comp
                 )?
             };
             let elem_kind = match &s.kind_of {
-                Kind::Set(crate::kind::SetElemKind::Int) => Kind::Int,
-                Kind::Set(crate::kind::SetElemKind::Bool) => Kind::Bool,
+                Kind::Set(inner) => (**inner).clone(),
                 other => other.clone(),
             };
             env.insert(var.clone(), elem_kind);
@@ -804,26 +803,28 @@ fn elaborate_expr(
                 Position::Set => kind_of_for_set()?,
                 Position::Value => {
                     // Matches compile_set_lit_value: a non-empty, homogeneous
-                    // Int/Bool literal constructs a genuine runtime Set value.
+                    // literal of a scalar Kind constructs a genuine runtime
+                    // Set value.
                     let Some(first) = sem_elements.first() else {
                         return Err(CompileError::ice(
                             "empty set literal in value position — element kind cannot be \
                              inferred; add an explicit annotation",
                         ));
                     };
-                    let elem_kind = match &first.kind_of {
-                        Kind::Int => crate::kind::SetElemKind::Int,
-                        Kind::Bool => crate::kind::SetElemKind::Bool,
-                        other => {
-                            return Err(CompileError::ice(format!(
-                                "sets of {other:?} not yet supported"
-                            )));
-                        }
-                    };
+                    if !crate::kind::is_scalar_word_kind(&first.kind_of) {
+                        return Err(CompileError::Unsupported {
+                            feature: format!(
+                                "Set({:?}) — runtime sets can only hold scalar elements \
+                                 (Int, Bool, Fail, and their named subsets) today",
+                                first.kind_of
+                            ),
+                            span,
+                        });
+                    }
                     if sem_elements.iter().any(|e| e.kind_of != first.kind_of) {
                         return Err(CompileError::ice("mixed element kinds in set literal"));
                     }
-                    Kind::Set(elem_kind)
+                    Kind::Set(Box::new(first.kind_of.clone()))
                 }
             };
             Ok(SemExpr {

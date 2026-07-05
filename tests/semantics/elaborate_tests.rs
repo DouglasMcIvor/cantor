@@ -351,7 +351,7 @@ fn for_in_over_runtime_set_variable_does_not_treat_it_as_a_set_description() {
         "expected a Var node, got {:?}",
         set.kind
     );
-    assert_eq!(set.kind_of, Kind::Set(cantor::kind::SetElemKind::Int));
+    assert_eq!(set.kind_of, Kind::Set(Box::new(Kind::Int)));
 }
 
 #[test]
@@ -421,7 +421,7 @@ fn membership_rhs_local_runtime_set_variable_is_value_position() {
         panic!("expected a top-level `in`, got {:?}", e.kind)
     };
     assert!(matches!(rhs.kind, SemExprKind::Var(_)));
-    assert_eq!(rhs.kind_of, Kind::Set(cantor::kind::SetElemKind::Int));
+    assert_eq!(rhs.kind_of, Kind::Set(Box::new(Kind::Int)));
 }
 
 #[test]

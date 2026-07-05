@@ -1200,8 +1200,18 @@ guaranteed compile-time unrolling.
 
 ### Runtime sets (DECIDED)
 
-`Set(Int)` and `Set(Bool)` are first-class heap-allocated runtime values.
-They hold sorted, duplicate-free elements. Supported operations:
+`Set(X)` is a first-class heap-allocated runtime value, for any `X` whose
+elements are a single raw i64 word: `Int`, `Bool`, `Fail`, and any named
+subset of these (`Nat`, `Int8`, a `distinct` set, …). `Set(Int)` and
+`Set(Bool)` were the original two; the restriction is really "scalar Kind",
+not "Int or Bool specifically" — see `kind::is_scalar_word_kind`. A compound
+element Kind (`Tuple`, `TaggedUnion`, `Vector`, or a nested `Set`) is
+rejected with a compile error rather than silently misbehaving: none of
+them has a defined structural equality/ordering yet (nothing in the
+compiler does, not even `==` on a `Tuple`), so neither dedup nor "sorted
+order" below would mean anything for them without that machinery first.
+
+Sets hold sorted, duplicate-free elements. Supported operations:
 
 | Syntax | Meaning |
 |---|---|

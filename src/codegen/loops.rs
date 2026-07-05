@@ -7,7 +7,7 @@ use inkwell::{
 
 use crate::{
     error::CompileError,
-    kind::{Kind, SetElemKind},
+    kind::Kind,
     semantics::tree::{SemExpr, SemExprKind, SemStmt, collect_loop_modified},
     span::Symbol,
 };
@@ -204,7 +204,7 @@ impl<'ctx> Compiler<'ctx> {
             _ => {
                 // Compile the set expression and dispatch on its runtime Kind.
                 let (ptr, kind) = self.compile_expr(set, env)?;
-                match kind {
+                match &kind {
                     Kind::Set(elem_kind) => {
                         self.compile_for_in_runtime_set(var, ptr, elem_kind, body, env, alloca_map)
                     }
@@ -226,7 +226,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         var: &Symbol,
         set_ptr: BasicValueEnum<'ctx>,
-        elem_kind: SetElemKind,
+        elem_kind: &Kind,
         body: &[SemStmt],
         env: &mut Env<'ctx>,
         outer_alloca_map: &HashMap<Symbol, PointerValue<'ctx>>,
@@ -263,13 +263,18 @@ impl<'ctx> Compiler<'ctx> {
         // `Set(Int)` built while tagging is active is a tagged set and must
         // be iterated via the `_tagged_` entry points instead of the plain
         // raw-ordered ones.
-        let int_is_tagged = elem_kind == SetElemKind::Int && self.tagging_active();
+        let int_is_tagged = *elem_kind == Kind::Int && self.tagging_active();
 
         // Get set size once before the loop.
         let size_fn_name = match elem_kind {
-            SetElemKind::Int if int_is_tagged => "cantor_tagged_set_size_i64",
-            SetElemKind::Int => "cantor_set_size_i64",
-            SetElemKind::Bool => "cantor_set_size_bool",
+            Kind::Int if int_is_tagged => "cantor_tagged_set_size_i64",
+            Kind::Int | Kind::Int64 => "cantor_set_size_i64",
+            Kind::Bool | Kind::Fail => "cantor_set_size_bool",
+            other => {
+                return Err(CompileError::ice(format!(
+                    "Set({other:?}) is not a legal runtime set element kind"
+                )));
+            }
         };
         let size_fn = self
             .module
@@ -345,9 +350,14 @@ impl<'ctx> Compiler<'ctx> {
         // ── Body block: fetch element, bind var, compile body, increment i ──────
         self.builder.position_at_end(body_bb);
         let get_fn_name = match elem_kind {
-            SetElemKind::Int if int_is_tagged => "cantor_tagged_set_get_i64",
-            SetElemKind::Int => "cantor_set_get_i64",
-            SetElemKind::Bool => "cantor_set_get_bool",
+            Kind::Int if int_is_tagged => "cantor_tagged_set_get_i64",
+            Kind::Int | Kind::Int64 => "cantor_set_get_i64",
+            Kind::Bool | Kind::Fail => "cantor_set_get_bool",
+            other => {
+                return Err(CompileError::ice(format!(
+                    "Set({other:?}) is not a legal runtime set element kind"
+                )));
+            }
         };
         let get_fn = self
             .module
@@ -365,13 +375,13 @@ impl<'ctx> Compiler<'ctx> {
             // representation — no decode needed. The plain raw-ordered set
             // stores a raw i64, so it needs re-tagging on read (every
             // consumer downstream expects `Kind::Int` to mean tagged).
-            SetElemKind::Int if int_is_tagged => (elem_raw, Kind::Int),
-            SetElemKind::Int => (
+            Kind::Int if int_is_tagged => (elem_raw, Kind::Int),
+            Kind::Int | Kind::Int64 => (
                 self.ensure_tagged(elem_raw.into_int_value(), &Kind::Int64)?
                     .into(),
                 Kind::Int,
             ),
-            SetElemKind::Bool => {
+            Kind::Bool | Kind::Fail => {
                 let i1 = self
                     .builder
                     .build_int_truncate(
@@ -380,7 +390,17 @@ impl<'ctx> Compiler<'ctx> {
                         "elem_bool",
                     )
                     .map_err(|e| CompileError::ice(e.to_string()))?;
-                (i1.into(), Kind::Bool)
+                let elem_k = if *elem_kind == Kind::Fail {
+                    Kind::Fail
+                } else {
+                    Kind::Bool
+                };
+                (i1.into(), elem_k)
+            }
+            other => {
+                return Err(CompileError::ice(format!(
+                    "Set({other:?}) is not a legal runtime set element kind"
+                )));
             }
         };
 
