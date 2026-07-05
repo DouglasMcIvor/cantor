@@ -1,0 +1,19 @@
+canon5 : Int -> Int
+canon5(x) = x rem 5
+
+IntMod5 = Int / canon5
+
+seven_not_member : -> Int | Fail
+seven_not_member() {
+    assert not (7 in IntMod5)
+    1
+}
+
+canon_of_seven_is_member : -> Int | Fail
+canon_of_seven_is_member() {
+    assert canon5(7) in IntMod5
+    1
+}
+
+main : -> Int
+main() = 1

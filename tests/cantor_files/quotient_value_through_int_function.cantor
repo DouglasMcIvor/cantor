@@ -1,0 +1,10 @@
+canon5_32 : Int32 -> Int32
+canon5_32(x) = x rem 5
+
+IntMod5_32 = Int32 / canon5_32
+
+double : Int -> Int
+double(x) = x + x
+
+main : -> Int
+main() = double(canon5_32(17))

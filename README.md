@@ -378,6 +378,36 @@ $ cantor distinct_demo.cantor
 
 Accidentally passing a plain `Nat` where a `Litre` is expected, or forgetting the constructor, produces a counterexample rather than a silent pass.
 
+### Quotient sets
+
+`L / canon` forms the quotient of a set `L` by a canonicalizer function — the set of `L`'s values that are already in canonical form.
+`canon` must be a plain reference to a named, single-parameter, single-expression function; the compiler proves two things about it once, up front: its declared range is a subset of `L`, and it's **idempotent** (`canon(canon(x)) == canon(x)` for every `x ∈ L`) — a hard compile error with no escape hatch if it can't prove idempotence, since it's a claim about every element of a (possibly infinite) set, not a single value.
+
+```haskell
+canon5 : Int -> Int
+canon5(x) = x rem 5
+
+IntMod5 = Int / canon5
+```
+
+`rem`/`quot` are Euclidean remainder/quotient — `rem` is always non-negative (`0 <= rem < |divisor|`), which is what makes `IntMod5` land in the clean canonical range `{0, 1, 2, 3, 4}` with no extra fixup. (This is the opposite convention from `/`, which is currently documented as truncating toward zero — see `docs/design-decisions.md`.)
+
+Membership in a quotient set is exactly the canonicalizer's fixed points:
+
+```haskell
+main : -> Int | Fail
+main() {
+    assert not (7 in IntMod5)        -- 7 isn't already canonical (canon5(7) = 2, not 7)
+    assert canon5(7) in IntMod5      -- but canonicalizing it lands you in the set
+    1
+}
+```
+
+A quotient set has no representation of its own — an `IntMod5` value is stored exactly like a plain `Int`, so it flows through any ordinary `Int`-typed function with zero special handling, no wrapper, no codegen changes.
+
+> **Known limitation:** arithmetic on quotient-set values doesn't wrap (canonicalize) yet.
+> `x + y` for `x, y : IntMod5` is just ordinary `Int` addition — the result isn't automatically brought back into `IntMod5`'s canonical range. The planned fix is a `deriving Arithmetic` modifier: `IntMod5 = Int / canon5 deriving Arithmetic` would derive wrapping versions of `+`, `*`, etc. by translating each operand to its basis (`Int`), calling the ordinary operator, and re-canonicalizing the result with `canon5` before handing it back — turning `IntMod5` into genuine machine-modular arithmetic (`WrappingNat32`-style) rather than just a compile-time membership predicate. Not implemented yet; only the quotient-set-formation half of this feature exists today.
+
 ### Product Sets
 
 Functions can take and return elements of product sets (aka tuples) using `*` in signatures and `(e1, e2)` syntax in bodies. Positional projection uses `.0`, `.1`, etc.
@@ -634,6 +664,8 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 - **Named set naming convention** — uppercase names are compile-time set names (`Nat`, `HTTPError`); lowercase names are values (`pi`, `abs`, `collected_primes`); enforced by the compiler
 - **`alias` and `distinct` set modifiers** — `Colour = {1, 2, 3}` and `Animal = alias Cat | Dog` declare transparent aliases (the solver expands membership inline); `Litre = distinct Nat` declares a new solver-opaque set disjoint from `Nat` with full SMT-backed value proofs (see below)
 - **`distinct` value proofs** — `Litre = distinct Nat` automatically provides the constructor `litre : Nat -> Litre` and the built-in destructor `from(x)` which returns the basis-type value. The solver gives each distinct set its own uninterpreted CVC5 sort plus uninterpreted constructor/destructor functions (`mk_Litre : Int -> Litre`, `from_Litre : Litre -> Int`); basis-set constraints are emitted on demand at each `litre(n)` / `from(x)` site (no global axioms; logic `ALL`); identity functions (`volume : Litre -> Litre`) are proved directly. Plain integer literals not wrapped in a constructor are correctly rejected with a counterexample. Both `litre` and `from` are identity operations at runtime. `from` and `size` are reserved keywords.
+- **`rem` / `quot`** — Euclidean remainder/quotient (`rem` always `0 <= rem < |divisor|`, the opposite convention from `/`'s currently-documented truncating behaviour); same divide-by-zero domain proof obligation as `/`. Needed for quotient-set canonicalizers (below), also useful standalone.
+- **Quotient sets** — `L / canon` forms the quotient of `L` by a canonicalizer function (see above); the compiler proves the canonicalizer's range is `⊆ L` and that it's idempotent (`canon(canon(x)) == canon(x)`) once, up front — an unprovable idempotence claim is a hard compile error, no escape hatch. A quotient-set value has the same runtime representation as its basis (no wrapper, no codegen changes); membership is the canonicalizer's fixed points. Arithmetic on quotient-set values doesn't wrap/canonicalize yet — see the roadmap.
 - **JIT execution** — `cantor run <file>` checks proofs then JIT-compiles and runs `main` via LLVM
 - **LLVM IR dump** — `cantor llvm-ir <file>` skips the SMT solver and prints the compiled LLVM IR to stdout, for debugging codegen without JIT-running anything
 
@@ -645,7 +677,7 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 
 - **Namespaces and named structured data** — Named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`), and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
 
-- **Quotient sets and wrapping arithmetic** - Quotient sets to be defined by a canonicalizer, which would let us write `WrappingNat32 = distinct Nat / (x -> x mod 2^32) deriving Arithmetic + ...`. Built in quotient sets for native machine arithmetic.
+- **`deriving Arithmetic` (wrapping arithmetic on quotient sets)** — quotient sets (`L / canon`, working today — see Features above) don't yet derive any operators of their own: `x + y` for `x, y : IntMod5` is just ordinary `Int` addition, not automatically brought back into range. `deriving Arithmetic` would fix that: `IntMod5 = Int / canon5 deriving Arithmetic` derives wrapping versions of `+`, `*`, etc. by translating each operand to its basis set (`Int`), calling the ordinary operator, then re-canonicalizing the result with `canon5` before returning it — giving genuine machine-modular arithmetic (`Signed32`/`Unsigned32`-style wraparound) built entirely out of quotient sets, rather than a separate wrapping-integer primitive. Also on this branch of the roadmap: an inline lambda canonicalizer (today's canonicalizer must be a named function) and the `L = X * R` structural shortcut for `/`.
 
 - **Lambdas, closures, and higher-order functions** — anonymous functions, captured variables, and functions as first-class values. Unlocks `map`, `filter`, `fold`, and combinators without needing the full generics machinery.
 

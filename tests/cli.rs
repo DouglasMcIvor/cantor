@@ -14,6 +14,8 @@ mod helpers;
 mod overflow;
 #[path = "cli/overloads.rs"]
 mod overloads;
+#[path = "cli/quotient_sets.rs"]
+mod quotient_sets;
 #[path = "cli/rem_quot.rs"]
 mod rem_quot;
 #[path = "cli/repl.rs"]

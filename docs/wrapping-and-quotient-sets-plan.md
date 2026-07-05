@@ -366,11 +366,53 @@ which feature lands first overall.
 
 ### Quotient set formation: `L / canonicalizer`
 
-**The pleasant surprise, confirmed by re-reading the actual elaboration
-code rather than assumed:** staged the way you described (named-function
-canonicalizer only, zero auto-derived operators), this needs **no new
-solver sort and no codegen at all**. The whole feature is compile-time
-bookkeeping plus one new proof obligation.
+**Status: DONE, 2026-07-05.** Landed close to this sketch, with the
+"no codegen" and "no new solver sort" claims both holding up exactly as
+predicted — confirmed by an explicit codegen regression test (a quotient
+value flowing through an ordinary `Int`-typed function). Three real
+surprises found only by implementing it, none anticipated by this doc:
+
+1. **`SetQuotient`'s RHS had to become a bare `Symbol`, not a boxed
+   `SemExpr`.** The original sketch assumed the canonicalizer reference
+   could stay a normal sub-expression; in practice, elaborating it as an
+   ordinary expression (Set or Value position) doesn't work at all, since
+   `canon5` names a *function*, not a set or a runtime value — neither
+   position's `Var` handling can resolve it (`name_defs` only holds
+   `NameDef`s). Fixed by carrying the canonicalizer as a plain `Symbol` on
+   `SemExprKind::SetQuotient`, resolved against `fn_env` only once it
+   exists (solver time), never elaborated as an expression.
+2. **A real, hard-won solver-design lesson: no persistent axiom.** The
+   first working version registered the canonicalizer as an uninterpreted
+   `canon : sort -> sort` and asserted `∀x. canon(x) == body(x)` onto
+   *every* per-signature solver in the file (mirroring how `distinct`'s
+   `mk`/`from` get re-registered fresh per solver instance). This
+   **made cvc5 hang** on a file containing nothing but an unrelated
+   function plus the quotient definition — injecting a quantified fact
+   into every proof, even ones with nothing to do with the quotient set,
+   revived the same quantifier/nonlinear-interaction risk this codebase
+   already documents (the nl-cov note). Fixed by dropping the axiom
+   entirely: `QuotientInfo` stores the canonicalizer's raw param+body, and
+   `membership_constraint`'s `SetQuotient` arm calls `encode_comp_expr` to
+   substitute the *specific* term being checked, no quantifier involved.
+   The idempotence *proof* itself still needs a real quantifier — but that
+   one only ever runs once, in its own isolated solver, in
+   `validate_quotient_sets`, never injected into the general-purpose ones.
+3. **`membership_constraint`'s signature needed widening across ~40 call
+   sites** to reach the canonicalizer's body from inside membership
+   checking (it didn't have `fn_env` and adding it broadly would have been
+   far more invasive). Resolved with a `SolverPreds` wrapper — bundles the
+   existing `DistinctPreds` with a new `QuotientPreds`, `Deref`s to the
+   former — so call sites that only ever needed distinct-set info (the
+   large majority, including every `set_sort` call) needed zero changes;
+   only construction sites and direct field-reads needed touching.
+4. **A pre-existing naming-convention checker false-positive**:
+   `src/names.rs`'s uppercase-only rule for domain/range set expressions
+   walked `BinOp`'s both children generically, rejecting `canon5` (correctly
+   lowercase, a function name) as if it were a set name. Fixed with a
+   `BinOp::Div`-specific exception, mirroring the doc's own pre-existing
+   exception for `in`/`not in`'s RHS.
+
+The whole feature is compile-time bookkeeping plus one new proof obligation.
 
 - **Restrict the RHS to a bare named function reference** — reject any
   other expression shape (including any future lambda) with an explicit

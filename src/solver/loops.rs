@@ -14,7 +14,7 @@ use crate::{
 
 use super::blocks::{BlockCtx, encode_block};
 use super::encode::{EncodeCtx, Env, boolean_value, encode_expr, integer_value};
-use super::membership::{DistinctPreds, Membership, membership_constraint};
+use super::membership::{Membership, SolverPreds, membership_constraint};
 use super::obligations::{
     BuiltinObligation, OverflowObligation, OverloadCallObligation, decide_overflow_obligations,
     decide_overload_resolutions,
@@ -38,7 +38,7 @@ pub(super) struct LoopCtx<'a, 'tm> {
     pub(super) param_names: &'a [Symbol],
     pub(super) param_terms: &'a [Term<'tm>],
     pub(super) immutable_names: &'a HashSet<Symbol>,
-    pub(super) distinct_preds: &'a DistinctPreds<'tm>,
+    pub(super) distinct_preds: &'a SolverPreds<'tm>,
     pub(super) has_runtime_assert: &'a mut bool,
     pub(super) overflow_checks: &'a mut HashMap<Span, bool>,
     pub(super) overload_resolutions: &'a mut HashMap<Span, Option<usize>>,

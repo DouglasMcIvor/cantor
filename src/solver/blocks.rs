@@ -14,7 +14,7 @@ use super::CheckResult;
 use super::NameDefs;
 use super::encode::{EncodeCtx, Env, encode_expr, integer_value, proj_from_tuple, tuple_arity};
 use super::loops::{LoopCtx, check_for_inductive_step, check_inductive_step};
-use super::membership::{DistinctPreds, Membership, membership_constraint};
+use super::membership::{Membership, SolverPreds, membership_constraint};
 use super::obligations::BuiltinObligation;
 
 // ── Loop predicate ────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ pub(crate) fn body_has_unconstrained_loop_var<'tm>(
     constraint_env: &HashMap<Symbol, SemExpr>,
     tm: &'tm TermManager,
     name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
 ) -> bool {
     stmts.iter().any(|s| match s {
         SemStmt::While { body, .. } | SemStmt::ForIn { body, .. } => {

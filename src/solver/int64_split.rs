@@ -51,7 +51,7 @@ use crate::semantics::tree::{
 };
 use crate::span::{Span, Symbol};
 
-use super::membership::{Membership, membership_constraint};
+use super::membership::{Membership, QuotientPreds, SolverPreds, membership_constraint};
 use super::{
     CheckResult, FunctionEnv, NameDefs, build_distinct_preds, check_function, configured_solver,
 };
@@ -141,7 +141,14 @@ fn trial_fully_proves_int64<'a>(
 fn domain_within_int64(part: &SemExpr, name_defs: &NameDefs, timeout_ms: u64) -> bool {
     let tm = TermManager::new();
     let mut solver = configured_solver(&tm, timeout_ms);
-    let distinct_preds = build_distinct_preds(&tm, name_defs);
+    // No `fn_env` available here — this is an eligibility check for an
+    // optimization (whole-function Int64 promotion), not general membership
+    // — so quotient-set membership safely degrades to `Unsupported` (i.e.
+    // declines the optimization) rather than being threaded through.
+    let distinct_preds = SolverPreds {
+        distinct: build_distinct_preds(&tm, name_defs),
+        quotient: QuotientPreds::new(),
+    };
     let t = tm.mk_const(tm.integer_sort(), "__int64_promote_check");
     let int64_expr = var_expr("Int64", Kind::Int64, part.span);
 
@@ -449,8 +456,9 @@ fn expr_contains_mul(expr: &SemExpr) -> bool {
         | SemExprKind::Sub(l, r)
         | SemExprKind::SetDifference(l, r)
         | SemExprKind::CartesianProduct(l, r)
-        | SemExprKind::Div(l, r)
-        | SemExprKind::SetQuotient(l, r) => expr_contains_mul(l) || expr_contains_mul(r),
+        | SemExprKind::Div(l, r) => expr_contains_mul(l) || expr_contains_mul(r),
+        // The RHS is a canonicalizer function name, not an expression to recurse into.
+        SemExprKind::SetQuotient(l, _canon) => expr_contains_mul(l),
         SemExprKind::BinOp { lhs, rhs, .. } => expr_contains_mul(lhs) || expr_contains_mul(rhs),
         SemExprKind::UnOp { expr, .. } => expr_contains_mul(expr),
         SemExprKind::Call { args, .. } => args.iter().any(expr_contains_mul),

@@ -17,6 +17,7 @@ use super::sort::arm_ctor_name_for_arm;
 ///
 /// Each distinct set gets its own opaque CVC5 uninterpreted sort so the solver
 /// cannot confuse values of different distinct sets or of their basis.
+#[derive(Clone)]
 pub(crate) struct DistinctInfo<'tm> {
     /// Opaque CVC5 sort — every D-value has this sort.
     pub(crate) sort: Sort<'tm>,
@@ -30,6 +31,64 @@ pub(crate) struct DistinctInfo<'tm> {
 
 /// Map from distinct set name to its CVC5 encoding artefacts.
 pub(crate) type DistinctPreds<'tm> = HashMap<Symbol, DistinctInfo<'tm>>;
+
+/// Per-quotient-set artefacts created for `L / canon` (see
+/// `build_quotient_preds`). Keyed by the canonicalizer's own `Symbol` (not
+/// the quotient set's name, if any — the same canonicalizer reference is
+/// valid whether or not it's bound to a name), since that's exactly what a
+/// `SemExprKind::SetQuotient` node carries.
+///
+/// Deliberately holds the canonicalizer's raw ingredients (param + body),
+/// not a precomputed CVC5 uninterpreted-function-plus-defining-axiom: an
+/// earlier version built `canon : sort -> sort` once per solver instance
+/// and asserted `∀x. canon(x) == body(x)` unconditionally — which injects a
+/// quantified fact into *every* per-signature proof in the file, including
+/// ones with nothing to do with this quotient set, and was observed to make
+/// cvc5 hang (the same quantifier/nonlinear-interaction risk this codebase
+/// already works around elsewhere, e.g. the nl-cov note). Encoding the body
+/// on demand via `encode_comp_expr` — substituting the *specific* term
+/// being checked, no quantifier involved — avoids that entirely; only the
+/// one-time idempotence proof (`check_quotient_def`, run once per quotient
+/// definition, in its own isolated solver) still needs a quantifier.
+#[derive(Clone)]
+pub(crate) struct QuotientInfo<'tm> {
+    /// `L`'s own sort — quotient values are represented identically to
+    /// their canonical representative, no wrapper sort. Used only to
+    /// fast-reject a wrong-sort term before attempting to encode anything.
+    pub(crate) sort: Sort<'tm>,
+    /// The canonicalizer's own parameter name — substituted for by
+    /// `encode_comp_expr` when evaluating `body` at a concrete term.
+    pub(crate) param: Symbol,
+    /// The canonicalizer's body (already validated elsewhere to be a
+    /// single expression, not a block — see `resolve_canonicalizer`).
+    pub(crate) body: SemExpr,
+}
+
+/// Map from canonicalizer symbol to its CVC5 encoding artefacts.
+pub(crate) type QuotientPreds<'tm> = HashMap<Symbol, QuotientInfo<'tm>>;
+
+/// Bundles both cross-cutting "opaque identity" registries
+/// `membership_constraint` needs. Kept as one struct — threaded through the
+/// same parameter/field every `distinct_preds` caller already passes today
+/// — rather than adding `quotient_preds` as a new parameter everywhere:
+/// `Deref` to the inner `DistinctPreds` means the ~40 call sites that only
+/// ever read distinct-set info (including every `set_sort` call, which
+/// doesn't need quotient info at all) need no changes, since `&SolverPreds`
+/// coerces to `&DistinctPreds` automatically wherever that's still what's
+/// expected. Only construction sites (`build_distinct_preds` →
+/// `build_quotient_preds` alongside it) and the handful of struct field
+/// *type* annotations that flow into `membership_constraint` need updating.
+pub(crate) struct SolverPreds<'tm> {
+    pub(crate) distinct: DistinctPreds<'tm>,
+    pub(crate) quotient: QuotientPreds<'tm>,
+}
+
+impl<'tm> std::ops::Deref for SolverPreds<'tm> {
+    type Target = DistinctPreds<'tm>;
+    fn deref(&self) -> &DistinctPreds<'tm> {
+        &self.distinct
+    }
+}
 
 /// The result of asking "what does `t ∈ set_expr` look like as a cvc5 term?"
 pub(crate) enum Membership<'tm> {
@@ -80,7 +139,7 @@ fn membership_constraint_for_dt<'tm>(
     t: Term<'tm>,
     set_expr: &SemExpr,
     name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
 ) -> Membership<'tm> {
     let dt = t.sort().datatype();
     // `^` (SymDiff) builds its cross-kind DT with exactly `[lhs, rhs]` as the two
@@ -174,7 +233,7 @@ fn lift_sequence_into_atomic<'tm>(
     t: Term<'tm>,
     set_expr: &SemExpr,
     name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
 ) -> Membership<'tm> {
     match &set_expr.kind {
         // Product A*B*C: t ∈ A*B*C ⟺ len(t)==N ∧ nth(t,0)∈A ∧ nth(t,1)∈B ∧ …
@@ -263,7 +322,7 @@ pub(crate) fn membership_constraint<'tm>(
     t: Term<'tm>,
     set_expr: &SemExpr,
     name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
 ) -> Membership<'tm> {
     // Fast path: datatype-sorted terms (cross-kind union values) use
     // ApplyTester / ApplySelector rather than arithmetic comparisons.
@@ -666,6 +725,43 @@ pub(crate) fn membership_constraint<'tm>(
             }
         }
 
+        // `L / canon` — quotient set. Membership is the canonicalizer's fixed
+        // points: `x ∈ L/canon ⟺ x ∈ L ∧ canon(x) == x`. `canon(t)` is
+        // encoded on demand for this *specific* `t` via `encode_comp_expr`
+        // (no quantifier, no persistent axiom — see `QuotientInfo`'s doc
+        // comment for why). Looked up by the canonicalizer's own symbol;
+        // absent, or a body `encode_comp_expr` can't handle, means either
+        // the quotient definition failed validation (already reported
+        // elsewhere as a compile error) or this call site never had
+        // `fn_env` available to register it (e.g. an auxiliary pass like
+        // `domain_within_int64`) — either way, `Unsupported` degrades to
+        // `Unknown` rather than guessing.
+        SemExprKind::SetQuotient(lhs, canon_sym) => {
+            let Some(info) = distinct_preds.quotient.get(canon_sym) else {
+                return Membership::Unsupported;
+            };
+            if t.sort() != info.sort {
+                return Membership::Constrained(tm.mk_boolean(false));
+            }
+            let comp_ctx = CompCtx {
+                tm,
+                name_defs,
+                distinct_preds,
+            };
+            let Some(applied) = encode_comp_expr(&info.body, &info.param, t.clone(), comp_ctx)
+            else {
+                return Membership::Unsupported;
+            };
+            let fixed_point = tm.mk_term(Kind::Equal, &[applied, t.clone()]);
+            match membership_constraint(tm, t, lhs, name_defs, distinct_preds) {
+                Membership::Unsupported => Membership::Unsupported,
+                Membership::Unconstrained => Membership::Constrained(fixed_point),
+                Membership::Constrained(in_lhs) => {
+                    Membership::Constrained(tm.mk_term(Kind::And, &[in_lhs, fixed_point]))
+                }
+            }
+        }
+
         _ => Membership::Unsupported,
     }
 }
@@ -675,10 +771,10 @@ pub(crate) fn membership_constraint<'tm>(
 /// references, so this bundle can just be passed by value throughout their
 /// mutual recursion.
 #[derive(Clone, Copy)]
-struct CompCtx<'a, 'tm> {
-    tm: &'tm TermManager,
-    name_defs: &'a NameDefs,
-    distinct_preds: &'a DistinctPreds<'tm>,
+pub(crate) struct CompCtx<'a, 'tm> {
+    pub(crate) tm: &'tm TermManager,
+    pub(crate) name_defs: &'a NameDefs,
+    pub(crate) distinct_preds: &'a SolverPreds<'tm>,
 }
 
 /// Encode `t ∈ { output for var in source if filter }` as a cvc5 predicate.
@@ -759,7 +855,7 @@ fn comprehension_membership<'tm>(
 /// bound variable `var`.  Only handles arithmetic and comparisons — enough for
 /// comprehension output expressions and filter predicates.  Returns `None` for
 /// anything more complex (calls, if-then-else, etc.).
-fn encode_comp_expr<'tm>(
+pub(crate) fn encode_comp_expr<'tm>(
     expr: &SemExpr,
     var: &Symbol,
     var_term: Term<'tm>,

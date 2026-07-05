@@ -47,10 +47,13 @@ pub enum SemExprKind {
     CartesianProduct(Box<SemExpr>, Box<SemExpr>),
     /// Value-position `/`.
     Div(Box<SemExpr>, Box<SemExpr>),
-    /// Set-position `/` — set quotient. No consumer implements this yet;
-    /// it exists so that misuse fails loudly instead of silently aliasing
-    /// the LHS's Kind the way the pre-elaboration code path did.
-    SetQuotient(Box<SemExpr>, Box<SemExpr>),
+    /// Set-position `/` — set quotient, `L / canon`. The RHS is a bare
+    /// reference to a named canonicalizer function (never a value/set
+    /// expression — elaboration rejects anything else, e.g. a lambda), so
+    /// it's carried as a plain `Symbol` rather than a boxed `SemExpr`;
+    /// resolving it against the canonicalizer's actual body happens at
+    /// solver time (`build_quotient_preds`), once `fn_env` exists.
+    SetQuotient(Box<SemExpr>, Symbol),
 
     /// Every other binary operator — single meaning regardless of position.
     BinOp {
@@ -529,7 +532,10 @@ fn as_binop(kind: &SemExprKind) -> Option<(BinOp, &SemExpr, &SemExpr)> {
         SemExprKind::Add(l, r) | SemExprKind::DisjointUnion(l, r) => Some((BinOp::Add, l, r)),
         SemExprKind::Sub(l, r) | SemExprKind::SetDifference(l, r) => Some((BinOp::Sub, l, r)),
         SemExprKind::Mul(l, r) | SemExprKind::CartesianProduct(l, r) => Some((BinOp::Mul, l, r)),
-        SemExprKind::Div(l, r) | SemExprKind::SetQuotient(l, r) => Some((BinOp::Div, l, r)),
+        SemExprKind::Div(l, r) => Some((BinOp::Div, l, r)),
+        // Deliberately excluded: `SetQuotient`'s RHS is a bare `Symbol`, not
+        // a `SemExpr` — it can't share this helper's `(BinOp, &SemExpr,
+        // &SemExpr)` shape. Has its own `Display` arm below instead.
         SemExprKind::BinOp { op, lhs, rhs } => Some((*op, lhs, rhs)),
         _ => None,
     }
@@ -616,6 +622,16 @@ impl std::fmt::Display for SemExprKind {
             }
             SemExprKind::Proj { base, index } => write!(f, "{base}.{index}"),
             SemExprKind::Index { base, index } => write!(f, "{base}[{index}]"),
+            SemExprKind::SetQuotient(lhs, canon) => {
+                let lhs_needs_parens = as_binop(&lhs.kind).is_some_and(|(child_op, ..)| {
+                    sem_binop_prec(&child_op) < sem_binop_prec(&BinOp::Div)
+                });
+                if lhs_needs_parens {
+                    write!(f, "({lhs}) / {canon}")
+                } else {
+                    write!(f, "{lhs} / {canon}")
+                }
+            }
             SemExprKind::KleeneStar(inner) => match &inner.kind {
                 SemExprKind::Var(_) => write!(f, "{inner}*"),
                 _ => write!(f, "({inner})*"),
@@ -628,7 +644,6 @@ impl std::fmt::Display for SemExprKind {
             | SemExprKind::DisjointUnion(..)
             | SemExprKind::SetDifference(..)
             | SemExprKind::CartesianProduct(..)
-            | SemExprKind::SetQuotient(..)
             | SemExprKind::BinOp { .. } => unreachable!("handled by as_binop above"),
         }
     }

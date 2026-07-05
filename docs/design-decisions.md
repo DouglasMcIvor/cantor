@@ -1289,6 +1289,49 @@ constructor / `from` site (no global axioms; logic `ALL`). The
 auto-provided constructor (`litre : Nat -> Litre`) and the built-in
 destructor `from` are identity operations at runtime.
 
+### Quotient sets (`L / canon`) (DECIDED for this slice,
+    docs/wrapping-and-quotient-sets-plan.md)
+
+`L / canon` — the quotient of set `L` by a canonicalizer function, e.g.:
+
+```
+canon5 : Int -> Int
+canon5(x) = x rem 5
+
+IntMod5 = Int / canon5
+```
+
+`canon` must be a bare reference to a named, single-parameter,
+single-expression function (no lambdas, no block bodies — a compile-time
+diagnostic, not silently accepted). Two proof obligations, both checked
+once per quotient definition, before the main per-function loop:
+
+- **Range containment** (graduated, the ordinary domain/range machinery,
+  no new proof kind): `canon`'s declared range must be provably `⊆ L`.
+- **Idempotence** (the one genuinely new proof kind): `∀x ∈ L.
+  canon(canon(x)) == canon(x)`. Unlike ordinary domain/range obligations,
+  an unproved idempotence claim has **no runtime fallback and no `assume`
+  escape hatch** — same category as recursive-set well-foundedness above —
+  since it's a claim about every element of a possibly-infinite set, not a
+  single call-site value.
+
+**No operators are derived yet.** `IntMod5` has no `+`/`-`/`*` of its own;
+`deriving Arithmetic`-style operator derivation, an inline lambda
+canonicalizer, and the `L = X * R` structural shortcut for `/` are all
+explicitly deferred (§12).
+
+**Runtime representation — deliberately unchanged**: since no operators are
+derived, `L/canon`'s Kind is simply `L`'s own Kind — an `IntMod5` value is
+stored exactly like a plain `Int` (same `i64`, no tagging, no wrapper, zero
+codegen changes). Membership is defined as the canonicalizer's fixed
+points: `x ∈ L/canon ⟺ x ∈ L ∧ canon(x) == x`, encoded on demand for the
+specific value being tested (substituting into `canon`'s body directly —
+no persistent quantified axiom is asserted into the general-purpose
+per-function solvers, since that was found to make cvc5 hang on files
+containing entirely unrelated functions). Passing an `IntMod5` value into
+a function typed over `Int` already works via the ordinary
+subset-domain-membership proof the compiler does everywhere else.
+
 ### Function composition operator (DECIDED)
 
 `>>` — left-to-right composition: `f >> g` means `x -> g(f(x))`, reading in
@@ -1379,6 +1422,14 @@ Other open items (lower priority, not blocking):
   proven/disproven/unproven + `-Wall` escalation)
 - Automatic domain-partition inference for overload sets
 - Emit handlers written in Cantor itself
+- **Quotient-set operator derivation** — `IntMod5 = Int / canon5` (§10)
+  currently derives no operators of its own; a future `deriving Arithmetic`
+  (or similar) would let `+`/`-`/`*` on a quotient set automatically
+  canonicalize their result. An inline lambda canonicalizer (vs. today's
+  named-function-only requirement) and the `L = X * R` structural shortcut
+  for `/` (recognizing a quotient as a genuine partition into
+  representative/remainder, rather than requiring an explicit
+  canonicalizer function) are related, also-deferred ideas.
 - Solver-capability versioning
 - **Named product sets (structs)** — `Point = distinct (x: Meter; y: Meter)`;
   constructor syntax TBD (tentatively positional `(3m, 4m)` or named

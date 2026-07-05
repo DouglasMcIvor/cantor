@@ -12,7 +12,7 @@ use crate::{
 
 use super::NameDefs;
 use super::encode_call::{CallSite, encode_call};
-use super::membership::{DistinctPreds, Membership, membership_constraint};
+use super::membership::{DistinctPreds, Membership, SolverPreds, membership_constraint};
 use super::obligations::{
     BuiltinObligation, OverflowObligation, OverloadCallObligation, binary_builtin_domain,
     named_set, unary_builtin_domain,
@@ -39,7 +39,7 @@ pub(crate) struct EncodeCtx<'a, 'tm> {
     pub(crate) builtin_obligs: &'a mut Vec<BuiltinObligation<'tm>>,
     pub(crate) overflow_obligs: &'a mut Vec<OverflowObligation<'tm>>,
     pub(crate) overload_obligs: &'a mut Vec<OverloadCallObligation<'tm>>,
-    pub(crate) distinct_preds: &'a DistinctPreds<'tm>,
+    pub(crate) distinct_preds: &'a SolverPreds<'tm>,
 }
 
 // ── Expression encoder (compact router) ──────────────────────────────────────
@@ -97,7 +97,7 @@ pub(crate) fn encode_expr<'tm>(
         }
         if callee.0 == "from" && args.len() == 1 {
             let arg_term = enc!(&args[0])?;
-            for (sym, info) in ctx.distinct_preds {
+            for (sym, info) in ctx.distinct_preds.iter() {
                 // `Fail` is registered as a distinct sort purely so the
                 // cross-kind union machinery treats it like any other arm —
                 // it has no user-facing basis value to extract, so `from()`

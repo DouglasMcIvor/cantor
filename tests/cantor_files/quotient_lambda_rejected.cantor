@@ -1,0 +1,4 @@
+X = Int / (Int + Int)
+
+main : -> Int
+main() = 1

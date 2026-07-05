@@ -16,7 +16,7 @@ use crate::{
 };
 
 use super::NameDefs;
-use super::membership::{DistinctPreds, Membership, membership_constraint};
+use super::membership::{Membership, SolverPreds, membership_constraint};
 use super::sort::{
     extract_success_value, is_product_range, maybe_coerce, set_sort, success_arm_of_range,
 };
@@ -228,7 +228,7 @@ fn sig_domain_match<'tm>(
     callee: &Symbol,
     tm: &'tm TermManager,
     name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
 ) -> Result<DomainMatch<'tm>, String> {
     let parts = match sem_param_set_exprs(sig.domain.as_ref(), arg_terms.len()) {
         Ok(p) => p,

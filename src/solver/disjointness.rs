@@ -14,7 +14,7 @@ use cvc5::{Kind, Solver, Term, TermManager};
 use crate::kind::Kind as ValKind;
 use crate::semantics::tree::{SemExpr, SemFunctionDef, sem_param_set_exprs};
 
-use super::membership::{DistinctPreds, Membership, membership_constraint};
+use super::membership::{Membership, QuotientPreds, SolverPreds, membership_constraint};
 use super::{
     CheckResult, FunctionEnv, NameDefs, boolean_value, build_distinct_preds, configured_solver,
     integer_value,
@@ -49,7 +49,14 @@ pub(super) fn validate_disjoint_unions(
             if timeout_ms > 0 {
                 solver.set_option("tlimit", &timeout_ms.to_string());
             }
-            let distinct_preds = build_distinct_preds(&tm, name_defs);
+            // No `fn_env` available in this auxiliary check (it's about
+            // disjoint-union/overload-domain well-formedness, not general
+            // membership), so quotient-set membership here safely degrades
+            // to `Unsupported`/`Unknown` rather than being threaded through.
+            let distinct_preds = SolverPreds {
+                distinct: build_distinct_preds(&tm, name_defs),
+                quotient: QuotientPreds::new(),
+            };
             let t = tm.mk_const(tm.integer_sort(), "__disjoint_check");
             let in_a = membership_constraint(&tm, t.clone(), lhs, name_defs, &distinct_preds);
             let in_b = membership_constraint(&tm, t, rhs, name_defs, &distinct_preds);
@@ -89,12 +96,16 @@ pub(super) fn validate_disjoint_unions(
         }
         SemExprKind::SetDifference(lhs, rhs)
         | SemExprKind::CartesianProduct(lhs, rhs)
-        | SemExprKind::SetQuotient(lhs, rhs)
         | SemExprKind::BinOp { lhs, rhs, .. } => {
             if let Some(err) = validate_disjoint_unions(lhs, name_defs, timeout_ms) {
                 return Some(err);
             }
             validate_disjoint_unions(rhs, name_defs, timeout_ms)
+        }
+        // The RHS is a canonicalizer *function name*, not a set expression —
+        // nothing to recurse into there.
+        SemExprKind::SetQuotient(lhs, _canon) => {
+            validate_disjoint_unions(lhs, name_defs, timeout_ms)
         }
         SemExprKind::Call { args, .. } => {
             for arg in args {
@@ -157,7 +168,7 @@ fn overload_domain_term<'tm>(
     param_terms: &[Term<'tm>],
     tm: &'tm TermManager,
     name_defs: &NameDefs,
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
 ) -> Result<Term<'tm>, String> {
     let mut arms: Vec<Term<'_>> = Vec::new();
     for sig in &def.sigs {
@@ -207,7 +218,13 @@ fn check_pair_disjoint(
 ) -> CheckResult {
     let tm = TermManager::new();
     let mut solver = configured_solver(&tm, timeout_ms);
-    let distinct_preds = build_distinct_preds(&tm, name_defs);
+    // No `fn_env` available here (an overload-domain-disjointness check, not
+    // general membership) — quotient-set membership degrades to
+    // `Unsupported`/`Unknown` rather than being threaded through.
+    let distinct_preds = SolverPreds {
+        distinct: build_distinct_preds(&tm, name_defs),
+        quotient: QuotientPreds::new(),
+    };
 
     let param_terms = match fresh_overload_param_terms(&def_a.param_kinds, &tm) {
         Ok(v) => v,

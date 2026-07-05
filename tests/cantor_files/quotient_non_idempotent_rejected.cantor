@@ -1,0 +1,7 @@
+bad_canon : Int -> Int
+bad_canon(x) = x + 1
+
+BadQuotient = Int / bad_canon
+
+main : -> Int
+main() = 1

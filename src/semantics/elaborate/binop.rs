@@ -95,16 +95,36 @@ pub(super) fn elaborate_binop(
             })
         }
         BinOp::Div => {
-            let (l, r) = (
-                elaborate_expr(lhs, pos, ctx, env)?,
-                elaborate_expr(rhs, pos, ctx, env)?,
-            );
+            let l = elaborate_expr(lhs, pos, ctx, env)?;
             let (node, kind_of) = match pos {
-                Position::Value => (SemExprKind::Div(Box::new(l), Box::new(r)), Kind::Int),
-                Position::Set => (
-                    SemExprKind::SetQuotient(Box::new(l), Box::new(r)),
-                    kind_of_for_set()?,
-                ),
+                Position::Value => {
+                    let r = elaborate_expr(rhs, pos, ctx, env)?;
+                    (SemExprKind::Div(Box::new(l), Box::new(r)), Kind::Int)
+                }
+                // `L / canon` — quotient-set formation. Unlike `+ - *`'s
+                // Set-position duals, the RHS here is never itself a set
+                // description: it's a reference to a named canonicalizer
+                // function, so it's rejected/accepted by raw AST shape
+                // (a bare name) rather than elaborated as an expression —
+                // elaborating it via `elaborate_expr(rhs, Position::Set, ..)`
+                // would try (and fail) to resolve it as a *set* name, since
+                // functions never appear in `name_defs`. Resolving the
+                // symbol against its actual function body is deferred to
+                // solver time (`build_quotient_preds`), once `fn_env` exists.
+                Position::Set => {
+                    let ExprKind::Var(canon_sym) = &rhs.kind else {
+                        return Err(CompileError::InvalidSetExpression {
+                            detail: "canonicalizer must be a named function \
+                                     (lambdas not yet supported)"
+                                .to_string(),
+                            span: rhs.span,
+                        });
+                    };
+                    (
+                        SemExprKind::SetQuotient(Box::new(l), canon_sym.clone()),
+                        kind_of_for_set()?,
+                    )
+                }
             };
             Ok(SemExpr {
                 kind: node,

@@ -29,6 +29,13 @@ fn is_compile_time_value(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Var(sym) => starts_uppercase(&sym.0),
         ExprKind::SetLit(_) | ExprKind::IntLit(_) | ExprKind::BoolLit(_) => true,
+        // `L / canon` — only `lhs` need be compile-time; `canon` is a
+        // (correctly lowercase) function reference, not a value to check.
+        ExprKind::BinOp {
+            op: crate::ast::BinOp::Div,
+            lhs,
+            ..
+        } => is_compile_time_value(lhs),
         ExprKind::BinOp { lhs, rhs, .. } => {
             is_compile_time_value(lhs) && is_compile_time_value(rhs)
         }
@@ -175,6 +182,15 @@ fn vars_must_be_uppercase(expr: &Expr, errors: &mut Vec<CompileError>) {
                 });
             }
         }
+        // `L / canon` — the RHS names a canonicalizer *function*, correctly
+        // lowercase per the definition-name convention; only `lhs` is a set
+        // expression. Mirrors the module doc's existing exception for `in`/
+        // `not in`'s RHS.
+        ExprKind::BinOp {
+            op: crate::ast::BinOp::Div,
+            lhs,
+            ..
+        } => vars_must_be_uppercase(lhs, errors),
         ExprKind::BinOp { lhs, rhs, .. } => {
             vars_must_be_uppercase(lhs, errors);
             vars_must_be_uppercase(rhs, errors);

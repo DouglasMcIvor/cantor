@@ -360,13 +360,19 @@ pub(crate) fn set_sort<'tm>(
         }
         // Value-position-only variants must never appear in set-expression context.
         // Listed explicitly so adding a new SemExprKind causes a compile error here.
+        // `L / canon` — quotient values live in the same sort as their
+        // canonical representative, i.e. `L`'s own sort (no wrapper, no new
+        // sort — see docs/wrapping-and-quotient-sets-plan.md's "Runtime
+        // representation" note). The canonicalizer name itself has no sort.
+        SemExprKind::SetQuotient(lhs, _canon) => {
+            return set_sort(tm, lhs, distinct_preds, name_defs);
+        }
         SemExprKind::IntLit(_)
         | SemExprKind::BoolLit(_)
         | SemExprKind::Add(..)
         | SemExprKind::Sub(..)
         | SemExprKind::Mul(..)
         | SemExprKind::Div(..)
-        | SemExprKind::SetQuotient(..)
         | SemExprKind::BinOp { .. }
         | SemExprKind::UnOp { .. }
         | SemExprKind::If { .. }
