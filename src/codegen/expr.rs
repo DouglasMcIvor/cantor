@@ -61,6 +61,11 @@ impl<'ctx> Compiler<'ctx> {
                 expr.kind
             ))),
             SemExprKind::UnOp { op, expr: inner } => self.compile_unop(*op, inner, env, expr.span),
+            SemExprKind::BinOp {
+                op: op @ (BinOp::Rem | BinOp::Quot),
+                lhs,
+                rhs,
+            } => self.compile_rem_quot(*op, lhs, rhs, env, expr.span),
             SemExprKind::BinOp { op, lhs, rhs } => {
                 self.compile_binop(*op, lhs, rhs, env, expr.span)
             }
@@ -410,6 +415,10 @@ impl<'ctx> Compiler<'ctx> {
             BinOp::In | BinOp::NotIn => unreachable!("handled above"),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => unreachable!(
                 "Add/Sub/Mul/Div are dedicated SemExprKind variants, never wrapped in BinOp"
+            ),
+            BinOp::Rem | BinOp::Quot => unreachable!(
+                "Rem/Quot are routed to compile_rem_quot by compile_expr's dispatch, \
+                 never reach compile_binop"
             ),
             BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
                 Err(CompileError::ice("set operations not yet implemented"))

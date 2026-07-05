@@ -518,7 +518,7 @@ fn sem_binop_prec(op: &BinOp) -> u8 {
         BinOp::SymDiff => 5,
         BinOp::Intersect => 6,
         BinOp::Add | BinOp::Sub | BinOp::Concat => 7,
-        BinOp::Mul | BinOp::Div => 8,
+        BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Quot => 8,
     }
 }
 

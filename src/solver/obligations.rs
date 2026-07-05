@@ -172,11 +172,21 @@ pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(SemExpr,
             ),
             (named_set("NonZeroInt"), "division by zero"),
         ],
+        // Rem/Quot arg 1 (the divisor): same shape as Div's.
+        (BinOp::Rem | BinOp::Quot, 1) => vec![
+            (
+                named_set("Int"),
+                "divisor must be Int, not a member of a distinct set",
+            ),
+            (named_set("NonZeroInt"), "division by zero"),
+        ],
         // All arithmetic args must be plain Int (not Bool, not a distinct set).
-        (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, _) => vec![(
-            named_set("Int"),
-            "operand must be Int, not a member of a distinct set",
-        )],
+        (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Quot, _) => {
+            vec![(
+                named_set("Int"),
+                "operand must be Int, not a member of a distinct set",
+            )]
+        }
         // ── Comparisons ───────────────────────────────────────────────────────
         (BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, _) => vec![],
         // ── Logical ───────────────────────────────────────────────────────────

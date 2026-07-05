@@ -521,6 +521,13 @@ fn encode_binop<'tm>(
         BinOp::Sub => Kind::Sub,
         BinOp::Mul => Kind::Mult,
         BinOp::Div => Kind::IntsDivision,
+        // Euclidean by design (fork 2 of docs/wrapping-and-quotient-sets-plan.md):
+        // cvc5's `IntsDivision`/`IntsModulus` (SMT-LIB `div`/`mod`) are already
+        // Euclidean, so `quot`/`rem` map onto them directly with no correction —
+        // unlike `/`, which is *documented* truncating but *encoded* Euclidean
+        // (the long-standing, deliberately-deferred mismatch noted above).
+        BinOp::Quot => Kind::IntsDivision,
+        BinOp::Rem => Kind::IntsModulus,
         BinOp::Eq => Kind::Equal,
         BinOp::Ne => Kind::Distinct,
         BinOp::Lt => Kind::Lt,
@@ -558,6 +565,8 @@ fn encode_binop<'tm>(
             | BinOp::Sub
             | BinOp::Mul
             | BinOp::Div
+            | BinOp::Rem
+            | BinOp::Quot
             | BinOp::Lt
             | BinOp::Le
             | BinOp::Gt
@@ -591,15 +600,23 @@ fn encode_binop<'tm>(
     // dedicated `tdiv`/`trem` truncating-division operators (low priority,
     // separate from the Euclidean `quot`/`rem` pair that plan introduces).
     // Leave this mismatch as-is until then rather than patching it piecemeal.
-    if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
-        && let Membership::Constrained(c) = membership_constraint(
-            ctx.tm,
-            result.clone(),
-            &named_set("Int64"),
-            ctx.name_defs,
-            ctx.distinct_preds,
-        )
-    {
+    //
+    // `Quot` shares `/`'s exact overflow corner (`i64::MIN quot -1` is the
+    // one case that doesn't fit in Int64) so it gets the same obligation.
+    // `Rem` needs none: a Euclidean remainder is always `0 <= rem < |divisor|`,
+    // strictly bounded by an already-Int64 divisor, so it can never overflow —
+    // proving this needlessly would just cost a solver call for a fact that's
+    // true by construction.
+    if matches!(
+        op,
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Quot
+    ) && let Membership::Constrained(c) = membership_constraint(
+        ctx.tm,
+        result.clone(),
+        &named_set("Int64"),
+        ctx.name_defs,
+        ctx.distinct_preds,
+    ) {
         ctx.overflow_obligs.push(OverflowObligation {
             span,
             path_cond: path_cond.clone(),

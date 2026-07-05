@@ -1,0 +1,11 @@
+safe_rem : Int * (Int - {0}) -> Int
+safe_rem(x, y) = x rem y
+
+safe_quot : Int * (Int - {0}) -> Int
+safe_quot(x, y) = x quot y
+
+bad_rem : Int -> Int
+bad_rem(x) = safe_rem(x, 0)
+
+bad_quot : Int -> Int
+bad_quot(x) = safe_quot(x, 0)

@@ -289,6 +289,43 @@ into the wrapping registry alongside `distinct_preds`.
 
 ### Prerequisite: `rem` / `quot` operators
 
+**Status: DONE, 2026-07-05.** Implemented as sketched below, with two
+adjustments made along the way (both confirmed with Doug):
+
+1. **BigInt scope, narrower than this doc originally implied.** `+ - * /`
+   all have a `cantor_bigint_*` runtime function so an unbounded, tagged
+   `Int` operand still computes a correct (if BigInt-backed) answer.
+   `rem`/`quot` don't get that treatment in this slice — no
+   `cantor_bigint_rem`/`cantor_bigint_quot` exists yet, and rather than
+   silently running plain-i64 Euclidean arithmetic on what might actually
+   be a boxed BigInt pointer, an unbounded operand is a **compile-time**
+   `Unsupported` error (not a runtime trap — `lk`/`rk` are already known
+   statically at codegen time, so there's nothing to defer to runtime).
+   Only a genuinely `Int64`-bounded operand (e.g. an `Int32`-domain
+   function promoted by `int64_split`'s Step A) reaches the real Euclidean
+   codegen. Adding the two runtime functions is a deferred follow-up.
+2. **No set-position meaning.** Unlike `+ - * /`, `rem`/`quot` never had a
+   "SetRem"/"SetQuot" dual planned — confirmed this means Set position is a
+   hard `InvalidSetExpression` diagnostic, not silently falling through to
+   some default.
+
+**A real, pre-existing bug found and worked around (not fixed) while
+writing the CLI tests**: a function's raw `Kind::Int64` result (post
+`int64_split` promotion) flowing directly into a `Fail`-wire success
+payload, or a tuple leaf, reaches the runtime *untagged*, but the
+display/decode side (`format_tagged_int` in `src/main.rs`, and
+`cantor_bigint_*` for the tagged-arithmetic path) assumes every `Kind::Int`
+position is tagged. Reproduces identically with plain `/` (a
+`Fail`-wrapped case prints a silently wrong value; a tuple-returning case
+crashes with a misaligned-pointer panic in `src/runtime/bigint.rs`) — this
+is **not** a rem/quot bug, it's a gap in the `Int64`→`Int` re-tagging
+boundary for *any* promoted function's result used from a `Fail`-wrapped or
+tuple-returning caller. All CLI tests below route around it by keeping
+`main`'s return a bare `-> Int` (confirmed to tag correctly). Flagged to
+Doug; not fixed here — out of scope for this slice, needs its own
+investigation of where codegen assembles the `Fail`-wire struct /
+tuple-into-buffer trampoline.
+
 Needed unconditionally for the motivating example to even be *writable*
 (`x -> x rem 5`), and independently useful — do this first regardless of
 which feature lands first overall.

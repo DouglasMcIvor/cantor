@@ -1,0 +1,5 @@
+safe_rem32 : Int32 * (Int32 - {0}) -> Int
+safe_rem32(x, y) = x rem y
+
+main : -> Int
+main() = safe_rem32(-7, 5)

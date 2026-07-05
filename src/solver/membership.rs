@@ -819,6 +819,8 @@ fn encode_comp_expr<'tm>(
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => unreachable!(
                     "Add/Sub/Mul/Div are dedicated SemExprKind variants, never wrapped in BinOp"
                 ),
+                BinOp::Rem => Kind::IntsModulus,
+                BinOp::Quot => Kind::IntsDivision,
                 BinOp::Union | BinOp::Intersect | BinOp::SymDiff | BinOp::Concat => return None,
             };
             Some(tm.mk_term(kind, &[l, r]))

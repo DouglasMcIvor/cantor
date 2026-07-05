@@ -243,6 +243,19 @@ fn binop_kind(
         BinOp::Concat => set_kind(lhs, name_defs)?,
 
         BinOp::And | BinOp::Or => Kind::Bool,
+
+        // `rem`/`quot` are arithmetic-only — unlike `+ - * /` they have no
+        // set-forming meaning, so this arm should never legitimately be
+        // reached (see `elaborate::binop`'s `Position::Set` case for `Rem`/
+        // `Quot`, which raises `InvalidSetExpression` before `set_kind` is
+        // ever called with one of these).
+        BinOp::Rem | BinOp::Quot => {
+            return Err(CompileError::ice(
+                "`rem`/`quot` reached set_kind — elaborate::binop should have \
+                 rejected this in Position::Set before calling set_kind"
+                    .to_string(),
+            ));
+        }
     })
 }
 

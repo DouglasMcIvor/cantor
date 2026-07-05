@@ -167,6 +167,8 @@ pub enum BinOp {
     Sub, // arithmetic subtraction in value position; set difference in set position
     Mul, // arithmetic multiplication in value position; Cartesian product in set position
     Div,
+    Rem,  // Euclidean remainder (always 0 <= rem < |divisor|)
+    Quot, // Euclidean quotient (paired with Rem)
     // Comparison (produce Bool)
     Eq,
     Ne,
@@ -641,7 +643,7 @@ fn binop_prec(op: &BinOp) -> u8 {
         BinOp::SymDiff => 5,
         BinOp::Intersect => 6,
         BinOp::Add | BinOp::Sub | BinOp::Concat => 7,
-        BinOp::Mul | BinOp::Div => 8,
+        BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Quot => 8,
     }
 }
 
@@ -652,6 +654,8 @@ impl fmt::Display for BinOp {
             Self::Sub => "-",
             Self::Mul => "*",
             Self::Div => "/",
+            Self::Rem => "rem",
+            Self::Quot => "quot",
             Self::Eq => "==",
             Self::Ne => "!=",
             Self::Lt => "<",

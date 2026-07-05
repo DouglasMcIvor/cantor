@@ -1607,6 +1607,35 @@ No implicit coercion between `Bool` and any integer kind exists at any layer.
   Full rationale, encode/decode formulas, and step order:
   int-soundness-plan.md's "Phase 3 — BigInt runtime" section.
 
+### `rem` / `quot` (DECIDED, docs/wrapping-and-quotient-sets-plan.md)
+
+- **Euclidean, not truncating**: `a rem b` is always `0 <= rem < |b|`; `a
+  quot b` is `(a - (a rem b)) / b`. This is deliberately the opposite
+  convention from `/`'s current truncating-toward-zero documentation (see
+  above) — chosen so `IntMod5 = Int / (x -> x rem 5)`-style quotient-set
+  canonicalizers land in a clean, non-negative canonical range with no
+  fixup. `(-7) rem 5 == 3`, `(-7) quot 5 == -2`.
+- The solver encodes both directly via CVC5's `Kind::IntsModulus`/
+  `Kind::IntsDivision` (SMT-LIB `mod`/`div`), which are already Euclidean —
+  no correction needed on the proof side, unlike `/`. Codegen lowers to
+  `sdiv`/`srem` plus the standard sign-correction transform (the same one
+  used to implement e.g. Python's `%`/`//` over hardware division).
+- Same domain/soundness treatment as `/`: the divisor must be `Int` and
+  `NonZeroInt` (hard compile-time proof gate, not a runtime check), and
+  `quot` shares `/`'s one overflow corner (`i64::MIN quot -1`, checked the
+  same way). A bare `rem` never overflows on its own (its result is
+  strictly bounded by the divisor), so it carries no overflow obligation.
+- **Scope of this slice**: only genuinely `Int64`-bounded operands are
+  supported — an operand that's an unbounded, BigInt-tagged `Int` (i.e.
+  `int64_split`'s whole-function promotion doesn't apply) is a clean
+  `Unsupported` compile error, not a silent wrong answer or a runtime trap.
+  No `cantor_bigint_rem`/`cantor_bigint_quot` runtime function exists yet;
+  adding one (mirroring `cantor_bigint_div`) is a deferred follow-up.
+- No set-position meaning: unlike `+ - * /`, `rem`/`quot` don't have a
+  "SetRem"/"SetQuot" dual (no operator resolves to them for set
+  definitions) — using either to define a set is a hard user error
+  (`InvalidSetExpression`), not a silent `Kind::Int` default.
+
 ### Narrowing back to IntN
 
 Three mechanisms in order of increasing programmer responsibility:

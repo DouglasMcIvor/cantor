@@ -247,6 +247,133 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Value-position `rem`/`quot` — Euclidean by design (`rem` always
+    /// `0 <= rem < |divisor|`), unlike `/`'s truncating-toward-zero codegen.
+    /// Always a generic `SemExprKind::BinOp` node (single meaning, no
+    /// Set-position dual — see `elaborate::binop`), routed here directly by
+    /// `compile_expr` rather than through `compile_binop`.
+    ///
+    /// TODO(rem/quot BigInt support, docs/wrapping-and-quotient-sets-plan.md):
+    /// no `cantor_bigint_rem`/`cantor_bigint_quot` runtime function exists
+    /// yet. Rather than silently running plain-i64 Euclidean arithmetic on
+    /// an operand that might actually be a boxed BigInt pointer (wrong
+    /// answer, not merely unchecked), this is a hard compile error until
+    /// that runtime support lands — `lk`/`rk` are already known at this
+    /// point in the pipeline, so the gap is caught at compile time, not
+    /// deferred to a runtime trap.
+    pub(super) fn compile_rem_quot(
+        &self,
+        op: BinOp,
+        lhs: &SemExpr,
+        rhs: &SemExpr,
+        env: &Env<'ctx>,
+        span: Span,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let (lv, lk) = self.compile_expr(lhs, env)?;
+        let (rv, rk) = self.compile_expr(rhs, env)?;
+        let li = self.scalarize_to_int(lv, &lk)?;
+        let ri = self.scalarize_to_int(rv, &rk)?;
+
+        if self.tagging_active() && !(lk == Kind::Int64 && rk == Kind::Int64) {
+            return Err(CompileError::Unsupported {
+                feature: format!(
+                    "`{op}` on an Int value not proven to fit Int64 (needs \
+                     cantor_bigint_rem/cantor_bigint_quot, not yet implemented)"
+                ),
+                span,
+            });
+        }
+
+        let b = &self.builder;
+        let i64_type = self.context.i64_type();
+        let raw_result_kind = if self.tagging_active() {
+            Kind::Int64
+        } else {
+            Kind::Int
+        };
+
+        // Same `i64::MIN / -1` corner `/` already guards (see `compile_arith`):
+        // the truncated quotient doesn't fit in i64, and LLVM's `sdiv`/`srem`
+        // are both poison at this exact operand pair. Unlike `/`, no proof
+        // obligation is ever pushed for a bare `Rem` node (its result can
+        // never overflow Int64 on its own), so this guard is never elided
+        // for `rem` — only a `Quot` node's span can appear in
+        // `overflow_checks`.
+        let proved = self.overflow_checks.get(&span).copied().unwrap_or(false);
+        if !proved {
+            let min = i64_type.const_int(i64::MIN as u64, true);
+            let neg_one = i64_type.const_all_ones();
+            let is_min = b
+                .build_int_compare(IntPredicate::EQ, li, min, "rq_lhs_is_min")
+                .map_err(|e| CompileError::ice(e.to_string()))?;
+            let is_neg_one = b
+                .build_int_compare(IntPredicate::EQ, ri, neg_one, "rq_rhs_is_neg_one")
+                .map_err(|e| CompileError::ice(e.to_string()))?;
+            let overflow = b
+                .build_and(is_min, is_neg_one, "rq_overflow")
+                .map_err(|e| CompileError::ice(e.to_string()))?;
+            self.emit_overflow_abort_branch(overflow, span)?;
+        }
+
+        // Truncating hardware division/remainder, then the standard
+        // truncated-to-Euclidean sign correction (same transform used to
+        // implement e.g. Python's `%`/`//` over hardware division):
+        //   if t_rem < 0: (b > 0) ? (quot-1, rem+b) : (quot+1, rem-b)
+        let t_quot = b
+            .build_int_signed_div(li, ri, "tquot")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        let t_rem = b
+            .build_int_signed_rem(li, ri, "trem")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+
+        let zero = i64_type.const_int(0, true);
+        let one = i64_type.const_int(1, true);
+        let rem_neg = b
+            .build_int_compare(IntPredicate::SLT, t_rem, zero, "rem_neg")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        let divisor_pos = b
+            .build_int_compare(IntPredicate::SGT, ri, zero, "divisor_pos")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+
+        let quot_m1 = b
+            .build_int_sub(t_quot, one, "quot_m1")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        let quot_p1 = b
+            .build_int_add(t_quot, one, "quot_p1")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        let rem_plus_b = b
+            .build_int_add(t_rem, ri, "rem_plus_b")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        let rem_minus_b = b
+            .build_int_sub(t_rem, ri, "rem_minus_b")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+
+        let quot_if_neg = b
+            .build_select(divisor_pos, quot_m1, quot_p1, "quot_if_neg")
+            .map_err(|e| CompileError::ice(e.to_string()))?
+            .into_int_value();
+        let rem_if_neg = b
+            .build_select(divisor_pos, rem_plus_b, rem_minus_b, "rem_if_neg")
+            .map_err(|e| CompileError::ice(e.to_string()))?
+            .into_int_value();
+
+        let final_quot = b
+            .build_select(rem_neg, quot_if_neg, t_quot, "final_quot")
+            .map_err(|e| CompileError::ice(e.to_string()))?
+            .into_int_value();
+        let final_rem = b
+            .build_select(rem_neg, rem_if_neg, t_rem, "final_rem")
+            .map_err(|e| CompileError::ice(e.to_string()))?
+            .into_int_value();
+
+        let result = match op {
+            BinOp::Quot => final_quot,
+            BinOp::Rem => final_rem,
+            _ => unreachable!("compile_rem_quot is only called for Rem/Quot"),
+        };
+        Ok((result.into(), raw_result_kind))
+    }
+
     pub(super) fn compile_unop(
         &self,
         op: UnOp,

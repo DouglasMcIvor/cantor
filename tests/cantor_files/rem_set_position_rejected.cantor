@@ -1,0 +1,4 @@
+X = Int rem 5
+
+main : -> Int
+main() = 1

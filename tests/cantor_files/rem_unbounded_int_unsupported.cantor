@@ -1,0 +1,5 @@
+f : Int * (Int - {0}) -> Int
+f(x, y) = x rem y
+
+main : -> Int
+main() = f(7, 5)

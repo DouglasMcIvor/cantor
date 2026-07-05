@@ -444,6 +444,8 @@ impl<'src> Parser<'src> {
             Token::PlusPlus => (13, 14, BinOp::Concat),
             Token::Star => (15, 16, BinOp::Mul),
             Token::Slash => (15, 16, BinOp::Div),
+            Token::Rem => (15, 16, BinOp::Rem),
+            Token::Quot => (15, 16, BinOp::Quot),
             _ => return None,
         };
         Some((lbp, rbp, op))

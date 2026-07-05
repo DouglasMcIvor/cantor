@@ -186,6 +186,35 @@ pub(super) fn elaborate_binop(
             })
         }
 
+        // `rem`/`quot` — arithmetic-only, single meaning (Int), Value
+        // position only. Unlike `+ - * /` they have no set-forming dual
+        // (no "SetRem"/"SetQuot" concept), so Set position is a hard user
+        // error rather than a silent Kind::Int default.
+        BinOp::Rem | BinOp::Quot => match pos {
+            Position::Value => {
+                let l = elaborate_expr(lhs, pos, ctx, env)?;
+                let r = elaborate_expr(rhs, pos, ctx, env)?;
+                Ok(SemExpr {
+                    kind: SemExprKind::BinOp {
+                        op: *op,
+                        lhs: Box::new(l),
+                        rhs: Box::new(r),
+                    },
+                    kind_of: Kind::Int,
+                    span,
+                })
+            }
+            Position::Set => Err(CompileError::InvalidSetExpression {
+                detail: format!(
+                    "`{op}` is arithmetic-only and has no set-forming meaning \
+                     (unlike `+ - * /`, which are disjoint union / set \
+                     difference / Cartesian product / set quotient in set \
+                     position)"
+                ),
+                span,
+            }),
+        },
+
         _ => {
             // Remaining operators: comparisons and logical and/or — single
             // meaning (Bool) regardless of position.
