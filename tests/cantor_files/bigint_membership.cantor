@@ -1,0 +1,9 @@
+-- int-soundness-plan phase 3 step 4b: a `Nat` membership check (sign test)
+-- against a tagged value must be correct for a genuinely boxed value too —
+-- a raw bit-pattern sign check would be meaningless for a boxed pointer.
+
+check_nat : Int -> Bool
+check_nat(x) = x in Nat
+
+main : -> Bool
+main() = check_nat(9223372036854775807 + 1)

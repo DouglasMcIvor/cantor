@@ -1,0 +1,14 @@
+-- int-soundness-plan phase 3 step 4b: call-boundary coercion between a
+-- Step-A-promoted (raw Int64) function and an ordinary (tagged Int) one.
+-- add8's result flows raw into combine's tagged-Int arithmetic — the
+-- compiler must tag it before combining, not treat the raw bits as if
+-- they were already a tagged word.
+
+add8 : Int8 * Int8 -> Int16
+add8(x, y) = x + y
+
+combine : Int -> Int
+combine(x) = add8(3, 4) + x
+
+main : -> Int
+main() = combine(100)

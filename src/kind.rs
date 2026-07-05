@@ -329,6 +329,11 @@ pub enum IfMerge {
     /// `else` is already a TaggedUnion; `then` is a single plain Kind
     /// appended as the final new arm.
     AppendThenArm { merged_arms: Vec<Kind> },
+    /// int-soundness-plan phase 3 step 4b: one branch is tagged `Int`, the
+    /// other raw `Int64` (e.g. one arm calls a Step-A-promoted function,
+    /// the other doesn't) — the raw side needs tagging before the merge;
+    /// `Int` is always the canonical shared representation.
+    CoerceInt64ToInt,
 }
 
 impl IfMerge {
@@ -342,6 +347,7 @@ impl IfMerge {
             IfMerge::MergeTaggedUnions { merged_arms, .. }
             | IfMerge::AppendElseArm { merged_arms }
             | IfMerge::AppendThenArm { merged_arms } => Kind::TaggedUnion(merged_arms.clone()),
+            IfMerge::CoerceInt64ToInt => Kind::Int,
         }
     }
 }
@@ -357,6 +363,12 @@ pub fn merge_if_branches(then_ty: &Kind, else_ty: &Kind) -> Result<IfMerge, Stri
     }
     if then_ty == else_ty {
         return Ok(IfMerge::Same(then_ty.clone()));
+    }
+    if matches!(
+        (then_ty, else_ty),
+        (Kind::Int, Kind::Int64) | (Kind::Int64, Kind::Int)
+    ) {
+        return Ok(IfMerge::CoerceInt64ToInt);
     }
 
     let then_is_tu = matches!(then_ty, Kind::TaggedUnion(_));

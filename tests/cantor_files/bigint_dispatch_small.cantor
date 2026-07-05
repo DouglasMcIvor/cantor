@@ -1,0 +1,11 @@
+-- Companion to bigint_dispatch.cantor: a small argument should resolve
+-- through the same runtime dispatch chain to the raw Int64 fast path.
+
+f : Int -> Int
+f(x) = x
+
+caller : Int -> Int
+caller(y) = f(y)
+
+main : -> Int
+main() = caller(5)

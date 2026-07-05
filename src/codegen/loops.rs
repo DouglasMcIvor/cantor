@@ -168,15 +168,16 @@ impl<'ctx> Compiler<'ctx> {
                 let i64_type = self.context.i64_type();
                 for elem in elements {
                     let (elem_val, elem_ty) = self.compile_expr(elem, env)?;
-                    let val_i64: BasicValueEnum = if elem_ty == Kind::Bool {
-                        self.builder
+                    let (val_i64, var_kind): (BasicValueEnum, Kind) = if elem_ty == Kind::Bool {
+                        let wide = self
+                            .builder
                             .build_int_z_extend(elem_val.into_int_value(), i64_type, "bool_ext")
-                            .map_err(|e| CompileError::ice(e.to_string()))?
-                            .into()
+                            .map_err(|e| CompileError::ice(e.to_string()))?;
+                        (wide.into(), Kind::Int)
                     } else {
-                        elem_val
+                        (elem_val, elem_ty)
                     };
-                    env.insert(var.clone(), (val_i64, Kind::Int));
+                    env.insert(var.clone(), (val_i64, var_kind));
                     self.compile_stmts(body, env, alloca_map)?;
                 }
                 Ok(())
@@ -352,7 +353,14 @@ impl<'ctx> Compiler<'ctx> {
             .left()
             .ok_or_else(|| CompileError::ice("get fn returned void"))?;
         let (elem_val, elem_k): (BasicValueEnum<'ctx>, Kind) = match elem_kind {
-            SetElemKind::Int => (elem_raw, Kind::Int),
+            // int-soundness-plan phase 3 step 4b: runtime `Set(Int)` storage
+            // is raw i64 (out of scope for tagging in this pass — see
+            // docs/int-soundness-plan.md), but every consumer downstream
+            // expects `Kind::Int` to mean tagged — re-tag on read.
+            SetElemKind::Int => (
+                self.ensure_tagged(elem_raw.into_int_value(), &Kind::Int64)?.into(),
+                Kind::Int,
+            ),
             SetElemKind::Bool => {
                 let i1 = self
                     .builder

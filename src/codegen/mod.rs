@@ -20,6 +20,7 @@ use crate::{
     span::{Span, Symbol},
 };
 
+mod arith;
 mod blocks;
 mod coerce;
 mod expr;
@@ -449,6 +450,7 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let (val, ty) = self.compile_expr(body, &env)?;
+        let (val, ty) = self.coerce_int_return(val, ty, function)?;
         let (val, ty) = self.coerce_vector_return(val, ty, function)?;
         let (val, ty) = self.coerce_tagged_union_return(val, ty, function)?;
         let ret_val = self.wrap_return_value(val, &ty)?;
@@ -525,6 +527,7 @@ impl<'ctx> Compiler<'ctx> {
 
         match return_val {
             Some((val, kind)) => {
+                let (val, kind) = self.coerce_int_return(val, kind, function)?;
                 let (val, kind) = self.coerce_vector_return(val, kind, function)?;
                 let (val, kind) = self.coerce_tagged_union_return(val, kind, function)?;
                 let ret_val = self.wrap_return_value(val, &kind)?;
@@ -558,6 +561,47 @@ impl<'ctx> Compiler<'ctx> {
         let all_int: Vec<Kind> = vec![Kind::Int; params.len()];
         let function = self.declare_function(name, params, &all_int, Kind::Int);
         self.compile_function_body(function, params, &all_int, body, false, &Env::new())
+    }
+
+    /// The bare-scalar-integer Kind a freshly-synthesized value (an integer
+    /// literal) should default to in the function currently being compiled —
+    /// int-soundness-plan phase 3 step 4b.
+    ///
+    /// Everything else in the pipeline determines `Kind::Int` vs `Kind::Int64`
+    /// by propagating an existing value's Kind (a parameter's declared Kind,
+    /// a call's declared return Kind, an arithmetic node's operand Kinds) —
+    /// a literal has nothing upstream to inherit from, so it needs this one
+    /// piece of ambient context instead. `Kind::Int64` only when the current
+    /// function's own declared params/return say so (Step A promotion or a
+    /// step 4a `Int64` split arm); `Kind::Int` (tagged) otherwise, including
+    /// when there's no current function at all (`compile_function`'s test
+    /// convenience wrapper, which always declares plain `Kind::Int`).
+    /// `true` only for `compile_constrained`'s pipeline (a real, solver-
+    /// verified `ConstrainedTree` — `cantor run`/`cantor check`), reusing
+    /// `overflow_ctx` as the existing signal for exactly that distinction
+    /// (see its own doc comment). `compile_file`/`compile_items` (the REPL,
+    /// `llvm-ir`, and every direct-codegen unit test) never run
+    /// `int64_split`'s Step A/4a passes, so nothing there ever produces a
+    /// `Kind::Int64` position — tagging `Kind::Int` for BigInt support is
+    /// only meaningful, and only safe to turn on, once it might coexist with
+    /// a genuine raw `Int64` position. Gating on this (rather than tagging
+    /// unconditionally) keeps every one of those unverified-pipeline
+    /// consumers on its pre-existing plain-i64 ABI, unchanged.
+    pub(crate) fn tagging_active(&self) -> bool {
+        self.overflow_ctx.is_some()
+    }
+
+    pub(crate) fn current_bare_int_kind(&self) -> Kind {
+        let Some(f) = self.current_fn else {
+            return Kind::Int;
+        };
+        let name = f.get_name().to_str().unwrap_or("");
+        let is_raw = self.fn_return_kinds.get(name) == Some(&Kind::Int64)
+            || self
+                .fn_param_kinds
+                .get(name)
+                .is_some_and(|ks| ks.contains(&Kind::Int64));
+        if is_raw { Kind::Int64 } else { Kind::Int }
     }
 
     /// Borrow the underlying LLVM module (useful for tests and manual IR construction).
@@ -692,14 +736,18 @@ pub(super) fn compile_elaborated<'ctx>(
         })
         .collect();
 
-    let i64_type = ctx.i64_type();
-    let const_env: Env<'ctx> = const_vals
-        .iter()
-        .map(|(sym, &val)| {
-            let llvm_val = i64_type.const_int(val as u64, true);
-            (sym.clone(), (llvm_val.into(), Kind::Int))
-        })
-        .collect();
+    // int-soundness-plan phase 3 step 4b: a named scalar constant is always
+    // genuinely `Kind::Int` (tagged) — it's inlined unchanged into every
+    // function's env regardless of that function's own representation, so
+    // it can't default to `Int64` the way a bare literal inside a
+    // Step-A-promoted body can (`current_bare_int_kind`). Whatever consumes
+    // it (arithmetic, a call boundary) already knows how to reconcile a
+    // tagged value against a raw one.
+    let mut const_env: Env<'ctx> = Env::new();
+    for (sym, &val) in &const_vals {
+        let llvm_val = compiler.compile_tagged_i64_const(val)?;
+        const_env.insert(sym.clone(), (llvm_val.into(), Kind::Int));
+    }
 
     // int-soundness-plan phase 2: how many `FunctionDef`s share each name —
     // a count of 1 (the overwhelming common case) keeps today's plain LLVM

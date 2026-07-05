@@ -1,0 +1,14 @@
+-- int-soundness-plan phase 3 step 4b: runtime overload dispatch mixing a
+-- step 4a Int64/BigInt split. `caller`'s argument isn't statically known,
+-- so `f(y)` is an unresolved dispatch — the domain-membership pre-check and
+-- the phi-merge across both candidates' results must handle the canonical
+-- tagged representation correctly, including a genuinely boxed value.
+
+f : Int -> Int
+f(x) = x
+
+caller : Int -> Int
+caller(y) = f(y)
+
+main : -> Int
+main() = caller(9223372036854775807 + 1)

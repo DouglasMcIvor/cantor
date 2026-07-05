@@ -1,4 +1,14 @@
-//! int-soundness-plan phase 1 — checked arithmetic, end to end.
+//! int-soundness-plan phase 1 — checked arithmetic, end to end — and phase 3
+//! step 4b, which supersedes phase 1's *abort* behaviour specifically for
+//! unbounded `Kind::Int` positions: an overflowing operation now promotes to
+//! a boxed `BigInt` and keeps computing the exact correct result instead of
+//! aborting. Phase 1's abort path is still real code (see `compile_arith`'s
+//! `Kind::Int64` branch) but is only ever reached by a raw `Int64` position —
+//! and every raw `Int64` position today comes from Step A promotion or a
+//! step 4a split, both of which only fire once the solver has *proved* the
+//! body can't overflow in the first place. So there's no longer a realistic
+//! (non-compiler-bug) program that hits the abort branch — these tests now
+//! assert the promotion behaviour instead.
 //!
 //! Counterexample/unknown overflow obligations must never be a compile-time
 //! refusal (see soundness_diagnostics.rs's `assert_run_refused` for what a
@@ -8,22 +18,20 @@
 use super::helpers::*;
 
 #[test]
-fn unbounded_mul_aborts_at_runtime_not_a_wrong_value() {
+fn unbounded_mul_promotes_to_bigint_instead_of_aborting() {
+    // 4611686018427387904 * 2 = 9223372036854775808 = i64::MAX + 1 — exceeds
+    // i64, so this used to abort (phase 1); now it promotes and computes the
+    // exact correct (if now BigInt-backed) result.
     let out = run_subcommand("overflow_mul.cantor");
-    assert_ne!(
+    assert_eq!(
         out.code, 0,
-        "overflow_mul.cantor should abort at runtime:\nstdout: {}\nstderr: {}",
+        "expected exit 0 (promotes instead of aborting):\nstdout: {}\nstderr: {}",
         out.stdout, out.stderr
     );
     assert!(
-        out.stderr.contains("arithmetic overflow"),
-        "expected overflow abort message on stderr:\n{}",
-        out.stderr
-    );
-    assert!(
-        !out.stderr.contains("not running"),
-        "must not be refused at compile time — overflow is a runtime concern:\n{}",
-        out.stderr
+        out.stdout.contains("main() = 9223372036854775808"),
+        "expected the exact correct product:\n{}",
+        out.stdout
     );
     assert!(
         out.stdout.contains("proved          mul"),
@@ -48,64 +56,54 @@ fn unbounded_mul_runs_normally_when_no_overflow_occurs() {
 }
 
 #[test]
-fn unbounded_add_aborts_at_i64_max() {
+fn unbounded_add_promotes_at_i64_max() {
+    // i64::MAX + 1 = 9223372036854775808 — used to abort, now promotes.
     let out = run_subcommand("overflow_add.cantor");
-    assert_ne!(
-        out.code, 0,
-        "overflow_add.cantor should abort at runtime:\n{}",
-        out.stdout
-    );
+    assert_eq!(out.code, 0, "expected exit 0:\n{}", out.stdout);
     assert!(
-        out.stderr.contains("arithmetic overflow"),
-        "stderr: {}",
-        out.stderr
+        out.stdout.contains("main() = 9223372036854775808"),
+        "stdout: {}",
+        out.stdout
     );
 }
 
 #[test]
-fn unbounded_sub_aborts() {
+fn unbounded_sub_promotes() {
+    // -9223372036854775807 - 2 = -9223372036854775809 — one past i64::MIN.
     let out = run_subcommand("overflow_sub.cantor");
-    assert_ne!(
-        out.code, 0,
-        "overflow_sub.cantor should abort at runtime:\n{}",
-        out.stdout
-    );
+    assert_eq!(out.code, 0, "expected exit 0:\n{}", out.stdout);
     assert!(
-        out.stderr.contains("arithmetic overflow"),
-        "stderr: {}",
-        out.stderr
+        out.stdout.contains("main() = -9223372036854775809"),
+        "stdout: {}",
+        out.stdout
     );
 }
 
 #[test]
-fn negating_i64_min_aborts() {
+fn negating_i64_min_promotes() {
+    // -i64::MIN = 9223372036854775808 — one past i64::MAX, the classic
+    // negation-overflow case.
     let out = run_subcommand("overflow_neg.cantor");
-    assert_ne!(
-        out.code, 0,
-        "overflow_neg.cantor should abort at runtime:\n{}",
-        out.stdout
-    );
+    assert_eq!(out.code, 0, "expected exit 0:\n{}", out.stdout);
     assert!(
-        out.stderr.contains("arithmetic overflow"),
-        "stderr: {}",
-        out.stderr
+        out.stdout.contains("main() = 9223372036854775808"),
+        "stdout: {}",
+        out.stdout
     );
 }
 
 #[test]
-fn division_of_i64_min_by_neg_one_aborts() {
+fn division_of_i64_min_by_neg_one_promotes() {
     // The one case division can overflow: divisor-nonzero (a separate, hard
-    // proof gate) is satisfied here, but MIN/-1 is UB in LLVM's sdiv.
+    // proof gate) is satisfied here, but plain i64::MIN/-1 is UB in LLVM's
+    // sdiv — this used to abort, now `cantor_bigint_div` computes the exact
+    // (BigInt-backed) answer, 9223372036854775808.
     let out = run_subcommand("overflow_div_min_neg1.cantor");
-    assert_ne!(
-        out.code, 0,
-        "overflow_div_min_neg1.cantor should abort at runtime:\n{}",
-        out.stdout
-    );
+    assert_eq!(out.code, 0, "expected exit 0:\n{}", out.stdout);
     assert!(
-        out.stderr.contains("arithmetic overflow"),
-        "stderr: {}",
-        out.stderr
+        out.stdout.contains("main() = 9223372036854775808"),
+        "stdout: {}",
+        out.stdout
     );
 }
 

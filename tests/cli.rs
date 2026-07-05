@@ -1,3 +1,5 @@
+#[path = "cli/bigint.rs"]
+mod bigint;
 #[path = "cli/check_basics.rs"]
 mod check_basics;
 #[path = "cli/cli_flags.rs"]

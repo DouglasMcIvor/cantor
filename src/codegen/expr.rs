@@ -1,11 +1,10 @@
 use inkwell::{
     IntPredicate,
-    intrinsics::Intrinsic,
-    values::{AggregateValueEnum, BasicValueEnum, IntValue},
+    values::{AggregateValueEnum, BasicValueEnum},
 };
 
 use crate::{
-    ast::{BinOp, UnOp},
+    ast::BinOp,
     error::CompileError,
     kind::{Kind, SetElemKind},
     semantics::tree::{SemExpr, SemExprKind},
@@ -22,10 +21,16 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         match &expr.kind {
-            SemExprKind::IntLit(n) => {
-                let v = self.context.i64_type().const_int(*n as u64, true);
-                Ok((v.into(), Kind::Int))
-            }
+            SemExprKind::IntLit(n) => match self.current_bare_int_kind() {
+                Kind::Int64 => {
+                    let v = self.context.i64_type().const_int(*n as u64, true);
+                    Ok((v.into(), Kind::Int64))
+                }
+                _ => {
+                    let v = self.compile_tagged_i64_const(*n)?;
+                    Ok((v.into(), Kind::Int))
+                }
+            },
             SemExprKind::BoolLit(b) => {
                 let v = self.context.bool_type().const_int(*b as u64, false);
                 Ok((v.into(), Kind::Bool))
@@ -81,187 +86,6 @@ impl<'ctx> Compiler<'ctx> {
             SemExprKind::Tuple(elems) => self.compile_tuple(elems, env),
             SemExprKind::Proj { base, index } => self.compile_proj(base, *index, env),
             SemExprKind::Index { base, index } => self.compile_index(base, index, env),
-        }
-    }
-
-    /// Value-position `+ - * /` — dedicated `SemExprKind` variants (never
-    /// wrapped in `BinOp`, see `tree.rs`'s module doc).
-    ///
-    /// int-soundness-plan phase 1: when the solver proved this node's result
-    /// fits in `Int64` (`self.overflow_checks`), emits today's plain
-    /// instruction — zero cost. Otherwise emits a checked instruction that
-    /// aborts at runtime rather than silently wrapping; unproved is the
-    /// common case (`Mul` under an unconstrained domain is nonlinear
-    /// arithmetic the solver can't decide), and is deliberately *not* a
-    /// compile error — see docs/int-soundness-plan.md.
-    fn compile_arith(
-        &self,
-        op: BinOp,
-        lhs: &SemExpr,
-        rhs: &SemExpr,
-        env: &Env<'ctx>,
-        span: Span,
-    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
-        let (lv, lk) = self.compile_expr(lhs, env)?;
-        let (rv, rk) = self.compile_expr(rhs, env)?;
-        let li = self.scalarize_to_int(lv, &lk)?;
-        let ri = self.scalarize_to_int(rv, &rk)?;
-        let proved = self.overflow_checks.get(&span).copied().unwrap_or(false);
-        let b = &self.builder;
-
-        if proved {
-            let v = match op {
-                BinOp::Add => b.build_int_add(li, ri, "add"),
-                BinOp::Sub => b.build_int_sub(li, ri, "sub"),
-                BinOp::Mul => b.build_int_mul(li, ri, "mul"),
-                BinOp::Div => b.build_int_signed_div(li, ri, "div"),
-                _ => unreachable!("compile_arith is only called for Add/Sub/Mul/Div"),
-            }
-            .map_err(|e| CompileError::ice(e.to_string()))?;
-            return Ok((v.into(), Kind::Int));
-        }
-
-        let v = match op {
-            BinOp::Add => self.emit_checked_arith_i64("llvm.sadd.with.overflow", li, ri, span)?,
-            BinOp::Sub => self.emit_checked_arith_i64("llvm.ssub.with.overflow", li, ri, span)?,
-            BinOp::Mul => self.emit_checked_arith_i64("llvm.smul.with.overflow", li, ri, span)?,
-            // Divisor-nonzero is already a hard proof gate (untouched by this
-            // phase); the only remaining overflow case is `i64::MIN / -1`
-            // (UB in LLVM's `sdiv`), which has no `with.overflow` intrinsic —
-            // an explicit guard is cheaper anyway since both operands are
-            // already valid i64 words by this point.
-            BinOp::Div => {
-                let i64_type = self.context.i64_type();
-                let min = i64_type.const_int(i64::MIN as u64, true);
-                let neg_one = i64_type.const_all_ones();
-                let is_min = b
-                    .build_int_compare(IntPredicate::EQ, li, min, "div_lhs_is_min")
-                    .map_err(|e| CompileError::ice(e.to_string()))?;
-                let is_neg_one = b
-                    .build_int_compare(IntPredicate::EQ, ri, neg_one, "div_rhs_is_neg_one")
-                    .map_err(|e| CompileError::ice(e.to_string()))?;
-                let overflow = b
-                    .build_and(is_min, is_neg_one, "div_overflow")
-                    .map_err(|e| CompileError::ice(e.to_string()))?;
-                self.emit_overflow_abort_branch(overflow, span)?;
-                b.build_int_signed_div(li, ri, "div")
-                    .map_err(|e| CompileError::ice(e.to_string()))?
-            }
-            _ => unreachable!("compile_arith is only called for Add/Sub/Mul/Div"),
-        };
-        Ok((v.into(), Kind::Int))
-    }
-
-    /// Emit an LLVM `llvm.{s}.with.overflow.i64` intrinsic call for `l op r`,
-    /// then an overflow-abort branch (`emit_overflow_abort_branch`) gated on
-    /// the intrinsic's overflow flag. Returns the (possibly-wrapped, but only
-    /// reached when the flag is false) result.
-    fn emit_checked_arith_i64(
-        &self,
-        intrinsic_name: &str,
-        l: IntValue<'ctx>,
-        r: IntValue<'ctx>,
-        span: Span,
-    ) -> Result<IntValue<'ctx>, CompileError> {
-        let i64_type = self.context.i64_type();
-        let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
-            CompileError::ice(format!("LLVM intrinsic `{intrinsic_name}` not found"))
-        })?;
-        let decl = intrinsic
-            .get_declaration(&self.module, &[i64_type.into()])
-            .ok_or_else(|| {
-                CompileError::ice(format!(
-                    "could not declare LLVM intrinsic `{intrinsic_name}`"
-                ))
-            })?;
-        let call = self
-            .builder
-            .build_call(decl, &[l.into(), r.into()], "checked_arith")
-            .map_err(|e| CompileError::ice(e.to_string()))?;
-        let agg = call
-            .try_as_basic_value()
-            .left()
-            .ok_or_else(|| {
-                CompileError::ice(format!("`{intrinsic_name}` returned void unexpectedly"))
-            })?
-            .into_struct_value();
-
-        let result = self
-            .builder
-            .build_extract_value(AggregateValueEnum::StructValue(agg), 0, "checked_result")
-            .map_err(|e| CompileError::ice(e.to_string()))?
-            .into_int_value();
-        let overflow = self
-            .builder
-            .build_extract_value(AggregateValueEnum::StructValue(agg), 1, "checked_overflow")
-            .map_err(|e| CompileError::ice(e.to_string()))?
-            .into_int_value();
-
-        self.emit_overflow_abort_branch(overflow, span)?;
-        Ok(result)
-    }
-
-    /// Branch to a runtime abort (never returns) when `is_overflow` is true,
-    /// otherwise fall through — same branch-and-continue shape as
-    /// `compile_assert` (blocks.rs). Positions the builder at the
-    /// fallthrough block afterward.
-    fn emit_overflow_abort_branch(
-        &self,
-        is_overflow: IntValue<'ctx>,
-        span: Span,
-    ) -> Result<(), CompileError> {
-        let function = self
-            .current_fn
-            .ok_or_else(|| CompileError::ice("checked arithmetic outside a function"))?;
-
-        let abort_bb = self.context.append_basic_block(function, "overflow_abort");
-        let pass_bb = self.context.append_basic_block(function, "overflow_pass");
-
-        self.builder
-            .build_conditional_branch(is_overflow, abort_bb, pass_bb)
-            .map_err(|e| CompileError::ice(e.to_string()))?;
-
-        self.builder.position_at_end(abort_bb);
-        let message = self.overflow_message(span);
-        let msg_global = self
-            .builder
-            .build_global_string_ptr(&message, "overflow_msg")
-            .map_err(|e| CompileError::ice(e.to_string()))?;
-        let msg_i64 = self
-            .builder
-            .build_ptr_to_int(
-                msg_global.as_pointer_value(),
-                self.context.i64_type(),
-                "overflow_msg_i64",
-            )
-            .map_err(|e| CompileError::ice(e.to_string()))?;
-        let abort_fn = self
-            .module
-            .get_function("cantor_overflow_abort")
-            .ok_or_else(|| CompileError::ice("cantor_overflow_abort not declared"))?;
-        self.builder
-            .build_call(abort_fn, &[msg_i64.into()], "overflow_abort_call")
-            .map_err(|e| CompileError::ice(e.to_string()))?;
-        self.builder
-            .build_unreachable()
-            .map_err(|e| CompileError::ice(e.to_string()))?;
-
-        self.builder.position_at_end(pass_bb);
-        Ok(())
-    }
-
-    /// Format an overflow-abort message, `path:line:col`-prefixed when
-    /// `overflow_ctx` is available (matches `main.rs`'s `print_compile_error`),
-    /// falling back to a bare message when it isn't (`compile_items`/
-    /// `compile_file` — no single coherent source string to point at).
-    fn overflow_message(&self, span: Span) -> String {
-        const MSG: &str = "arithmetic overflow (result does not fit in a 64-bit integer)";
-        match &self.overflow_ctx {
-            Some((path, src)) => {
-                let (line, col) = crate::span::offset_to_line_col(src, span.start);
-                format!("{path}:{line}:{col}: {MSG}")
-            }
-            None => MSG.to_string(),
         }
     }
 
@@ -355,6 +179,13 @@ impl<'ctx> Compiler<'ctx> {
 
         let (then_val, else_val, result_ty) = match &merge {
             crate::kind::IfMerge::Same(_) => (then_val_raw, else_val_raw, then_ty),
+            crate::kind::IfMerge::CoerceInt64ToInt => {
+                self.builder.position_at_end(then_bb_cur);
+                let tv = self.ensure_tagged(then_val_raw.into_int_value(), &then_ty)?.into();
+                self.builder.position_at_end(else_bb_cur);
+                let ev = self.ensure_tagged(else_val_raw.into_int_value(), &else_ty)?.into();
+                (tv, ev, merge.result_kind())
+            }
             crate::kind::IfMerge::CoerceToFailStruct => {
                 self.builder.position_at_end(then_bb_cur);
                 let tv = self.coerce_to_fail_struct(then_val_raw, &then_ty)?;
@@ -447,43 +278,6 @@ impl<'ctx> Compiler<'ctx> {
         Ok((phi.as_basic_value(), result_ty))
     }
 
-    fn compile_unop(
-        &self,
-        op: UnOp,
-        inner: &SemExpr,
-        env: &Env<'ctx>,
-        span: Span,
-    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
-        let (val, _ty) = self.compile_expr(inner, env)?;
-        let iv = val.into_int_value();
-        match op {
-            UnOp::Neg => {
-                // int-soundness-plan phase 1: `-x` overflows only at `i64::MIN`.
-                // Lowered as `0 - x` via `ssub.with.overflow` when unproved so
-                // it shares `emit_checked_arith_i64` with `Sub` rather than a
-                // bespoke compare.
-                if self.overflow_checks.get(&span).copied().unwrap_or(false) {
-                    let v = self
-                        .builder
-                        .build_int_neg(iv, "neg")
-                        .map_err(|e| CompileError::ice(e.to_string()))?;
-                    return Ok((v.into(), Kind::Int));
-                }
-                let zero = self.context.i64_type().const_int(0, true);
-                let v = self.emit_checked_arith_i64("llvm.ssub.with.overflow", zero, iv, span)?;
-                Ok((v.into(), Kind::Int))
-            }
-            // build_not is bitwise NOT; on i1 this is logical NOT (0↔1).
-            UnOp::Not => {
-                let v = self
-                    .builder
-                    .build_not(iv, "not")
-                    .map_err(|e| CompileError::ice(e.to_string()))?;
-                Ok((v.into(), Kind::Bool))
-            }
-        }
-    }
-
     /// Every binary operator except `+ - * /` (which are dedicated
     /// `SemExprKind` variants, see `compile_arith`) — comparisons, `and`/`or`,
     /// `in`/`not in`, `|`/`&`/`^`, and `++`.
@@ -501,6 +295,10 @@ impl<'ctx> Compiler<'ctx> {
         match op {
             BinOp::In | BinOp::NotIn => {
                 let (lv, lk) = self.compile_expr(lhs, env)?;
+                // int-soundness-plan phase 3 step 4b: `Kind::Int` is always
+                // tagged, `Kind::Int64` always raw — `compile_membership`
+                // needs to know which to interpret `lv` as.
+                let tagged = lk == Kind::Int;
                 let pred = if let Kind::TaggedUnion(ref arms) = lk {
                     // Tagged-union values: check the tag against the matching arm.
                     self.compile_tagged_union_membership(lv, arms, rhs)?
@@ -508,10 +306,10 @@ impl<'ctx> Compiler<'ctx> {
                     if let Some(&(set_ptr, Kind::Set(ek))) = env.get(sym) {
                         self.compile_runtime_contains(lv, lk, set_ptr, ek)?
                     } else {
-                        self.compile_membership(lv.into_int_value(), rhs)?
+                        self.compile_membership(lv.into_int_value(), rhs, tagged)?
                     }
                 } else {
-                    self.compile_membership(lv.into_int_value(), rhs)?
+                    self.compile_membership(lv.into_int_value(), rhs, tagged)?
                 };
                 if op == BinOp::NotIn {
                     let neg = self
@@ -546,6 +344,53 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CompileError::ice(e.to_string()))?;
                 Ok((v.into(), Kind::Bool))
             }};
+        }
+
+        // int-soundness-plan phase 3 step 4b: a comparison between two
+        // genuinely raw `Kind::Int64` operands stays a plain `icmp` below;
+        // anything touching a tagged `Kind::Int` operand routes through
+        // `cantor_bigint_cmp` instead — a raw i64 bit-pattern comparison is
+        // meaningless once either side could be a boxed pointer.
+        let both_int64 = lk == Kind::Int64 && rk == Kind::Int64;
+        let both_int_like =
+            matches!(lk, Kind::Int | Kind::Int64) && matches!(rk, Kind::Int | Kind::Int64);
+        // `both_int_like` only ever holds for the six comparison operators —
+        // `And`/`Or` operate on `Kind::Bool` operands, and every other `op`
+        // reaching this point operates on `Set`/`Vector` kinds, never `Int`.
+        let tagged_pred = match op {
+            BinOp::Eq => Some(IntPredicate::EQ),
+            BinOp::Ne => Some(IntPredicate::NE),
+            BinOp::Lt => Some(IntPredicate::SLT),
+            BinOp::Le => Some(IntPredicate::SLE),
+            BinOp::Gt => Some(IntPredicate::SGT),
+            BinOp::Ge => Some(IntPredicate::SGE),
+            _ => None,
+        };
+        if let Some(pred) = tagged_pred
+            && self.tagging_active()
+            && both_int_like
+            && !both_int64
+        {
+            let li = self.ensure_tagged(li, &lk)?;
+            let ri = self.ensure_tagged(ri, &rk)?;
+            let cmp_fn = self
+                .module
+                .get_function("cantor_bigint_cmp")
+                .ok_or_else(|| CompileError::ice("cantor_bigint_cmp not declared"))?;
+            let cmp = self
+                .builder
+                .build_call(cmp_fn, &[li.into(), ri.into()], "bigint_cmp")
+                .map_err(|e| CompileError::ice(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .ok_or_else(|| CompileError::ice("cantor_bigint_cmp returned void"))?
+                .into_int_value();
+            let zero = self.context.i64_type().const_int(0, true);
+            let v = self
+                .builder
+                .build_int_compare(pred, cmp, zero, "bigint_cmp_result")
+                .map_err(|e| CompileError::ice(e.to_string()))?;
+            return Ok((v.into(), Kind::Bool));
         }
 
         match op {
@@ -646,20 +491,24 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
-        // `from(x)` — built-in destructor for `distinct` values; identity at runtime.
+        // `from(x)` — built-in destructor for `distinct` values; identity at
+        // runtime. Preserves the argument's actual Kind (Int or Int64,
+        // whichever it already is) rather than hardcoding — it's a pure
+        // pass-through, not a fresh value.
         if callee.0 == "from" && args.len() == 1 {
-            let (val, _kind) = self.compile_expr(&args[0], env)?;
-            return Ok((val, Kind::Int));
+            let (val, kind) = self.compile_expr(&args[0], env)?;
+            return Ok((val, kind));
         }
 
-        // Auto-generated constructor `d(x)` for `D = distinct B`; identity at runtime.
+        // Auto-generated constructor `d(x)` for `D = distinct B`; identity at
+        // runtime — same reasoning as `from(x)` above.
         if args.len() == 1 {
             let mut chars = callee.0.chars();
             if let Some(first) = chars.next() {
                 let capitalized = first.to_uppercase().collect::<String>() + chars.as_str();
                 if self.distinct_names.contains(&capitalized) {
-                    let (val, _kind) = self.compile_expr(&args[0], env)?;
-                    return Ok((val, Kind::Int));
+                    let (val, kind) = self.compile_expr(&args[0], env)?;
+                    return Ok((val, kind));
                 }
             }
         }
@@ -683,6 +532,10 @@ impl<'ctx> Compiler<'ctx> {
                 .try_as_basic_value()
                 .left()
                 .ok_or_else(|| CompileError::ice("size fn returned void"))?;
+            // int-soundness-plan phase 3 step 4b: `cantor_set_size_i64`
+            // returns a raw i64 count, but this builtin's result is an
+            // ordinary `Kind::Int` (tagged) value like any other — tag it.
+            let result = self.ensure_tagged(result.into_int_value(), &Kind::Int64)?.into();
             return Ok((result, Kind::Int));
         }
 
@@ -715,11 +568,15 @@ impl<'ctx> Compiler<'ctx> {
                         .try_as_basic_value()
                         .left()
                         .ok_or_else(|| CompileError::ice("len fn returned void"))?;
+                    // int-soundness-plan phase 3 step 4b: same reasoning as
+                    // `size()` above — the runtime function returns a raw
+                    // count, tag it before it's used as a `Kind::Int` value.
+                    let result = self.ensure_tagged(result.into_int_value(), &Kind::Int64)?.into();
                     Ok((result, Kind::Int))
                 }
                 Kind::Tuple(inner_eks) => {
                     let length = Vec::len(inner_eks);
-                    let v = self.context.i64_type().const_int(length as u64, true);
+                    let v = self.compile_tagged_i64_const(length as i64)?;
                     Ok((v.into(), Kind::Int))
                 }
                 _ => Err(CompileError::ice("len() requires a vector (X*) argument")),
@@ -734,7 +591,27 @@ impl<'ctx> Compiler<'ctx> {
         // membership-test dispatch chain.
         let (lookup_key, target) = self.resolve_overload_call_target(callee, args, span)?;
 
-        let param_kinds_for_callee = self.fn_param_kinds.get(&lookup_key).cloned();
+        // int-soundness-plan phase 3 step 4b: an unresolved dispatch call
+        // must present every candidate a *common* representation to test
+        // membership against and to `phi`-merge results from — that common
+        // representation is the tagged `Kind::Int` (never raw `Kind::Int64`,
+        // which has no tag bit to represent "whichever candidate wins"
+        // generically). `lookup_key`'s own declared kinds might be the
+        // `Int64` half of a compiler-generated split (file order pushes it
+        // first), so a real `Direct` call still uses the callee's exact
+        // declared kinds unchanged, but a `Dispatch` call canonicalizes any
+        // `Int64` position to `Int` here — `compile_overload_dispatch`
+        // decodes back down to each individual candidate's real kind right
+        // before calling it.
+        let param_kinds_for_callee = self.fn_param_kinds.get(&lookup_key).map(|ks| {
+            if matches!(target, CallTarget::Dispatch(_)) {
+                ks.iter()
+                    .map(|k| if *k == Kind::Int64 { Kind::Int } else { k.clone() })
+                    .collect()
+            } else {
+                ks.clone()
+            }
+        });
         let mut compiled_arg_values = Vec::with_capacity(args.len());
         for (arg_idx, arg) in args.iter().enumerate() {
             let (v, arg_kind) = self.compile_expr(arg, env)?;
@@ -785,6 +662,23 @@ impl<'ctx> Compiler<'ctx> {
                 _ => (v, arg_kind),
             };
 
+            // int-soundness-plan phase 3 step 4b: tag/untag at the call
+            // boundary when the argument's representation doesn't match
+            // what the callee (or, for a dispatch call, the canonical
+            // shared representation — see above) declares — e.g. an
+            // ordinary tagged local passed into a `Kind::Int64` parameter,
+            // or a Step-A-promoted call's raw result passed into an
+            // ordinary tagged one.
+            let (v, arg_kind) = match expected_kind {
+                Some(Kind::Int64) if arg_kind == Kind::Int => {
+                    (self.ensure_raw_int64(v.into_int_value(), &arg_kind)?.into(), Kind::Int64)
+                }
+                Some(Kind::Int) if arg_kind == Kind::Int64 => {
+                    (self.ensure_tagged(v.into_int_value(), &arg_kind)?.into(), Kind::Int)
+                }
+                _ => (v, arg_kind),
+            };
+
             // All function parameters are i64 (uniform ABI); widen Bool args.
             let v_i64 = if arg_kind == Kind::Bool {
                 self.builder
@@ -797,6 +691,7 @@ impl<'ctx> Compiler<'ctx> {
             compiled_arg_values.push(v_i64);
         }
         let compiled_args: Vec<_> = compiled_arg_values.iter().map(|&v| v.into()).collect();
+        let is_dispatch = matches!(target, CallTarget::Dispatch(_));
 
         let result_i64 = match target {
             CallTarget::Direct(name) => {
@@ -818,17 +713,26 @@ impl<'ctx> Compiler<'ctx> {
                 &callee.0,
                 &candidates,
                 &compiled_arg_values,
-                &compiled_args,
+                param_kinds_for_callee.as_deref().unwrap_or(&[]),
                 span,
             )?,
         };
 
-        // Restore the correct Kind after the call.
-        let return_kind = self
+        // Restore the correct Kind after the call. For a `Dispatch` call,
+        // `compile_overload_dispatch` already normalizes every candidate's
+        // result to the canonical tagged `Int` before its `phi` merge (see
+        // that function), so the call-site result here is `Int`, never
+        // whichever candidate `lookup_key` happened to name.
+        let raw_return_kind = self
             .fn_return_kinds
             .get(&lookup_key)
             .cloned()
             .unwrap_or(Kind::Int);
+        let return_kind = if is_dispatch && raw_return_kind == Kind::Int64 {
+            Kind::Int
+        } else {
+            raw_return_kind
+        };
         match &return_kind {
             Kind::Bool => {
                 let i1_val = self
@@ -846,7 +750,12 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Tuple(_) | Kind::TaggedUnion(_) => Ok((result_i64, return_kind)),
             // Vector is an i64 pointer — pass through and preserve the Kind.
             Kind::Vector(_) | Kind::Set(_) => Ok((result_i64, return_kind)),
-            _ => Ok((result_i64, Kind::Int)),
+            // int-soundness-plan phase 3 step 4b: preserve the callee's real
+            // declared Kind (`Int` vs raw `Int64`) instead of hardcoding
+            // `Int` — a call into a Step-A-promoted or step-4a-split-Int64
+            // function returns a raw word, and mislabelling it `Int` here
+            // would make every downstream consumer treat it as tagged.
+            _ => Ok((result_i64, return_kind)),
         }
     }
 
@@ -933,6 +842,11 @@ impl<'ctx> Compiler<'ctx> {
                     .build_int_z_extend(val.into_int_value(), i64t, "elem_bool_ext")
                     .map_err(|e| CompileError::ice(e.to_string()))?
                     .into()
+            } else if k == Kind::Int {
+                // int-soundness-plan phase 3 step 4b: runtime `Set(Int)`
+                // storage stays raw i64 (out of scope for tagging in this
+                // pass — see docs/int-soundness-plan.md).
+                self.ensure_raw_int64(val.into_int_value(), &k)?.into()
             } else {
                 val
             };

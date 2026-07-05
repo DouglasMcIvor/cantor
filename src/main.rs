@@ -293,13 +293,26 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
                     }
                 };
                 if error_code != 0 {
-                    eprintln!("\nmain() failed with error code {error_code}");
+                    // int-soundness-plan phase 3 step 4b: the error code is
+                    // the Fail-wire's `Kind::Int` payload — tagged.
+                    eprintln!(
+                        "\nmain() failed with error code {}",
+                        format_tagged_int(error_code)
+                    );
                 } else {
                     eprintln!("\nmain() failed: assertion failed at runtime");
                 }
                 process::exit(1);
             } else {
-                println!("\nmain() = {result}");
+                // int-soundness-plan phase 3 step 4b: the success payload
+                // (elems[1]) is `Kind::Int` (tagged) for an ordinary
+                // fallible function — decode before printing.
+                let display = if elems.get(1) == Some(&Kind::Int) {
+                    format_tagged_int(result)
+                } else {
+                    result.to_string()
+                };
+                println!("\nmain() = {display}");
             }
         }
         // Tuple-returning main: use the buffer trampoline.
@@ -329,8 +342,28 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
                     });
                 f.call()
             };
-            println!("\nmain() = {result}");
+            // int-soundness-plan phase 3 step 4b: `Kind::Int` is tagged,
+            // everything else (`Bool`, `Int64`, `Set`, …) is a plain i64.
+            let display = if main_return_kind == Kind::Int {
+                format_tagged_int(result)
+            } else {
+                result.to_string()
+            };
+            println!("\nmain() = {display}");
         }
+    }
+}
+
+/// Decode a possibly-tagged `Int` word (int-soundness-plan phase 3 step 4b —
+/// see `runtime/mod.rs`'s module doc for the encoding) into its decimal
+/// display form.
+fn format_tagged_int(word: i64) -> String {
+    if word & 1 == 0 {
+        (word >> 1).to_string()
+    } else {
+        let ptr = cantor::runtime::cantor_bigint_to_string(word);
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::os::raw::c_char) };
+        s.to_string_lossy().into_owned()
     }
 }
 
@@ -355,10 +388,17 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
             *offset += 1;
             "fail".to_string()
         }
-        Kind::Int | Kind::Int64 | Kind::Set(_) => {
+        // int-soundness-plan phase 3 step 4b: `Int64`/`Set` leaves are
+        // always a plain raw i64; an `Int` leaf is tagged and needs decoding.
+        Kind::Int64 | Kind::Set(_) => {
             let v = buf[*offset];
             *offset += 1;
             format!("{v}")
+        }
+        Kind::Int => {
+            let v = buf[*offset];
+            *offset += 1;
+            format_tagged_int(v)
         }
         Kind::Tuple(elems) => {
             let parts: Vec<String> = elems

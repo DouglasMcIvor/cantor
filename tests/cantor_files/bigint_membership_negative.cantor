@@ -1,0 +1,8 @@
+-- Companion to bigint_membership.cantor: a boxed *negative* value must
+-- correctly fail the same Nat membership check.
+
+check_nat : Int -> Bool
+check_nat(x) = x in Nat
+
+main : -> Bool
+main() = check_nat(-9223372036854775807 - 2)

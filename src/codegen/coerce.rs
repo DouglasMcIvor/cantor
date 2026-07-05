@@ -208,6 +208,36 @@ impl<'ctx> Compiler<'ctx> {
         self.coerce_to_kind(val, val_kind, &expected, set_expr)
     }
 
+    /// Coerce a returned scalar `val : val_kind` to `function`'s own
+    /// declared return Kind when they're a mismatched `Int`/`Int64` pair —
+    /// int-soundness-plan phase 3 step 4b. Needed whenever a function's
+    /// *declared* representation (raw `Int64` for a Step-A-promoted or
+    /// step-4a-split function, tagged `Int` otherwise) differs from what its
+    /// body happened to compute — e.g. a promoted function whose body's
+    /// final expression is a call into an ordinary tagged callee. Every
+    /// other Kind pairing (including a genuine mismatch that isn't
+    /// Int/Int64) is left untouched — that's a real bug elsewhere, not
+    /// something to paper over here.
+    pub(crate) fn coerce_int_return(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_kind: Kind,
+        function: inkwell::values::FunctionValue<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let fn_name = function.get_name().to_str().unwrap_or("");
+        let expected = self.fn_return_kinds.get(fn_name);
+        match (&val_kind, expected) {
+            (Kind::Int, Some(Kind::Int64)) => Ok((
+                self.ensure_raw_int64(val.into_int_value(), &val_kind)?.into(),
+                Kind::Int64,
+            )),
+            (Kind::Int64, Some(Kind::Int)) => {
+                Ok((self.ensure_tagged(val.into_int_value(), &val_kind)?.into(), Kind::Int))
+            }
+            _ => Ok((val, val_kind)),
+        }
+    }
+
     /// Coerce a call argument `val : val_kind` to the callee's `expected`
     /// param Kind — the call-site mirror of `coerce_tagged_union_return`.
     /// Needed when a scalar value is passed directly into a `+`-typed
@@ -306,6 +336,113 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Encode a compile-time-constant `i64` as a tagged `Int` word — small
+    /// values fold to `n << 1` directly (zero runtime cost, the overwhelming
+    /// common case); a value outside the tagged scheme's narrower small-int
+    /// range (`runtime::TAG_SMALL_MIN..=TAG_SMALL_MAX`, one bit narrower than
+    /// `Int64` itself) boxes via a runtime call to `cantor_bigint_from_i64`
+    /// instead — the lexer already rejects literals wider than `i64`, so this
+    /// is the only place a *literal* value can end up boxed.
+    pub(crate) fn compile_tagged_i64_const(
+        &self,
+        n: i64,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CompileError> {
+        let i64t = self.context.i64_type();
+        if !self.tagging_active() {
+            return Ok(i64t.const_int(n as u64, true));
+        }
+        if (crate::runtime::TAG_SMALL_MIN..=crate::runtime::TAG_SMALL_MAX).contains(&n) {
+            return Ok(i64t.const_int(((n as i128) << 1) as u64, true));
+        }
+        let raw = i64t.const_int(n as u64, true);
+        let from_i64 = self.module.get_function("cantor_bigint_from_i64").ok_or_else(|| {
+            CompileError::ice("cantor_bigint_from_i64 not declared")
+        })?;
+        let call = self
+            .builder
+            .build_call(from_i64, &[raw.into()], "lit_box")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        call.try_as_basic_value()
+            .left()
+            .map(|v| v.into_int_value())
+            .ok_or_else(|| CompileError::ice("cantor_bigint_from_i64 returned void"))
+    }
+
+    /// Coerce `val : kind` (`Kind::Int` or `Kind::Int64`) up to the tagged
+    /// `Int` representation — a no-op for an already-tagged `Kind::Int`
+    /// value, or a runtime call to `cantor_bigint_from_i64` for a raw
+    /// `Kind::Int64` one. Used wherever a possibly-mixed pair of operands
+    /// (one raw, one tagged — e.g. a Step-A-promoted call's raw result used
+    /// alongside an ordinary tagged local) needs a common representation
+    /// before combining, and at call boundaries where a raw argument is
+    /// passed into a tagged `Kind::Int` parameter.
+    pub(crate) fn ensure_tagged(
+        &self,
+        val: inkwell::values::IntValue<'ctx>,
+        kind: &Kind,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CompileError> {
+        if !self.tagging_active() {
+            return Ok(val);
+        }
+        match kind {
+            Kind::Int => Ok(val),
+            Kind::Int64 => {
+                let from_i64 = self.module.get_function("cantor_bigint_from_i64").ok_or_else(|| {
+                    CompileError::ice("cantor_bigint_from_i64 not declared")
+                })?;
+                let call = self
+                    .builder
+                    .build_call(from_i64, &[val.into()], "tag_i64")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                call.try_as_basic_value()
+                    .left()
+                    .map(|v| v.into_int_value())
+                    .ok_or_else(|| CompileError::ice("cantor_bigint_from_i64 returned void"))
+            }
+            other => Err(CompileError::ice(format!(
+                "ensure_tagged: expected an Int/Int64 value, got {other:?}"
+            ))),
+        }
+    }
+
+    /// The inverse of [`Self::ensure_tagged`]: coerce `val : kind` down to a
+    /// raw `Int64` word — a no-op for an already-raw `Kind::Int64` value, or
+    /// a runtime call to `cantor_bigint_to_i64` for a tagged `Kind::Int` one.
+    /// Only sound at a boundary the solver has already proved lies within
+    /// `Int64` (a call resolved to an `Int64` overload candidate, or a
+    /// parameter declared `Int64` directly) — `cantor_bigint_to_i64` aborts
+    /// if the tagged value doesn't actually fit, which would mean that proof
+    /// was wrong (a compiler bug), never a legitimate runtime outcome.
+    pub(crate) fn ensure_raw_int64(
+        &self,
+        val: inkwell::values::IntValue<'ctx>,
+        kind: &Kind,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CompileError> {
+        if !self.tagging_active() {
+            return Ok(val);
+        }
+        match kind {
+            Kind::Int64 => Ok(val),
+            Kind::Int => {
+                let to_i64 = self
+                    .module
+                    .get_function("cantor_bigint_to_i64")
+                    .ok_or_else(|| CompileError::ice("cantor_bigint_to_i64 not declared"))?;
+                let call = self
+                    .builder
+                    .build_call(to_i64, &[val.into()], "untag_i64")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                call.try_as_basic_value()
+                    .left()
+                    .map(|v| v.into_int_value())
+                    .ok_or_else(|| CompileError::ice("cantor_bigint_to_i64 returned void"))
+            }
+            other => Err(CompileError::ice(format!(
+                "ensure_raw_int64: expected an Int/Int64 value, got {other:?}"
+            ))),
+        }
+    }
+
     /// Narrow a `TaggedUnion(arms)` value down to a plain scalar `expected`
     /// Kind by dropping the tag and reading the single i64 payload field.
     ///
@@ -386,13 +523,14 @@ impl<'ctx> Compiler<'ctx> {
         let i32t = self.context.i32_type();
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         let val_int = val.into_int_value();
+        let tagged = *val_kind == Kind::Int;
 
         let (&last, rest) = candidates.split_last().ok_or_else(|| {
             CompileError::ice("select_disjoint_union_arm: called with no candidate arms")
         })?;
         let mut tag = i32t.const_int(last as u64, false);
         for &candidate in rest.iter().rev() {
-            let in_arm = self.compile_membership(val_int, arm_exprs[candidate])?;
+            let in_arm = self.compile_membership(val_int, arm_exprs[candidate], tagged)?;
             let candidate_tag = i32t.const_int(candidate as u64, false);
             tag = self
                 .builder

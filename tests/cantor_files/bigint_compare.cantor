@@ -1,0 +1,9 @@
+-- int-soundness-plan phase 3 step 4b: comparisons on boxed BigInt values
+-- must route through cantor_bigint_cmp, not a raw i64 bit-pattern compare
+-- (which is meaningless once either side is a boxed pointer).
+
+huge : -> Int
+huge() = 9223372036854775807 + 1000000000000000000
+
+main : -> Bool
+main() = huge() > 9223372036854775807

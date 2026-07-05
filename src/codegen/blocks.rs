@@ -480,6 +480,7 @@ impl<'ctx> Compiler<'ctx> {
             .ok_or_else(|| CompileError::ice("`return` outside a function"))?;
 
         let (v, kind) = self.compile_expr(value, env)?;
+        let (v, kind) = self.coerce_int_return(v, kind, function)?;
         let ret_val = self.wrap_return_value(v, &kind)?;
         self.builder
             .build_return(Some(&ret_val))

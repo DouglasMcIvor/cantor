@@ -9,6 +9,7 @@ use inkwell::values::{BasicValue, BasicValueEnum, IntValue};
 
 use crate::{
     error::CompileError,
+    kind::Kind,
     semantics::tree::SemExpr,
     span::{Span, Symbol},
 };
@@ -102,7 +103,7 @@ impl<'ctx> Compiler<'ctx> {
         callee_name: &str,
         candidates: &[&OverloadEntry],
         arg_values: &[BasicValueEnum<'ctx>],
-        compiled_args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+        canonical_param_kinds: &[Kind],
         span: Span,
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         let function = self
@@ -122,7 +123,8 @@ impl<'ctx> Compiler<'ctx> {
 
         for entry in candidates {
             self.builder.position_at_end(check_bb);
-            let matches = self.compile_overload_domain_match(entry, arg_values)?;
+            let matches =
+                self.compile_overload_domain_match(entry, arg_values, canonical_param_kinds)?;
 
             let call_bb = self.context.append_basic_block(function, "ov_call");
             let next_check_bb = self.context.append_basic_block(function, "ov_check");
@@ -135,14 +137,50 @@ impl<'ctx> Compiler<'ctx> {
                 .module
                 .get_function(&entry.mangled_name)
                 .ok_or_else(|| CompileError::ice(format!("{} not declared", entry.mangled_name)))?;
+
+            // int-soundness-plan phase 3 step 4b: `arg_values` are in the
+            // canonical (tagged) representation shared by every candidate's
+            // membership pre-check and the merge point below — decode down
+            // to this specific candidate's real declared kind (only ever
+            // differs from canonical at an `Int64` position) right before
+            // the call.
+            let candidate_param_kinds = self.fn_param_kinds.get(&entry.mangled_name).cloned();
+            let candidate_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = arg_values
+                .iter()
+                .enumerate()
+                .map(|(i, &val)| -> Result<_, CompileError> {
+                    let real_kind = candidate_param_kinds.as_ref().and_then(|ks| ks.get(i));
+                    match real_kind {
+                        Some(Kind::Int64) if canonical_param_kinds.get(i) == Some(&Kind::Int) => {
+                            Ok(self.ensure_raw_int64(val.into_int_value(), &Kind::Int)?.into())
+                        }
+                        _ => Ok(val.into()),
+                    }
+                })
+                .collect::<Result<_, _>>()?;
+
             let call = self
                 .builder
-                .build_call(fn_val, compiled_args, "ov_call")
+                .build_call(fn_val, &candidate_args, "ov_call")
                 .map_err(err)?;
-            let result = call
+            let raw_result = call
                 .try_as_basic_value()
                 .left()
                 .ok_or_else(|| CompileError::ice("void return in expression position"))?;
+
+            // Normalize this candidate's result to the canonical tagged
+            // representation before the `phi` merge below — a raw `Int64`
+            // candidate's result has no tag bit, so it must be encoded
+            // before it can share a merge point with a tagged `Int`
+            // candidate's (already-tagged) result.
+            let candidate_return_kind = self.fn_return_kinds.get(&entry.mangled_name).cloned();
+            let result = match candidate_return_kind {
+                Some(Kind::Int64) => self
+                    .ensure_tagged(raw_result.into_int_value(), &Kind::Int64)?
+                    .into(),
+                _ => raw_result,
+            };
+
             let call_bb_end = self.builder.get_insert_block().unwrap();
             self.builder
                 .build_unconditional_branch(merge_bb)
@@ -200,17 +238,21 @@ impl<'ctx> Compiler<'ctx> {
     /// AND across parameter positions of `compile_membership(arg_i, domain_i)`
     /// for one overload candidate — an empty `domain_parts` (candidate whose
     /// domain didn't decompose at declare time) is trivially always-true.
+    /// `canonical_param_kinds` tells each position whether `arg_values` holds
+    /// a tagged `Kind::Int` word there (see `compile_overload_dispatch`).
     fn compile_overload_domain_match(
         &self,
         entry: &OverloadEntry,
         arg_values: &[BasicValueEnum<'ctx>],
+        canonical_param_kinds: &[Kind],
     ) -> Result<IntValue<'ctx>, CompileError> {
         if entry.domain_parts.is_empty() {
             return Ok(self.context.bool_type().const_int(1, false));
         }
         let mut acc: Option<IntValue<'ctx>> = None;
-        for (val, part) in arg_values.iter().zip(&entry.domain_parts) {
-            let m = self.compile_membership(val.into_int_value(), part)?;
+        for (i, (val, part)) in arg_values.iter().zip(&entry.domain_parts).enumerate() {
+            let tagged = canonical_param_kinds.get(i) == Some(&Kind::Int);
+            let m = self.compile_membership(val.into_int_value(), part, tagged)?;
             acc = Some(match acc {
                 None => m,
                 Some(a) => self
