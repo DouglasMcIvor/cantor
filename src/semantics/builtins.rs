@@ -11,6 +11,15 @@
 
 use crate::kind::Kind;
 
+/// Name of the built-in `Set(X)` power-set constructor. It's a parametrized
+/// compile-time function rather than a plain named set, so it can't go
+/// through `lookup` (which only takes a bare name) — this constant is the
+/// single source of truth every `callee.0 == "Set"` check compares against,
+/// so the three call sites (`kind::set_kind`, `semantics::elaborate`,
+/// `solver::loops`'s runtime-set-variable detection) can't drift apart on
+/// the spelling.
+pub const SET_CONSTRUCTOR: &str = "Set";
+
 /// The value-range predicate for an integer-kinded built-in set.
 /// Meaningless for non-`Kind::Int` builtins (`Bool`, `Fail`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

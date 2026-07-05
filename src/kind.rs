@@ -14,6 +14,7 @@
 use crate::ast::{
     BinOp, DefKind, Expr, ExprKind, NameDefs, UnOp, flatten_disjoint_union, flatten_domain,
 };
+use crate::error::CompileError;
 use crate::semantics::builtins;
 
 /// The element kind of a homogeneous runtime set.
@@ -23,29 +24,24 @@ pub enum SetElemKind {
     Bool,
 }
 
-// TODO: We should call this "Value" and move it into a semantics namespace
-//       OR we should split it into Atom, Algebra?
-//       We need to make a SemanticTree that an "elaboration" pass produces from the AST
-//       that is what annotates the Kind and distinguishes "+" from context
-//       Then the solver will produce a ConstrainedTree
 /// All the possible fundamental Cantor values
 ///
 /// `Copy` was intentionally dropped when `Tuple(Vec<Kind>)` was added; use
 /// `.clone()` where a copy was previously implicit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
-    /// i64 — integers, all named integer subsets (Nat, NatPos, Int8 … Int64, …).
-    /// int-soundness-plan phase 3: once the BigInt split exists, this becomes
-    /// the tagged/general representation; see `Kind::Int64` below.
+    /// i64 — the tagged/general integer representation. All named integer
+    /// subsets (Nat, NatPos, Int8 … Int64, …) elaborate to this by default
+    /// (`semantics::builtins::lookup`); it's the canonical shared Kind
+    /// wherever an `Int`/`Int64` mismatch needs reconciling (e.g.
+    /// `IfMerge::CoerceInt64ToInt`).
     Int,
-    /// i64, raw/untagged — **reserved for the int-soundness-plan phase 3
-    /// compiler-generated `Int64`/`BigInt` overload split (step 4); nothing
-    /// produces this variant yet.** Ordinary elaboration of the `Int64`
-    /// named set still yields `Kind::Int`, exactly as every other named
-    /// integer subset does (`semantics::builtins::lookup`) — introducing
-    /// this variant now is step 2's foundation, not a behaviour change for
-    /// existing programs. Every match on `Kind` added before step 4 exists
-    /// should treat this identically to `Kind::Int` (same wire type, same
+    /// i64, raw/untagged — produced by `solver::int64_split`'s two
+    /// compiler-generated transforms (int-soundness-plan phase 3): whole-
+    /// function promotion when a function's domain is already a bounded
+    /// `Int64` subset, and the solver-gated `Int64`/`BigInt` overload split
+    /// otherwise. Every match on `Kind` added before these transforms
+    /// existed treats this identically to `Kind::Int` (same wire type, same
     /// solver sort); the one place it's meant to diverge is
     /// `check_overload_kind_agreement`'s compiler-generated-split exception.
     Int64,
@@ -69,9 +65,13 @@ pub enum Kind {
     Vector(Box<Kind>),
 }
 
-// TODO: This appears to be growing into the Kind of any expression, not just sets
-pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
-    match &set_expr.kind {
+/// The Kind of a set-*describing* expression (domain/range annotations, `let`
+/// constraints, the RHS of `in`, …). Value-position expressions (function
+/// bodies, `let` values, …) never call this — `semantics::elaborate`'s
+/// `Position` enum decides structurally which one applies and only routes
+/// set-position nodes here.
+pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileError> {
+    Ok(match &set_expr.kind {
         ExprKind::IntLit { .. } => Kind::Int,
         ExprKind::BoolLit { .. } => Kind::Bool,
         ExprKind::Var(sym) => {
@@ -79,33 +79,33 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
                 builtin.kind
             } else if let Some(def) = name_defs.get(sym) {
                 match def.kind {
-                    DefKind::Alias => set_kind(&def.value, name_defs),
+                    DefKind::Alias => set_kind(&def.value, name_defs)?,
                     // Distinct sets are always integer-backed at the LLVM level.
                     DefKind::Distinct => Kind::Int,
                 }
             } else {
-                // TODO: Compile error
-                unreachable!("set_kind: unknown set name `{}`", sym.0)
+                return Err(CompileError::UndefinedVariable {
+                    name: sym.0.clone(),
+                    span: set_expr.span,
+                });
             }
         }
-        ExprKind::BinOp { op, lhs, rhs } => binop_kind(op, lhs, rhs, name_defs),
-        ExprKind::UnOp { op, expr, .. } => unop_kind(op, expr, name_defs),
-        // TODO: "Set" should also be part of the built in symbol table
+        ExprKind::BinOp { op, lhs, rhs } => binop_kind(op, lhs, rhs, name_defs)?,
+        ExprKind::UnOp { op, expr, .. } => unop_kind(op, expr, name_defs)?,
         // `Set(Int)` / `Set(Bool)` — the power set of the given element set.
         ExprKind::Call { callee, args } => {
-            if callee.0 == "Set" && args.len() == 1 {
+            if callee.0 == builtins::SET_CONSTRUCTOR && args.len() == 1 {
                 // TODO replace SetElemKind with just a nested Kind
-                match set_kind(&args[0], name_defs) {
+                match set_kind(&args[0], name_defs)? {
                     Kind::Bool => Kind::Set(SetElemKind::Bool),
                     Kind::Int => Kind::Set(SetElemKind::Int),
                     _ => unreachable!("{}", format!("Unexpected set element kind {set_expr:?}")),
                 }
             } else {
-                // TODO: Compile error
-                unreachable!(
-                    "set_kind: unknown compile time function name `{}`",
-                    callee.0
-                )
+                return Err(CompileError::UndefinedFunction {
+                    name: callee.0.clone(),
+                    span: set_expr.span,
+                });
             }
         }
         ExprKind::If {
@@ -113,8 +113,8 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
             else_expr,
             ..
         } => merge_into_union(
-            set_kind(then_expr, name_defs),
-            set_kind(else_expr, name_defs),
+            set_kind(then_expr, name_defs)?,
+            set_kind(else_expr, name_defs)?,
         ),
         // `{0, 1, 2}` as a set-builder expression — describes a domain restriction
         // to these elements, so its Kind is the *element* Kind, not `Kind::Set`
@@ -128,25 +128,40 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Kind {
         // (Position::Value) is a separate, still-scalar-only restriction
         // enforced by `codegen::compile_set_lit_value`.
         ExprKind::SetLit(exprs) => {
-            let kinds = exprs.iter().map(|e| set_kind(e, name_defs)).collect();
+            let kinds = exprs
+                .iter()
+                .map(|e| set_kind(e, name_defs))
+                .collect::<Result<Vec<_>, _>>()?;
             union_if_distinct(kinds)
         }
-        ExprKind::Try(expr) => set_kind(expr, name_defs),
+        ExprKind::Try(expr) => set_kind(expr, name_defs)?,
         ExprKind::FailLit => Kind::Fail,
-        ExprKind::FailWith(expr) => set_kind(expr, name_defs),
-        ExprKind::Comprehension { source, .. } => set_kind(source, name_defs),
-        ExprKind::Tuple(exprs) => {
-            Kind::Tuple(exprs.iter().map(|p| set_kind(p, name_defs)).collect())
-        }
-        ExprKind::Proj { base, .. } => set_kind(base, name_defs),
-        ExprKind::Index { base, .. } => set_kind(base, name_defs),
-        ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner, name_defs))),
-    }
+        ExprKind::FailWith(expr) => set_kind(expr, name_defs)?,
+        ExprKind::Comprehension { source, .. } => set_kind(source, name_defs)?,
+        ExprKind::Tuple(exprs) => Kind::Tuple(
+            exprs
+                .iter()
+                .map(|p| set_kind(p, name_defs))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        ExprKind::Proj { base, .. } => set_kind(base, name_defs)?,
+        ExprKind::Index { base, .. } => set_kind(base, name_defs)?,
+        ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner, name_defs)?)),
+    })
 }
 
-fn binop_kind(bin_op: &BinOp, lhs: &Expr, rhs: &Expr, name_defs: &NameDefs) -> Kind {
-    match &bin_op {
-        // TODO: this is also "add" we need to know the context, doesn't the parser do this?
+/// The set-position interpretation of each `BinOp`; only reached via
+/// `set_kind`, so `Add`/`Sub`/`Mul`/`Div` here are always the set-operation
+/// reading (disjoint union/difference/Cartesian product/quotient) — the
+/// value-position arithmetic reading is decided separately and never calls
+/// this (see `set_kind`'s doc comment).
+fn binop_kind(
+    bin_op: &BinOp,
+    lhs: &Expr,
+    rhs: &Expr,
+    name_defs: &NameDefs,
+) -> Result<Kind, CompileError> {
+    Ok(match &bin_op {
         // `A + B` — disjoint union. Unlike `|`, `+` *forces* disjointness (akin to
         // `distinct`): arms are never deduplicated by Kind, even when they share
         // the same underlying Kind (e.g. `{0} + NatPos` is still tagged), so the
@@ -159,13 +174,11 @@ fn binop_kind(bin_op: &BinOp, lhs: &Expr, rhs: &Expr, name_defs: &NameDefs) -> K
                     .into_iter()
                     .chain(right_parts)
                     .map(|p| set_kind(p, name_defs))
-                    .collect(),
+                    .collect::<Result<Vec<_>, _>>()?,
             )
         }
-        // TODO: this is also "sub" we need to know the context, doesn't the parser do this?
         // `A - B` — set difference.
-        BinOp::Sub => set_kind(lhs, name_defs),
-        // TODO: this is also "mul" we need to know the context, doesn't the parser do this?
+        BinOp::Sub => set_kind(lhs, name_defs)?,
         // `A * B * C` — Cartesian product → tuple.
         BinOp::Mul => {
             let left_parts = flatten_domain(lhs);
@@ -175,32 +188,32 @@ fn binop_kind(bin_op: &BinOp, lhs: &Expr, rhs: &Expr, name_defs: &NameDefs) -> K
                     .into_iter()
                     .chain(right_parts)
                     .map(|p| set_kind(p, name_defs))
-                    .collect(),
+                    .collect::<Result<Vec<_>, _>>()?,
             )
         }
-        // TODO: this will be both "div" and set quotient, again need context
-        BinOp::Div => set_kind(lhs, name_defs),
+        // `A / B` — set quotient.
+        BinOp::Div => set_kind(lhs, name_defs)?,
 
         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Kind::Bool,
         BinOp::In | BinOp::NotIn => Kind::Bool,
 
         // `A | B` — union
-        BinOp::Union => merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs)),
+        BinOp::Union => merge_into_union(set_kind(lhs, name_defs)?, set_kind(rhs, name_defs)?),
         // `A & B` — set intersection.
-        BinOp::Intersect => set_kind(lhs, name_defs),
+        BinOp::Intersect => set_kind(lhs, name_defs)?,
         // `A ^ B` — symmetric difference.
-        BinOp::SymDiff => merge_into_union(set_kind(lhs, name_defs), set_kind(rhs, name_defs)),
-        BinOp::Concat => set_kind(lhs, name_defs),
+        BinOp::SymDiff => merge_into_union(set_kind(lhs, name_defs)?, set_kind(rhs, name_defs)?),
+        BinOp::Concat => set_kind(lhs, name_defs)?,
 
         BinOp::And | BinOp::Or => Kind::Bool,
-    }
+    })
 }
 
-fn unop_kind(un_op: &UnOp, expr: &Expr, name_defs: &NameDefs) -> Kind {
-    match &un_op {
+fn unop_kind(un_op: &UnOp, expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileError> {
+    Ok(match &un_op {
         UnOp::Not => Kind::Bool,
-        UnOp::Neg => set_kind(expr, name_defs),
-    }
+        UnOp::Neg => set_kind(expr, name_defs)?,
+    })
 }
 
 /// The runtime Kind of a function's return value, given its range expression.
@@ -211,12 +224,12 @@ fn unop_kind(un_op: &UnOp, expr: &Expr, name_defs: &NameDefs) -> Kind {
 /// compiles to `{ i1 flag, i64 value }` with `flag == 1` indicating failure.
 /// Unlike plain `set_kind`, this is range-specific — a parameter can't be
 /// "fallible" the same way, so `set_kind` alone is correct for domains.
-pub fn range_kind(range: &Expr, name_defs: &NameDefs) -> Kind {
+pub fn range_kind(range: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileError> {
     match &range.kind {
         ExprKind::Var(sym) => {
             // Bare `Fail` has its own Kind; it becomes the flag field of {Fail, Int} structs.
             if sym.0 == "Fail" {
-                Kind::Fail
+                Ok(Kind::Fail)
             } else {
                 set_kind(range, name_defs)
             }
@@ -253,11 +266,16 @@ fn is_fail_arm(expr: &Expr) -> bool {
     }
 }
 
-fn range_fail_kind(range: &Expr, lhs: &Expr, rhs: &Expr, name_defs: &NameDefs) -> Kind {
+fn range_fail_kind(
+    range: &Expr,
+    lhs: &Expr,
+    rhs: &Expr,
+    name_defs: &NameDefs,
+) -> Result<Kind, CompileError> {
     if is_fail_arm(lhs) {
-        Kind::Tuple(vec![Kind::Fail, set_kind(rhs, name_defs)])
+        Ok(Kind::Tuple(vec![Kind::Fail, set_kind(rhs, name_defs)?]))
     } else if is_fail_arm(rhs) {
-        Kind::Tuple(vec![Kind::Fail, set_kind(lhs, name_defs)])
+        Ok(Kind::Tuple(vec![Kind::Fail, set_kind(lhs, name_defs)?]))
     } else {
         set_kind(range, name_defs)
     }

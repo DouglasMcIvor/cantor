@@ -6,7 +6,7 @@ use cantor::kind::{Kind, SetElemKind, set_kind};
 fn set_kind_of_set_int() {
     let expr = Expr::call("Set", vec![Expr::var("Int")]);
     assert_eq!(
-        set_kind(&expr, &NameDefs::new()),
+        set_kind(&expr, &NameDefs::new()).unwrap(),
         Kind::Set(SetElemKind::Int)
     );
 }
@@ -15,7 +15,7 @@ fn set_kind_of_set_int() {
 fn set_kind_of_set_bool() {
     let expr = Expr::call("Set", vec![Expr::var("Bool")]);
     assert_eq!(
-        set_kind(&expr, &NameDefs::new()),
+        set_kind(&expr, &NameDefs::new()).unwrap(),
         Kind::Set(SetElemKind::Bool)
     );
 }
@@ -25,7 +25,7 @@ fn set_kind_of_set_nat() {
     // Nat is a subset of Int — same runtime kind as Int.
     let expr = Expr::call("Set", vec![Expr::var("Nat")]);
     assert_eq!(
-        set_kind(&expr, &NameDefs::new()),
+        set_kind(&expr, &NameDefs::new()).unwrap(),
         Kind::Set(SetElemKind::Int)
     );
 }
@@ -38,7 +38,7 @@ fn range_kind_set_int_or_fail() {
     let fail = Expr::var("Fail");
     let union = Expr::binop(BinOp::Union, set_int, fail);
     assert_eq!(
-        range_kind(&union, &NameDefs::new()),
+        range_kind(&union, &NameDefs::new()).unwrap(),
         Kind::Tuple(vec![Kind::Fail, Kind::Set(SetElemKind::Int)])
     );
 }

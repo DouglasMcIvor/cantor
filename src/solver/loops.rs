@@ -5,7 +5,10 @@ use std::collections::{HashMap, HashSet};
 use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
-    semantics::tree::{SemExpr, SemExprKind, SemFunctionDef, SemStmt},
+    semantics::{
+        builtins,
+        tree::{SemExpr, SemExprKind, SemFunctionDef, SemStmt},
+    },
     span::{Span, Symbol},
 };
 
@@ -367,7 +370,7 @@ pub(super) fn check_for_inductive_step<'tm>(
     let runtime_elem_constraint: Option<SemExpr> = if let SemExprKind::Var(sym) = &set.kind {
         ctx.constraint_env.get(sym).and_then(|c| {
             if let SemExprKind::Call { callee, args } = &c.kind
-                && callee.0 == "Set"
+                && callee.0 == builtins::SET_CONSTRUCTOR
                 && args.len() == 1
             {
                 return Some(args[0].clone());

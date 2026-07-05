@@ -49,7 +49,7 @@ pub(super) fn elaborate_binop(
                 Position::Value => (SemExprKind::Add(Box::new(l), Box::new(r)), Kind::Int),
                 Position::Set => (
                     SemExprKind::DisjointUnion(Box::new(l), Box::new(r)),
-                    kind_of_for_set(),
+                    kind_of_for_set()?,
                 ),
             };
             Ok(SemExpr {
@@ -67,7 +67,7 @@ pub(super) fn elaborate_binop(
                 Position::Value => (SemExprKind::Sub(Box::new(l), Box::new(r)), Kind::Int),
                 Position::Set => (
                     SemExprKind::SetDifference(Box::new(l), Box::new(r)),
-                    kind_of_for_set(),
+                    kind_of_for_set()?,
                 ),
             };
             Ok(SemExpr {
@@ -85,7 +85,7 @@ pub(super) fn elaborate_binop(
                 Position::Value => (SemExprKind::Mul(Box::new(l), Box::new(r)), Kind::Int),
                 Position::Set => (
                     SemExprKind::CartesianProduct(Box::new(l), Box::new(r)),
-                    kind_of_for_set(),
+                    kind_of_for_set()?,
                 ),
             };
             Ok(SemExpr {
@@ -103,7 +103,7 @@ pub(super) fn elaborate_binop(
                 Position::Value => (SemExprKind::Div(Box::new(l), Box::new(r)), Kind::Int),
                 Position::Set => (
                     SemExprKind::SetQuotient(Box::new(l), Box::new(r)),
-                    kind_of_for_set(),
+                    kind_of_for_set()?,
                 ),
             };
             Ok(SemExpr {
@@ -149,7 +149,7 @@ pub(super) fn elaborate_binop(
                 elaborate_expr(rhs, pos, ctx, env)?,
             );
             let kind_of = match pos {
-                Position::Set => kind_of_for_set(),
+                Position::Set => kind_of_for_set()?,
                 // codegen::compile_binop rejects these outright in value
                 // position today ("set operations not yet implemented").
                 Position::Value => {

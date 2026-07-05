@@ -81,7 +81,7 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
             fn_sigs.insert(
                 def.name.clone(),
                 FnSig {
-                    return_kind: crate::kind::range_kind(&sig.range, &name_defs),
+                    return_kind: crate::kind::range_kind(&sig.range, &name_defs)?,
                 },
             );
         }
@@ -201,7 +201,7 @@ fn function_param_kinds(
     }
     let parts =
         ast::param_set_exprs(sig.domain.as_ref(), n_params).map_err(|e| CompileError::ice(e))?;
-    Ok(parts.into_iter().map(|p| set_kind(p, name_defs)).collect())
+    parts.into_iter().map(|p| set_kind(p, name_defs)).collect()
 }
 
 fn elaborate_item(item: &Item, ctx: &Ctx) -> Result<SemItem, CompileError> {
@@ -265,7 +265,7 @@ fn elaborate_sig(
         .transpose()?;
     let range = elaborate_expr(&sig.range, Position::Set, ctx, &mut env)?;
     let param_kinds = function_param_kinds(sig, n_params, ctx.name_defs)?;
-    let return_kind = crate::kind::range_kind(&sig.range, ctx.name_defs);
+    let return_kind = crate::kind::range_kind(&sig.range, ctx.name_defs)?;
     Ok(SemFunctionSig {
         domain,
         range,
@@ -623,7 +623,7 @@ fn elaborate_expr(
 
         ExprKind::Var(sym) => {
             let kind_of = match pos {
-                Position::Set => kind_of_for_set(),
+                Position::Set => kind_of_for_set()?,
                 // A local (param/let) takes priority; falling through to
                 // `name_defs` covers a value-position reference to a
                 // top-level scalar constant (e.g. `base : Nat = 10` used in
@@ -632,19 +632,18 @@ fn elaborate_expr(
                 // position for a name lookup, only *whether* it's local.
                 Position::Value => match env.get(sym) {
                     Some(k) => k.clone(),
-                    None => ctx
-                        .name_defs
-                        .get(sym)
-                        .map(|def| match def.kind {
-                            ast::DefKind::Alias => set_kind(&def.value, ctx.name_defs),
-                            ast::DefKind::Distinct => Kind::Int,
-                        })
-                        .ok_or_else(|| {
+                    None => {
+                        let def = ctx.name_defs.get(sym).ok_or_else(|| {
                             CompileError::ice(format!(
                                 "elaborate: reference to undefined local `{}`",
                                 sym.0
                             ))
-                        })?,
+                        })?;
+                        match def.kind {
+                            ast::DefKind::Alias => set_kind(&def.value, ctx.name_defs)?,
+                            ast::DefKind::Distinct => Kind::Int,
+                        }
+                    }
                 },
             };
             Ok(SemExpr {
@@ -689,7 +688,7 @@ fn elaborate_expr(
             // Matches set_kind (passes through) in set position and
             // compile_unop (always Int) in value position.
             let kind_of = match pos {
-                Position::Set => kind_of_for_set(),
+                Position::Set => kind_of_for_set()?,
                 Position::Value => Kind::Int,
             };
             Ok(SemExpr {
@@ -702,7 +701,9 @@ fn elaborate_expr(
             })
         }
 
-        ExprKind::Call { callee, args } if callee.0 == "Set" && args.len() == 1 => {
+        ExprKind::Call { callee, args }
+            if callee.0 == crate::semantics::builtins::SET_CONSTRUCTOR && args.len() == 1 =>
+        {
             // Built-in `Set(X)` constructor — its argument is always a set
             // description, regardless of the call's own position.
             let arg = elaborate_expr(&args[0], Position::Set, ctx, env)?;
@@ -711,7 +712,19 @@ fn elaborate_expr(
                     callee: callee.clone(),
                     args: vec![arg],
                 },
-                kind_of: kind_of_for_set(),
+                kind_of: kind_of_for_set()?,
+                span,
+            })
+        }
+        // Any other call reached in set position is meaningless — the only
+        // legitimate set-position call is the `Set(X)` arm above. Mirrors
+        // `kind::set_kind`'s own fallback exactly; caught here before the
+        // generic arm below, which would otherwise elaborate `args` as
+        // values and report a confusing "undefined local" error pointing at
+        // an argument instead of the actually-undefined callee.
+        ExprKind::Call { callee, .. } if pos == Position::Set => {
+            Err(CompileError::UndefinedFunction {
+                name: callee.0.clone(),
                 span,
             })
         }
@@ -763,7 +776,7 @@ fn elaborate_expr(
             let t = elaborate_expr(then_expr, pos, ctx, env)?;
             let e = elaborate_expr(else_expr, pos, ctx, env)?;
             let kind_of = match pos {
-                Position::Set => kind_of_for_set(),
+                Position::Set => kind_of_for_set()?,
                 Position::Value => crate::kind::merge_if_branches(&t.kind_of, &e.kind_of)
                     .map(|merge| merge.result_kind())
                     .map_err(|e| CompileError::ice(e))?,
@@ -788,7 +801,7 @@ fn elaborate_expr(
                 .map(|e| elaborate_expr(e, Position::Value, ctx, env))
                 .collect::<Result<Vec<_>, _>>()?;
             let kind_of = match pos {
-                Position::Set => kind_of_for_set(),
+                Position::Set => kind_of_for_set()?,
                 Position::Value => {
                     // Matches compile_set_lit_value: a non-empty, homogeneous
                     // Int/Bool literal constructs a genuine runtime Set value.
@@ -824,7 +837,7 @@ fn elaborate_expr(
             let e = elaborate_expr(inner, pos, ctx, env)?;
             // Matches compile_try exactly: always the unwrapped Int payload.
             let kind_of = match pos {
-                Position::Set => kind_of_for_set(),
+                Position::Set => kind_of_for_set()?,
                 Position::Value => Kind::Int,
             };
             Ok(SemExpr {
@@ -837,7 +850,7 @@ fn elaborate_expr(
         ExprKind::FailWith(inner) => {
             let e = elaborate_expr(inner, Position::Value, ctx, env)?;
             let kind_of = match pos {
-                Position::Set => kind_of_for_set(),
+                Position::Set => kind_of_for_set()?,
                 // Matches compile_expr exactly: always the fallible wrapper,
                 // regardless of the payload expression's own Kind.
                 Position::Value => Kind::Tuple(vec![Kind::Fail, Kind::Int]),
@@ -876,7 +889,7 @@ fn elaborate_expr(
                     source: Box::new(src),
                     filter: filt.map(Box::new),
                 },
-                kind_of: kind_of_for_set(),
+                kind_of: kind_of_for_set()?,
                 span,
             })
         }

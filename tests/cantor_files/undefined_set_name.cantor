@@ -1,0 +1,2 @@
+f : Foo -> Int
+f(x) = x

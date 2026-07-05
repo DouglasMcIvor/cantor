@@ -1,0 +1,2 @@
+f : Bag(Int) -> Int
+f(x) = 0

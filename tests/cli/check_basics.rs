@@ -92,6 +92,67 @@ fn set_op_in_value_position_reports_location_not_ice() {
 }
 
 #[test]
+fn undefined_set_name_in_domain_reports_location_not_ice() {
+    // undefined_set_name.cantor: `f : Foo -> Int` where `Foo` is never
+    // declared — a `CompileError::UndefinedVariable`, not a panic. Regression
+    // test for `kind::set_kind`'s `Var` fallback, which used to
+    // `unreachable!()` here.
+    let out = run_file("undefined_set_name.cantor");
+    assert_ne!(
+        out.code, 0,
+        "expected non-zero exit\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("undefined variable `Foo`"),
+        "expected an undefined-variable diagnostic on stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains(":1:"),
+        "expected the diagnostic to point at line 1:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("internal compiler error"),
+        "an undefined set name must never be reported as an ICE:\n{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn unknown_compile_time_function_in_domain_reports_location_not_ice() {
+    // unknown_compile_time_function.cantor: `f : Bag(Int) -> Int` — `Bag`
+    // isn't a recognized compile-time function (the only one is `Set`), so
+    // this is a `CompileError::UndefinedFunction`, not a panic. Regression
+    // test for `kind::set_kind`'s `Call` fallback, which used to
+    // `unreachable!()` here, and for the elaborator's generic `Call` arm,
+    // which used to eagerly elaborate `Int` as a value first and report a
+    // confusing "undefined local" ICE instead of naming the real culprit.
+    let out = run_file("unknown_compile_time_function.cantor");
+    assert_ne!(
+        out.code, 0,
+        "expected non-zero exit\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("undefined function `Bag`"),
+        "expected an undefined-function diagnostic on stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains(":1:"),
+        "expected the diagnostic to point at line 1:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("internal compiler error"),
+        "an unknown compile-time function must never be reported as an ICE:\n{}",
+        out.stderr
+    );
+}
+
+#[test]
 fn array_lit_in_domain_position_reports_clean_error() {
     // array_lit_in_domain_position.cantor: `f : [Int] -> Int` — `[Int]` parses
     // as a Tuple literal, which is never a valid set expression (products in
