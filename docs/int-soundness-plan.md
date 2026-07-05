@@ -857,24 +857,28 @@ at all, and a stray one would break the very `TaggedUnion`-arm matching
   its *real* declared Kind (`fn_param_kinds`) immediately before its call;
   each candidate's result is re-encoded to tagged before the `phi`.
 - **`Vector(Int)`/`Set(Int)`/runtime-`Set` `for`-loop storage — deliberately
-  stays raw, decode-on-read/encode-on-write at the boundary.** This is an
-  explicit, documented scope line, not an oversight: making container
-  *elements* genuinely arbitrary-precision would need a canonical (i.e.
-  never-duplicated) tagged representation for `Set` dedup/equality — two
-  *different* boxed heap allocations holding the same integer are not
+  stayed raw, decode-on-read/encode-on-write at the boundary; `Vector(Int)`
+  fixed 2026-07-05 (post-review), `Set(Int)`/runtime-`Set` still open.**
+  This was an explicit, documented scope line, not an oversight: making
+  container *elements* genuinely arbitrary-precision needs a canonical
+  (i.e. never-duplicated) tagged representation for `Set` dedup/equality —
+  two *different* boxed heap allocations holding the same integer are not
   `==` as raw pointers, so `cantor_set_insert_i64`/`cantor_set_contains_i64`
   would silently break set semantics the moment a boxed value entered a
-  set. Out of scope for this pass; `ensure_raw_int64`/`ensure_tagged` at
-  each construction/read site (`compile_tuple_as_vector`,
-  `compile_scalar_as_singleton_vector`, `compile_index`/`compile_proj`,
-  `compile_set_lit_value`, `compile_runtime_contains`, `compile_for_in`'s
-  runtime-set loop) mean a value that doesn't fit raw `Int64` aborts loudly
-  (via `ensure_raw_int64`'s existing "compiler invariant violated" message —
-  imprecise wording for this specific case, noted as a TODO) rather than
-  corrupting anything. `Tuple`/`TaggedUnion` payload leaves needed **no**
-  changes at all — they already pass an `Int` position's bits through
-  opaquely, so whatever representation it already is (tagged or raw) just
-  carries through unchanged.
+  set. `Vector(Int)` has no such problem — it's an ordered sequence, no
+  dedup/equality involved — so a review found the raw decode/re-encode at
+  its four construction/read sites (`compile_tuple_as_vector`,
+  `compile_scalar_as_singleton_vector`, `compile_index`/`compile_proj`) was
+  pure unnecessary work: `Int64Array` storage is representation-agnostic
+  (it's just an i64 word either way), so a tagged (possibly boxed) element
+  round-trips through it correctly with zero runtime changes — exactly
+  like `Tuple`/`TaggedUnion` payload leaves already did, which never needed
+  this dance in the first place. Fixed by deleting the coercion calls at
+  those four sites. `Set(Int)`/`compile_set_lit_value`/
+  `compile_runtime_contains`/`compile_for_in`'s runtime-set loop remain on
+  the raw path for now — `ensure_raw_int64`'s "compiler invariant violated"
+  abort (imprecise wording for this specific case, noted as a TODO) still
+  fires for a `Set(Int)` element that doesn't fit raw `Int64`.
 - **Domain/range membership checks** (`codegen/membership.rs`): every
   `IntBound` arm (`NonNeg`/`Positive`/`NonZero`/`Bounded`) and the
   named-set/set-literal equality arms now route through a new

@@ -108,15 +108,10 @@ impl<'ctx> Compiler<'ctx> {
             .try_as_basic_value()
             .left()
             .ok_or_else(|| CompileError::ice(format!("`{get_fn}` returned void unexpectedly")))?;
-        // int-soundness-plan phase 3 step 4b: `Vector(Int)` storage is raw
-        // i64 (see `compile_tuple_as_vector`'s comment) but every consumer
-        // downstream expects `Kind::Int` to mean tagged — re-tag on read.
-        let result_val = if elem_kind == Kind::Int {
-            self.ensure_tagged(result_val.into_int_value(), &Kind::Int64)?
-                .into()
-        } else {
-            result_val
-        };
+        // `Vector(Int)` storage is representation-agnostic i64 words (see
+        // `compile_tuple_as_vector`'s comment) — whatever representation an
+        // element was pushed in (tagged or raw) is exactly what comes back,
+        // no decode/re-encode needed.
         Ok((result_val, elem_kind))
     }
 
@@ -175,15 +170,9 @@ impl<'ctx> Compiler<'ctx> {
                     let result_val = result.try_as_basic_value().left().ok_or_else(|| {
                         CompileError::ice(format!("`{get_fn}` returned void unexpectedly"))
                     })?;
-                    // int-soundness-plan phase 3 step 4b: see the matching
-                    // comment in `compile_index` — `Vector(Int)` storage is
-                    // raw, re-tag on read.
-                    let result_val = if elem_kind == Kind::Int {
-                        self.ensure_tagged(result_val.into_int_value(), &Kind::Int64)?
-                            .into()
-                    } else {
-                        result_val
-                    };
+                    // See the matching comment in `compile_index` —
+                    // `Vector(Int)` storage is representation-agnostic, no
+                    // decode/re-encode needed on read.
                     return Ok((result_val, elem_kind));
                 }
             }
@@ -294,14 +283,9 @@ impl<'ctx> Compiler<'ctx> {
                     .build_int_z_extend(elem.into_int_value(), i64t, "vec_elem_ext")
                     .map_err(err)?
                     .into(),
-                // int-soundness-plan phase 3 step 4b: `Vector(Int)` storage
-                // is out of scope for tagging in this pass (see
-                // docs/int-soundness-plan.md) — it stores plain raw i64
-                // elements exactly as before, so a tagged element must be
-                // decoded first.
-                (Kind::Int, Kind::Int) => self
-                    .ensure_raw_int64(elem.into_int_value(), outer_ek)?
-                    .into(),
+                // `Vector(Int)` storage is representation-agnostic i64 words
+                // — push whatever representation the element already has
+                // (tagged or raw), no decode needed.
                 _ => elem,
             };
             self.builder
@@ -651,8 +635,9 @@ impl<'ctx> Compiler<'ctx> {
             .left()
             .ok_or_else(|| CompileError::ice("singleton builder new returned void"))?;
 
-        // int-soundness-plan phase 3 step 4b: `Vector(Int)` storage stays
-        // raw i64 (see the matching comment in `compile_tuple_as_vector`).
+        // `Vector(Int)` storage is representation-agnostic i64 words (see
+        // the matching comment in `compile_tuple_as_vector`) — push `val` as
+        // whatever representation it already has.
         let push_val: BasicValueEnum<'ctx> = if *val_kind == Kind::Bool {
             self.builder
                 .build_int_z_extend(
@@ -661,9 +646,6 @@ impl<'ctx> Compiler<'ctx> {
                     "singleton_ext",
                 )
                 .map_err(err)?
-                .into()
-        } else if *elem_kind == Kind::Int && *val_kind == Kind::Int {
-            self.ensure_raw_int64(val.into_int_value(), val_kind)?
                 .into()
         } else {
             val

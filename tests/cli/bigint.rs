@@ -208,30 +208,29 @@ mod small_value_membership_regression {
     }
 }
 
-// ── Known issues (still open) ────────────────────────────────────────────────
-mod known_issues {
-    use super::*;
-
-    #[test]
-    #[ignore = "Vector(Int)/Set(Int) elements are documented as out of scope \
-                for BigInt (int-soundness-plan.md step 4b) -- a boxed element \
-                currently aborts via ensure_raw_int64 (\"compiler invariant \
-                violated\", a misleading message for what is really an \
-                unimplemented feature, not a compiler bug) rather than \
-                computing the correct answer. Fails loudly, per CLAUDE.md, so \
-                this is a completeness gap rather than a soundness one -- but \
-                still open."]
-    fn vector_of_int_holding_a_boxed_element_reads_back_correctly() {
-        let out = run_subcommand("vector_int_bigint_element.cantor");
-        assert_eq!(
-            out.code, 0,
-            "expected exit 0:\n{}\n{}",
-            out.stdout, out.stderr
-        );
-        assert!(
-            out.stdout.contains("main() = 9223372036854775808"),
-            "expected the boxed element to read back exactly:\n{}",
-            out.stdout
-        );
-    }
+// ── Container elements (found in review, 2026-07-05; Vector(Int) fixed) ────
+//
+// `Vector(Int)`/`Set(Int)` elements were documented as out of scope for
+// BigInt (int-soundness-plan.md step 4b): a boxed element aborted via
+// `ensure_raw_int64` rather than computing the correct answer. Fixed for
+// `Vector(Int)` by no longer decoding/re-encoding at the vector push/read
+// boundary at all — `Int64Array` storage is representation-agnostic, so a
+// tagged (possibly boxed) word round-trips through it unchanged; `Tuple`/
+// `TaggedUnion` element storage already worked this way. `Set(Int)` needs a
+// canonical/deduped comparison (two different boxed allocations holding the
+// same value must still dedup to one set entry) and is still open — see
+// `int64_split`'s sibling module or int-soundness-plan.md for that follow-up.
+#[test]
+fn vector_of_int_holding_a_boxed_element_reads_back_correctly() {
+    let out = run_subcommand("vector_int_bigint_element.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 9223372036854775808"),
+        "expected the boxed element to read back exactly:\n{}",
+        out.stdout
+    );
 }
