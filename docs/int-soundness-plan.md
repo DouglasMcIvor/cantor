@@ -25,9 +25,39 @@ defer call boundaries" turned out not to be a viable slice at all; see
 step 4b's entry for the confirmed real scope and the (kept, inert) prep
 work from the attempt: a new `cantor_bigint_to_i64` runtime function, its
 `runtime_decls.rs`/`jit.rs` wiring, and an independent parameter-Kind-
-binding bug fix in `codegen/mod.rs`. Steps 4b–5 (tagged-value codegen,
-tests/docs) otherwise not started — no LLVM/codegen/JIT wiring for the
-tagged representation's arithmetic/call-boundary behaviour exists yet.
+binding bug fix in `codegen/mod.rs`. **Step A (whole-function `Int64`
+promotion) DONE (2026-07-05)** — added *before* resuming step 4b, once
+attempting it surfaced that blanket-tagging every `Kind::Int` position
+would tax every integer operation in the language, not just genuinely-
+unbounded ones (see "Step A — whole-function `Int64` promotion" below).
+While implementing it, also found and fixed a latent gap in step 4a's own
+eligibility check: it verified only the outer `domain → range` contract,
+not that every arithmetic node individually stays within `Int64` — sound
+for `+`/`-`/`*`/`neg`-only bodies (ring operations mod 2^64 compose safely
+under a proved final-range bound) but not once a body contains `/`; both
+mechanisms now share a stricter `trial_fully_proves_int64` check.
+
+**Step 4b (tagged-value codegen) DONE (2026-07-05)**, this time landed as
+one cohesive change rather than re-attempting the "scalar only, defer call
+boundaries" slice that failed on 2026-07-04. Real final scope, confirmed
+while implementing (each surfaced only once the previous one was fixed —
+see "Step 4b — tagged-value codegen" below for the full account and the
+key `tagging_active` gating decision that keeps every non-solver-verified
+codegen consumer, including the entire existing test suite, on the
+pre-existing plain-i64 ABI unchanged): literal/arithmetic/comparison
+tagging, call-boundary encode/decode (including the function-*return*
+boundary, not just call arguments — a promoted function returning another
+tagged call's result needed this too), the overload-dispatch phi-merge and
+per-candidate decode, `Vector(Int)`/`Set(Int)`/runtime-`Set` `for`-loop
+storage (kept raw/untagged, decode-on-read/encode-on-write at that
+boundary — out of scope for genuinely arbitrary-precision container
+elements this pass), domain/range membership checks (`assert`/`in`,
+tag-aware bound comparisons), and the `len()`/`size()`/`from()`/distinct-
+constructor builtins and named-constant inlining (all of which either
+returned or passed through a raw value while claiming the now-tagged
+`Kind::Int` label). `expr.rs` crossed 1000 lines again during this work;
+split into `codegen/arith.rs` (checked/tagged `+ - * /` and unary `-`) as
+a same-session pure-refactor, mirroring the project's established pattern.
 **Executes in three phases; phase 1 alone closes the soundness gap**
 
 ---
@@ -412,6 +442,97 @@ that can't clear that bar simply never gets an `Int64` overload generated
 for it in the first place, and relies entirely on the per-node mechanism
 instead (a single, ordinary `Kind::Int` body, no split involved).
 
+### Step A — whole-function `Int64` promotion (DECIDED and DONE, 2026-07-05)
+
+**Why this exists, and why it was added before step 4b rather than after.**
+Cantor's `Kind` doesn't distinguish `Int8`/`Int16`/`Int32`/`Nat`/unbounded
+`Int` — every named integer subset elaborates to the same `Kind::Int`
+(`kind.rs`). Once step 4b tags every `Kind::Int` value, a blanket
+"tag everything" implementation would add a shift-and-tag-check to *every*
+integer operation in the language, including values declared over `Int8` or
+`Int32` that can never actually need `BigInt` — not just genuinely-unbounded
+arithmetic. The overload split above only rescues the narrow case of a bare
+unbounded-`Int` domain that *happens* to stay small; it does nothing for the
+far more common case of a domain that's already bounded by construction.
+
+**The mechanism.** For any function whose domain is already provably
+`⊆ Int64` (any shape — `Int8`, a bounded custom set, `Int64` itself, …, not
+just the bare `Int` builtin), there's no "otherwise" case a caller could
+ever hit: the ordinary domain-membership proof obligation at every call site
+already guarantees every argument fits in `Int64`. So the whole function is
+promoted **in place** to `Kind::Int64` — no sibling overload, no runtime
+dispatch, nothing for a caller to disambiguate. Concretely
+(`src/solver/int64_split.rs`'s `try_promote_to_int64`):
+
+1. Reject anything not already scalar-`Int`-typed throughout (`Bool`/
+   `Tuple`/`Vector`/`TaggedUnion` positions never need this; a signature
+   mixing `Int` with another Kind is a fast-follow, not this first cut).
+2. For each parameter's domain component (`sem_param_set_exprs`), an
+   explicit solver entailment check: does a witness value exist that
+   satisfies the domain but not `Int64`? Unsat ⇒ proved subset. This is a
+   *new* check step 4a's own trial never needed, because step 4a always
+   narrows the domain to the bare `Int64` builtin itself as its hypothesis
+   — there was nothing else to check.
+3. If every parameter clears that bar, build the promoted candidate (same
+   body, same *declared* domain/range — only `param_kinds`/`return_kind`
+   change to `Kind::Int64`) and run it through the same
+   `trial_fully_proves_int64` check step 4a uses (see below).
+
+**MVP eligibility, deliberately narrow like step 4a:** exactly one
+signature, no pre-existing overload sibling. Unlike step 4a, no restriction
+on arity or on `Mul` — this doesn't synthesize a domain *narrower* than
+what's already declared, so there's no new nonlinear-arithmetic bound for
+cvc5 to struggle with beyond whatever the function's own declared domain
+already required it to handle.
+
+**The eligibility bar, and the step 4a gap it also caught.** It is *not*
+enough for the outer `domain → range` contract alone to prove. Two's-
+complement `+`/`-`/`*`/`neg` are exact ring operations mod 2^64, so a chain
+of only those is safe under raw wraparound hardware as long as the *final*
+result is proved in range — wraparound arithmetic computes exactly in
+ℤ/2^64ℤ at every step, and if the true final value lands in the unique
+`[i64::MIN, i64::MAX]` representative of its residue class, the wrapped
+i64 result necessarily equals it, regardless of what happened to
+intermediate values (the same reason a checksum is allowed to overflow
+mid-computation). But `/` breaks this: dividing an intermediate value that
+already wrapped can produce a genuinely wrong quotient even when the true
+final answer would have been in range, since division isn't a ring
+homomorphism mod 2^64 the way `+`/`-`/`*` are. So both this promotion and
+step 4a's split require every individual arithmetic node's own overflow
+obligation (phase 1's per-node side channel) to *also* prove `true` for the
+trial signature, not just the outer contract — `trial_fully_proves_int64`
+inspects the trial's own `overflow_checks` scratch map for this, discarding
+it afterward either way (the real per-function loop in `check_file` checks
+the eventual replacement item again from scratch and populates the file's
+real maps then). **Step 4a's own trial check didn't do this before this
+change** — it only checked the outer contract, discarding its scratch
+overflow map unused. This is provably fine for step 4a's current shape
+(the `Mul`-restriction already forces the body to a `+`/`-`/`/`/`neg`-only
+shape... but `/` was *not* excluded, so the gap was real, if narrow and not
+known to have an actual failing fixture). Both mechanisms now share the
+same stricter helper.
+
+**Behavioural asymmetry this preserves, on purpose.** Once step 4b lands,
+an ordinary `Kind::Int` value that overflows i64 *promotes to a boxed
+`BigInt` and keeps computing correctly* — it never aborts. A function
+promoted to `Kind::Int64` by this mechanism has no tag bit to promote into,
+so if it ever did overflow it could only abort (phase 1's existing
+behaviour, unchanged). Requiring every arithmetic node to independently
+prove `Int64`-bounded is what makes this safe: a function that qualifies
+genuinely never needed the `BigInt` safety net in the first place, so
+opting it out of that net costs it nothing; a function that doesn't qualify
+keeps the full tagged/`BigInt` treatment. Before step 4b exists, `Kind::Int64`
+and `Kind::Int` compile identically (both raw i64, both driven by the same
+per-node `overflow_checks` proved/unproved decision) — promotion is
+observably inert until step 4b lands, confirmed by the full existing test
+suite (920 tests, unit + integration) passing unchanged. Tested in
+`tests/solver/int64_split.rs`: single- and multi-parameter and zero-
+parameter bounded domains promoting without a split; an unbounded `Nat`
+domain declining; a domain that's *itself* exactly `Int64` but whose body
+(`x + x`) can still overflow declining (the case a "final result in range
+alone" check would miss); and a promoted function's callers still proving
+with a plain direct call, no dispatch.
+
 ### What phase 3 does *not* need to change
 
 - The solver: already reasons over unbounded ℤ (see above).
@@ -499,7 +620,10 @@ independently unit-testable before any codegen exists)
 4. **Codegen** (4a is really a pre-codegen semantics/solver pass — it decides
    *whether* a split exists at all before any of 4b–4d's codegen work
    applies — but stays numbered under step 4 since it only matters once
-   codegen is the consumer):
+   codegen is the consumer). **Step A (whole-function `Int64` promotion,
+   DONE 2026-07-05, see its own section above) runs first**, in the same
+   `src/solver/int64_split.rs` pass: a name is only handed to 4a's split
+   logic once promotion has already declined it.
    a. **Split-generation pass — DONE (2026-07-04)**, in
       `src/solver/int64_split.rs`, inserted in `check_file` between
       `elaborate()` and the main per-function loop. For each user
@@ -596,37 +720,186 @@ independently unit-testable before any codegen exists)
       parameter as `Kind::Int` the moment any codegen logic started caring
       about the difference. Fixed to preserve `kind.clone()`.
 
-      **Real scope, confirmed empirically, for whenever this is picked
-      back up:** call-boundary coercion (tag a raw arg for a `Kind::Int`
-      param; decode a tagged arg for a resolved `Int64` param; the
-      dispatch-merge return-Kind bug already identified) has to land
-      *together* with literal/arithmetic/comparison tagging and CLI/JIT
-      output decode — there is no smaller correct increment than "every
-      place a scalar `Kind::Int` value is produced, consumed, or crosses a
-      function boundary, all at once." Vector/struct/tuple elements of
-      `Kind::Int` can still wait for a later step. Doug chose to pause
-      here for the session rather than pick a path forward (fold call
-      boundaries into one big change vs. reconsider the representation
-      vs. stop) — revisit this decision point first next time.
-   c. replace phase 1's abort branch with the promotion branch at unbounded-
-      `Int` arithmetic nodes (bounded-`IntN` nodes keep the phase 1 abort,
-      unchanged);
-   d. comparisons (`<`, `<=`, `==`, …) and printing on tagged values route
-      through `cantor_bigint_cmp` / `cantor_bigint_to_string` when either
-      operand's tag bit indicates a boxed value — an early tag check lets
-      the common both-small case stay on the raw i64 comparison instruction.
-5. **Tests / docs**: CLI e2e covering (i) a call proved `Int64` compiles to
-   the raw overload with no promotion codegen at all (assert on emitted IR,
-   mirroring phase 1's "proved elides" test); (ii) a call that overflows i64
-   promotes and continues to a correct (if now BigInt-backed) result instead
-   of aborting; (iii) an unresolved call-site dispatches at runtime to
-   whichever overload the argument's membership test picks; (iv)
-   `require`/`assert ... not in BigInt` once `BigInt` is exposed as an
-   ordinary named set (see below). README: retire the "Known incompleteness"
-   call-out entirely — once phase 3 lands, no value can escape
-   representation, closing the gap phase 1 left open. design-decisions.md:
-   promote this section's representation choice from this doc into §7's
-   Integers subsection as DECIDED (small pointer, full detail stays here).
+      **Real scope, confirmed empirically:** call-boundary coercion (tag a
+      raw arg for a `Kind::Int` param; decode a tagged arg for a resolved
+      `Int64` param; the dispatch-merge return-Kind bug already identified)
+      has to land *together* with literal/arithmetic/comparison tagging and
+      CLI/JIT output decode — there is no smaller correct increment than
+      "every place a scalar `Kind::Int` value is produced, consumed, or
+      crosses a function boundary, all at once." Confirmed and landed this
+      way on 2026-07-05 — see the full writeup below ("Step 4b —
+      tagged-value codegen").
+   c. **DONE (2026-07-05).** Phase 1's abort branch is now the promotion
+      branch for every tagged `Kind::Int` arithmetic node — see below;
+      bounded-`Int64` nodes (Step A/step 4a raw arms) keep the phase 1
+      abort, unchanged, exactly as designed (they're proved never to need
+      it).
+   d. **DONE (2026-07-05).** Comparisons (`<`, `<=`, `==`, …) route through
+      `cantor_bigint_cmp` whenever either operand is tagged; printing
+      (`main.rs`'s scalar/tuple-leaf output, `?` narrowing's Fail-wire
+      payload) routes through `cantor_bigint_to_string` on the boxed tag
+      bit. The both-small fast-path-inside-the-runtime-function optimization
+      (skip `cantor_bigint_cmp`'s own call overhead with an early tag check
+      *in codegen* before calling it) was **not** done — deferred as a minor
+      follow-up since it doesn't affect correctness, only shaves one
+      avoidable call on an already-not-statically-elided check.
+5. **Tests / docs — DONE (2026-07-05) for the core surface**: CLI e2e
+   covering (ii) a call that overflows i64 promotes and continues to a
+   correct (if now BigInt-backed) result instead of aborting
+   (`tests/cli/overflow.rs`, rewritten from phase 1's abort-expecting
+   originals); comparisons, call boundaries, runtime dispatch mixing an
+   Int64/BigInt split, and domain-membership checks on boxed values
+   (`tests/cli/bigint.rs`, new). **Still open:** (i) a call proved `Int64`
+   compiles to the raw overload with no promotion codegen at all, asserted
+   directly on emitted IR; (iv) `require`/`assert ... not in BigInt` once
+   `BigInt` is exposed as an ordinary named set (see below) — neither is
+   blocking, both are fast-follow coverage. README: retire the "Known
+   incompleteness" call-out for *scalar* `Int`/`Nat` — closed by this step
+   — but add a narrower one for `Vector(Int)`/`Set(Int)` (see below, still
+   open). design-decisions.md: promote this section's representation choice
+   from this doc into §7's Integers subsection as DECIDED (small pointer,
+   full detail stays here) — not yet done.
+
+### Step 4b — tagged-value codegen (DONE, 2026-07-05)
+
+Landed as one cohesive change, per the "real scope" finding above and the
+decision to fold call boundaries in rather than re-attempt a smaller slice
+(confirmed with Doug via `AskUserQuestion` before starting). The scope grew
+twice more while implementing, each time surfaced by an actual failing test
+rather than assumed up front — recorded here so the next person touching
+this code understands *why* the surface is shaped the way it is, not just
+*that* it is.
+
+**The key design decision: tagging is gated on `Compiler::tagging_active()`
+(`overflow_ctx.is_some()`), not unconditional.** `compile_file`/
+`compile_items` (the REPL, the `llvm-ir` subcommand, and every direct-codegen
+unit test in `tests/codegen/*.rs`/`tests/solver/*.rs`) never run
+`int64_split`'s Step A/4a passes — nothing in that pipeline ever produces a
+`Kind::Int64` position, so there's nothing for a tagged `Kind::Int` to be
+mixed with, and no need to change that pipeline's ABI at all. Discovered the
+hard way: an early version tagged unconditionally, and the entire
+`tests/codegen` binary either corrupted values (a raw i64 count from
+`len()`/`size()`, or a raw `Set`/`Vector(Int)` element, reinterpreted as a
+tagged word) or crashed outright (`as_bigint` null/misaligned-pointer
+dereference on a bit pattern that was never actually a tagged word in the
+first place) — over a hundred existing tests assume a plain-i64 JIT ABI for
+`fn(i64) -> i64`-shaped test helpers, and rewriting all of them was both far
+outside this step's scope and unnecessary once the real fix (gate on
+`tagging_active`) was found. `ensure_tagged`/`ensure_raw_int64` (the
+encode/decode primitives) and `compile_tagged_i64_const` (literal encoding)
+are no-ops when `!tagging_active()`; `compile_membership`'s `tagged`
+parameter is ANDed with it at the function's entry so no caller has to
+remember to. This is also why the "raw path" in `compile_arith`/
+`compile_unop` reports `Kind::Int` (not `Kind::Int64`) when tagging isn't
+active — outside the verified pipeline `Kind::Int64` never appears anywhere
+at all, and a stray one would break the very `TaggedUnion`-arm matching
+(`coerce_to_kind`) that surfaced this bug.
+
+**Scope, confirmed by iterating against real failures:**
+- **Literals** (`compile_tagged_i64_const`, `codegen/coerce.rs`): a bare
+  literal's default representation comes from `Compiler::current_bare_int_kind`
+  — `Int64` only inside a Step-A-promoted/step-4a-split body (nothing else
+  to inherit from, unlike every other expression kind, which propagates an
+  upstream Kind). Small values (`runtime::TAG_SMALL_MIN..=TAG_SMALL_MAX`,
+  one bit narrower than `Int64`) fold to `n << 1` at compile time; the rare
+  literal outside that range boxes via a runtime `cantor_bigint_from_i64`
+  call — the *only* place a literal can end up boxed, confirmed the lexer
+  already rejects anything wider than `i64`.
+- **Arithmetic/comparisons/unary `-`** (`codegen/arith.rs`, extracted from
+  `expr.rs` as a same-session pure refactor once the file crossed 1000
+  lines again): routes through `cantor_bigint_{add,sub,mul,div,neg,cmp}`
+  whenever either operand is genuinely tagged; two operands that are *both*
+  raw `Int64` stay on phase 1's existing checked/proved-elide path,
+  unchanged. `ensure_tagged` reconciles a mixed pair (e.g. a Step-A-promoted
+  call's raw result combined with an ordinary tagged local) before combining.
+- **Call boundaries, both directions, found incrementally:**
+  - Call *arguments* (`compile_call`, `expr.rs`): tag/untag when the
+    argument's representation doesn't match the callee's declared param
+    Kind.
+  - Call/function *returns* — **the first thing that actually broke**,
+    exposed by `main() = combine(100)` where `combine` (ordinary, tagged)
+    calls `add8` (Step-A-promoted, raw): nothing coerced the body's computed
+    Kind against the function's own declared return Kind at the return
+    boundary itself. Fixed with a new `coerce_int_return`
+    (`codegen/coerce.rs`), wired into *all three* return sites —
+    `compile_function_body`, `compile_block_body`, **and** the early
+    `return` statement path (`compile_return_stmt`, `blocks.rs`) — the
+    third one doesn't get the Vector/TaggedUnion return coercions either
+    (a separate, pre-existing, out-of-scope gap), but keeping it consistent
+    for Int/Int64 specifically was cheap and avoided introducing a new
+    inconsistency.
+  - `if`/`else` branch merging (`kind::merge_if_branches`, `codegen/expr.rs`'s
+    `compile_if`) needed a new `IfMerge::CoerceInt64ToInt` variant for the
+    same reason — one branch calling a promoted function, the other not.
+- **Overload dispatch** (`codegen/overload_dispatch.rs`): a `Dispatch`
+  call's shared argument representation is canonicalized to tagged `Int`
+  (mapping any `Int64` position from the "representative" candidate) — this
+  is what the domain-membership pre-check and the `phi` merge both need a
+  common representation for. Each candidate's own args are decoded back to
+  its *real* declared Kind (`fn_param_kinds`) immediately before its call;
+  each candidate's result is re-encoded to tagged before the `phi`.
+- **`Vector(Int)`/`Set(Int)`/runtime-`Set` `for`-loop storage — deliberately
+  stays raw, decode-on-read/encode-on-write at the boundary.** This is an
+  explicit, documented scope line, not an oversight: making container
+  *elements* genuinely arbitrary-precision would need a canonical (i.e.
+  never-duplicated) tagged representation for `Set` dedup/equality — two
+  *different* boxed heap allocations holding the same integer are not
+  `==` as raw pointers, so `cantor_set_insert_i64`/`cantor_set_contains_i64`
+  would silently break set semantics the moment a boxed value entered a
+  set. Out of scope for this pass; `ensure_raw_int64`/`ensure_tagged` at
+  each construction/read site (`compile_tuple_as_vector`,
+  `compile_scalar_as_singleton_vector`, `compile_index`/`compile_proj`,
+  `compile_set_lit_value`, `compile_runtime_contains`, `compile_for_in`'s
+  runtime-set loop) mean a value that doesn't fit raw `Int64` aborts loudly
+  (via `ensure_raw_int64`'s existing "compiler invariant violated" message —
+  imprecise wording for this specific case, noted as a TODO) rather than
+  corrupting anything. `Tuple`/`TaggedUnion` payload leaves needed **no**
+  changes at all — they already pass an `Int` position's bits through
+  opaquely, so whatever representation it already is (tagged or raw) just
+  carries through unchanged.
+- **Domain/range membership checks** (`codegen/membership.rs`): every
+  `IntBound` arm (`NonNeg`/`Positive`/`NonZero`/`Bounded`) and the
+  named-set/set-literal equality arms now route through a new
+  `compile_int_cmp_const`, which for a tagged value compares the *small*
+  case (order-preserving under the `<< 1` shift — comparing both operands
+  shifted the same way preserves `<`/`=`/`>`, so this needs no unshifting)
+  via a `select` against the *boxed* case (`cantor_bigint_cmp`) on the tag
+  bit. Found by tracing exactly why a raw bit-pattern comparison against an
+  unshifted bound (e.g. `Int8`'s `127`) is wrong for *any* tagged value, not
+  just a boxed one — `100` (valid `Int8`) tags to `200`, and `200 <= 127` is
+  false.
+- **Builtins/constants that returned or passed through a raw value under
+  the tagged `Kind::Int` label — the second thing that actually broke**,
+  exposed by `len(foo())` crashing (a `Kind::Int64`-shaped null-pointer
+  dereference from a `len()` result that was never tagged in the first
+  place, hit only once a *caller* — `main`, promoted by Step A — tried to
+  coerce it as if it were a mismatched `Int64` value). Fixed: `len()`/
+  `size()` now tag their raw runtime-function count before returning;
+  `from(x)`/the auto-generated `distinct` constructor now preserve the
+  argument's actual Kind instead of hardcoding `Kind::Int` (a pure
+  pass-through has nothing to tag); named scalar constants
+  (`compile_elaborated`'s pass-0 constant folding, `codegen/mod.rs`) are
+  now encoded through `compile_tagged_i64_const` instead of a bare
+  `const_int`.
+- **Fallible functions are explicitly out of scope for Step A promotion**
+  (`int64_split.rs`, one added guard): a `SemFunctionDef`'s `return_kind`
+  names only the success Kind — `Fail`-ness lives entirely in the
+  `{i1, i64}` wire struct built separately at the codegen boundary — so
+  promoting one would need the success payload's raw-vs-tagged
+  representation threaded through that wire too. Not done; fast-follow.
+- **Output decode**: `main.rs`'s scalar/fallible/tuple-leaf `main` display
+  paths, and the fallible-`main` error-code path, all decode through a new
+  `format_tagged_int` when the relevant Kind is `Int`. The REPL's own
+  `evaluate_expr` print does **not** — it goes through `compile_file`, so
+  `tagging_active()` is always `false` there and the result is already
+  plain, exactly as before this step.
+
+**What's still open, deliberately deferred:** the emitted-IR assertion for
+a proved-`Int64` call eliding all promotion codegen; `require`/
+`assert ... not in BigInt` (needs `BigInt` exposed as an ordinary named
+set, `BigInt = Int - Int64`, itself deferred); the both-small early-exit
+codegen optimization for `cantor_bigint_cmp` call sites; a clearer abort
+message for the `Set`/`Vector(Int)` "doesn't fit raw i64" boundary case.
 
 `require x not in BigInt` / `assert x not in BigInt` (backlog) fall out of
 `BigInt` being an ordinary named set once the split exists — no new syntax

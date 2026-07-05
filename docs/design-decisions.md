@@ -1345,8 +1345,14 @@ Other open items (lower priority, not blocking):
   exits as SSA phi-merge paths.
 - **`raise` / `emits` syntax** — see §11.
 - Float, char/string, byte primitive values.
-- BigInt runtime support for unbounded `Int` / `Nat` — design DECIDED, not
-  yet implemented; see int-soundness-plan.md phase 3.
+- BigInt runtime support for unbounded `Int` / `Nat` — DONE 2026-07-05 for
+  scalar positions (literals, arithmetic, comparisons, call boundaries,
+  overload dispatch, domain/range membership checks, output display); see
+  int-soundness-plan.md phase 3 and its "Step 4b" writeup for the full
+  account. `Vector(Int)`/`Set(Int)` elements deliberately still stay raw
+  `Int64` only (a value that doesn't fit aborts loudly rather than
+  corrupting `Set` dedup/equality, which needs a canonical tagged
+  representation this pass didn't build) — this remains open.
 - Compiled (AOT) binaries; linker integration.
 - Module system (imports, separate checking) — see §7.
 - More containers: ordered sets, vectors, maps; iterators.
