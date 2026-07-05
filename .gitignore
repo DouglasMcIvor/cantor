@@ -19,3 +19,8 @@ target
 
 # Machine-specific docker-compose settings (see docker-compose.yml)
 .env
+
+# Claude Code local state (per-user permissions, lock files, worktrees)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
