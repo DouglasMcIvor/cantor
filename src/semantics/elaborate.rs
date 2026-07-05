@@ -185,6 +185,16 @@ fn builtin_call_kind(callee: &Symbol, args_len: usize, name_defs: &NameDefs) -> 
         return Some(Kind::Int);
     }
     // Auto-generated constructor `d(x)` for `D = distinct B`.
+    //
+    // TODO: hardcoding `Kind::Int` here is a holdover from when `distinct`
+    // could only wrap an Int-sorted basis set (a rapid-prototyping-era
+    // assumption, not a deliberate design choice). `distinct` should
+    // eventually generalise to wrap *any* basis set/Kind — at that point
+    // this needs to return the constructor's actual result Kind (derived
+    // from the basis, not unconditionally `Int`), the same way a future
+    // wrapping-fixed-width-integer constructor (`signed32(n)`, see
+    // docs/wrapping-and-quotient-sets-plan.md) must not naively copy this
+    // `Kind::Int` default either.
     let mut chars = callee.0.chars();
     let first = chars.next()?;
     let capitalized = first.to_uppercase().collect::<String>() + chars.as_str();

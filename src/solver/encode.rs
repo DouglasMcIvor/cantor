@@ -580,11 +580,17 @@ fn encode_binop<'tm>(
     // runtime-valid i64 words) pick a cheaper guard than a general overflow
     // intrinsic for `/` specifically.
     //
-    // TODO(int-soundness-plan): `Kind::IntsDivision` is SMT-LIB's Euclidean
-    // `div` (remainder always non-negative), while codegen's `sdiv` truncates
-    // toward zero (matching docs/design-decisions.md's stated `/` semantics).
-    // These disagree for negative operands — a separate, pre-existing gap
-    // flagged during phase 1 but deliberately out of scope here.
+    // TODO: `Kind::IntsDivision` is SMT-LIB's Euclidean `div` (remainder
+    // always non-negative), while codegen's `sdiv` truncates toward zero
+    // (matching docs/design-decisions.md's *current* stated `/` semantics).
+    // These disagree for negative operands. Confirmed 2026-07-05: this is a
+    // rapid-prototyping-era placeholder, not a bug to reconcile in place —
+    // `/` is intended to eventually produce `Rational` (a future numeric-
+    // tower addition, see docs/wrapping-and-quotient-sets-plan.md), at which
+    // point today's Int-truncating `/` goes away entirely and is replaced by
+    // dedicated `tdiv`/`trem` truncating-division operators (low priority,
+    // separate from the Euclidean `quot`/`rem` pair that plan introduces).
+    // Leave this mismatch as-is until then rather than patching it piecemeal.
     if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
         && let Membership::Constrained(c) = membership_constraint(
             ctx.tm,

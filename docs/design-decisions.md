@@ -1410,6 +1410,13 @@ Other open items (lower priority, not blocking):
   exits as SSA phi-merge paths.
 - **`raise` / `emits` syntax** — see §11.
 - Float, char/string, byte primitive values.
+- **`Rational`** — the intended eventual result Kind of `/` (see "Arithmetic
+  widening" above), replacing today's Int-truncating placeholder semantics.
+  Once it lands, truncating integer division/remainder move to their own
+  dedicated `tdiv`/`trem` operators — low priority, not scheduled. The
+  Euclidean `quot`/`rem` pair introduced by
+  docs/wrapping-and-quotient-sets-plan.md is unaffected either way (needed
+  now for quotient-set canonicalizers, independent of `/`'s future).
 - `Vector(Int)`/`Set(Int)` arbitrary-precision elements — the one remaining
   piece of BigInt runtime support (scalar positions are DONE, see
   "Integers" above and int-soundness-plan.md phase 3's "Step 4b"). Needs a
@@ -1546,15 +1553,21 @@ No implicit coercion between `Bool` and any integer kind exists at any layer.
 - **Cap at Int64**: `Int64 + Int64 → Int` (not `Int128`). 128-bit
   hardware support is inconsistent; `Int` (BigInt) is the correct
   mathematical fallback. Same cap applies to the other arithmetic operators.
-- `/` is integer division (truncates toward zero). Domain excludes zero in
-  the denominator — standard domain-check machinery handles this.
-  <!-- TODO(int-soundness-plan phase 1): the solver encodes `/` via CVC5's
-  `Kind::IntsDivision` (SMT-LIB `div`, Euclidean — remainder always
-  non-negative), which disagrees with the truncating-toward-zero semantics
-  stated above for negative operands. Flagged during phase 1 as a likely
-  pre-existing correctness gap, deliberately left unfixed (out of phase 1's
-  scope, which is overflow only) — see the same TODO at the `Kind::IntsDivision`
-  mapping in `src/solver/encode.rs`. -->
+- `/` is integer division (currently documented as truncating toward zero,
+  but see the note immediately below — this is slated to change).
+  Domain excludes zero in the denominator — standard domain-check machinery
+  handles this.
+  <!-- TODO: the solver encodes `/` via CVC5's `Kind::IntsDivision` (SMT-LIB
+  `div`, Euclidean — remainder always non-negative), which disagrees with
+  the truncating-toward-zero semantics stated above for negative operands.
+  Confirmed 2026-07-05 with Doug: this is a rapid-prototyping-era
+  placeholder, not a gap to patch in place — `/` is intended to eventually
+  produce `Rational` (a future numeric-tower addition), at which point
+  today's Int-truncating `/` is retired entirely in favour of dedicated
+  `tdiv`/`trem` truncating-division operators (low priority, deferred). See
+  docs/wrapping-and-quotient-sets-plan.md, which introduces a *separate*,
+  Euclidean `quot`/`rem` pair in the meantime (needed for quotient-set
+  canonicalizers) that is unaffected by whatever `/` eventually becomes. -->
 - **Checked arithmetic (DECIDED, int-soundness-plan phase 1)**: every
   `+ - * /`/unary `-` on integers carries an implicit compiler-generated
   claim that its result (computed in ℤ) lies in `Int64`, checked by the
