@@ -81,6 +81,9 @@ impl<'ctx> Compiler<'ctx> {
                     IntBound::Bounded(min, max) => {
                         self.compile_bounded_membership(val, min, max, tagged)
                     }
+                    IntBound::Outside(min, max) => {
+                        self.compile_outside_membership(val, min, max, tagged)
+                    }
                 },
                 None => {
                     // Check user-defined named sets (e.g. `HTTPError = {400, 503}`).
@@ -370,6 +373,23 @@ impl<'ctx> Compiler<'ctx> {
         let le = self.compile_int_cmp_const(val, max, IntPredicate::SLE, tagged)?;
         self.builder
             .build_and(ge, le, "bounded")
+            .map_err(|e| CompileError::ice(e.to_string()))
+    }
+
+    /// The complement of [`Self::compile_bounded_membership`]: `val < min ||
+    /// val > max` — currently only reached via `BigInt = Int - Int64`
+    /// (`Outside(i64::MIN, i64::MAX)`).
+    fn compile_outside_membership(
+        &self,
+        val: IntValue<'ctx>,
+        min: i64,
+        max: i64,
+        tagged: bool,
+    ) -> Result<IntValue<'ctx>, CompileError> {
+        let lt = self.compile_int_cmp_const(val, min, IntPredicate::SLT, tagged)?;
+        let gt = self.compile_int_cmp_const(val, max, IntPredicate::SGT, tagged)?;
+        self.builder
+            .build_or(lt, gt, "outside")
             .map_err(|e| CompileError::ice(e.to_string()))
     }
 }

@@ -77,3 +77,27 @@ fn nat_membership_on_boxed_negative_value_is_false() {
         out.stdout
     );
 }
+
+#[test]
+fn bigint_named_set_membership_true_for_boxed_value() {
+    // BigInt = Int - Int64, exposed as an ordinary named set purely for
+    // `in`/`not in` checks (assert/require).
+    let out = run_subcommand("bigint_named_set.cantor");
+    assert_eq!(out.code, 0, "expected exit 0:\n{}\n{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("main() = 1"),
+        "expected i64::MAX + 1 to be in BigInt:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn bigint_named_set_membership_false_for_small_value() {
+    let out = run_subcommand("bigint_named_set_small.cantor");
+    assert_eq!(out.code, 0, "expected exit 0:\n{}\n{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("main() = 0"),
+        "expected a small value to not be in BigInt:\n{}",
+        out.stdout
+    );
+}

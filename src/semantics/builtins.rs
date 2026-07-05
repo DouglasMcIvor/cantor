@@ -25,6 +25,11 @@ pub enum IntBound {
     NonZero,
     /// `min <= x <= max`
     Bounded(i64, i64),
+    /// `x < min || x > max` — the complement of `Bounded(min, max)`. Only
+    /// user today: `BigInt = Int - Int64` (`Outside(i64::MIN, i64::MAX)`),
+    /// exposed so `assert`/`require ... not in BigInt` work as an ordinary
+    /// named-set check — see int-soundness-plan.md phase 3.
+    Outside(i64, i64),
 }
 
 // `Kind` dropped `Copy` when `Tuple(Vec<Kind>)` was added, so `BuiltinSet` can
@@ -63,6 +68,13 @@ pub fn lookup(name: &str) -> Option<BuiltinSet> {
         "Int16" => int(IntBound::Bounded(i16::MIN as i64, i16::MAX as i64)),
         "Int32" => int(IntBound::Bounded(i32::MIN as i64, i32::MAX as i64)),
         "Int64" => int(IntBound::Bounded(i64::MIN, i64::MAX)),
+        // int-soundness-plan phase 3: `Int - Int64` — the part of `Int` a
+        // raw `i64` word can't represent, backed by a boxed `CantorBigInt`
+        // at runtime (see runtime/mod.rs). A named set purely for
+        // `in`/`not in` checks (e.g. `assert x not in BigInt`); it plays no
+        // role in the `Kind::Int64` split/promotion machinery itself, which
+        // reasons about `Int64` directly.
+        "BigInt" => int(IntBound::Outside(i64::MIN, i64::MAX)),
         _ => None,
     }
 }

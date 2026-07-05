@@ -338,6 +338,7 @@ pub(crate) fn membership_constraint<'tm>(
                             Membership::Constrained(tm.mk_term(Kind::Distinct, &[t, zero]))
                         }
                         IntBound::Bounded(min, max) => bounded(tm, t, min, max),
+                        IntBound::Outside(min, max) => outside(tm, t, min, max),
                         IntBound::Any => unreachable!(),
                     }
                 }
@@ -841,4 +842,17 @@ pub(crate) fn bounded<'tm>(
     let geq = tm.mk_term(Kind::Geq, &[t.clone(), lo]);
     let leq = tm.mk_term(Kind::Leq, &[t, hi]);
     Membership::Constrained(tm.mk_term(Kind::And, &[geq, leq]))
+}
+
+/// The complement of [`bounded`]: `t < min || t > max` — currently only
+/// reached via `BigInt = Int - Int64` (`Outside(i64::MIN, i64::MAX)`).
+fn outside<'tm>(tm: &'tm TermManager, t: Term<'tm>, min: i64, max: i64) -> Membership<'tm> {
+    let Some(t) = to_integer_term(t) else {
+        return Membership::Constrained(tm.mk_boolean(false));
+    };
+    let lo = tm.mk_integer(min);
+    let hi = tm.mk_integer(max);
+    let lt = tm.mk_term(Kind::Lt, &[t.clone(), lo]);
+    let gt = tm.mk_term(Kind::Gt, &[t, hi]);
+    Membership::Constrained(tm.mk_term(Kind::Or, &[lt, gt]))
 }

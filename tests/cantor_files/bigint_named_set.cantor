@@ -1,0 +1,8 @@
+-- int-soundness-plan phase 3: BigInt = Int - Int64 exposed as an ordinary
+-- named set, purely for `in`/`not in` checks.
+
+classify : Int -> Int
+classify(x) = if x in BigInt then 1 else 0
+
+main : -> Int
+main() = classify(9223372036854775807 + 1)

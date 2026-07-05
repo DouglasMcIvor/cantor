@@ -1,0 +1,8 @@
+-- Companion to bigint_named_set.cantor: a value that fits in Int64 must
+-- not be in BigInt.
+
+classify : Int -> Int
+classify(x) = if x in BigInt then 1 else 0
+
+main : -> Int
+main() = classify(5)

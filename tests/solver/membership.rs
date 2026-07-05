@@ -417,3 +417,73 @@ bad_strip(x) = 0
 ",
     );
 }
+
+// ── BigInt (int-soundness-plan phase 3: `Int - Int64`, an ordinary named set
+// exposed purely for `in`/`not in` checks) ─────────────────────────────────────
+
+// No `| Fail` on any of these: an unprovable `assert` would otherwise
+// gracefully become a runtime check (the "unknown -> runtime check" rung of
+// the assert gradient) and the function would still report `Proved` overall
+// — that would defeat the point of these tests, which is to check the
+// membership *claim itself*, not just that a Fail escape hatch exists.
+
+#[test]
+fn int64_domain_never_in_bigint_proved() {
+    // A value already restricted to Int64 is trivially never in its own
+    // complement.
+    proved(
+        "
+f : Int64 -> Int
+f(x) {
+    assert x not in BigInt
+    x
+}
+",
+    );
+}
+
+#[test]
+fn unbounded_int_domain_can_be_in_bigint_counterexample() {
+    // Without an Int64 restriction, a witness like i64::MAX + 1 exists in
+    // BigInt — the solver reasons over unbounded ℤ, so this is decidable,
+    // not just unknown. Domain is `Nat`, not bare `Int`: a bare-`Int`-domain
+    // single-param function is exactly step 4a's split-eligibility shape
+    // (see int64_split.rs), and `counterexample()` only inspects the first
+    // of the resulting entries — `Nat` is just as unbounded above but isn't
+    // the literal name `try_split` matches, so `f` stays a single function.
+    counterexample(
+        "
+f : Nat -> Int
+f(x) {
+    assert x not in BigInt
+    x
+}
+",
+    );
+}
+
+#[test]
+fn int64_and_bigint_are_disjoint_proved() {
+    proved(
+        "
+f : Int -> Int
+f(x) {
+    assert not (x in Int64 and x in BigInt)
+    x
+}
+",
+    );
+}
+
+#[test]
+fn int64_or_bigint_covers_all_of_int_proved() {
+    proved(
+        "
+f : Int -> Int
+f(x) {
+    assert x in Int64 | BigInt
+    x
+}
+",
+    );
+}
