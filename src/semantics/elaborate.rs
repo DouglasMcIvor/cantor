@@ -71,6 +71,8 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
         })
         .collect();
 
+    super::wellfounded::check_well_founded(items, &name_defs)?;
+
     // First pass: every function's return Kind, derived from its first
     // signature — mirrors `codegen::Compiler`'s existing rule that
     // overloaded signatures must agree on the Kind of each position.

@@ -1,0 +1,4 @@
+Tree = Tree * Tree
+
+f : Int -> Int
+f(x) = x

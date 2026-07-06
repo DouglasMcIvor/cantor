@@ -1,0 +1,7 @@
+-- The reference to `Weird` is nested under `&`, not a bare union arm or
+-- Cartesian-product factor — tier 1's shape classifier doesn't recognize
+-- this, so it must be rejected as unsupported rather than guessed at.
+Weird = Int | (Weird & Int)
+
+f : Int -> Int
+f(x) = x

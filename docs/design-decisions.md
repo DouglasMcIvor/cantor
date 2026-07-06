@@ -83,7 +83,9 @@ implementation detail the developer should not rely on.
 
 ## 3. Recursion
 
-### Recursive sets
+### Recursive sets (well-foundedness check IMPLEMENTED 2026-07-06,
+    src/semantics/wellfounded.rs; Kind/solver/codegen support NOT yet —
+    see docs/recursive-sets-plan.md)
 - Require a well-foundedness proof (the recursion is constitutive of the
   set's denotation — an ill-founded definition doesn't denote a set at all).
 - Three-tier staged approach:
@@ -91,6 +93,22 @@ implementation detail the developer should not rely on.
      constructor, e.g. `BinStr = {ε} ∪ {0++s | s ∈ BinStr} ∪ {1++s | s ∈ BinStr}`)
      — automatically recognised, zero solver cost, compiler confirms this
      explicitly to the developer.
+     **Implementation note, corrected from the first draft of
+     docs/recursive-sets-plan.md**: "strictly under a constructor" does
+     *not* mean "a literal operand of `*`". Cantor's cross-kind unions
+     already give every `|`-arm its own CVC5 constructor regardless of
+     shape (`build_union_datatype_sort`, src/solver/sort.rs), so a bare
+     self-reference arm (`Peano = Zero | Peano`) is exactly as well-founded
+     as a product-guarded one (`Tree = Int | Tree * Tree`) — both get
+     their own tag. The actual, sufficient rule is backlog.md's "generating
+     sets" fixpoint: a name is well-founded once at least one of its `|`-arms
+     is built entirely from non-recursive bases and/or other
+     already-generating names in the same cycle. `src/semantics/wellfounded.rs`
+     implements exactly this (with a permissive-but-safe fallback: a
+     recursive reference that shows up somewhere *other* than a bare union
+     arm or Cartesian-product factor — e.g. nested under `&`/`-`/a
+     comprehension — is reported as unsupported rather than silently
+     guessed at either way).
   2. **`decreasing by <measure>`** — explicit annotation escape hatch for
      non-structural cases. DEFERRED past v0 (ship as "not implemented yet"
      error initially).

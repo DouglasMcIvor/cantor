@@ -1,0 +1,9 @@
+-- design-decisions.md §3's own example shape: recursive occurrence guarded
+-- by a Cartesian product. Well-founded (the well-foundedness check accepts
+-- it), but recursive-set codegen/solver support isn't implemented yet
+-- (docs/recursive-sets-plan.md phases 1-3) — must fail loudly as
+-- "not yet supported", not silently compile something wrong.
+Tree = Int | Tree * Tree
+
+f : Int -> Int
+f(x) = x

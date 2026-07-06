@@ -337,6 +337,30 @@ pub fn flatten_disjoint_union(expr: &Expr) -> Vec<&Expr> {
     }
 }
 
+/// Flatten a left-associated `|` union `((A | B) | C)` into `[A, B, C]`.
+///
+/// Sibling of `flatten_domain`/`flatten_disjoint_union` for the third
+/// set-forming binary operator (`BinOp::Union`, the `|` token — distinct
+/// from `BinOp::Add`'s *disjoint* union, which requires the arms be
+/// provably non-overlapping). Used by `semantics::wellfounded` to find a
+/// named set definition's top-level union arms without needing elaboration
+/// to have run first (recursive definitions can't be elaborated yet — that's
+/// exactly the case this flattening exists to detect ahead of time).
+pub fn flatten_union(expr: &Expr) -> Vec<&Expr> {
+    match &expr.kind {
+        ExprKind::BinOp {
+            op: BinOp::Union,
+            lhs,
+            rhs,
+        } => {
+            let mut arms = flatten_union(lhs);
+            arms.extend(flatten_union(rhs));
+            arms
+        }
+        _ => vec![expr],
+    }
+}
+
 /// Map each function parameter to its set expression, implementing the
 /// arity disambiguation rule:
 ///

@@ -75,6 +75,16 @@ pub enum CompileError {
         detail: String,
         span: Span,
     },
+    /// A recursive named-set definition (design-decisions.md §3, "Recursive
+    /// sets") has no way to bottom out — every union arm that could make it
+    /// inhabited itself depends, directly or transitively, on the set being
+    /// defined. Tier-1 structural recursion permanently rejects this shape
+    /// (there is no runtime escape hatch, same as quotient-set idempotence);
+    /// it is not a "not yet implemented" gap.
+    IllFoundedRecursiveSet {
+        name: String,
+        span: Span,
+    },
     // Future: DomainViolation, RangeViolation (driven by cvc5 unsat core)
     /// A compiler invariant was violated — a bug in Cantor's compiler
     /// itself, not something the developer can fix by editing their
@@ -105,6 +115,13 @@ impl std::fmt::Display for CompileError {
             Self::Unsupported { feature, .. } => write!(f, "not yet supported: {feature}"),
             Self::InvalidSetExpression { detail, .. } => {
                 write!(f, "invalid set expression: {detail}")
+            }
+            Self::IllFoundedRecursiveSet { name, .. } => {
+                write!(
+                    f,
+                    "cannot verify well-foundedness of recursive set `{name}` — \
+                     every union arm depends on `{name}` itself with no base case"
+                )
             }
             Self::Ice {
                 detail,
@@ -156,6 +173,7 @@ impl CompileError {
             Self::OverloadKindMismatch { span, .. } => Some(*span),
             Self::Unsupported { span, .. } => Some(*span),
             Self::InvalidSetExpression { span, .. } => Some(*span),
+            Self::IllFoundedRecursiveSet { span, .. } => Some(*span),
             Self::Ice { .. } => None,
         }
     }

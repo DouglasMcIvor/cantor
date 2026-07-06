@@ -16,6 +16,8 @@ mod overflow;
 mod overloads;
 #[path = "cli/quotient_sets.rs"]
 mod quotient_sets;
+#[path = "cli/recursive_sets.rs"]
+mod recursive_sets;
 #[path = "cli/rem_quot.rs"]
 mod rem_quot;
 #[path = "cli/repl.rs"]
