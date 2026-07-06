@@ -16,8 +16,8 @@ use crate::semantics::tree::{SemExpr, SemFunctionDef, sem_param_set_exprs};
 
 use super::membership::{Membership, QuotientPreds, SolverPreds, membership_constraint};
 use super::{
-    CheckResult, FunctionEnv, NameDefs, boolean_value, build_distinct_preds, configured_solver,
-    integer_value,
+    CheckResult, FunctionEnv, NameDefs, boolean_value, build_distinct_preds, build_wrapping_preds,
+    configured_solver, integer_value,
 };
 
 /// Verify that every `+` (disjoint union) in `set_expr` has genuinely disjoint operands.
@@ -55,6 +55,7 @@ pub(super) fn validate_disjoint_unions(
             // to `Unsupported`/`Unknown` rather than being threaded through.
             let distinct_preds = SolverPreds {
                 distinct: build_distinct_preds(&tm, name_defs),
+                wrapping: build_wrapping_preds(&tm),
                 quotient: QuotientPreds::new(),
             };
             let t = tm.mk_const(tm.integer_sort(), "__disjoint_check");
@@ -223,6 +224,7 @@ fn check_pair_disjoint(
     // `Unsupported`/`Unknown` rather than being threaded through.
     let distinct_preds = SolverPreds {
         distinct: build_distinct_preds(&tm, name_defs),
+        wrapping: build_wrapping_preds(&tm),
         quotient: QuotientPreds::new(),
     };
 

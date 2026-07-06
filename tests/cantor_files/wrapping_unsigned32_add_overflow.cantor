@@ -1,0 +1,3 @@
+-- Unsigned32 wraps at u32::MAX + 1 back to 0.
+main : -> Unsigned32
+main() = unsigned32(4294967295) + unsigned32(1)

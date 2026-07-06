@@ -43,6 +43,19 @@ pub enum Kind {
     /// i1 — the `fail` singleton; always has value 1 when constructed.
     /// Used as the flag field in `{i1, i64}` fallible-function return structs.
     Fail,
+    /// i32, two's-complement wrapping, signed reading. A fresh CVC5
+    /// uninterpreted sort backed by native `(_ BitVec 32)` — mutually opaque
+    /// to `Int`, `Unsigned32`, and every other Kind, the same way `distinct`
+    /// sets and `Fail` are opaque (see docs/wrapping-and-quotient-sets-
+    /// plan.md, Feature 1). Never tagged/boxed at the LLVM level, unlike
+    /// `Kind::Int` — arithmetic wraps by construction (`bvadd`/`bvsub`/
+    /// `bvmul`/`bvneg`), so there is nothing to prove and nothing that can
+    /// overflow.
+    Signed32,
+    /// i32, two's-complement wrapping, unsigned reading. Disjoint from
+    /// `Signed32` even though both share the same bit-pattern space — see
+    /// `Kind::Signed32`'s doc comment.
+    Unsigned32,
     /// i64 (pointer-as-i64) — heap-allocated sorted array of the boxed
     /// element Kind. Only single-i64-word Kinds (`Int`, `Int64`, `Bool`,
     /// `Fail`) can appear here today — `set_kind`'s `Set(X)` arm is the

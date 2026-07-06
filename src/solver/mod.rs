@@ -63,7 +63,7 @@ use self::encode::{
 };
 use self::membership::{
     CompCtx, DistinctInfo, DistinctPreds, Membership, QuotientInfo, QuotientPreds, SolverPreds,
-    encode_comp_expr, membership_constraint,
+    WrappingInfo, WrappingPreds, encode_comp_expr, membership_constraint,
 };
 use self::obligations::{
     BuiltinObligation, OverflowObligation, decide_overflow_obligations, decide_overload_resolutions,
@@ -155,6 +155,69 @@ fn build_distinct_preds<'tm>(tm: &'tm TermManager, name_defs: &NameDefs) -> Dist
         .collect()
 }
 
+/// Build the wrapping fixed-width integer registry (`Signed32`/`Unsigned32`,
+/// docs/wrapping-and-quotient-sets-plan.md Feature 1): for each, a fresh
+/// uninterpreted sort plus constructor/destructor uninterpreted functions
+/// connecting straight to a native `(_ BitVec 32)` term — never `Int` — so
+/// `+ - * neg` and comparisons between two same-family operands stay
+/// entirely in bit-vector land (see `WrappingInfo`'s doc comment for why).
+///
+/// Unconditional and name-fixed (both builtins always exist, unlike
+/// `distinct` sets which are only registered when the user actually declares
+/// one) — no `name_defs` dependency, unlike `build_distinct_preds`.
+fn build_wrapping_preds(tm: &TermManager) -> WrappingPreds<'_> {
+    [("Signed32", true), ("Unsigned32", false)]
+        .into_iter()
+        .map(|(name, signed)| {
+            let width = 32;
+            let bv_sort = tm.mk_bv_sort(width);
+            let d_sort = tm.mk_uninterpreted_sort(name);
+            let mk = tm.mk_const(
+                tm.mk_fun_sort(std::slice::from_ref(&bv_sort), d_sort.clone()),
+                &format!("mk_{name}"),
+            );
+            let from = tm.mk_const(
+                tm.mk_fun_sort(std::slice::from_ref(&d_sort), bv_sort),
+                &format!("from_{name}"),
+            );
+            (
+                Symbol::new(name),
+                WrappingInfo {
+                    width,
+                    signed,
+                    d_sort,
+                    mk,
+                    from,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Build the full `SolverPreds` bundle for one solver instance: distinct
+/// sets, wrapping fixed-width integer sorts, and quotient sets, in that
+/// dependency order — `build_quotient_preds` calls `set_sort`, which needs
+/// the other two registries already built, but doesn't need its *own*
+/// (still-being-built) output, so it's safe to hand it a `SolverPreds` with
+/// an empty `quotient` map and fill that field in afterwards via struct-
+/// update syntax (no cloning of `distinct`/`wrapping` needed).
+fn build_solver_preds<'tm>(
+    tm: &'tm TermManager,
+    name_defs: &NameDefs,
+    fn_env: &FunctionEnv<'_>,
+) -> SolverPreds<'tm> {
+    let sort_lookup = SolverPreds {
+        distinct: build_distinct_preds(tm, name_defs),
+        wrapping: build_wrapping_preds(tm),
+        quotient: QuotientPreds::new(),
+    };
+    let quotient = build_quotient_preds(tm, name_defs, fn_env, &sort_lookup);
+    SolverPreds {
+        quotient,
+        ..sort_lookup
+    }
+}
+
 /// Resolve a quotient set's canonicalizer `Symbol` against `fn_env`: it must
 /// be exactly one (non-overloaded) function, taking exactly one parameter,
 /// with a single-expression body — a block body would need real statement
@@ -211,7 +274,7 @@ fn build_quotient_preds<'tm>(
     tm: &'tm TermManager,
     name_defs: &NameDefs,
     fn_env: &FunctionEnv<'_>,
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
 ) -> QuotientPreds<'tm> {
     let mut out = QuotientPreds::new();
     for def in name_defs.values() {
@@ -331,6 +394,7 @@ fn check_quotient_def(
         // referencing another quotient set's membership is out of scope
         // for this slice (see `build_quotient_preds`'s doc comment).
         distinct: build_distinct_preds(&tm, name_defs),
+        wrapping: build_wrapping_preds(&tm),
         quotient: QuotientPreds::new(),
     };
     let Some(sort) = set_sort(&tm, lhs, &distinct_preds, name_defs) else {
@@ -657,12 +721,7 @@ fn check_name_def(
         solver.set_option("tlimit", &timeout_ms.to_string());
     }
 
-    let distinct_preds = build_distinct_preds(&tm, name_defs);
-    let quotient_preds = build_quotient_preds(&tm, name_defs, fn_env, &distinct_preds);
-    let distinct_preds = SolverPreds {
-        distinct: distinct_preds,
-        quotient: quotient_preds,
-    };
+    let distinct_preds = build_solver_preds(&tm, name_defs, fn_env);
     let env = Env::new();
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();
@@ -851,7 +910,7 @@ fn decode_cex_params<'tm>(
     param_names: &[Symbol],
     param_terms: &[Term<'tm>],
     domain_parts: &[&SemExpr],
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
 ) -> HashMap<String, i64> {
     let mut cex_params = HashMap::new();
     for ((name, term), part) in param_names
@@ -869,6 +928,23 @@ fn decode_cex_params<'tm>(
         ) {
             // TODO: render tuple/datatype-arm/vector model values in counterexample display
             0
+        } else if let Some(info) = distinct_preds
+            .wrapping
+            .values()
+            .find(|i| i.d_sort == term.sort())
+        {
+            // Parameter has a wrapping (Signed32/Unsigned32) sort — apply
+            // `from_D` to recover the BitVec, then the signed/unsigned
+            // BitVec→Int reading to get the same decimal value `from(x)`
+            // would print.
+            let bv_app = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), term.clone()]);
+            let to_int_kind = if info.signed {
+                Kind::BitvectorSbvToInt
+            } else {
+                Kind::BitvectorUbvToInt
+            };
+            let int_app = tm.mk_term(to_int_kind, &[bv_app]);
+            integer_value(&solver.get_value(int_app))
         } else if let Some(info) = distinct_preds.values().find(|i| i.sort == term.sort()) {
             // Parameter has a distinct (uninterpreted) sort — apply `from_D` to
             // recover the underlying integer for the counterexample display.
@@ -1022,12 +1098,7 @@ fn check_block_sig(
 
     let tm = TermManager::new();
     let mut solver = configured_solver(&tm, timeout_ms);
-    let distinct_preds = build_distinct_preds(&tm, name_defs);
-    let quotient_preds = build_quotient_preds(&tm, name_defs, fn_env, &distinct_preds);
-    let distinct_preds = SolverPreds {
-        distinct: distinct_preds,
-        quotient: quotient_preds,
-    };
+    let distinct_preds = build_solver_preds(&tm, name_defs, fn_env);
 
     let (domain_parts, param_terms) = match build_param_terms(
         &tm,
@@ -1170,12 +1241,7 @@ fn check_sig(
 
     let tm = TermManager::new();
     let mut solver = configured_solver(&tm, timeout_ms);
-    let distinct_preds = build_distinct_preds(&tm, name_defs);
-    let quotient_preds = build_quotient_preds(&tm, name_defs, fn_env, &distinct_preds);
-    let distinct_preds = SolverPreds {
-        distinct: distinct_preds,
-        quotient: quotient_preds,
-    };
+    let distinct_preds = build_solver_preds(&tm, name_defs, fn_env);
 
     let (domain_parts, param_terms) = match build_param_terms(
         &tm,

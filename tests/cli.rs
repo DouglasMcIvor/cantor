@@ -32,3 +32,5 @@ mod tuples_and_destructuring;
 mod vectors;
 #[path = "cli/vectors_nested.rs"]
 mod vectors_nested;
+#[path = "cli/wrapping.rs"]
+mod wrapping;

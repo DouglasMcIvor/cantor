@@ -1,0 +1,5 @@
+-- Same underlying bit pattern (all ones), read two different ways:
+-- Signed32's all-ones is -1 (negative), Unsigned32's all-ones is u32::MAX
+-- (the largest value) — a good gotcha for the docs appendix.
+main : -> Bool
+main() = signed32(-1) < signed32(0) and unsigned32(4294967295) > unsigned32(0)

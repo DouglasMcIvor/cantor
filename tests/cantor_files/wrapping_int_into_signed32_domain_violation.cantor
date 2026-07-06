@@ -1,0 +1,11 @@
+-- Signed32 is fully disjoint from Int (docs/wrapping-and-quotient-sets-
+-- plan.md, fork 1) — a raw Int literal is never a member, exactly like
+-- passing a plain Int where a `distinct` value is expected.
+identity32 : Signed32 -> Signed32
+identity32(x) = x
+
+bad : -> Signed32
+bad() = identity32(5)
+
+main : -> Signed32
+main() = signed32(5)

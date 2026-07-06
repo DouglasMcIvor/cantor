@@ -191,6 +191,27 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(err)?;
                 *leaf_idx += 1;
             }
+            Kind::Signed32 | Kind::Unsigned32 => {
+                let wide = if *kind == Kind::Signed32 {
+                    builder.build_int_s_extend(val.into_int_value(), i64t, "w32")
+                } else {
+                    builder.build_int_z_extend(val.into_int_value(), i64t, "w32")
+                }
+                .map_err(err)?;
+                let ptr = if *leaf_idx == 0 {
+                    out_ptr
+                } else {
+                    let idx = i64t.const_int(*leaf_idx as u64, false);
+                    // Safety: same as above.
+                    unsafe {
+                        builder
+                            .build_gep(i64t, out_ptr, &[idx], "gp")
+                            .map_err(err)?
+                    }
+                };
+                builder.build_store(ptr, wide).map_err(err)?;
+                *leaf_idx += 1;
+            }
             Kind::Tuple(elem_kinds) => {
                 let sv = AggregateValueEnum::StructValue(val.into_struct_value());
                 for (i, ek) in elem_kinds.iter().enumerate() {

@@ -184,23 +184,31 @@ fn builtin_call_kind(callee: &Symbol, args_len: usize, name_defs: &NameDefs) -> 
     if callee.0 == "from" || callee.0 == "size" || callee.0 == "len" {
         return Some(Kind::Int);
     }
-    // Auto-generated constructor `d(x)` for `D = distinct B`.
-    //
-    // TODO: hardcoding `Kind::Int` here is a holdover from when `distinct`
-    // could only wrap an Int-sorted basis set (a rapid-prototyping-era
-    // assumption, not a deliberate design choice). `distinct` should
-    // eventually generalise to wrap *any* basis set/Kind — at that point
-    // this needs to return the constructor's actual result Kind (derived
-    // from the basis, not unconditionally `Int`), the same way a future
-    // wrapping-fixed-width-integer constructor (`signed32(n)`, see
-    // docs/wrapping-and-quotient-sets-plan.md) must not naively copy this
-    // `Kind::Int` default either.
     let mut chars = callee.0.chars();
     let first = chars.next()?;
     let capitalized = first.to_uppercase().collect::<String>() + chars.as_str();
-    match name_defs.get(&Symbol(capitalized)) {
-        Some(def) if def.kind == DefKind::Distinct => Some(Kind::Int),
-        _ => None,
+    // Auto-generated constructor for a wrapping fixed-width integer builtin
+    // (`signed32(n)`/`unsigned32(n)`, docs/wrapping-and-quotient-sets-
+    // plan.md): unlike `distinct`, a wrapping sort genuinely gets its own
+    // runtime Kind (different LLVM width/ABI extension), so this must be
+    // checked *before* falling through to the `distinct`-only default below.
+    match crate::semantics::builtins::lookup(&capitalized) {
+        Some(b) if b.kind == Kind::Signed32 || b.kind == Kind::Unsigned32 => Some(b.kind),
+        _ => {
+            // Auto-generated constructor `d(x)` for `D = distinct B`.
+            //
+            // TODO: hardcoding `Kind::Int` here is a holdover from when
+            // `distinct` could only wrap an Int-sorted basis set (a rapid-
+            // prototyping-era assumption, not a deliberate design choice).
+            // `distinct` should eventually generalise to wrap *any* basis
+            // set/Kind — at that point this needs to return the
+            // constructor's actual result Kind (derived from the basis, not
+            // unconditionally `Int`).
+            match name_defs.get(&Symbol(capitalized)) {
+                Some(def) if def.kind == DefKind::Distinct => Some(Kind::Int),
+                _ => None,
+            }
+        }
     }
 }
 

@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::NameDefs;
-use super::membership::DistinctPreds;
+use super::membership::{DistinctPreds, SolverPreds};
 
 // ── Cross-kind union datatype naming ─────────────────────────────────────────
 
@@ -35,6 +35,11 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
         ValKind::Int | ValKind::Int64 => "ck_Int".to_string(),
         ValKind::Bool => "ck_Bool".to_string(),
         ValKind::Fail => "ck_Fail".to_string(),
+        // Each already has its own unique Kind (unlike `distinct`, which
+        // always reports `ValKind::Int` and needs `arm_ctor_name_for_arm`'s
+        // symbol-based disambiguation instead) — no name collision risk.
+        ValKind::Signed32 => "ck_Signed32".to_string(),
+        ValKind::Unsigned32 => "ck_Unsigned32".to_string(),
         ValKind::Set(_) => "ck_Set".to_string(),
         ValKind::Tuple(inner) => {
             let s = inner
@@ -100,7 +105,7 @@ pub(crate) fn arm_ctor_name_for_arm<'tm>(
 fn build_union_datatype_sort<'tm>(
     tm: &'tm TermManager,
     arms: &[&SemExpr],
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
     name_defs: &NameDefs,
 ) -> Sort<'tm> {
     let arm_infos: Vec<(String, Sort<'_>)> = arms
@@ -217,12 +222,26 @@ pub(crate) fn maybe_coerce<'tm>(
 pub(crate) fn set_sort<'tm>(
     tm: &'tm TermManager,
     set_expr: &SemExpr,
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
     name_defs: &NameDefs,
 ) -> Option<Sort<'tm>> {
     Some(match &set_expr.kind {
         // Bool has its own CVC5 boolean sort.
         SemExprKind::Var(_) if set_expr.kind_of == ValKind::Bool => tm.boolean_sort(),
+        // Signed32/Unsigned32 (docs/wrapping-and-quotient-sets-plan.md) each
+        // have their own CVC5 uninterpreted sort, exactly like a distinct
+        // set — but registered in `wrapping`, not `distinct` (they're
+        // language builtins with no `NameDef`, resolved by `kind_of` alone).
+        SemExprKind::Var(sym)
+            if matches!(set_expr.kind_of, ValKind::Signed32 | ValKind::Unsigned32) =>
+        {
+            distinct_preds
+                .wrapping
+                .get(sym)
+                .expect("Signed32/Unsigned32 must be registered as builtin wrapping sorts")
+                .d_sort
+                .clone()
+        }
         // Distinct sets each have their own CVC5 uninterpreted sort.
         SemExprKind::Var(sym) => {
             if let Some(info) = distinct_preds.get(sym) {
@@ -319,7 +338,14 @@ pub(crate) fn set_sort<'tm>(
         | SemExprKind::DisjointUnion(lhs, rhs) => {
             let ls = set_sort(tm, lhs, distinct_preds, name_defs)?;
             let rs = set_sort(tm, rhs, distinct_preds, name_defs)?;
-            let is_distinct_sort = |s: &Sort<'_>| distinct_preds.values().any(|i| &i.sort == s);
+            // "Opaque" = distinct-set sort or wrapping-sort (Signed32/
+            // Unsigned32) — both are mutually-disjoint uninterpreted sorts
+            // that always need a real tagged wrapper when unioned with
+            // anything else, the same reasoning for both.
+            let is_distinct_sort = |s: &Sort<'_>| {
+                distinct_preds.values().any(|i| &i.sort == s)
+                    || distinct_preds.wrapping.values().any(|i| &i.d_sort == s)
+            };
             // Sequence arms with the same sort are "same-kind" (e.g. Nat* | Int* both
             // give Seq<Int>); sequences with different element sorts, or one sequence and
             // one non-sequence, are cross-kind and need a DT.
@@ -448,7 +474,7 @@ pub(crate) fn extract_success_value<'tm>(
     tm: &'tm TermManager,
     result_var: Term<'tm>,
     success: &SemExpr,
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
     name_defs: &NameDefs,
 ) -> Option<Term<'tm>> {
     // Not cross-kind at all: nothing to extract, result_var already IS the

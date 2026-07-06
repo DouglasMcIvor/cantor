@@ -46,7 +46,10 @@ pub(super) fn elaborate_binop(
                 elaborate_expr(rhs, pos, ctx, env)?,
             );
             let (node, kind_of) = match pos {
-                Position::Value => (SemExprKind::Add(Box::new(l), Box::new(r)), Kind::Int),
+                Position::Value => {
+                    let kind_of = arith_value_kind(&l.kind_of, &r.kind_of);
+                    (SemExprKind::Add(Box::new(l), Box::new(r)), kind_of)
+                }
                 Position::Set => (
                     SemExprKind::DisjointUnion(Box::new(l), Box::new(r)),
                     kind_of_for_set()?,
@@ -64,7 +67,10 @@ pub(super) fn elaborate_binop(
                 elaborate_expr(rhs, pos, ctx, env)?,
             );
             let (node, kind_of) = match pos {
-                Position::Value => (SemExprKind::Sub(Box::new(l), Box::new(r)), Kind::Int),
+                Position::Value => {
+                    let kind_of = arith_value_kind(&l.kind_of, &r.kind_of);
+                    (SemExprKind::Sub(Box::new(l), Box::new(r)), kind_of)
+                }
                 Position::Set => (
                     SemExprKind::SetDifference(Box::new(l), Box::new(r)),
                     kind_of_for_set()?,
@@ -82,7 +88,10 @@ pub(super) fn elaborate_binop(
                 elaborate_expr(rhs, pos, ctx, env)?,
             );
             let (node, kind_of) = match pos {
-                Position::Value => (SemExprKind::Mul(Box::new(l), Box::new(r)), Kind::Int),
+                Position::Value => {
+                    let kind_of = arith_value_kind(&l.kind_of, &r.kind_of);
+                    (SemExprKind::Mul(Box::new(l), Box::new(r)), kind_of)
+                }
                 Position::Set => (
                     SemExprKind::CartesianProduct(Box::new(l), Box::new(r)),
                     kind_of_for_set()?,
@@ -257,7 +266,7 @@ pub(super) fn elaborate_binop(
                         )));
                     }
                     BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
-                        if l.kind_of != Kind::Int || r.kind_of != Kind::Int =>
+                        if !is_ordered_pair(&l.kind_of, &r.kind_of) =>
                     {
                         let chained_hint = if l.kind_of == Kind::Bool {
                             " (a chain like `a < b < c` parses as `(a < b) < c`; \
@@ -266,8 +275,10 @@ pub(super) fn elaborate_binop(
                             ""
                         };
                         return Err(CompileError::ice(format!(
-                            "`{op}` compares integers, got {:?} and {:?} — Bool is \
-                             not ordered{chained_hint}",
+                            "`{op}` compares Int, Signed32, or Unsigned32 (both operands \
+                             the same one of those), got {:?} and {:?} — Bool is not \
+                             ordered, and Signed32/Unsigned32 are disjoint from Int and \
+                             from each other{chained_hint}",
                             l.kind_of, r.kind_of
                         )));
                     }
@@ -285,4 +296,30 @@ pub(super) fn elaborate_binop(
             })
         }
     }
+}
+
+/// Value-position `+ - *`'s result Kind: `Int` for every combination except
+/// two matching wrapping operands, which stay in their own family (no
+/// arithmetic Kind ever silently becomes `Int` — that would tell codegen to
+/// treat an i32 register as the tagged i64 `Int` wire type). A genuine
+/// mismatch (e.g. `Signed32 + Int`) falls through to plain `Kind::Int` here,
+/// same as it always has for any other Kind combination — it's still
+/// rejected, just later, by the solver's existing sort-mismatch guard
+/// (`Membership::Constrained(false)`), exactly like today's `distinct`
+/// values in raw arithmetic (docs/wrapping-and-quotient-sets-plan.md).
+fn arith_value_kind(l: &Kind, r: &Kind) -> Kind {
+    if l == r && matches!(l, Kind::Signed32 | Kind::Unsigned32) {
+        l.clone()
+    } else {
+        Kind::Int
+    }
+}
+
+/// Whether `<`/`<=`/`>`/`>=` accepts this operand pair: both sides the same
+/// ordered-scalar Kind. `Signed32`/`Unsigned32` are ordered (comparisons pick
+/// `bvslt`/`bvult` per family at the solver layer) but mutually disjoint —
+/// `Signed32 < Unsigned32` is rejected here just like `Bool < Int` always
+/// was, not silently accepted by falling back to `Int`'s comparison.
+fn is_ordered_pair(l: &Kind, r: &Kind) -> bool {
+    l == r && matches!(l, Kind::Int | Kind::Signed32 | Kind::Unsigned32)
 }

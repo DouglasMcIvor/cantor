@@ -45,6 +45,31 @@ impl<'ctx> Compiler<'ctx> {
         let li = self.scalarize_to_int(lv, &lk)?;
         let ri = self.scalarize_to_int(rv, &rk)?;
 
+        // Signed32/Unsigned32 (docs/wrapping-and-quotient-sets-plan.md):
+        // plain i32 `add`/`sub`/`mul` with no `nsw`/`nuw` flags is already
+        // exactly two's-complement wraparound — nothing to prove, nothing
+        // to tag, nothing that can overflow. `/` on a wrapping sort is a
+        // clean compile-time error at the solver layer (division isn't a
+        // ring homomorphism mod 2^32, deliberately deferred), so a
+        // same-family Div should never actually reach codegen — this ICE is
+        // a defensive "the solver should have already rejected this", not a
+        // live path.
+        if matches!(lk, Kind::Signed32 | Kind::Unsigned32) {
+            let v = match op {
+                BinOp::Add => self.builder.build_int_add(li, ri, "wadd"),
+                BinOp::Sub => self.builder.build_int_sub(li, ri, "wsub"),
+                BinOp::Mul => self.builder.build_int_mul(li, ri, "wmul"),
+                _ => {
+                    return Err(CompileError::ice(format!(
+                        "`{op}` on a wrapping fixed-width integer reached codegen — the \
+                         solver should have already rejected this at compile time"
+                    )));
+                }
+            }
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+            return Ok((v.into(), lk));
+        }
+
         // int-soundness-plan phase 3 step 4b: only a node whose *actual*
         // operand values are both raw `Int64` stays on the fast/checked raw
         // path below — anything touching a tagged `Kind::Int` operand (the
@@ -385,6 +410,18 @@ impl<'ctx> Compiler<'ctx> {
         let iv = self.scalarize_to_int(val, &ty)?;
         match op {
             UnOp::Neg => {
+                // Signed32/Unsigned32: `sub i32 0, x` wraps correctly at
+                // `i32::MIN` with no guard needed (unlike `Int`'s checked-
+                // then-abort model) — this is the entire point of wrapping
+                // semantics (docs/wrapping-and-quotient-sets-plan.md).
+                if matches!(ty, Kind::Signed32 | Kind::Unsigned32) {
+                    let zero = self.context.i32_type().const_int(0, true);
+                    let v = self
+                        .builder
+                        .build_int_sub(zero, iv, "wneg")
+                        .map_err(|e| CompileError::ice(e.to_string()))?;
+                    return Ok((v.into(), ty));
+                }
                 // int-soundness-plan phase 3 step 4b: a tagged `Kind::Int`
                 // operand routes through `cantor_bigint_neg` (never
                 // overflows, promotes to boxed `BigInt` internally instead);

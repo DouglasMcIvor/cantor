@@ -107,11 +107,17 @@ pub(super) fn elaborate_expr(
             expr: inner,
         } => {
             let e = elaborate_expr(inner, pos, ctx, env)?;
-            // Matches set_kind (passes through) in set position and
-            // compile_unop (always Int) in value position.
+            // Matches set_kind (passes through) in set position. In value
+            // position, negation stays within the operand's own family —
+            // `Signed32`/`Unsigned32` negate via `bvneg` and never become a
+            // tagged `Kind::Int` (docs/wrapping-and-quotient-sets-plan.md) —
+            // and defaults to `Int` otherwise, same as always.
             let kind_of = match pos {
                 Position::Set => kind_of_for_set()?,
-                Position::Value => Kind::Int,
+                Position::Value => match e.kind_of {
+                    Kind::Signed32 | Kind::Unsigned32 => e.kind_of.clone(),
+                    _ => Kind::Int,
+                },
             };
             Ok(SemExpr {
                 kind: SemExprKind::UnOp {

@@ -1,0 +1,11 @@
+-- Signed32 and Unsigned32 are mutually disjoint too, not just each disjoint
+-- from Int (fork 1) — each gets its own opaque solver sort, not a shared bit
+-- pattern space.
+accept_u32 : Unsigned32 -> Unsigned32
+accept_u32(x) = x
+
+bad : -> Unsigned32
+bad() = accept_u32(signed32(5))
+
+main : -> Unsigned32
+main() = unsigned32(5)

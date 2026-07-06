@@ -339,6 +339,32 @@ impl<'ctx> Compiler<'ctx> {
         let ri = self.scalarize_to_int(rv, &rk)?;
         let b = &self.builder;
 
+        // Unsigned32 (docs/wrapping-and-quotient-sets-plan.md): the one
+        // place signed-vs-unsigned actually changes which LLVM predicate is
+        // used. `Signed32` needs no special case — the default signed
+        // predicates below (`SLT`/`SLE`/`SGT`/`SGE`) are already correct for
+        // it, and `==`/`!=` never care about signedness either way.
+        if lk == Kind::Unsigned32 {
+            let pred = match op {
+                BinOp::Eq => IntPredicate::EQ,
+                BinOp::Ne => IntPredicate::NE,
+                BinOp::Lt => IntPredicate::ULT,
+                BinOp::Le => IntPredicate::ULE,
+                BinOp::Gt => IntPredicate::UGT,
+                BinOp::Ge => IntPredicate::UGE,
+                _ => {
+                    return Err(CompileError::ice(format!(
+                        "`{op}` on Unsigned32 reached codegen — the solver should have \
+                         already rejected this at compile time"
+                    )));
+                }
+            };
+            let v = b
+                .build_int_compare(pred, li, ri, "u32cmp")
+                .map_err(|e| CompileError::ice(e.to_string()))?;
+            return Ok((v.into(), Kind::Bool));
+        }
+
         macro_rules! cmp_op {
             ($pred:ident, $name:literal) => {{
                 let v = b
@@ -505,12 +531,31 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
-        // `from(x)` — built-in destructor for `distinct` values; identity at
-        // runtime. Preserves the argument's actual Kind (Int or Int64,
-        // whichever it already is) rather than hardcoding — it's a pure
-        // pass-through, not a fresh value.
+        // `from(x)` — built-in destructor. Identity at runtime for `distinct`
+        // values (preserves the argument's actual Kind, Int or Int64,
+        // whichever it already is — a pure pass-through, not a fresh value).
+        // For a Signed32/Unsigned32 argument (docs/wrapping-and-quotient-
+        // sets-plan.md) it's genuinely not identity: sign-/zero-extend the
+        // i32 register up to i64, then tag it (a raw i64 straight from a
+        // 32-bit register always fits `Int64`, so `ensure_tagged` is always
+        // sound here, never the boxed-BigInt path) to produce a proper
+        // `Kind::Int` value — the wire type `Kind::Int` always means tagged.
         if callee.0 == "from" && args.len() == 1 {
             let (val, kind) = self.compile_expr(&args[0], env)?;
+            if matches!(kind, Kind::Signed32 | Kind::Unsigned32) {
+                let i64t = self.context.i64_type();
+                let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+                let wide = if kind == Kind::Signed32 {
+                    self.builder
+                        .build_int_s_extend(val.into_int_value(), i64t, "from_s32")
+                } else {
+                    self.builder
+                        .build_int_z_extend(val.into_int_value(), i64t, "from_u32")
+                }
+                .map_err(err)?;
+                let tagged = self.ensure_tagged(wide, &Kind::Int64)?;
+                return Ok((tagged.into(), Kind::Int));
+            }
             return Ok((val, kind));
         }
 
@@ -523,6 +568,29 @@ impl<'ctx> Compiler<'ctx> {
                 if self.distinct_names.contains(&capitalized) {
                     let (val, kind) = self.compile_expr(&args[0], env)?;
                     return Ok((val, kind));
+                }
+                // Auto-generated constructor `signed32(n)`/`unsigned32(n)`
+                // (docs/wrapping-and-quotient-sets-plan.md): untag the `Int`
+                // argument first (it may be the tagged small-int/boxed-BigInt
+                // representation, not a raw i64 — same concern
+                // `int64_split`'s promotion machinery already handles via
+                // `ensure_raw_int64`), then reduce to the i32 register via a
+                // plain `trunc`. Total — unlike `distinct`'s constructor
+                // there's no basis obligation, so nothing else to emit.
+                if capitalized == "Signed32" || capitalized == "Unsigned32" {
+                    let (val, arg_kind) = self.compile_expr(&args[0], env)?;
+                    let raw = self.ensure_raw_int64(val.into_int_value(), &arg_kind)?;
+                    let i32t = self.context.i32_type();
+                    let truncated = self
+                        .builder
+                        .build_int_truncate(raw, i32t, "wrap_ctor")
+                        .map_err(|e| CompileError::ice(e.to_string()))?;
+                    let result_kind = if capitalized == "Signed32" {
+                        Kind::Signed32
+                    } else {
+                        Kind::Unsigned32
+                    };
+                    return Ok((truncated.into(), result_kind));
                 }
             }
         }

@@ -193,6 +193,10 @@ impl<'ctx> Compiler<'ctx> {
         match kind {
             Kind::Int | Kind::Int64 | Kind::Set(_) => self.context.i64_type().into(),
             Kind::Bool | Kind::Fail => self.context.bool_type().into(),
+            // Plain i32 register — wraps by construction via ordinary LLVM
+            // i32 arithmetic (two's-complement is the default), no nsw/nuw
+            // flags (docs/wrapping-and-quotient-sets-plan.md).
+            Kind::Signed32 | Kind::Unsigned32 => self.context.i32_type().into(),
             Kind::Tuple(elems) => {
                 let types: Vec<BasicTypeEnum<'ctx>> =
                     elems.iter().map(|k| self.kind_to_llvm_type(k)).collect();
@@ -245,6 +249,28 @@ impl<'ctx> Compiler<'ctx> {
                 let wide = self
                     .builder
                     .build_int_z_extend(val.into_int_value(), i64t, "tu_lb")
+                    .map_err(err)?;
+                *agg = self
+                    .builder
+                    .build_insert_value(*agg, wide, *field_idx, "tu_l")
+                    .map_err(err)?;
+                *field_idx += 1;
+            }
+            Kind::Signed32 => {
+                let wide = self
+                    .builder
+                    .build_int_s_extend(val.into_int_value(), i64t, "tu_ls32")
+                    .map_err(err)?;
+                *agg = self
+                    .builder
+                    .build_insert_value(*agg, wide, *field_idx, "tu_l")
+                    .map_err(err)?;
+                *field_idx += 1;
+            }
+            Kind::Unsigned32 => {
+                let wide = self
+                    .builder
+                    .build_int_z_extend(val.into_int_value(), i64t, "tu_lu32")
                     .map_err(err)?;
                 *agg = self
                     .builder
@@ -329,14 +355,13 @@ impl<'ctx> Compiler<'ctx> {
         if matches!(kind, Kind::Tuple(e) if e.first() == Some(&Kind::Fail)) {
             return Ok(val);
         }
-        let i64t = self.context.i64_type();
         let payload = match kind {
-            Kind::Bool => self
-                .builder
-                .build_int_z_extend(val.into_int_value(), i64t, "coerce_bool")
-                .map_err(|e| CompileError::ice(e.to_string()))?
-                .into(),
-            Kind::Int => val,
+            Kind::Bool
+            | Kind::Int
+            | Kind::Int64
+            | Kind::Set(_)
+            | Kind::Signed32
+            | Kind::Unsigned32 => self.widen_scalar_to_i64(val, kind, "coerce_bool")?,
             _ => {
                 return Err(CompileError::ice(
                     "cannot coerce value to fail struct: unsupported kind",
@@ -346,10 +371,72 @@ impl<'ctx> Compiler<'ctx> {
         self.build_success_struct(payload)
     }
 
+    /// Widen a scalar ABI-boundary-crossing value up to i64: `Bool` (i1)
+    /// zero-extends, `Signed32`/`Unsigned32` (i32) sign-/zero-extend
+    /// respectively (docs/wrapping-and-quotient-sets-plan.md — mirrors the
+    /// existing `Bool` widen exactly, just with a different width/extend
+    /// kind), anything already i64-shaped passes through unchanged.
+    fn widen_scalar_to_i64(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        kind: &Kind,
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let i64t = self.context.i64_type();
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+        Ok(match kind {
+            Kind::Bool => self
+                .builder
+                .build_int_z_extend(val.into_int_value(), i64t, name)
+                .map_err(err)?
+                .into(),
+            Kind::Signed32 => self
+                .builder
+                .build_int_s_extend(val.into_int_value(), i64t, name)
+                .map_err(err)?
+                .into(),
+            Kind::Unsigned32 => self
+                .builder
+                .build_int_z_extend(val.into_int_value(), i64t, name)
+                .map_err(err)?
+                .into(),
+            _ => val,
+        })
+    }
+
+    /// Inverse of `widen_scalar_to_i64`: narrow an incoming i64 parameter
+    /// down to its declared Kind's natural register width — `Bool` (i1),
+    /// `Signed32`/`Unsigned32` (i32, same truncation regardless of
+    /// signedness — sign only matters for how the bits are *interpreted*,
+    /// e.g. `bvslt` vs `bvult` at the solver layer, comparisons/`from()` at
+    /// codegen, never for the truncation itself). Anything else passes
+    /// through unchanged (already i64-shaped).
+    fn narrow_i64_param(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        kind: &Kind,
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+        Ok(match kind {
+            Kind::Bool => self
+                .builder
+                .build_int_truncate(val.into_int_value(), self.context.bool_type(), name)
+                .map_err(err)?
+                .into(),
+            Kind::Signed32 | Kind::Unsigned32 => self
+                .builder
+                .build_int_truncate(val.into_int_value(), self.context.i32_type(), name)
+                .map_err(err)?
+                .into(),
+            _ => val,
+        })
+    }
+
     /// Wrap a return value for a fallible function if needed.
     ///
     /// - Already a fail struct → pass through (e.g. from `FailLit`, `compile_try`)
-    /// - Bool in non-fallible function → zero-extend to i64
+    /// - Bool/Signed32/Unsigned32 in non-fallible function → widen to i64
     /// - Any other value in non-fallible function → pass through
     /// - Any non-struct value in fallible function → wrap in `{i1=0, i64=val}`
     pub(crate) fn wrap_return_value(
@@ -358,29 +445,15 @@ impl<'ctx> Compiler<'ctx> {
         kind: &Kind,
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         if self.fail_bb.is_none() {
-            // Non-fallible: apply Bool-to-i64 extension and pass through.
-            return Ok(if *kind == Kind::Bool {
-                self.builder
-                    .build_int_z_extend(val.into_int_value(), self.context.i64_type(), "bool_ret")
-                    .map_err(|e| CompileError::ice(e.to_string()))?
-                    .into()
-            } else {
-                val
-            });
+            // Non-fallible: widen Bool/Signed32/Unsigned32 to i64 and pass
+            // everything else through.
+            return self.widen_scalar_to_i64(val, kind, "ret_wide");
         }
         // Fallible function: ensure the value is a {i1, i64} struct.
         if matches!(kind, Kind::Tuple(e) if e.first() == Some(&Kind::Fail)) {
             return Ok(val); // already a fail struct
         }
-        let i64t = self.context.i64_type();
-        let payload = match kind {
-            Kind::Bool => self
-                .builder
-                .build_int_z_extend(val.into_int_value(), i64t, "bool_ret")
-                .map_err(|e| CompileError::ice(e.to_string()))?
-                .into(),
-            _ => val,
-        };
+        let payload = self.widen_scalar_to_i64(val, kind, "ret_wide")?;
         self.build_success_struct(payload)
     }
 
@@ -427,25 +500,17 @@ impl<'ctx> Compiler<'ctx> {
             .zip(param_kinds.iter())
         {
             llvm_param.set_name(&param.name.0);
-            let entry = if *kind == Kind::Bool {
-                let i1_val = self
-                    .builder
-                    .build_int_truncate(
-                        llvm_param.into_int_value(),
-                        self.context.bool_type(),
-                        "bool_param",
-                    )
-                    .map_err(|e| CompileError::ice(e.to_string()))?;
-                (i1_val.into(), Kind::Bool)
-            } else {
-                // int-soundness-plan phase 3: preserving the declared Kind
-                // here (not hardcoding `Kind::Int`) is what lets a
-                // compiler-generated `Int64` overload's parameter be
-                // correctly seen as raw/untagged downstream, distinct from
-                // an ordinary `Kind::Int` (tagged) parameter — both are the
-                // same `i64` LLVM type, so no other change is needed here.
-                (llvm_param, kind.clone())
-            };
+            // int-soundness-plan phase 3: preserving the declared Kind here
+            // (not hardcoding `Kind::Int`) is what lets a compiler-generated
+            // `Int64` overload's parameter be correctly seen as raw/untagged
+            // downstream, distinct from an ordinary `Kind::Int` (tagged)
+            // parameter — both are the same `i64` LLVM type, so no other
+            // change is needed for those. Bool/Signed32/Unsigned32 do need
+            // narrowing from the uniform i64 ABI down to their native width.
+            let entry = (
+                self.narrow_i64_param(llvm_param, kind, "param_narrow")?,
+                kind.clone(),
+            );
             env.insert(param.name.clone(), entry);
         }
 
@@ -501,25 +566,17 @@ impl<'ctx> Compiler<'ctx> {
             .zip(param_kinds.iter())
         {
             llvm_param.set_name(&param.name.0);
-            let entry = if *kind == Kind::Bool {
-                let i1_val = self
-                    .builder
-                    .build_int_truncate(
-                        llvm_param.into_int_value(),
-                        self.context.bool_type(),
-                        "bool_param",
-                    )
-                    .map_err(|e| CompileError::ice(e.to_string()))?;
-                (i1_val.into(), Kind::Bool)
-            } else {
-                // int-soundness-plan phase 3: preserving the declared Kind
-                // here (not hardcoding `Kind::Int`) is what lets a
-                // compiler-generated `Int64` overload's parameter be
-                // correctly seen as raw/untagged downstream, distinct from
-                // an ordinary `Kind::Int` (tagged) parameter — both are the
-                // same `i64` LLVM type, so no other change is needed here.
-                (llvm_param, kind.clone())
-            };
+            // int-soundness-plan phase 3: preserving the declared Kind here
+            // (not hardcoding `Kind::Int`) is what lets a compiler-generated
+            // `Int64` overload's parameter be correctly seen as raw/untagged
+            // downstream, distinct from an ordinary `Kind::Int` (tagged)
+            // parameter — both are the same `i64` LLVM type, so no other
+            // change is needed for those. Bool/Signed32/Unsigned32 do need
+            // narrowing from the uniform i64 ABI down to their native width.
+            let entry = (
+                self.narrow_i64_param(llvm_param, kind, "param_narrow")?,
+                kind.clone(),
+            );
             env.insert(param.name.clone(), entry);
         }
 

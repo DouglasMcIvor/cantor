@@ -1,0 +1,5 @@
+-- Negating i32::MIN wraps back to itself in two's complement — the entire
+-- point of wrapping semantics (no guard needed, unlike Int's checked
+-- overflow-then-abort model at i64::MIN).
+main : -> Signed32
+main() = -signed32(-2147483648)

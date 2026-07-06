@@ -1,0 +1,4 @@
+-- Sub wraparound: i32::MIN - 1 wraps to i32::MAX (no proof obligation, no
+-- runtime check — wrapping is the operator's definition, not a checked fact).
+main : -> Signed32
+main() = signed32(-2147483648) - signed32(1)

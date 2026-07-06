@@ -12,7 +12,7 @@ use crate::{
 
 use super::NameDefs;
 use super::encode_call::{CallSite, encode_call};
-use super::membership::{DistinctPreds, Membership, SolverPreds, membership_constraint};
+use super::membership::{Membership, SolverPreds, membership_constraint};
 use super::obligations::{
     BuiltinObligation, OverflowObligation, OverloadCallObligation, binary_builtin_domain,
     named_set, unary_builtin_domain,
@@ -97,6 +97,23 @@ pub(crate) fn encode_expr<'tm>(
         }
         if callee.0 == "from" && args.len() == 1 {
             let arg_term = enc!(&args[0])?;
+            // Signed32/Unsigned32 (docs/wrapping-and-quotient-sets-plan.md):
+            // `from(x)` unwraps via `from_D` (D_sort -> BitVec) then the
+            // signed/unsigned BitVec->Int reading. Total, like the
+            // constructor — no basis obligation.
+            for info in ctx.distinct_preds.wrapping.values() {
+                if arg_term.sort() == info.d_sort {
+                    let bv = ctx
+                        .tm
+                        .mk_term(Kind::ApplyUf, &[info.from.clone(), arg_term]);
+                    let to_int_kind = if info.signed {
+                        Kind::BitvectorSbvToInt
+                    } else {
+                        Kind::BitvectorUbvToInt
+                    };
+                    return Ok(ctx.tm.mk_term(to_int_kind, &[bv]));
+                }
+            }
             for (sym, info) in ctx.distinct_preds.iter() {
                 // `Fail` is registered as a distinct sort purely so the
                 // cross-kind union machinery treats it like any other arm —
@@ -335,6 +352,104 @@ pub(crate) fn encode_expr<'tm>(
     maybe_coerce(ctx.tm, term, &coerce_to)
 }
 
+// ── Wrapping fixed-width integers (Signed32/Unsigned32) ─────────────────────
+//
+// docs/wrapping-and-quotient-sets-plan.md, Feature 1. Each is its own opaque
+// CVC5 sort backed by native `(_ BitVec 32)`; `+ - * neg` and ordered
+// comparisons unwrap via `from_D` into BitVec land, apply the matching
+// `bv*` operator, and (for `+ - * neg`) rewrap via `mk_D`. `==`/`!=` need
+// none of this — plain CVC5 term equality on two same-sort terms is already
+// exactly right, so `encode_binop`'s existing `Eq`/`Ne` path is untouched.
+
+/// The registered `WrappingInfo` whose `d_sort` matches `sort`, if any.
+fn wrapping_info_for_sort<'a, 'tm>(
+    distinct_preds: &'a SolverPreds<'tm>,
+    sort: &Sort<'tm>,
+) -> Option<&'a super::membership::WrappingInfo<'tm>> {
+    distinct_preds.wrapping.values().find(|i| &i.d_sort == sort)
+}
+
+/// `+ - *` and `< <= > >=` between two same-family wrapping operands.
+/// Returns `None` when `l`/`r` aren't both the same registered wrapping
+/// sort (caller falls through to the ordinary integer-sort path). Returns
+/// `Err` for a same-sort pair whose operator isn't one of the above —
+/// `/ rem quot` on a wrapping sort is explicitly out of scope for this
+/// slice (division isn't a ring homomorphism mod 2^32), so it must be a
+/// clean compile error, not a silently-wrong dummy value.
+fn encode_wrapping_binop<'tm>(
+    op: &BinOp,
+    l: &Term<'tm>,
+    r: &Term<'tm>,
+    ctx: &EncodeCtx<'_, 'tm>,
+) -> Option<Result<Term<'tm>, String>> {
+    let info = wrapping_info_for_sort(ctx.distinct_preds, &l.sort())?;
+    if r.sort() != info.d_sort {
+        return None;
+    }
+    let tm = ctx.tm;
+    let bv_kind = match op {
+        BinOp::Add => Kind::BitvectorAdd,
+        BinOp::Sub => Kind::BitvectorSub,
+        BinOp::Mul => Kind::BitvectorMult,
+        BinOp::Lt => {
+            if info.signed {
+                Kind::BitvectorSlt
+            } else {
+                Kind::BitvectorUlt
+            }
+        }
+        BinOp::Le => {
+            if info.signed {
+                Kind::BitvectorSle
+            } else {
+                Kind::BitvectorUle
+            }
+        }
+        BinOp::Gt => {
+            if info.signed {
+                Kind::BitvectorSgt
+            } else {
+                Kind::BitvectorUgt
+            }
+        }
+        BinOp::Ge => {
+            if info.signed {
+                Kind::BitvectorSge
+            } else {
+                Kind::BitvectorUge
+            }
+        }
+        // `==`/`!=` need no wrapping-specific code at all (see the module
+        // comment above) — return `None` so the caller's ordinary path
+        // handles them with plain CVC5 term equality, unchanged.
+        BinOp::Eq | BinOp::Ne => return None,
+        _ => {
+            return Some(Err(format!(
+                "`{op}` is not yet supported between {} values — only `+ - *`, negation, \
+                 and comparisons are implemented for wrapping fixed-width integers so far \
+                 (division isn't a ring homomorphism mod 2^{}, deliberately deferred)",
+                if info.signed {
+                    "Signed32"
+                } else {
+                    "Unsigned32"
+                },
+                info.width
+            )));
+        }
+    };
+    let l_bv = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), l.clone()]);
+    let r_bv = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), r.clone()]);
+    let bv_result = tm.mk_term(bv_kind, &[l_bv, r_bv]);
+    let result = match op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul => {
+            tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), bv_result])
+        }
+        // Comparisons already produce a Boolean term — no rewrap.
+        _ => bv_result,
+    };
+    Some(Ok(result))
+}
+
 // ── Arm helpers ───────────────────────────────────────────────────────────────
 
 fn encode_unop<'tm>(
@@ -346,6 +461,20 @@ fn encode_unop<'tm>(
     path_cond: Term<'tm>,
 ) -> Result<Term<'tm>, String> {
     let t = encode_expr(inner, env, ctx, path_cond.clone(), None)?;
+    // Signed32/Unsigned32: `bvneg` wraps by construction (definitional, not
+    // a proof obligation) — see the Add/Sub/Mul reasoning above
+    // `encode_wrapping_binop`. Checked *before* `unary_builtin_domain`'s
+    // "operand must be Int" obligation below, which would otherwise wrongly
+    // reject every wrapping-sort negation as a domain violation (a wrapping
+    // value is never a member of plain `Int`, by design — that obligation
+    // is only meaningful for the ordinary `Int`-typed path).
+    if matches!(op, UnOp::Neg)
+        && let Some(info) = wrapping_info_for_sort(ctx.distinct_preds, &t.sort())
+    {
+        let bv = ctx.tm.mk_term(Kind::ApplyUf, &[info.from.clone(), t]);
+        let neg = ctx.tm.mk_term(Kind::BitvectorNeg, &[bv]);
+        return Ok(ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), neg]));
+    }
     for (domain, reason) in unary_builtin_domain(op) {
         if let Membership::Constrained(c) = membership_constraint(
             ctx.tm,
@@ -489,6 +618,20 @@ fn encode_binop<'tm>(
 
     let l = enc!(lhs)?;
     let r = enc!(rhs)?;
+
+    // Signed32/Unsigned32: `+ - *` and ordered comparisons route through
+    // `bv*` operators instead of the generic Int-sorted path below — checked
+    // *before* `binary_builtin_domain`'s "operand must be Int" obligation,
+    // which would otherwise wrongly reject every wrapping-sort arithmetic
+    // expression as a domain violation (a wrapping value is never a member
+    // of plain `Int`, by design — that obligation is only meaningful for
+    // the ordinary `Int`-typed path). `==`/`!=` deliberately fall through
+    // unchanged (plain CVC5 term equality on matching sorts is already
+    // correct with no wrapping-specific code — see the module comment above
+    // `encode_wrapping_binop`).
+    if let Some(result) = encode_wrapping_binop(op, &l, &r, ctx) {
+        return result;
+    }
 
     for (arg_idx, arg_term) in [&l, &r].iter().enumerate() {
         for (domain, reason) in binary_builtin_domain(op, arg_idx) {
@@ -851,7 +994,7 @@ pub(crate) fn mk_decomposed_tuple<'tm, 'e>(
     tm: &'tm TermManager,
     name: &str,
     set_expr: &'e SemExpr,
-    distinct_preds: &DistinctPreds<'tm>,
+    distinct_preds: &SolverPreds<'tm>,
     name_defs: &NameDefs,
 ) -> (Term<'tm>, Vec<(Term<'tm>, &'e SemExpr)>) {
     let parts = flatten_cartesian_product(set_expr);

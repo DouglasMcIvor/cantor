@@ -370,6 +370,7 @@ fn format_tagged_int(word: i64) -> String {
 fn count_kind_leaves(kind: &Kind) -> usize {
     match kind {
         Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail | Kind::Set(_) => 1,
+        Kind::Signed32 | Kind::Unsigned32 => 1,
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
         // TODO: tagged-union IR — count tag field + widest arm
         Kind::TaggedUnion(_) => 1,
@@ -391,6 +392,15 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
         // int-soundness-plan phase 3 step 4b: `Int64`/`Set` leaves are
         // always a plain raw i64; an `Int` leaf is tagged and needs decoding.
         Kind::Int64 | Kind::Set(_) => {
+            let v = buf[*offset];
+            *offset += 1;
+            format!("{v}")
+        }
+        // Signed32/Unsigned32 leaves already arrived sext/zext-ed to i64 by
+        // the trampoline (docs/wrapping-and-quotient-sets-plan.md) — the
+        // widened i64 already reads as the correct decimal value, no
+        // decoding needed (never tagged, unlike `Kind::Int`).
+        Kind::Signed32 | Kind::Unsigned32 => {
             let v = buf[*offset];
             *offset += 1;
             format!("{v}")

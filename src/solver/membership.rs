@@ -32,6 +32,33 @@ pub(crate) struct DistinctInfo<'tm> {
 /// Map from distinct set name to its CVC5 encoding artefacts.
 pub(crate) type DistinctPreds<'tm> = HashMap<Symbol, DistinctInfo<'tm>>;
 
+/// Per-wrapping-sort CVC5 artefacts for `Signed32`/`Unsigned32`
+/// (docs/wrapping-and-quotient-sets-plan.md, Feature 1).
+///
+/// Structurally like `DistinctInfo` (own opaque sort + constructor/destructor
+/// uninterpreted functions), but `mk`/`from` connect straight to a native
+/// `(_ BitVec width)` term, not `Int` — every `+ - * neg`/comparison between
+/// two same-family operands stays entirely in bit-vector land (`bvadd` etc.
+/// on `from_D(x)`/`from_D(y)`, then `mk_D(...)`), so `Int ↔ BitVec`
+/// conversion only happens at the two genuine boundary points: the
+/// user-facing constructor (`signed32(n)`, `int2bv`) and `from(x)` (`ubv_to_int`/
+/// `sbv_to_int`, depending on `signed`).
+#[derive(Clone)]
+pub(crate) struct WrappingInfo<'tm> {
+    pub(crate) width: u32,
+    pub(crate) signed: bool,
+    /// Opaque CVC5 sort — every value of this wrapping set has this sort.
+    pub(crate) d_sort: Sort<'tm>,
+    /// Constructor UF: `mk_D : BitVec(width) → D_sort`.
+    pub(crate) mk: Term<'tm>,
+    /// Destructor UF: `from_D : D_sort → BitVec(width)`.
+    pub(crate) from: Term<'tm>,
+}
+
+/// Map from wrapping-set builtin name (`"Signed32"`/`"Unsigned32"`) to its
+/// CVC5 encoding artefacts.
+pub(crate) type WrappingPreds<'tm> = HashMap<Symbol, WrappingInfo<'tm>>;
+
 /// Per-quotient-set artefacts created for `L / canon` (see
 /// `build_quotient_preds`). Keyed by the canonicalizer's own `Symbol` (not
 /// the quotient set's name, if any — the same canonicalizer reference is
@@ -67,19 +94,19 @@ pub(crate) struct QuotientInfo<'tm> {
 /// Map from canonicalizer symbol to its CVC5 encoding artefacts.
 pub(crate) type QuotientPreds<'tm> = HashMap<Symbol, QuotientInfo<'tm>>;
 
-/// Bundles both cross-cutting "opaque identity" registries
+/// Bundles all three cross-cutting "opaque identity" registries
 /// `membership_constraint` needs. Kept as one struct — threaded through the
 /// same parameter/field every `distinct_preds` caller already passes today
-/// — rather than adding `quotient_preds` as a new parameter everywhere:
-/// `Deref` to the inner `DistinctPreds` means the ~40 call sites that only
-/// ever read distinct-set info (including every `set_sort` call, which
-/// doesn't need quotient info at all) need no changes, since `&SolverPreds`
-/// coerces to `&DistinctPreds` automatically wherever that's still what's
-/// expected. Only construction sites (`build_distinct_preds` →
-/// `build_quotient_preds` alongside it) and the handful of struct field
-/// *type* annotations that flow into `membership_constraint` need updating.
+/// — rather than adding new parameters everywhere: `Deref` to the inner
+/// `DistinctPreds` means the ~40 call sites that only ever read distinct-set
+/// info need no changes, since `&SolverPreds` coerces to `&DistinctPreds`
+/// automatically wherever that's still what's expected. Only construction
+/// sites and the handful of call sites that need `.wrapping`/`.quotient`
+/// directly (a small superset of `set_sort`'s own callers, since a wrapping
+/// value's sort is now also decided there) need updating.
 pub(crate) struct SolverPreds<'tm> {
     pub(crate) distinct: DistinctPreds<'tm>,
+    pub(crate) wrapping: WrappingPreds<'tm>,
     pub(crate) quotient: QuotientPreds<'tm>,
 }
 
@@ -378,6 +405,22 @@ pub(crate) fn membership_constraint<'tm>(
                             Membership::Constrained(tm.mk_term(Kind::Or, &[eq0, eq1]))
                         }
                     }
+                }
+            }
+            // `Signed32`/`Unsigned32` (docs/wrapping-and-quotient-sets-
+            // plan.md): each is its own opaque CVC5 sort, same rule as
+            // `Fail`/`distinct` above — a term of exactly that sort is
+            // trivially a member, anything else (Int, the other wrapping
+            // sort, a distinct sort, tuple, …) is definitely not.
+            Some(b) if b.kind == ValKind::Signed32 || b.kind == ValKind::Unsigned32 => {
+                let info = distinct_preds
+                    .wrapping
+                    .get(sym)
+                    .expect("Signed32/Unsigned32 must be registered as builtin wrapping sorts");
+                if t.sort() == info.d_sort {
+                    Membership::Unconstrained
+                } else {
+                    Membership::Constrained(tm.mk_boolean(false))
                 }
             }
             // `Int` and its named integer subsets (Nat, NatPos, NonZeroInt,

@@ -89,6 +89,22 @@ pub(crate) fn encode_call<'tm>(
         return maybe_coerce(ctx.tm, result, &coerce_to);
     }
 
+    // Auto-generated constructor: `signed32(n)`/`unsigned32(n)`
+    // (docs/wrapping-and-quotient-sets-plan.md). Total — every `Int` maps to
+    // *some* bit pattern, so unlike `distinct` there's no basis obligation to
+    // emit. `int2bv` handles the mod-2^32 reduction for arbitrary (including
+    // negative, or >= 2^32) integers internally — confirmed against the real
+    // cvc5 crate before writing this (see the plan doc's spike note).
+    if args.len() == 1
+        && let Some(info) = wrapping_info_for_constructor(callee, ctx.distinct_preds)
+    {
+        let arg_term = enc!(&args[0])?;
+        let int2bv = ctx.tm.mk_op(Kind::IntToBitvector, &[info.width]);
+        let bv = ctx.tm.mk_term_from_op(int2bv, &[arg_term]);
+        let result = ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), bv]);
+        return maybe_coerce(ctx.tm, result, &coerce_to);
+    }
+
     let arg_terms: Vec<Term<'_>> = args.iter().map(|a| enc!(a)).collect::<Result<_, _>>()?;
 
     let overload_set = ctx
@@ -484,4 +500,20 @@ fn distinct_def_for_constructor<'a>(
     name_defs
         .get(&sym)
         .filter(|def| def.kind == DefKind::Distinct)
+}
+
+/// If `callee` is the auto-generated constructor for a wrapping fixed-width
+/// integer builtin (`signed32(n)`/`unsigned32(n)`,
+/// docs/wrapping-and-quotient-sets-plan.md), return its `WrappingInfo`.
+/// Unlike `distinct_def_for_constructor`, there's no `NameDef` to look up —
+/// `Signed32`/`Unsigned32` are language builtins registered unconditionally
+/// in `wrapping` (`build_wrapping_preds`), keyed by the same capitalized name.
+fn wrapping_info_for_constructor<'a, 'tm>(
+    callee: &Symbol,
+    distinct_preds: &'a SolverPreds<'tm>,
+) -> Option<&'a super::membership::WrappingInfo<'tm>> {
+    let mut chars = callee.0.chars();
+    let first = chars.next()?;
+    let capitalized = first.to_uppercase().collect::<String>() + chars.as_str();
+    distinct_preds.wrapping.get(&Symbol::new(capitalized))
 }

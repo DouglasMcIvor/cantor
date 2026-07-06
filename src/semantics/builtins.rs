@@ -84,6 +84,18 @@ pub fn lookup(name: &str) -> Option<BuiltinSet> {
         // role in the `Kind::Int64` split/promotion machinery itself, which
         // reasons about `Int64` directly.
         "BigInt" => int(IntBound::Outside(i64::MIN, i64::MAX)),
+        // Wrapping fixed-width integers (docs/wrapping-and-quotient-sets-
+        // plan.md, Feature 1) — genuinely distinct sorts, not `Int` subsets,
+        // so `bound` is meaningless here (`IntBound::Any` is filler, same as
+        // the `Bool`/`Fail` entries above).
+        "Signed32" => Some(BuiltinSet {
+            kind: Kind::Signed32,
+            bound: IntBound::Any,
+        }),
+        "Unsigned32" => Some(BuiltinSet {
+            kind: Kind::Unsigned32,
+            bound: IntBound::Any,
+        }),
         _ => None,
     }
 }

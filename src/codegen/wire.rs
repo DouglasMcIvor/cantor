@@ -15,6 +15,9 @@ pub use crate::kind::range_kind;
 pub fn leaf_count(kind: &Kind) -> usize {
     match kind {
         Kind::Bool | Kind::Int | Kind::Int64 | Kind::Set(_) | Kind::Fail => 1,
+        // Signed32/Unsigned32 cross the ABI boundary widened to i64 (sext/zext
+        // respectively), same convention as Bool's i1<->i64 — one leaf each.
+        Kind::Signed32 | Kind::Unsigned32 => 1,
         Kind::Tuple(elems) => elems.iter().map(leaf_count).sum(),
         Kind::TaggedUnion(arms) => 1 + tagged_union_leaf_count(arms),
         // Vector is an i64 pointer (like Set) — one leaf.

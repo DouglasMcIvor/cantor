@@ -1,0 +1,4 @@
+-- from() unwraps a wrapping value back to a plain Int — total, no
+-- obligation, in both signed and unsigned directions.
+main : -> Bool
+main() = from(signed32(100)) == 100 and from(unsigned32(100)) == 100

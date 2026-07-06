@@ -617,6 +617,20 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(err)?;
                 Ok(vec![wide.into()])
             }
+            Kind::Signed32 => {
+                let wide = self
+                    .builder
+                    .build_int_s_extend(val.into_int_value(), i64t, "ul_s32")
+                    .map_err(err)?;
+                Ok(vec![wide.into()])
+            }
+            Kind::Unsigned32 => {
+                let wide = self
+                    .builder
+                    .build_int_z_extend(val.into_int_value(), i64t, "ul_u32")
+                    .map_err(err)?;
+                Ok(vec![wide.into()])
+            }
             Kind::Tuple(elems) => {
                 let sv = AggregateValueEnum::StructValue(val.into_struct_value());
                 let mut leaves = Vec::new();

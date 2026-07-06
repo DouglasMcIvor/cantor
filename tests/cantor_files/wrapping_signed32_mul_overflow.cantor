@@ -1,0 +1,4 @@
+-- Mul wraparound: 2147483647 * 2 = 4294967294, which read as Signed32's
+-- two's-complement bit pattern is -2.
+main : -> Signed32
+main() = signed32(2147483647) * signed32(2)

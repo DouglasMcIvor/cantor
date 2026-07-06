@@ -64,6 +64,72 @@ solver-novel piece. Suggested sequencing at the end reflects this.
 
 ## Feature 1 — `Signed32` / `Unsigned32` (wrapping fixed-width integers)
 
+**Status: DONE, 2026-07-06.** Landed close to this sketch — the spike
+resolved every medium-confidence unknown flagged below in favor of the
+sketch's own guesses (see "Resolved during implementation" just below) — but
+two real gaps this doc didn't anticipate were found and fixed along the way:
+
+1. **The `Int ↔ BitVec` spike confirmed everything hoped for, with zero
+   surprises.** A standalone probe against the real `cvc5` crate (mirroring
+   this doc's suggested spike) confirmed: `Kind::IntToBitvector` handles
+   arbitrary integers (negative, or ≥ 2^32) with the mod-2^32 reduction done
+   *internally* by cvc5 — no manual pre-reduction formula needed, resolving
+   the doc's first open question. `Kind::BitvectorUbvToInt` and
+   `Kind::BitvectorSbvToInt` both exist natively in the installed cvc5
+   1.3.1 — no hand-rolled `ite` needed for the signed reading either,
+   resolving the second and third open questions. All three "needs a spike"
+   items below turned out to need no compromise at all.
+2. **Elaboration's value-position `+ - * neg`/comparisons hard-coded
+   `Kind::Int`, not traced by this doc.** `binop.rs`'s `Add`/`Sub`/`Mul`
+   (value position) and `expr.rs`'s `UnOp::Neg` unconditionally produced
+   `Kind::Int` regardless of operand Kind — harmless historically, since
+   every existing operand Kind those paths ever saw genuinely was `Kind::Int`
+   (even `distinct` values, whose Kind is always `Int` by design). Once an
+   operand can genuinely be `Kind::Signed32`/`Kind::Unsigned32`, this
+   default would silently mislabel the result — the same "plausible-looking
+   wildcard default" trap this doc's own `builtin_call_kind` note already
+   warned about, just at a different call site the doc didn't trace this
+   far. Fixed by deriving the result Kind from the operands (same Kind in →
+   same Kind out; falls back to `Int` for every other combination, exactly
+   preserving prior behavior for everything that isn't wrapping). Ordered
+   comparisons got the analogous fix (`is_ordered_pair`, generalizing the
+   old "both operands must be `Int`" check to "both operands the same one of
+   `Int`/`Signed32`/`Unsigned32`").
+3. **The pre-existing `binary_builtin_domain`/`unary_builtin_domain`
+   "operand must be Int" obligation had to be checked *after* the new
+   wrapping encoding, not before.** These built-in domain obligations
+   (`obligations.rs`) run unconditionally for every `Add`/`Sub`/`Mul`/`Neg`
+   node, regardless of operand Kind — previously harmless, since a
+   `distinct` value's Kind is always `Int` so the obligation never actually
+   fired for it. A `Signed32`/`Unsigned32` operand is genuinely never a
+   member of plain `Int`, so encoding the domain check *before* the new
+   `bv*` path (the natural place to slot it in) made every wrapping
+   arithmetic expression a spurious counterexample — caught by the CLI
+   tests, fixed by moving `encode_wrapping_binop`/the `Neg` wrapping check
+   earlier, ahead of that obligation loop, so a same-family wrapping pair
+   returns before the "must be Int" domain check ever runs.
+4. **`signed32(n)`'s constructor and `from(x)`'s destructor needed the
+   existing tagged/raw-`Int` conversion helpers** (`ensure_raw_int64`/
+   `ensure_tagged`, int-soundness-plan phase 3), not a bare `trunc`/`sext`:
+   the `n : Int` flowing into `signed32(n)` may be the tagged small-int
+   representation (or a boxed `BigInt`), not a raw i64 word, so truncating
+   it directly produced silently wrong bit patterns until untagged first.
+   Symmetrically, `from(x)`'s sign-/zero-extended `i64` needs tagging before
+   it's a valid `Kind::Int` value. Caught by the CLI tests (`Signed32`
+   arithmetic on literals like `-2147483648` produced wrong values until
+   this was fixed — `Unsigned32` tests with only positive/small literals
+   happened not to exercise the tagging path, which is why this wasn't
+   caught immediately).
+
+No new `BuiltinKind`/registry-generalization abstraction was needed beyond
+what's sketched below — `semantics::builtins::lookup` already generalizes
+via `Kind`, so `Signed32`/`Unsigned32` slot in as two more match arms next
+to `Bool`/`Fail` with no new enum. `arm_ctor_name`/`arm_ctor_name_for_arm`
+likewise needed no disambiguation logic beyond a name each, since — unlike
+`distinct` sets, which all share `ValKind::Int` — `Signed32`/`Unsigned32`
+already have their own unique `Kind`, so cross-kind-union arm naming was
+automatically collision-free.
+
 ### Scope for this slice
 
 Only width 32, both signed and unsigned, and only `+ - * neg` plus
@@ -493,8 +559,10 @@ The whole feature is compile-time bookkeeping plus one new proof obligation.
 
 ## Suggested overall sequencing
 
-Reordering the original framing, now that tracing the code shows the two
-features share almost no machinery:
+**Status: all three steps DONE as of 2026-07-06** (`rem`/`quot` and quotient
+sets 2026-07-05, `Signed32`/`Unsigned32` 2026-07-06) — this whole plan
+document is now fully implemented. Sequencing actually used, matching the
+reordering suggested below:
 
 1. **`rem`/`quot` operators** — small, mechanical, useful standalone,
    unconditionally required before the quotient-set example can even be
@@ -505,11 +573,13 @@ features share almost no machinery:
    than being discovered mid-way through step 2.
 3. **`Signed32`/`Unsigned32`** — the larger, more solver-novel piece (new
    sort family, the `Int ↔ BitVec` conversion spike, cross-kind union
-   generalization). Nothing about it is blocked by 1 or 2 landing first;
-   it's sequenced last here purely because it's the biggest chunk of new
-   solver ground, not because anything depends on it.
+   generalization). Nothing about it was blocked by 1 or 2 landing first;
+   it was sequenced last purely because it was the biggest chunk of new
+   solver ground, not because anything depended on it.
 
-This is a sequencing observation, not a hard dependency — happy to do
-Signed32/Unsigned32 first if you'd rather bank the "prettier"/higher-signal
-piece early, or if the BitVec spike turns out cheap enough to derisk
-quickly.
+Remaining follow-ups explicitly deferred out of this plan (not tracked
+further here): `cantor_bigint_rem`/`cantor_bigint_quot` runtime functions
+(§ rem/quot scope note), the pre-existing `Int64`→`Int` re-tagging gap for
+`Fail`-wire/tuple payloads (see `project_int64_retag_gap` memory — a
+pre-existing bug, not introduced by this plan), additional wrapping widths
+(`Signed8/16/64`, …), and division/remainder on wrapping sorts.

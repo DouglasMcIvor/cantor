@@ -53,7 +53,8 @@ use crate::span::{Span, Symbol};
 
 use super::membership::{Membership, QuotientPreds, SolverPreds, membership_constraint};
 use super::{
-    CheckResult, FunctionEnv, NameDefs, build_distinct_preds, check_function, configured_solver,
+    CheckResult, FunctionEnv, NameDefs, build_distinct_preds, build_wrapping_preds, check_function,
+    configured_solver,
 };
 
 /// Runs both transforms over every function in the file. Items that aren't
@@ -147,6 +148,7 @@ fn domain_within_int64(part: &SemExpr, name_defs: &NameDefs, timeout_ms: u64) ->
     // declines the optimization) rather than being threaded through.
     let distinct_preds = SolverPreds {
         distinct: build_distinct_preds(&tm, name_defs),
+        wrapping: build_wrapping_preds(&tm),
         quotient: QuotientPreds::new(),
     };
     let t = tm.mk_const(tm.integer_sort(), "__int64_promote_check");

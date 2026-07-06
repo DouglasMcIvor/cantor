@@ -407,6 +407,12 @@ implementation detail the developer should not rely on.
   identity**: `5` may be passed where `Nat*` is expected, but `5 == [5]` is a
   domain error and `len(5)` is invalid — `len` is defined only on genuine
   sequence values.
+- The same bit pattern reads differently under `Signed32` vs `Unsigned32`
+  (§13): `unsigned32(4294967295) > unsigned32(0)` is `true`, and
+  `signed32(-1) < signed32(0)` is *also* `true` — the all-ones bit pattern
+  is `u32::MAX` read one way, `-1` read the other. The two sets are mutually
+  disjoint (no implicit reinterpretation), so this only bites when a
+  developer deliberately unwraps and re-wraps across families.
 
 ### Set operators (Unicode primary, ASCII equivalent required for all)
 | Concept | Unicode | ASCII |
@@ -1686,6 +1692,45 @@ No implicit coercion between `Bool` and any integer kind exists at any layer.
   "SetRem"/"SetQuot" dual (no operator resolves to them for set
   definitions) — using either to define a set is a hard user error
   (`InvalidSetExpression`), not a silent `Kind::Int` default.
+
+### Signed32 / Unsigned32 — wrapping fixed-width integers (DECIDED, docs/wrapping-and-quotient-sets-plan.md)
+
+Two hardcoded builtin sets (not a general-purpose `wrapping` keyword — no
+second use case yet to justify the extra parser/semantics surface), each a
+genuinely distinct, disjoint set — not a subset of `Int`, and disjoint from
+*each other* too (mirrors `Bool`≠`Int`: two representationally identical bit
+patterns must not become solver-equatable just because nothing else keeps
+them apart). This is a different mechanism from the `IntN`/`truncateN`
+sketch above ("Narrowing back to IntN"): an `IntN` value stays `Kind::Int`-
+shaped (an in-range `Int`); `Signed32`/`Unsigned32` are their own opaque
+sort/Kind entirely, with their own LLVM register width.
+
+- **Solver representation**: CVC5's native `(_ BitVec 32)`, wrapped in a
+  fresh uninterpreted sort per name — the same "opaque sort + constructor/
+  destructor uninterpreted functions" recipe `distinct`/`Fail` already use,
+  so the two (and `Int`) stay mutually opaque. `+ - * neg` between two
+  same-family operands unwrap into BitVec land, apply the matching `bv*`
+  operator (`bvadd`/`bvsub`/`bvmul`/`bvneg`), then rewrap — wrapping is
+  definitional, so there is no proof obligation and nothing that can time
+  out. `==`/`!=` are plain CVC5 term equality on matching sorts, no unwrap
+  needed. Ordered comparisons (`< <= > >=`) route to `bvslt`-family for
+  `Signed32`, `bvult`-family for `Unsigned32` — the one place signed-vs-
+  unsigned changes which operator is used.
+- **Codegen**: a plain `i32` LLVM register, no `nsw`/`nuw` flags — LLVM's
+  default `i32` arithmetic is already exactly two's-complement wraparound.
+  The ABI boundary reuses the existing `Bool` widen/truncate convention
+  (every value crosses as `i64`): `Signed32` sign-extends, `Unsigned32`
+  zero-extends.
+- `signed32(n)`/`unsigned32(n)` (auto-generated constructors) and `from(x)`
+  (the shared destructor) are both **total** — every `Int` maps to some bit
+  pattern and back — so unlike `distinct`'s constructor, neither needs a
+  basis obligation.
+- **Scope of this slice**: only width 32, and only `+ - * neg` plus
+  comparisons. Division/remainder on a wrapping sort is a clean
+  `Unsupported` compile error (division isn't a ring homomorphism mod
+  2^32) — deferred, not silently wrong. Additional widths (`Signed8`,
+  `Signed16`, `Signed64`, …) are a mechanical repeat of this slice, not
+  attempted yet.
 
 ### Narrowing back to IntN
 
