@@ -32,8 +32,27 @@ You probably don't want to read this unless you're me.
 - generators at runtime. we can relax restriction on infinite 
   sets being compile-time only, under the restriction that they have a generator.
   generator for totally ordered, well founded built in sets (Nat, Bool, not Int?) come for free
-- ordered sets `<1, 2, 3>`, sequences are _semantically_ `['a', 'b'] == <(0, 'a'), (1, 'b')>`
-- `OrderedSet(X)`, `FiniteOrderedSet(X)` and `InfiniteOrderedSet(X) == UniqueGenerator(X)`
+- collections direction (DECIDED 2026-07-06):
+  - no `<1, 2, 3>` ordered-set literal: `<`/`>` clash with comparison operators
+    (the C++ template ambiguity), and runtime sets already iterate in a
+    deterministic sorted order. Orderedness is a *property* of a set — a set
+    paired with an enumerator — not a bracket. `OrderedSet(X)`,
+    `FiniteOrderedSet(X)` and `InfiniteOrderedSet(X) == UniqueGenerator(X)`.
+  - bags/multisets need no bracket either: `Bag(X) = X* / sort` — the quotient
+    of sequences by permutation, reusing the quotient-set machinery. The
+    ordered × unique 2×2 grid of collections is exactly quotient-by-permutation
+    × quotient-by-multiplicity of `X*`. Bag literals are just `[…]` sequence
+    literals in a Bag-annotated position, canonicalized to sorted order.
+    Ergonomics (derived ops) deliberately deferred until quotient-set
+    `deriving` machinery exists.
+  - the pair view of a sequence (`['a', 'b']` ↔ `{(0, 'a'), (1, 'b')}`) is a
+    *coercion, not an equality* — same doctrine as sequence unification
+    (equality would make `x in xs`, `len` vs `size`, and `for x in xs`
+    ambiguous). The view is reified explicitly by `graph(xs) : (Nat * X)*`,
+    the graph of the sequence-as-function; later generalizes to
+    `graph(f) == {(a, f(a))}` for functions. `enumerate(xs)` will be kept as a
+    beginner-friendly synonym, and `zip(Nat, xs)` becomes the general form
+    once generators land. None of the three is implemented yet.
 - `X*`/`X^ == Generator(X)` for finite and infinite sequences 
 - immutable set constants like `s = {1, 2, 3}`, need to be baked in as statics
 - value literals desugaring in compile time set positions and support for sequences of literal values.
@@ -52,7 +71,7 @@ You probably don't want to read this unless you're me.
   - `Size`, `Word` (platform dependent)
 - more containers:
   - maps
-  - ordered sets
+  - ordered sets and bags — see "collections direction" above
   - deques and stuff like that?
 - more operators:
   - quot and rem (instead of modulo)
@@ -102,7 +121,11 @@ Algorithm:
   * set → hash table of chunks
   * map → hash table of key/value chunks
   * string → rope of UTF-8 chunks
-- natural `for i, x in foo` syntax to combine destructuring should fall out from the above without additional work
+- multi-binder `for a, b in xs` is *always* element destructuring — never an implicit
+  enumerate, which would be ambiguous for e.g. `(Nat * Nat)*` iterables (the loop's
+  meaning would depend on the element set). Index iteration is
+  `for i, x in graph(xs)` (or `enumerate(xs)`); falls out from destructuring + for-in
+  once `graph` exists.
 - destructuring assignment should work when we "don't provide enough binders" so that
   ```
   x, y = (1, 2, 3)

@@ -1521,7 +1521,15 @@ Other open items (lower priority, not blocking):
 - **Pattern matching** — `match x { a => …, b => … }` or overloaded-signature
   form; exact syntax undecided. Natural complement to named unions.
 - **Destructuring** — implemented in v0 (see §10 "Destructuring assignment").
-  `for i, x in collection` falls out as sugar over destructuring + for-in (deferred).
+  Multi-binder `for a, b in xs` is always *element* destructuring — never an
+  implicit enumerate, which would be ambiguous for tuple-element iterables
+  like `(Nat * Nat)*` (DECIDED 2026-07-06). Index iteration is explicit:
+  `for i, x in graph(xs)`, where `graph(xs) : (Nat * X)*` reifies the
+  pair view of a sequence (the graph of the sequence-as-function) — a
+  coercion made explicit, per the sequence-unification doctrine, not an
+  equality. `enumerate(xs)` planned as a beginner-friendly synonym and
+  `zip(Nat, xs)` as the eventual general form once generators exist; all
+  three deferred (see backlog.md "collections direction").
 - **Generics via `given`** — `given A; require A <= Countable; f(x: A) -> Nat`.
   Introduce a compile-time variable into scope; obligations stated with
   `require`. The generic *body* is checked once at **definition time**
@@ -1553,7 +1561,10 @@ Other open items (lower priority, not blocking):
   loudly rather than corrupting anything.
 - Compiled (AOT) binaries; linker integration.
 - Module system (imports, separate checking) — see §7.
-- More containers: ordered sets, vectors, maps; iterators.
+- More containers: maps; bags as `X* / sort` (quotient by permutation) and
+  ordered sets as sets-with-enumerators, per backlog.md "collections
+  direction" (DECIDED 2026-07-06 — no new literal brackets); iterators/
+  generators.
 - **General Kind-polymorphic overloading (user-facing)** — let a user-written
   overload set span multiple `Kind`s (today `check_overload_kind_agreement`
   rejects this unconditionally; only phase 3's compiler-generated
