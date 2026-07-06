@@ -25,7 +25,8 @@ fn equivalent_functions_proved() {
         out.stdout, out.stderr
     );
     assert!(
-        out.stdout.contains("proved          equiv double1, double2"),
+        out.stdout
+            .contains("proved          equiv double1, double2"),
         "expected the equiv declaration itself to report proved:\n{}",
         out.stdout
     );

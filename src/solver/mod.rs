@@ -234,7 +234,9 @@ pub fn check_file(
     // Function equivalence checking (`equiv f, g`) — a new kind of claim
     // (two existing functions agree on their shared domain), same
     // "gates `all_proved`, no `assume` escape" treatment as the two above.
-    results.extend(validate_equiv_decls(&sem_items, &name_defs, &fn_env, timeout_ms));
+    results.extend(validate_equiv_decls(
+        &sem_items, &name_defs, &fn_env, timeout_ms,
+    ));
 
     let all_proved = results
         .iter()

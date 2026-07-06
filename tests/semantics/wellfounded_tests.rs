@@ -95,9 +95,8 @@ fn mutual_recursion_with_a_base_case_is_well_founded() {
     // `Tree = Int | Forest`, `Forest = {} | Tree * Forest` — the
     // Tree/Forest shape from docs/recursive-sets-plan.md §4 (mirroring the
     // cvc5 crate's own `dt_mutual_recursion` integration test).
-    let err = elaborate_err(
-        "Tree = Int | Forest\nForest = {} | Tree * Forest\nf : Int -> Int\nf(x) = x",
-    );
+    let err =
+        elaborate_err("Tree = Int | Forest\nForest = {} | Tree * Forest\nf : Int -> Int\nf(x) = x");
     assert!(
         matches!(err, CompileError::Unsupported { .. }),
         "expected well-founded (Unsupported), got {err:?}"

@@ -33,7 +33,11 @@ fn bare_self_reference_rejected_with_clean_diagnostic() {
 #[test]
 fn product_only_definition_with_no_base_case_rejected() {
     let out = run_file("recursive_set_no_base_case.cantor");
-    assert_ne!(out.code, 0, "expected non-zero exit:\nstdout: {}", out.stdout);
+    assert_ne!(
+        out.code, 0,
+        "expected non-zero exit:\nstdout: {}",
+        out.stdout
+    );
     assert!(
         out.stderr.contains("cannot verify well-foundedness"),
         "expected a well-foundedness diagnostic on stderr:\n{}",
@@ -47,10 +51,13 @@ fn structural_recursion_reported_as_not_yet_implemented() {
     // yet — must be a clear "not yet supported" message, never a silent
     // pass and never confused with the permanent ill-founded rejection.
     let out = run_file("recursive_set_structural_not_yet_implemented.cantor");
-    assert_ne!(out.code, 0, "expected non-zero exit:\nstdout: {}", out.stdout);
+    assert_ne!(
+        out.code, 0,
+        "expected non-zero exit:\nstdout: {}",
+        out.stdout
+    );
     assert!(
-        out.stderr.contains("not yet supported")
-            && out.stderr.contains("recursive-sets-plan"),
+        out.stderr.contains("not yet supported") && out.stderr.contains("recursive-sets-plan"),
         "expected a not-yet-supported diagnostic pointing at the plan doc:\n{}",
         out.stderr
     );
@@ -69,10 +76,13 @@ fn structural_recursion_reported_as_not_yet_implemented() {
 #[test]
 fn recursion_under_intersection_reported_as_unrecognized_shape() {
     let out = run_file("recursive_set_unrecognized_shape.cantor");
-    assert_ne!(out.code, 0, "expected non-zero exit:\nstdout: {}", out.stdout);
+    assert_ne!(
+        out.code, 0,
+        "expected non-zero exit:\nstdout: {}",
+        out.stdout
+    );
     assert!(
-        out.stderr.contains("not yet supported")
-            && out.stderr.contains("bare union arm"),
+        out.stderr.contains("not yet supported") && out.stderr.contains("bare union arm"),
         "expected an unrecognized-shape diagnostic on stderr:\n{}",
         out.stderr
     );
