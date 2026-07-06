@@ -1356,6 +1356,58 @@ containing entirely unrelated functions). Passing an `IntMod5` value into
 a function typed over `Int` already works via the ordinary
 subset-domain-membership proof the compiler does everywhere else.
 
+### Function equivalence checking (`equiv f, g`) (DECIDED for this slice, v0)
+
+`equiv f, g` — a new top-level declaration, checked once like `require`: a
+compile-time-only proof obligation, no runtime value, no name, no `Kind`, no
+codegen. Not a statement inside a function body; a standalone item, since it
+makes a claim about two *existing*, independently-defined functions rather
+than introducing anything new.
+
+**Claim proved**: `f` and `g` agree on their shared domain —
+`∀x ∈ dom(f) ∩ dom(g). f(x) == g(x)` — refuted the same way every other
+proof obligation in this compiler is: assert the negation
+(`∃x ∈ dom(f) ∩ dom(g). f(x) != g(x)`) and ask cvc5 for unsat. `proved` /
+`counterexample` (with a genuine witness `x`) / `unknown` — the exact same
+three-outcome story the whole language already tells, now applied to "do
+these two implementations compute the same thing" rather than "does this
+implementation respect its declared range." Quantifying over the
+*intersection* of both declared domains (not requiring them to be written
+identically, and not silently ignoring them) is the safe and natural
+framing: calling either function outside its own checked domain gives no
+guarantee to compare against. A shared domain that's provably empty makes
+the claim vacuously (and correctly) `Proved`.
+
+**v0 scope**: single-parameter, single-signature, single-expression-body
+functions only, on either side — reuses `encode_comp_expr` (the same
+narrow arithmetic/comparison-only body encoder quotient-set canonicalizers
+already use, see above), not the full `encode_expr`/`EncodeCtx` machinery
+that supports calls/if-else/block bodies. Same restriction, same rationale:
+smallest slice that's still genuinely useful, zero new `Kind`/codegen
+surface area. Extending to richer bodies (calls, `if`/`else`, block bodies)
+is real, separate future work — not attempted here. A shape the checker
+can't handle (differing parameter/return Kinds, an overloaded or
+undefined name, a block body, unsupported body syntax) is `Unknown` with a
+clear reason, never silently accepted or confused with a genuine
+counterexample.
+
+```haskell
+double1 : Int -> Int
+double1(x) = x + x
+
+double2 : Int -> Int
+double2(x) = 2 * x
+
+equiv double1, double2
+```
+
+```sh
+$ cantor equiv_demo.cantor
+  proved          double1 : Int -> Int
+  proved          double2 : Int -> Int
+  proved          equiv double1, double2
+```
+
 ### Function composition operator (DECIDED)
 
 `>>` — left-to-right composition: `f >> g` means `x -> g(f(x))`, reading in

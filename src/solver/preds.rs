@@ -13,7 +13,7 @@ use cvc5::{Kind, TermManager};
 
 use crate::{
     ast::DefKind,
-    semantics::tree::{SemExpr, SemExprKind, SemFunctionBody},
+    semantics::tree::{SemExpr, SemExprKind, SemFunctionBody, SemFunctionDef, SemItem},
     span::Symbol,
 };
 
@@ -415,6 +415,213 @@ fn check_quotient_def(
     } else {
         CheckResult::Unknown(format!(
             "could not prove canonicalizer `{canon_sym}` is idempotent"
+        ))
+    }
+}
+
+// ── Function equivalence checking (`equiv f, g`) ────────────────────────────
+//
+// A new kind of compile-time claim, not covered by ordinary domain/range
+// checking: two *different*, already-defined functions agree on their
+// shared domain. Reuses `encode_comp_expr` (the same single-parameter,
+// single-expression-body encoder quotient-set canonicalizers use) rather
+// than the full `encode_expr`/`EncodeCtx` machinery — same v0 restriction
+// (no calls, no if/else, no block bodies) as quotient sets accepted for
+// exactly the same reason: it's the smallest slice that's still genuinely
+// useful, and it introduces zero new `Kind`/codegen surface area. Lifting
+// the restriction to arbitrary function bodies is real, separate future
+// work, not attempted here.
+
+/// Resolve `name` to its single definition, tolerating int-soundness-plan
+/// phase 3's compiler-generated `Int64`/`BigInt` split pair exactly like
+/// `check_quotient_def` does for canonicalizers above — a genuine user
+/// overload of the same name is still rejected, since `equiv` compares one
+/// concrete function, not a whole overload set.
+fn single_def<'a>(name: &Symbol, fn_env: &FunctionEnv<'a>) -> Result<&'a SemFunctionDef, String> {
+    let defs = fn_env
+        .get(name)
+        .ok_or_else(|| format!("`{name}` is not a defined function"))?;
+    if defs.len() > 1 && !defs.iter().all(|d| d.compiler_generated_split) {
+        return Err(format!("`{name}` must not be an overloaded name"));
+    }
+    defs.first()
+        .copied()
+        .ok_or_else(|| format!("`{name}` is not a defined function"))
+}
+
+pub(super) fn validate_equiv_decls(
+    sem_items: &[SemItem],
+    name_defs: &NameDefs,
+    fn_env: &FunctionEnv<'_>,
+    timeout_ms: u64,
+) -> Vec<(String, Vec<(String, CheckResult)>)> {
+    sem_items
+        .iter()
+        .filter_map(|item| {
+            let SemItem::EquivDecl { lhs, rhs, .. } = item else {
+                return None;
+            };
+            let label = format!("equiv {lhs}, {rhs}");
+            let result = check_equiv_decl(lhs, rhs, name_defs, fn_env, timeout_ms);
+            // Reuses `lhs`'s own name as the grouping key — the same trick
+            // `check_overload_disjointness`'s synthetic entries already rely
+            // on (see main.rs's `items_by_name`/`next_item_idx`): once a
+            // name's *real* signature results are exhausted, extra entries
+            // under the same key correctly fall back to displaying `label`
+            // verbatim instead of being matched against a real signature.
+            Some((lhs.0.clone(), vec![(label, result)]))
+        })
+        .collect()
+}
+
+fn check_equiv_decl(
+    lhs: &Symbol,
+    rhs: &Symbol,
+    name_defs: &NameDefs,
+    fn_env: &FunctionEnv<'_>,
+    timeout_ms: u64,
+) -> CheckResult {
+    let lhs_def = match single_def(lhs, fn_env) {
+        Ok(d) => d,
+        Err(msg) => return CheckResult::Unknown(msg),
+    };
+    let rhs_def = match single_def(rhs, fn_env) {
+        Ok(d) => d,
+        Err(msg) => return CheckResult::Unknown(msg),
+    };
+
+    if lhs_def.params.len() != 1 || rhs_def.params.len() != 1 {
+        return CheckResult::Unknown(format!(
+            "`equiv` currently only supports single-parameter functions \
+             (`{lhs}` has {}, `{rhs}` has {})",
+            lhs_def.params.len(),
+            rhs_def.params.len()
+        ));
+    }
+    if lhs_def.sigs.len() != 1 || rhs_def.sigs.len() != 1 {
+        return CheckResult::Unknown(
+            "`equiv` currently only supports functions with exactly one signature".to_string(),
+        );
+    }
+    let SemFunctionBody::Expr(lhs_body) = &lhs_def.body else {
+        return CheckResult::Unknown(format!(
+            "`{lhs}` must have a single-expression body (block bodies not yet \
+             supported for `equiv`)"
+        ));
+    };
+    let SemFunctionBody::Expr(rhs_body) = &rhs_def.body else {
+        return CheckResult::Unknown(format!(
+            "`{rhs}` must have a single-expression body (block bodies not yet \
+             supported for `equiv`)"
+        ));
+    };
+    let Some(lhs_domain) = lhs_def.sigs[0].domain.as_ref() else {
+        return CheckResult::Unknown(format!("`{lhs}` has no domain to quantify over"));
+    };
+    let Some(rhs_domain) = rhs_def.sigs[0].domain.as_ref() else {
+        return CheckResult::Unknown(format!("`{rhs}` has no domain to quantify over"));
+    };
+
+    let tm = TermManager::new();
+    let distinct_preds = SolverPreds {
+        distinct: build_distinct_preds(&tm, name_defs),
+        wrapping: build_wrapping_preds(&tm),
+        quotient: QuotientPreds::new(),
+    };
+
+    let Some(sort) = set_sort(&tm, lhs_domain, &distinct_preds, name_defs) else {
+        return CheckResult::Unknown(format!("`{lhs}`'s domain has no representable solver sort"));
+    };
+    let Some(rhs_sort) = set_sort(&tm, rhs_domain, &distinct_preds, name_defs) else {
+        return CheckResult::Unknown(format!("`{rhs}`'s domain has no representable solver sort"));
+    };
+    if sort != rhs_sort {
+        return CheckResult::Unknown(format!(
+            "`{lhs}` and `{rhs}` take differently-represented parameters, cannot compare"
+        ));
+    }
+
+    let mut solver = configured_solver(&tm, timeout_ms);
+    let x = tm.mk_var(sort, "x");
+    let comp_ctx = CompCtx {
+        tm: &tm,
+        name_defs,
+        distinct_preds: &distinct_preds,
+    };
+    let lhs_param = &lhs_def.params[0].name;
+    let rhs_param = &rhs_def.params[0].name;
+    let Some(lhs_result) = encode_comp_expr(lhs_body, lhs_param, x.clone(), comp_ctx) else {
+        return CheckResult::Unknown(format!(
+            "`{lhs}`'s body uses syntax `equiv` doesn't support yet \
+             (only arithmetic/comparisons — no calls, if/else, or block bodies)"
+        ));
+    };
+    let Some(rhs_result) = encode_comp_expr(rhs_body, rhs_param, x.clone(), comp_ctx) else {
+        return CheckResult::Unknown(format!(
+            "`{rhs}`'s body uses syntax `equiv` doesn't support yet \
+             (only arithmetic/comparisons — no calls, if/else, or block bodies)"
+        ));
+    };
+    if lhs_result.sort() != rhs_result.sort() {
+        return CheckResult::Unknown(format!(
+            "`{lhs}` and `{rhs}` return differently-represented values, cannot compare"
+        ));
+    }
+
+    // Quantify over the *shared* domain, not either function's full
+    // declared domain in isolation — calling `rhs` outside its own checked
+    // domain (or vice versa) gives no guarantee to compare against, so
+    // restricting the search to `dom(lhs) ∩ dom(rhs)` is both the safe and
+    // the mathematically natural framing (and costs nothing extra: it's the
+    // same conjunction-of-two-membership-constraints shape already used for
+    // range containment above). A shared domain that's provably empty makes
+    // the claim vacuously (and correctly) `Proved` — no witness was ever
+    // searched for, which is the right answer, just worth knowing about.
+    let in_lhs_dom = membership_constraint(&tm, x.clone(), lhs_domain, name_defs, &distinct_preds);
+    let in_rhs_dom = membership_constraint(&tm, x.clone(), rhs_domain, name_defs, &distinct_preds);
+    if matches!(in_lhs_dom, Membership::Unsupported)
+        || matches!(in_rhs_dom, Membership::Unsupported)
+    {
+        return CheckResult::Unknown(format!(
+            "cannot verify `{lhs}`/`{rhs}`'s shared domain — unsupported membership syntax"
+        ));
+    }
+    let shared_domain_guard = match (in_lhs_dom, in_rhs_dom) {
+        (Membership::Unconstrained, Membership::Unconstrained) => None,
+        (Membership::Unconstrained, Membership::Constrained(c))
+        | (Membership::Constrained(c), Membership::Unconstrained) => Some(c),
+        (Membership::Constrained(a), Membership::Constrained(b)) => {
+            Some(tm.mk_term(Kind::And, &[a, b]))
+        }
+        (Membership::Unsupported, _) | (_, Membership::Unsupported) => {
+            unreachable!("handled above")
+        }
+    };
+
+    // Prove `∀x ∈ dom(lhs) ∩ dom(rhs). lhs(x) == rhs(x)` by refuting
+    // `∃x ∈ (shared domain). lhs(x) != rhs(x)` — same shape as
+    // `check_quotient_def`'s idempotence proof above.
+    let neq = tm.mk_term(Kind::Distinct, &[lhs_result, rhs_result]);
+    let counterexample_body = match shared_domain_guard {
+        None => neq,
+        Some(guard) => tm.mk_term(Kind::And, &[guard, neq]),
+    };
+    let vars = tm.mk_term(Kind::VariableList, &[x]);
+    solver.assert_formula(tm.mk_term(Kind::Exists, &[vars, counterexample_body]));
+    let sat = solver.check_sat();
+    if sat.is_unsat() {
+        CheckResult::Proved
+    } else if sat.is_sat() {
+        CheckResult::Counterexample {
+            params: HashMap::new(),
+            output: 0,
+            reason: format!(
+                "found x in the shared domain of `{lhs}`/`{rhs}` where `{lhs}(x) != {rhs}(x)`"
+            ),
+        }
+    } else {
+        CheckResult::Unknown(format!(
+            "could not prove `{lhs}` and `{rhs}` are equivalent"
         ))
     }
 }

@@ -97,7 +97,9 @@ pub(super) fn generate_int64_bigint_splits(
                     None => out.push(item.clone()),
                 }
             }
-            SemItem::FunctionDef(_) | SemItem::NameDef(_) => out.push(item.clone()),
+            SemItem::FunctionDef(_) | SemItem::NameDef(_) | SemItem::EquivDecl { .. } => {
+                out.push(item.clone())
+            }
         }
     }
     out

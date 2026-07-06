@@ -6,6 +6,8 @@ mod check_basics;
 mod cli_flags;
 #[path = "cli/constants_and_bool.rs"]
 mod constants_and_bool;
+#[path = "cli/equiv.rs"]
+mod equiv;
 #[path = "cli/error_handling.rs"]
 mod error_handling;
 #[path = "cli/helpers.rs"]

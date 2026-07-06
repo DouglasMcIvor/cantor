@@ -69,7 +69,8 @@ use self::obligations::{
     BuiltinObligation, OverflowObligation, decide_overflow_obligations, decide_overload_resolutions,
 };
 use self::preds::{
-    build_distinct_preds, build_solver_preds, build_wrapping_preds, validate_quotient_sets,
+    build_distinct_preds, build_solver_preds, build_wrapping_preds, validate_equiv_decls,
+    validate_quotient_sets,
 };
 use self::sort::set_sort;
 
@@ -211,6 +212,9 @@ pub fn check_file(
                 let label = format!("{} : {} = {}", def.name, ty, def.value);
                 Some(Ok((def.name.0.clone(), vec![(label, result)])))
             }
+            // Checked separately below (`validate_equiv_decls`), once
+            // `fn_env` covers every function in the file — not per-item here.
+            SemItem::EquivDecl { .. } => None,
         })
         .collect::<Result<_, _>>()?;
 
@@ -226,6 +230,11 @@ pub fn check_file(
     // rather than re-proved per call site — same "gates `all_proved`, no
     // `assume` escape" treatment as overload disjointness just above.
     results.extend(validate_quotient_sets(&name_defs, &fn_env, timeout_ms));
+
+    // Function equivalence checking (`equiv f, g`) — a new kind of claim
+    // (two existing functions agree on their shared domain), same
+    // "gates `all_proved`, no `assume` escape" treatment as the two above.
+    results.extend(validate_equiv_decls(&sem_items, &name_defs, &fn_env, timeout_ms));
 
     let all_proved = results
         .iter()

@@ -1,0 +1,10 @@
+double1 : Int -> Int
+double1(x) = x + x
+
+double2 : Int -> Int
+double2(x) = 2 * x
+
+equiv double1, double2
+
+main : -> Int
+main() = 1

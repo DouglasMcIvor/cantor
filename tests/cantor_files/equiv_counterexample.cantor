@@ -1,0 +1,10 @@
+inc : Int -> Int
+inc(x) = x + 1
+
+inc_wrong : Int -> Int
+inc_wrong(x) = x + 2
+
+equiv inc, inc_wrong
+
+main : -> Int
+main() = 1

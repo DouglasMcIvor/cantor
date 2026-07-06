@@ -160,6 +160,10 @@ fn main() {
         let name = match item {
             Item::FunctionDef(def) => def.name.0.as_str(),
             Item::NameDef(def) => def.name.0.as_str(),
+            // No backing item of its own to look up — `validate_equiv_decls`
+            // already keys its result under the `lhs` function's own name
+            // (same synthetic-entry trick `check_overload_disjointness` uses).
+            Item::EquivDecl { .. } => continue,
         };
         items_by_name.entry(name).or_default().push(item);
     }
@@ -181,7 +185,7 @@ fn main() {
                     Some(sig) => format!("{} : {}", def.name, sig),
                     None => label.clone(),
                 },
-                Some(Item::NameDef(_)) | None => label.clone(),
+                Some(Item::NameDef(_)) | Some(Item::EquivDecl { .. }) | None => label.clone(),
             };
 
             match result {
@@ -239,7 +243,7 @@ fn main() {
 fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
     let has_main = tree.items.iter().any(|item| match item {
         Item::FunctionDef(def) => def.name.0 == "main" && def.params.is_empty(),
-        Item::NameDef(_) => false,
+        Item::NameDef(_) | Item::EquivDecl { .. } => false,
     });
 
     if !has_main {

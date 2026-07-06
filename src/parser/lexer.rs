@@ -29,6 +29,8 @@ pub enum Token {
     // Set definitions
     Alias,
     Distinct,
+    // `equiv f, g` — top-level function-equivalence proof obligation
+    Equiv,
     // Loops
     While,
     // Reserved for comprehensions (parser rejects with a "not yet" error)
@@ -107,6 +109,7 @@ impl fmt::Display for Token {
             Token::Return => f.write_str("return"),
             Token::Alias => f.write_str("alias"),
             Token::Distinct => f.write_str("distinct"),
+            Token::Equiv => f.write_str("equiv"),
             Token::While => f.write_str("while"),
             Token::For => f.write_str("for"),
             Token::Fail => f.write_str("fail"),
@@ -216,6 +219,7 @@ impl<'src> Lexer<'src> {
             "require" => Token::Require,
             "alias" => Token::Alias,
             "distinct" => Token::Distinct,
+            "equiv" => Token::Equiv,
             "while" => Token::While,
             "for" => Token::For,
             "fail" => Token::Fail,

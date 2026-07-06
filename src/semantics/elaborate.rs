@@ -231,6 +231,11 @@ fn elaborate_item(item: &Item, ctx: &Ctx) -> Result<SemItem, CompileError> {
     match item {
         Item::FunctionDef(def) => elaborate_function_def(def, ctx).map(SemItem::FunctionDef),
         Item::NameDef(def) => elaborate_name_def(def, ctx).map(SemItem::NameDef),
+        Item::EquivDecl { lhs, rhs, span } => Ok(SemItem::EquivDecl {
+            lhs: lhs.clone(),
+            rhs: rhs.clone(),
+            span: *span,
+        }),
     }
 }
 

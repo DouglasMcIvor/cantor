@@ -889,7 +889,9 @@ pub(super) fn compile_elaborated<'ctx>(
                 }
                 Some((fn_val, def))
             }
-            SemItem::NameDef(_) => None,
+            // Compile-time-only proof obligation (like `require`) — no
+            // codegen, no runtime representation, nothing to declare.
+            SemItem::NameDef(_) | SemItem::EquivDecl { .. } => None,
         })
         .collect();
 

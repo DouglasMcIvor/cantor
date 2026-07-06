@@ -239,6 +239,14 @@ pub struct SemNameDef {
 pub enum SemItem {
     FunctionDef(SemFunctionDef),
     NameDef(SemNameDef),
+    /// `equiv f, g` — passthrough from `ast::Item::EquivDecl`, unchanged.
+    /// No `Kind` to compute: it's a proof obligation about two *existing*
+    /// functions, not a new name or value. See `solver::preds::validate_equiv_decls`.
+    EquivDecl {
+        lhs: Symbol,
+        rhs: Symbol,
+        span: Span,
+    },
 }
 
 // ── AST utilities, mirrored for the elaborated tree ─────────────────────────

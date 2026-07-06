@@ -1,0 +1,7 @@
+f : Int -> Int
+f(x) = x
+
+equiv f, g
+
+main : -> Int
+main() = 1

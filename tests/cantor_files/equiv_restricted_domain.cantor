@@ -1,0 +1,15 @@
+-- `p`/`q` disagree on every input (`x + 1` vs `x - 1`), but their *domains*
+-- (Nat, Int - Nat) are disjoint -- the equiv claim only quantifies over the
+-- shared domain (Nat ∩ (Int - Nat) = {}), so it's vacuously true. Regression
+-- test for "quantify over the intersection of both domains", not "domains
+-- must be written identically" or "ignore domains entirely".
+p : Nat -> Int
+p(x) = x + 1
+
+q : Int - Nat -> Int
+q(x) = x - 1
+
+equiv p, q
+
+main : -> Int
+main() = 1

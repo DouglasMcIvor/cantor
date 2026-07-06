@@ -15,6 +15,11 @@ use crate::{
 
 impl<'src> Parser<'src> {
     pub(super) fn parse_item(&mut self) -> Result<Item, CompileError> {
+        // `equiv f, g` — top-level function-equivalence proof obligation.
+        if self.peek() == &Token::Equiv {
+            return self.parse_equiv_decl();
+        }
+
         // Unannotated name def: `Name = [alias|distinct] expr`
         // Disambiguated from annotated defs and functions (which have `:` after the name)
         // by checking the second lookahead token.
@@ -118,6 +123,23 @@ impl<'src> Parser<'src> {
             body,
             span: Span::new(start_span.start, end),
         }))
+    }
+
+    /// Parse `equiv f, g` — a top-level function-equivalence proof obligation.
+    /// No new name is introduced; `lhs`/`rhs` are references to functions
+    /// defined elsewhere (in either order relative to this declaration).
+    fn parse_equiv_decl(&mut self) -> Result<Item, CompileError> {
+        let start = self.peek_span();
+        self.expect(&Token::Equiv)?;
+        let lhs = self.expect_ident()?;
+        self.expect(&Token::Comma)?;
+        let rhs_span = self.peek_span();
+        let rhs = self.expect_ident()?;
+        Ok(Item::EquivDecl {
+            lhs,
+            rhs,
+            span: Span::new(start.start, rhs_span.end),
+        })
     }
 
     /// Parse an unannotated name def: `Name = [alias|distinct] expr`.

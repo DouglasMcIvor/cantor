@@ -535,6 +535,15 @@ pub type NameDefs = HashMap<Symbol, NameDef>;
 pub enum Item {
     FunctionDef(FunctionDef),
     NameDef(NameDef),
+    /// `equiv f, g` — a top-level proof obligation that `f` and `g` agree on
+    /// their shared domain. Purely compile-time (like `require`): introduces
+    /// no name, no runtime value, no `Kind`. See
+    /// `solver::preds::validate_equiv_decls` for the actual check.
+    EquivDecl {
+        lhs: Symbol,
+        rhs: Symbol,
+        span: Span,
+    },
 }
 
 // ── Display ───────────────────────────────────────────────────────────────────

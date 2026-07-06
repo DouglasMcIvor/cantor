@@ -129,6 +129,7 @@ fn handle_command(state: &mut ReplState, cmd: &str) -> bool {
                             }
                         }
                         Item::NameDef(def) => println!("  {}", def.name),
+                        Item::EquivDecl { lhs, rhs, .. } => println!("  equiv {lhs}, {rhs}"),
                     }
                 }
             }
@@ -316,5 +317,9 @@ fn item_name(item: &Item) -> &str {
     match item {
         Item::FunctionDef(def) => def.name.0.as_str(),
         Item::NameDef(def) => def.name.0.as_str(),
+        // Keyed the same way `solver::preds::validate_equiv_decls` labels
+        // its result — `lhs`'s own name — since an equiv declaration has no
+        // single name of its own.
+        Item::EquivDecl { lhs, .. } => lhs.0.as_str(),
     }
 }

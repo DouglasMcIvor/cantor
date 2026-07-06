@@ -52,6 +52,9 @@ pub fn check_names(items: &[Item]) -> Vec<CompileError> {
         match item {
             Item::FunctionDef(def) => check_function(def, &mut errors),
             Item::NameDef(def) => check_name_def(def, &mut errors),
+            // `equiv f, g` introduces no name of its own — `f`/`g` are
+            // references, already checked at their own definition sites.
+            Item::EquivDecl { .. } => {}
         }
     }
     errors
