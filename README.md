@@ -408,6 +408,56 @@ A quotient set has no representation of its own — an `IntMod5` value is stored
 > **Known limitation:** arithmetic on quotient-set values doesn't wrap (canonicalize) yet.
 > `x + y` for `x, y : IntMod5` is just ordinary `Int` addition — the result isn't automatically brought back into `IntMod5`'s canonical range. The planned fix is a `deriving Arithmetic` modifier: `IntMod5 = Int / canon5 deriving Arithmetic` would derive wrapping versions of `+`, `*`, etc. by translating each operand to its basis (`Int`), calling the ordinary operator, and re-canonicalizing the result with `canon5` before handing it back — turning `IntMod5` into genuine machine-modular arithmetic (`WrappingNat32`-style) rather than just a compile-time membership predicate. Not implemented yet; only the quotient-set-formation half of this feature exists today.
 
+### Function equivalence checking
+
+Most languages have no way to ask "do these two functions compute the same thing?" — you write a property-based test, run it a few thousand times, and hope.
+Cantor can just *prove* it, over the same shared domain/range machinery every other claim in this language goes through.
+
+`equiv f, g` is a standalone top-level declaration — not a statement inside a function body — asserting that `f` and `g` agree on every input in their shared domain.
+It introduces no new value, no name, no runtime representation: purely a compile-time proof obligation, checked once, the same way `require` is.
+
+```haskell
+double1 : Int -> Int
+double1(x) = x + x
+
+double2 : Int -> Int
+double2(x) = 2 * x
+
+equiv double1, double2
+```
+
+```sh
+$ cantor equiv_demo.cantor
+  proved          double1 : Int -> Int
+  proved          double2 : Int -> Int
+  proved          equiv double1, double2
+
+  3 proved, 0 counterexample(s), 0 unknown
+```
+
+If they disagree, you get a genuine counterexample — a concrete input where the two implementations diverge — exactly like any other proof failure in Cantor:
+
+```haskell
+inc : Int -> Int
+inc(x) = x + 1
+
+inc_wrong : Int -> Int
+inc_wrong(x) = x + 2
+
+equiv inc, inc_wrong
+```
+
+```sh
+$ cantor equiv_broken.cantor
+  counterexample  equiv inc, inc_wrong
+      ->  output = 0  (found x in the shared domain of `inc`/`inc_wrong` where `inc(x) != inc_wrong(x)`)
+```
+
+The claim quantifies over the *intersection* of both functions' declared domains, not either one in isolation — comparing a function outside its own checked domain would give no guarantee to compare against.
+If two functions' domains happen to be disjoint, the claim is vacuously (and correctly) `proved`, since there's no shared input for them to disagree on.
+
+> **v0 scope:** only single-parameter, single-expression-body functions on either side — no calls, `if`/`else`, or block bodies yet. Same restriction quotient-set canonicalizers already have, for the same reason: it's the smallest slice that's still genuinely useful. A shape the checker can't yet handle (differing parameter/return kinds, an overloaded or undefined name, unsupported body syntax) reports `unknown` with a clear reason — never silently accepted, never confused with a real counterexample.
+
 ### Product Sets
 
 Functions can take and return elements of product sets (aka tuples) using `*` in signatures and `(e1, e2)` syntax in bodies. Positional projection uses `.0`, `.1`, etc.
