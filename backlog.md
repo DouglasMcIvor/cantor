@@ -308,6 +308,13 @@ Algorithm:
   ```
   not sure how we interpret that to be the Kleene star?
   That should cover all of list, option and error tuples etc.
+- Extend Fable's 'equiv' to cover any proof obligation:
+  forall is:
+  given x : Int
+  given y : Int
+  require P(x, y)
+  there exists is
+  y = choose { y if P(y) }
 - automatic multithreading for semi-pure core?
 - multiple concurrent IO threads? ChatGPT convo suggests developing a _scheduler_ using optimisitic
   concurrency control, taking adaptive measurements on which events conflicts, both statically and dynamically determining state partitions for different event handlers, letting the developer declare that events are `ordered` or `unordered` or `mostly independent` so that we know the "shape" of events. Lots of fun stuff we could do!
