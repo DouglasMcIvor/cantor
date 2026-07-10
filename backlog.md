@@ -21,6 +21,7 @@ You probably don't want to read this unless you're me.
     -  `cargo llvm-cov` for coverage - try again to publish to GitHub pages
     -  `cargo +nightly miri test` for UB, aliasing, invalid references
   - "giving every stage a `validate()` method"
+- 'check pred(x) for x in X' keyword for property based testing, unit testing as the degenerate case
 - termination checking on recursion and loops with a 'decreases n' annotation to declare a ranking function.
   automatic inference of the ranking function structurally where possible 
 - `none` value and `None` set, currently missing
