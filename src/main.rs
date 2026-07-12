@@ -1,6 +1,7 @@
 mod repl;
 
 use std::io::BufRead;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use inkwell::context::Context;
@@ -9,10 +10,11 @@ use std::collections::HashMap;
 
 use cantor::{
     ast::Item,
-    codegen::{compile_constrained, compile_to_ir},
+    codegen::{build_executable, compile_constrained, compile_to_ir, find_event_loop_state_kind},
     error::CompileError,
     kind::Kind,
     pipeline::{FrontendError, parse_and_check_names, results_of},
+    runtime::event_loop,
     semantics::tree::SemItem,
     solver::{CheckOutcome, CheckResult, ConstrainedTree, check_file},
 };
@@ -41,8 +43,13 @@ pub(crate) const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_SECS * 1000;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // Strip out --timeout <n> / --timeout=<n> before positional parsing.
+    // Strip out --timeout <n> / --timeout=<n>, -o <path> / -o=<path>, and
+    // --keep-temps before positional parsing — the latter two only apply to
+    // `build`, but stripping them unconditionally keeps this one pass
+    // shared across all subcommands, same as --timeout already is.
     let mut timeout_secs: u64 = DEFAULT_TIMEOUT_SECS;
+    let mut output_path: Option<&str> = None;
+    let mut keep_temps = false;
     let mut positional: Vec<&str> = Vec::new();
     let mut i = 1;
     while i < args.len() {
@@ -67,6 +74,17 @@ fn main() {
                     process::exit(2);
                 }
             };
+        } else if args[i] == "-o" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("error: -o requires an output path");
+                process::exit(2);
+            }
+            output_path = Some(args[i].as_str());
+        } else if let Some(val) = args[i].strip_prefix("-o=") {
+            output_path = Some(val);
+        } else if args[i] == "--keep-temps" {
+            keep_temps = true;
         } else {
             positional.push(args[i].as_str());
         }
@@ -74,19 +92,25 @@ fn main() {
     }
     let timeout_ms = timeout_secs * 1000;
 
-    let (do_run, do_llvm_ir, path) = match positional.len() {
+    let (do_run, do_llvm_ir, do_build, path) = match positional.len() {
         0 => {
             repl::run();
             return;
         }
-        1 if positional[0] != "run" && positional[0] != "llvm-ir" => (false, false, positional[0]),
-        2 if positional[0] == "run" => (true, false, positional[1]),
-        2 if positional[0] == "llvm-ir" => (false, true, positional[1]),
+        1 if positional[0] != "run" && positional[0] != "llvm-ir" && positional[0] != "build" => {
+            (false, false, false, positional[0])
+        }
+        2 if positional[0] == "run" => (true, false, false, positional[1]),
+        2 if positional[0] == "llvm-ir" => (false, true, false, positional[1]),
+        2 if positional[0] == "build" => (false, false, true, positional[1]),
         _ => {
             eprintln!("usage: cantor [--timeout <secs>]");
             eprintln!("       cantor [--timeout <secs>] <file.cantor>");
             eprintln!("       cantor [--timeout <secs>] run <file.cantor>");
             eprintln!("       cantor llvm-ir <file.cantor>");
+            eprintln!(
+                "       cantor build <file.cantor> [-o <output>] [--keep-temps]  (event-loop `main` only)"
+            );
             process::exit(2);
         }
     };
@@ -236,6 +260,17 @@ fn main() {
                 process::exit(1);
             }
         }
+    } else if do_build {
+        match outcome {
+            CheckOutcome::Proved(tree) => run_build(tree, path, &src, output_path, keep_temps),
+            CheckOutcome::NotProved(_) => {
+                eprintln!(
+                    "error: not building — {} counterexample(s), {} unknown result(s) found above",
+                    n_counter, n_unknown
+                );
+                process::exit(1);
+            }
+        }
     } else if n_counter > 0 || n_unknown > 0 {
         process::exit(1);
     }
@@ -363,9 +398,9 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
             let display = if main_return_kind == Kind::Int {
                 format_tagged_int(result)
             } else if main_return_kind == Kind::Char {
-                format_char(result)
+                event_loop::format_char(result)
             } else if main_return_kind == Kind::Vector(Box::new(Kind::Char)) {
-                format_char_vector(result)
+                event_loop::format_char_vector(result)
             } else {
                 result.to_string()
             };
@@ -374,34 +409,37 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
     }
 }
 
-/// MVP IO event loop (docs/design-decisions.md §6) detection: find the
-/// State `Kind` of a 2-arity `main` shaped like `Char* * S -> Char* * S`, if
-/// the file defines one. `None` means this file just isn't using the
-/// event-loop feature (an ordinary zero-arg `main`, or none at all).
-fn find_event_loop_state_kind(tree: &ConstrainedTree) -> Option<Kind> {
-    tree.sem_items.iter().find_map(|item| match item {
-        SemItem::FunctionDef(def)
-            if def.name.0 == "main"
-                && is_event_loop_step_shape(&def.param_kinds, &def.return_kind) =>
-        {
-            let Kind::Tuple(elems) = &def.return_kind else {
-                unreachable!("is_event_loop_step_shape already checked this is a Tuple");
-            };
-            Some(elems[1].clone())
-        }
-        _ => None,
-    })
-}
+/// `cantor build`: AOT-compile a proved `ConstrainedTree` to a standalone
+/// executable. Only the IO event-loop `main` shape is supported (see
+/// `codegen::aot`'s module doc for why) — scalar/tuple `main` refuses here
+/// with a clear message rather than silently falling back to some other
+/// behavior, mirroring `run_main`'s own "requires a zero-argument `main`"
+/// refusal for the opposite case.
+fn run_build(tree: ConstrainedTree, path: &str, src: &str, output: Option<&str>, keep_temps: bool) {
+    let Some(state_kind) = find_event_loop_state_kind(&tree) else {
+        eprintln!(
+            "error: `cantor build` only supports the IO event-loop `main` shape \
+             (`Char* * S -> Char* * S`, docs/design-decisions.md §6) — scalar/tuple \
+             `main` is JIT-only, use `cantor run` instead"
+        );
+        process::exit(1);
+    };
 
-/// True when `(param_kinds, return_kind)` matches the MVP event loop's fixed
-/// v0 shape `Char* * S -> Char* * S`. Duplicates `codegen`'s private
-/// predicate of the same name (a few lines) rather than exposing it across
-/// the lib/bin crate boundary just for this.
-fn is_event_loop_step_shape(param_kinds: &[Kind], return_kind: &Kind) -> bool {
-    let is_char_star = |k: &Kind| matches!(k, Kind::Vector(elem) if **elem == Kind::Char);
-    param_kinds.len() == 2
-        && is_char_star(&param_kinds[0])
-        && matches!(return_kind, Kind::Tuple(elems) if elems.len() == 2 && is_char_star(&elems[0]))
+    let output_path: PathBuf = match output {
+        Some(o) => PathBuf::from(o),
+        None => Path::new(path)
+            .file_stem()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("a.out")),
+    };
+
+    match build_executable(&tree, path, src, &state_kind, &output_path, keep_temps) {
+        Ok(()) => println!("wrote executable: {}", output_path.display()),
+        Err(e) => {
+            print_compile_error(path, &e, src);
+            process::exit(1);
+        }
+    }
 }
 
 /// MVP IO event loop driver (docs/design-decisions.md §6): compiles the
@@ -446,12 +484,12 @@ fn run_event_loop(tree: ConstrainedTree, path: &str, src: &str, state_kind: Kind
 
     loop {
         let (event_ptr, is_final) = match lines.next() {
-            Some(Ok(line)) => (encode_char_star(&line), false),
+            Some(Ok(line)) => (event_loop::encode_char_star(&line), false),
             Some(Err(e)) => {
                 eprintln!("error reading stdin: {e}");
                 process::exit(1);
             }
-            None => (encode_eot_event(), true),
+            None => (event_loop::encode_eot_event(), true),
         };
 
         let mut in_buf = Vec::with_capacity(1 + n_state_leaves);
@@ -463,62 +501,13 @@ fn run_event_loop(tree: ConstrainedTree, path: &str, src: &str, state_kind: Kind
             step.call(in_buf.as_mut_ptr(), out_buf.as_mut_ptr());
         }
 
-        println!("{}", format_char_vector(out_buf[0]));
+        println!("{}", event_loop::format_char_vector(out_buf[0]));
         state_buf.copy_from_slice(&out_buf[1..]);
 
         if is_final {
             break;
         }
     }
-}
-
-/// Build a `Char*` (heap-allocated Arrow-backed vector) from a Rust `&str`,
-/// one element per Unicode scalar value — the same runtime representation
-/// JIT'd Cantor code itself builds array literals into, just called
-/// directly since the driver runs as ordinary native Rust, not JIT'd code.
-fn encode_char_star(s: &str) -> i64 {
-    let builder = cantor::runtime::cantor_vec_builder_new_i64();
-    for c in s.chars() {
-        cantor::runtime::cantor_vec_builder_push_i64(builder, c as i64);
-    }
-    cantor::runtime::cantor_vec_builder_finish_i64(builder)
-}
-
-/// The synthetic final `Event` fed to an event-loop `main` when `stdin`
-/// closes: a length-1 `Char*` containing codepoint 4 (ASCII EOT, the
-/// traditional Ctrl-D "end of transmission" control character — not
-/// U+2404 ␄, which is a printable *display glyph* for EOT and could
-/// theoretically appear in real input). docs/design-decisions.md §6.
-fn encode_eot_event() -> i64 {
-    encode_char_star("\u{4}")
-}
-
-/// Decode a `Char` leaf (zero-extended to i64 by the trampoline, same
-/// convention as `Unsigned32`) into its display form — the actual character,
-/// not the bare codepoint. Only valid Unicode scalar values can ever reach
-/// here: `char(n)` proves it once at construction, so `char::from_u32` is
-/// infallible.
-fn format_char(word: i64) -> String {
-    let v = word as u32;
-    let c = char::from_u32(v)
-        .unwrap_or_else(|| panic!("ICE: Char leaf {v} is not a valid Unicode scalar"));
-    format!("{c}")
-}
-
-/// Decode a `Char*` (`Vector(Char)`) pointer-as-i64 into its text — reuses
-/// `Vector(Int)`'s `_i64` Arrow runtime verbatim (docs/design-decisions.md
-/// §13). Shared by `format_kind_val`'s `Vector(Char)` arm and the
-/// non-fallible scalar-main path below, which bypasses `format_kind_val`
-/// entirely for any return Kind other than `Tuple`.
-fn format_char_vector(vec_ptr: i64) -> String {
-    let len = cantor::runtime::cantor_vec_len_i64(vec_ptr);
-    (0..len)
-        .map(|i| {
-            let cp = cantor::runtime::cantor_vec_get_i64(vec_ptr, i) as u32;
-            char::from_u32(cp)
-                .unwrap_or_else(|| panic!("ICE: Char* element {cp} is not a valid Unicode scalar"))
-        })
-        .collect::<String>()
 }
 
 /// Decode a possibly-tagged `Int` word (int-soundness-plan phase 3 step 4b —
@@ -579,7 +568,7 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
         Kind::Char => {
             let v = buf[*offset];
             *offset += 1;
-            format_char(v)
+            event_loop::format_char(v)
         }
         Kind::Int => {
             let v = buf[*offset];
@@ -602,7 +591,7 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
         Kind::Vector(ek) if **ek == Kind::Char => {
             let vec_ptr = buf[*offset];
             *offset += 1;
-            format_char_vector(vec_ptr)
+            event_loop::format_char_vector(vec_ptr)
         }
         Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in CLI output"),
     }
