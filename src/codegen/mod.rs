@@ -24,6 +24,7 @@ mod arith;
 mod blocks;
 mod coerce;
 mod expr;
+mod expr_call;
 mod expr_vec;
 mod jit;
 mod loops;

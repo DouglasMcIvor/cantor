@@ -34,6 +34,8 @@ mod runtime_sets;
 mod set_defs;
 #[path = "solver/set_ops.rs"]
 mod set_ops;
+#[path = "solver/statements.rs"]
+mod statements;
 #[path = "solver/tuples.rs"]
 mod tuples;
 #[path = "solver/vectors.rs"]
