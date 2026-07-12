@@ -804,6 +804,13 @@ cargo run -- <file.cantor>          # check proofs
 cargo run -- run <file.cantor>      # check then JIT-run main()
 ```
 
+One-time setup to enable the checked-in pre-commit hook (blocks commits that
+aren't `cargo fmt`-clean):
+
+```
+git config core.hooksPath .githooks
+```
+
 ## Development process
 
 Luckily for me it's been 152 years since Cantor published ["_Ueber eine Eigenschaft des Inbegriffes aller reellen algebraischen Zahlen_"]([https://en.wikipedia.org/wiki/Cantor%27s_first_set_theory_article](https://en.wikipedia.org/wiki/Georg_Cantor#Set_theory)) and not only do we have unbelievely powerful silicon computers, that silicon can _think_ and _write code_ and sometimes even tells me cat jokes.
