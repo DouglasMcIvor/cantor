@@ -271,7 +271,7 @@ implementation detail the developer should not rely on.
 - Compiler/runtime needs structural-sharing/diffing so unchanged state isn't
   recreated from scratch (persistent data structures, not naive rebuild).
 
-### MVP event loop (`cantor run`) — DECIDED, not yet implemented
+### MVP event loop (`cantor run`) — DECIDED, IMPLEMENTED
 
 - **Event = Output = `Char*`** for v0 — line-based CLIs only. Not
   user-configurable yet; a fixed part of the `cantor run` contract, not a
@@ -320,6 +320,50 @@ implementation detail the developer should not rely on.
   next `Event`) — the v0 stdio runtime already has exactly this shape,
   just hard-coded in Rust (`print(Output)` then `read a line as Event`)
   rather than pluggable.
+
+### `cantor build` — AOT compilation (DECIDED, IMPLEMENTED)
+
+`cantor run` executes a program through the in-process LLVM JIT — useful
+for iterating, but every run pays LLVM+cvc5 startup cost and the result
+can't be handed to someone else as an artifact. `cantor build
+<file.cantor> [-o <output>] [--keep-temps]` instead produces a standalone
+native executable, going through the same solver-verified
+`ConstrainedTree` `cantor run` does (refuses to build an unproved file,
+same as `cantor run` refuses to execute one) but emitting a linked binary
+instead of JIT-executing in-process.
+
+- **Scope is permanently the event-loop `main` shape only**
+  (`Char* * S -> Char* * S`, above) — **not** a "not yet implemented" gap
+  to close later. Scalar/tuple `main` was only ever a JIT convenience for
+  playing with the language and will not get AOT support. One practical
+  consequence: an event-loop program's driver needs zero `Kind`-shape
+  branching to compile (`State` is opaque, just copied as an i64 buffer;
+  `Output` is always `Char*`), so `cantor build` never generates
+  per-program dispatch logic — see `src/codegen/aot.rs`'s module doc.
+- **`cantor-runtime` is its own workspace crate**, split out of what used
+  to be `src/runtime/`. It only ever depended on
+  arrow-array/arrow-buffer/arrow-schema/num-bigint, never cvc5/inkwell, so
+  a compiled Cantor executable links against this lean artifact — no
+  `libcvc5`/`libLLVM` runtime dependency (verified by `ldd` in
+  `tests/cli/build.rs`). `cantor` (the compiler) is the only thing that
+  needs the full toolchain.
+- **Pipeline**: verify → emit a native object file via LLVM's
+  `TargetMachine` (`src/codegen/object.rs`) → generate a small (~10 line)
+  Rust "driver" declaring the program's statically-linked
+  `cantor_initial_state`/`cantor_step` symbols and handing them to
+  `cantor_runtime::event_loop::drive_event_loop` (the same stdin-loop
+  logic `cantor run`'s JIT path uses, shared rather than duplicated) →
+  shell out to `rustc` to compile the driver and link it against the
+  object file and the already-built `cantor-runtime` rlib.
+- **Toolchain requirement**: `cantor build` needs `rustc` on `PATH` at
+  *build* time — exactly analogous to a C compiler needing `cc` for its
+  link step, not a new *runtime* dependency of the compiled executable
+  itself (which needs nothing beyond libc). No cross-compilation story
+  yet — object files are emitted for the host target only.
+- Compiled-program temp artifacts (`program.o`, the generated driver
+  source) live under the OS temp dir and are deleted unless `--keep-temps`
+  is passed; only the final linked executable — written straight to the
+  caller-chosen `-o` path — needs to be on an executable filesystem.
 
 ## 7. Compilation model
 
@@ -417,6 +461,14 @@ implementation detail the developer should not rely on.
   own goals, genuine professional learning value, reasonable FFI story for
   wrapping cvc5.
 - **Compiler backend: LLVM.**
+- **Workspace split: `cantor-runtime`.** The Cargo workspace root (`cantor`)
+  holds the compiler proper (parser/solver/codegen, cvc5+inkwell); the
+  `cantor-runtime` member holds only the set/vector/bigint runtime called
+  from JIT'd and AOT-compiled Cantor code (arrow-array/arrow-buffer/
+  arrow-schema/num-bigint, nothing else). `cantor` depends on it and
+  re-exports it as `cantor::runtime`; `cantor build`'s compiled
+  executables link against `cantor-runtime` directly, never the full
+  `cantor` crate — see §6's "`cantor build`" subsection.
 - **Compiler from day one** — not interpreter-first. Cantor should feel
   statically-typed/compiled from the start (Haskell/Rust/C++ register, not
   Python/JS).
