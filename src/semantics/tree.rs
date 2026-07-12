@@ -84,6 +84,8 @@ pub enum SemExprKind {
     Try(Box<SemExpr>),
     FailLit,
     FailWith(Box<SemExpr>),
+    /// Bare `none` — mirrors `FailLit`, no payload variant.
+    NoneLit,
     Comprehension {
         output: Box<SemExpr>,
         var: Symbol,
@@ -340,7 +342,7 @@ pub fn sem_param_set_exprs(
     }
 }
 
-/// True if the range expression can produce a failure value at runtime.
+/// True if the range expression can produce a `Fail`-tagged value at runtime.
 /// Mirrors `codegen::range_contains_fail`, operating on the disambiguated
 /// `CartesianProduct` variant (the elaborated form of `Fail * Y`, desugared
 /// from `!! Y`) instead of `BinOp::Mul`.
@@ -356,6 +358,183 @@ pub fn range_contains_fail(range: &SemExpr) -> bool {
             matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
         }
         _ => false,
+    }
+}
+
+/// True if the range expression can produce a `None`-tagged value at
+/// runtime. Mirrors `range_contains_fail` exactly, minus the `Fail * Y`
+/// payload-carrying shape — `None` is deliberately bare-only.
+pub fn range_contains_none(range: &SemExpr) -> bool {
+    match &range.kind {
+        SemExprKind::Var(sym) => sym.0 == "None",
+        SemExprKind::BinOp {
+            op: BinOp::Union,
+            lhs,
+            rhs,
+        } => range_contains_none(lhs) || range_contains_none(rhs),
+        _ => false,
+    }
+}
+
+/// True if the range can produce either propagation tag (`Fail` and/or
+/// `None`) at runtime — gates whether a function needs the fallible
+/// `{tag, i64}` wire-return shape at all. See `kind::is_propagation_tuple`.
+pub fn range_is_fallible(range: &SemExpr) -> bool {
+    range_contains_fail(range) || range_contains_none(range)
+}
+
+/// Every `f(args)?` call site in `body`, as `(callee name, ?'s own span)`.
+/// Used by `solver::mod`'s propagation-tag check: a `?` on a callee whose
+/// range can produce `Fail`/`None` requires the *caller's own* declared
+/// range to include that same tag, or codegen would try to `return` a
+/// `{tag, i64}` struct from a function declared to return a plain scalar —
+/// an LLVM type-mismatch ICE, not a clean diagnostic, if left unchecked (see
+/// docs/design-decisions.md §4's "the caller must also declare `Fail`" rule
+/// — this function is what actually enforces it).
+///
+/// Only the `Try(Call { .. })` shape is collected — `?` on any other
+/// expression shape isn't a call-narrowing site `encode_call` handles, so it
+/// has nothing here to check against. Recurses exhaustively (no wildcard
+/// arm) so a future `SemExprKind`/`SemStmt` variant forces an explicit
+/// decision here.
+pub fn collect_try_calls(body: &SemFunctionBody) -> Vec<(&Symbol, Span)> {
+    let mut out = Vec::new();
+    match body {
+        SemFunctionBody::Expr(e) => collect_try_calls_expr(e, &mut out),
+        SemFunctionBody::Block(stmts) => collect_try_calls_stmts(stmts, &mut out),
+    }
+    out
+}
+
+/// `collect_try_calls` for a block body's statement list directly — used by
+/// `solver::check_block_sig`, which only has `&[SemStmt]` in hand (not a
+/// `SemFunctionBody`, which would require cloning to construct).
+pub fn collect_try_calls_stmts<'a>(stmts: &'a [SemStmt], out: &mut Vec<(&'a Symbol, Span)>) {
+    stmts.iter().for_each(|s| collect_try_calls_stmt(s, out));
+}
+
+fn collect_try_calls_stmt<'a>(stmt: &'a SemStmt, out: &mut Vec<(&'a Symbol, Span)>) {
+    match stmt {
+        SemStmt::Let {
+            constraint, value, ..
+        }
+        | SemStmt::MutLet {
+            constraint, value, ..
+        } => {
+            collect_try_calls_expr(constraint, out);
+            collect_try_calls_expr(value, out);
+        }
+        SemStmt::Assign { value, .. } | SemStmt::DestructAssign { value, .. } => {
+            collect_try_calls_expr(value, out);
+        }
+        SemStmt::DestructLet {
+            tuple_constraint,
+            value,
+            ..
+        }
+        | SemStmt::DestructMutLet {
+            tuple_constraint,
+            value,
+            ..
+        } => {
+            if let Some(c) = tuple_constraint {
+                collect_try_calls_expr(c, out);
+            }
+            collect_try_calls_expr(value, out);
+        }
+        SemStmt::Require { predicate, .. } | SemStmt::Assume { predicate, .. } => {
+            collect_try_calls_expr(predicate, out);
+        }
+        SemStmt::Assert {
+            predicate,
+            else_clause,
+            ..
+        } => {
+            collect_try_calls_expr(predicate, out);
+            match else_clause {
+                None => {}
+                Some(SemAssertElse::FailWith(e)) | Some(SemAssertElse::Return(e)) => {
+                    collect_try_calls_expr(e, out);
+                }
+            }
+        }
+        SemStmt::Expr(e) => collect_try_calls_expr(e, out),
+        SemStmt::Block(stmts) => stmts.iter().for_each(|s| collect_try_calls_stmt(s, out)),
+        SemStmt::While { cond, body, .. } => {
+            collect_try_calls_expr(cond, out);
+            body.iter().for_each(|s| collect_try_calls_stmt(s, out));
+        }
+        SemStmt::ForIn { set, body, .. } => {
+            collect_try_calls_expr(set, out);
+            body.iter().for_each(|s| collect_try_calls_stmt(s, out));
+        }
+        SemStmt::Return { value, .. } => collect_try_calls_expr(value, out),
+    }
+}
+
+pub fn collect_try_calls_expr<'a>(expr: &'a SemExpr, out: &mut Vec<(&'a Symbol, Span)>) {
+    match &expr.kind {
+        SemExprKind::IntLit(_)
+        | SemExprKind::BoolLit(_)
+        | SemExprKind::CharLit(_)
+        | SemExprKind::Var(_)
+        | SemExprKind::FailLit
+        | SemExprKind::NoneLit => {}
+        SemExprKind::Add(l, r)
+        | SemExprKind::DisjointUnion(l, r)
+        | SemExprKind::Sub(l, r)
+        | SemExprKind::SetDifference(l, r)
+        | SemExprKind::Mul(l, r)
+        | SemExprKind::CartesianProduct(l, r)
+        | SemExprKind::Div(l, r) => {
+            collect_try_calls_expr(l, out);
+            collect_try_calls_expr(r, out);
+        }
+        SemExprKind::SetQuotient(l, _canon) => collect_try_calls_expr(l, out),
+        SemExprKind::BinOp { lhs, rhs, .. } => {
+            collect_try_calls_expr(lhs, out);
+            collect_try_calls_expr(rhs, out);
+        }
+        SemExprKind::UnOp { expr, .. } => collect_try_calls_expr(expr, out),
+        SemExprKind::Call { args, .. } => args.iter().for_each(|a| collect_try_calls_expr(a, out)),
+        SemExprKind::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_try_calls_expr(cond, out);
+            collect_try_calls_expr(then_expr, out);
+            collect_try_calls_expr(else_expr, out);
+        }
+        SemExprKind::SetLit(exprs) | SemExprKind::Tuple(exprs) => {
+            exprs.iter().for_each(|e| collect_try_calls_expr(e, out));
+        }
+        SemExprKind::Try(inner) => {
+            if let SemExprKind::Call { callee, args } = &inner.kind {
+                out.push((callee, expr.span));
+                args.iter().for_each(|a| collect_try_calls_expr(a, out));
+            } else {
+                collect_try_calls_expr(inner, out);
+            }
+        }
+        SemExprKind::FailWith(e) | SemExprKind::KleeneStar(e) => collect_try_calls_expr(e, out),
+        SemExprKind::Comprehension {
+            output,
+            source,
+            filter,
+            ..
+        } => {
+            collect_try_calls_expr(output, out);
+            collect_try_calls_expr(source, out);
+            if let Some(f) = filter {
+                collect_try_calls_expr(f, out);
+            }
+        }
+        SemExprKind::Proj { base, .. } => collect_try_calls_expr(base, out),
+        SemExprKind::Index { base, index } => {
+            collect_try_calls_expr(base, out);
+            collect_try_calls_expr(index, out);
+        }
     }
 }
 
@@ -614,6 +793,7 @@ impl std::fmt::Display for SemExprKind {
             SemExprKind::Try(inner) => write!(f, "{inner}?"),
             SemExprKind::FailLit => f.write_str("fail"),
             SemExprKind::FailWith(expr) => write!(f, "fail {expr}"),
+            SemExprKind::NoneLit => f.write_str("none"),
             SemExprKind::Comprehension {
                 output,
                 var,

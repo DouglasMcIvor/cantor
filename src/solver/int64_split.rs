@@ -209,11 +209,11 @@ fn try_promote_to_int64<'a>(
     }
     let sig = &def.sigs[0];
     // MVP scope: a fallible function's `return_kind` names only its success
-    // Kind (`Fail`-ness lives in the `Fail`-wire `{i1, i64}` struct, built
+    // Kind (Fail/None propagation lives in the `{tag, i64}` struct, built
     // separately at the codegen boundary) — promoting one is a fast-follow,
     // not this first cut, since the success payload's raw-vs-tagged
     // representation inside that wire isn't threaded through yet.
-    if crate::semantics::tree::range_contains_fail(&sig.range) {
+    if crate::semantics::tree::range_is_fallible(&sig.range) {
         return None;
     }
     let parts = sem_param_set_exprs(sig.domain.as_ref(), def.params.len()).ok()?;
@@ -455,7 +455,8 @@ fn expr_contains_mul(expr: &SemExpr) -> bool {
         | SemExprKind::BoolLit(_)
         | SemExprKind::CharLit(_)
         | SemExprKind::Var(_)
-        | SemExprKind::FailLit => false,
+        | SemExprKind::FailLit
+        | SemExprKind::NoneLit => false,
         SemExprKind::Add(l, r)
         | SemExprKind::DisjointUnion(l, r)
         | SemExprKind::Sub(l, r)

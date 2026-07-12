@@ -80,16 +80,21 @@ impl<'ctx> Compiler<'ctx> {
             SemExprKind::SetLit(elements) => self.compile_set_lit_value(elements, env),
             SemExprKind::Try(inner) => self.compile_try(inner, env),
             SemExprKind::FailLit => {
-                // fail → {i1=1, i64=0}
+                // fail → {tag=1, i64=0}
                 let zero = self.context.i64_type().const_int(0, false);
                 let v = self.build_fail_struct(zero.into())?;
                 Ok((v, Kind::Tuple(vec![Kind::Fail, Kind::Int])))
             }
             SemExprKind::FailWith(inner) => {
-                // fail n → {i1=1, i64=n}
+                // fail n → {tag=1, i64=n}
                 let (v, _) = self.compile_expr(inner, env)?;
                 let s = self.build_fail_struct(v)?;
                 Ok((s, Kind::Tuple(vec![Kind::Fail, Kind::Int])))
+            }
+            SemExprKind::NoneLit => {
+                // none → {tag=2, i64=0}
+                let s = self.build_none_struct()?;
+                Ok((s, Kind::Tuple(vec![Kind::None, Kind::Int])))
             }
             SemExprKind::Tuple(elems) => self.compile_tuple(elems, env),
             SemExprKind::Proj { base, index } => self.compile_proj(base, *index, env),
@@ -106,7 +111,7 @@ impl<'ctx> Compiler<'ctx> {
 
         if !val.is_struct_value() {
             return Err(CompileError::ice(
-                "`?` applied to a non-fallible expression (expected `{i1, i64}` struct return)",
+                "`?` applied to a non-fallible expression (expected `{tag, i64}` struct return)",
             ));
         }
 
@@ -117,19 +122,27 @@ impl<'ctx> Compiler<'ctx> {
         let struct_val = val.into_struct_value();
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
 
-        // Extract the fail flag (field 0 = i1).
-        let fail_flag = self
+        // Extract the tag (field 0 = i8: 0 success, 1 Fail, 2 None) and test
+        // for "not success" — propagation doesn't care which of the two
+        // non-zero tags fired, only that the whole struct passes through
+        // unchanged (the tag and payload already carry the right meaning).
+        let tag = self
             .builder
-            .build_extract_value(struct_val, 0, "try_flag")
+            .build_extract_value(struct_val, 0, "try_tag")
             .map_err(err)?
             .into_int_value();
+        let zero_i8 = self.context.i8_type().const_int(0, false);
+        let is_propagate = self
+            .builder
+            .build_int_compare(IntPredicate::NE, tag, zero_i8, "try_propagate")
+            .map_err(err)?;
 
-        // If fail_flag = 1: propagate — return the struct to the caller.
-        // If fail_flag = 0: extract the i64 success payload and continue.
+        // If is_propagate: propagate — return the struct to the caller.
+        // If not: extract the i64 success payload and continue.
         let propagate_bb = self.context.append_basic_block(function, "try_fail");
         let success_bb = self.context.append_basic_block(function, "try_ok");
         self.builder
-            .build_conditional_branch(fail_flag, propagate_bb, success_bb)
+            .build_conditional_branch(is_propagate, propagate_bb, success_bb)
             .map_err(err)?;
 
         self.builder.position_at_end(propagate_bb);

@@ -278,7 +278,7 @@ pub(super) fn compile_elaborated<'ctx>(
         let is_fallible = def
             .sigs
             .iter()
-            .any(|s| crate::semantics::tree::range_contains_fail(&s.range));
+            .any(|s| crate::semantics::tree::range_is_fallible(&s.range));
 
         match &def.body {
             SemFunctionBody::Expr(e) => {
@@ -315,8 +315,8 @@ pub(super) fn compile_elaborated<'ctx>(
             .cloned()
             .unwrap_or(Kind::Int);
         match &ret_kind {
-            // Fallible main: emit an i64-returning runner that converts {i1, i64} to flat i64.
-            Kind::Tuple(elems) if elems.first() == Some(&Kind::Fail) => {
+            // Fallible main: emit an i64-returning runner that converts {tag, i64} to flat i64.
+            Kind::Tuple(elems) if crate::kind::is_propagation_tuple(elems) => {
                 compiler.emit_fallible_main_runner(main_fn)?;
             }
             // Regular tuple main: emit the existing ptr-buffer trampoline.

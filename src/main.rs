@@ -321,9 +321,8 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
         .unwrap_or(Kind::Int);
 
     match &main_return_kind {
-        // Fallible main: the runner converts {i1, i64} → flat i64 (sentinel on failure).
-        Kind::Tuple(elems) if elems.first() == Some(&Kind::Fail) => {
-            let _ = elems; // used in the match guard only
+        // Fallible main: the runner converts {tag, i64} → flat i64 (sentinel on non-success).
+        Kind::Tuple(elems) if cantor::kind::is_propagation_tuple(elems) => {
             let result = unsafe {
                 let f = engine
                     .get_function::<unsafe extern "C" fn() -> i64>("__cantor_main_runner")
@@ -334,24 +333,36 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
                 f.call()
             };
             if result == i64::MIN {
-                // Read the typed error code stored by the runner via the JIT getter.
-                let error_code: i64 = unsafe {
+                // Read the tag/error code stored by the runner via the JIT getters.
+                let tag: i64 = unsafe {
                     match engine
-                        .get_function::<unsafe extern "C" fn() -> i64>("__cantor_get_fail_code")
+                        .get_function::<unsafe extern "C" fn() -> i64>("__cantor_get_fail_tag")
                     {
                         Ok(f) => f.call(),
                         Err(_) => 0,
                     }
                 };
-                if error_code != 0 {
-                    // int-soundness-plan phase 3 step 4b: the error code is
-                    // the Fail-wire's `Kind::Int` payload — tagged.
-                    eprintln!(
-                        "\nmain() failed with error code {}",
-                        format_tagged_int(error_code)
-                    );
+                if tag == 2 {
+                    eprintln!("\nmain() returned none");
                 } else {
-                    eprintln!("\nmain() failed: assertion failed at runtime");
+                    let error_code: i64 = unsafe {
+                        match engine
+                            .get_function::<unsafe extern "C" fn() -> i64>("__cantor_get_fail_code")
+                        {
+                            Ok(f) => f.call(),
+                            Err(_) => 0,
+                        }
+                    };
+                    if error_code != 0 {
+                        // int-soundness-plan phase 3 step 4b: the error code is
+                        // the Fail-wire's `Kind::Int` payload — tagged.
+                        eprintln!(
+                            "\nmain() failed with error code {}",
+                            format_tagged_int(error_code)
+                        );
+                    } else {
+                        eprintln!("\nmain() failed: assertion failed at runtime");
+                    }
                 }
                 process::exit(1);
             } else {
@@ -525,7 +536,7 @@ fn format_tagged_int(word: i64) -> String {
 
 fn count_kind_leaves(kind: &Kind) -> usize {
     match kind {
-        Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail | Kind::Set(_) => 1,
+        Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail | Kind::None | Kind::Set(_) => 1,
         Kind::Signed32 | Kind::Unsigned32 | Kind::Char => 1,
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
         // TODO: tagged-union IR — count tag field + widest arm
@@ -548,6 +559,10 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
         Kind::Fail => {
             *offset += 1;
             "fail".to_string()
+        }
+        Kind::None => {
+            *offset += 1;
+            "none".to_string()
         }
         // int-soundness-plan phase 3 step 4b: `Int64`/`Set` leaves are
         // always a plain raw i64; an `Int` leaf is tagged and needs decoding.

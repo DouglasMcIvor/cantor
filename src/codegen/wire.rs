@@ -14,7 +14,7 @@ pub use crate::kind::range_kind;
 /// Bool and Int each occupy one slot; Tuple recurses into its element kinds.
 pub fn leaf_count(kind: &Kind) -> usize {
     match kind {
-        Kind::Bool | Kind::Int | Kind::Int64 | Kind::Set(_) | Kind::Fail => 1,
+        Kind::Bool | Kind::Int | Kind::Int64 | Kind::Set(_) | Kind::Fail | Kind::None => 1,
         // Signed32/Unsigned32/Char cross the ABI boundary widened to i64
         // (sext/zext respectively), same convention as Bool's i1<->i64 —
         // one leaf each.

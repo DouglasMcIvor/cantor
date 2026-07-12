@@ -97,7 +97,11 @@ pub fn check_well_founded(items: &[Item], name_defs: &NameDefs) -> Result<(), Co
 /// only needs handling once, here, exhaustively (no wildcard arm).
 fn for_each_var(expr: &Expr, f: &mut impl FnMut(&Symbol)) {
     match &expr.kind {
-        ExprKind::IntLit(_) | ExprKind::BoolLit(_) | ExprKind::CharLit(_) | ExprKind::FailLit => {}
+        ExprKind::IntLit(_)
+        | ExprKind::BoolLit(_)
+        | ExprKind::CharLit(_)
+        | ExprKind::FailLit
+        | ExprKind::NoneLit => {}
         ExprKind::Var(sym) => f(sym),
         ExprKind::BinOp { lhs, rhs, .. } => {
             for_each_var(lhs, f);

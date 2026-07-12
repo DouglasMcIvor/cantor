@@ -69,6 +69,10 @@ pub fn lookup(name: &str) -> Option<BuiltinSet> {
             kind: Kind::Fail,
             bound: IntBound::Any,
         }),
+        "None" => Some(BuiltinSet {
+            kind: Kind::None,
+            bound: IntBound::Any,
+        }),
         "Int" => int(IntBound::Any),
         "Nat" => int(IntBound::NonNeg),
         "NatPos" => int(IntBound::Positive),

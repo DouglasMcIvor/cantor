@@ -39,6 +39,8 @@ pub enum Token {
     For,
     // Failure
     Fail,
+    // Absence — the `None` singleton, mirrors `Fail` but carries no payload.
+    NoneLit,
     // Built-in functions (reserved — cannot be shadowed by user definitions)
     From,
     Size,
@@ -117,6 +119,7 @@ impl fmt::Display for Token {
             Token::While => f.write_str("while"),
             Token::For => f.write_str("for"),
             Token::Fail => f.write_str("fail"),
+            Token::NoneLit => f.write_str("none"),
             Token::From => f.write_str("from"),
             Token::Size => f.write_str("size"),
             Token::Plus => f.write_str("+"),
@@ -364,6 +367,7 @@ impl<'src> Lexer<'src> {
             "while" => Token::While,
             "for" => Token::For,
             "fail" => Token::Fail,
+            "none" => Token::NoneLit,
             "return" => Token::Return,
             "from" => Token::From,
             "size" => Token::Size,

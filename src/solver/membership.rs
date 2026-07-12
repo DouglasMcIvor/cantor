@@ -263,6 +263,21 @@ pub(crate) fn membership_constraint<'tm>(
                     Membership::Constrained(tm.mk_boolean(false))
                 }
             }
+            // `None` is registered as a builtin distinct sort too
+            // (`build_distinct_preds`), same rule as `Fail` above — a term of
+            // exactly that sort is trivially a member; anything else is not.
+            Some(b) if b.kind == ValKind::None => {
+                let none_sort = distinct_preds
+                    .get(&Symbol::new("None"))
+                    .expect("None must be registered as a builtin distinct sort")
+                    .sort
+                    .clone();
+                if t.sort() == none_sort {
+                    Membership::Unconstrained
+                } else {
+                    Membership::Constrained(tm.mk_boolean(false))
+                }
+            }
             // `Char` is registered as a builtin distinct sort too (`build_distinct_preds`),
             // same rule as `Fail` above — a term of exactly the `Char` sort is
             // trivially a member (validity was already proved once, at

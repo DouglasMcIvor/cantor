@@ -1,0 +1,11 @@
+lookup : Int -> Nat | Fail | None
+lookup(x) {
+    assert x != 0
+    if x > 0 then x else none
+}
+
+main : -> Nat | Fail | None
+main() {
+    result : Nat = lookup(-5)?
+    result
+}

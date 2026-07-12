@@ -18,6 +18,8 @@ mod error_handling;
 mod event_loop;
 #[path = "cli/helpers.rs"]
 mod helpers;
+#[path = "cli/none_propagation.rs"]
+mod none_propagation;
 #[path = "cli/overflow.rs"]
 mod overflow;
 #[path = "cli/overloads.rs"]

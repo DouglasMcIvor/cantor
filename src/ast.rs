@@ -102,6 +102,10 @@ impl Expr {
         Self::new(ExprKind::FailWith(Box::new(expr)), Span::dummy())
     }
 
+    pub fn none_lit() -> Self {
+        Self::new(ExprKind::NoneLit, Span::dummy())
+    }
+
     pub fn comprehension(output: Expr, var: &str, source: Expr, filter: Option<Expr>) -> Self {
         Self::new(
             ExprKind::Comprehension {
@@ -153,6 +157,11 @@ pub enum ExprKind {
     /// can distinguish it from a success value even when the payload is
     /// numerically equal to a valid success value.
     FailWith(Box<Expr>),
+    /// Bare `none` — the singleton absence value (member of `None = {none}`).
+    /// Unlike `fail`, carries no payload — mirrors `Fail`'s wire-format and
+    /// `?`-propagation treatment (see docs/design-decisions.md §4) but stays
+    /// deliberately simpler: no `none expr` form, no error-union sugar.
+    NoneLit,
     /// `{ output for var in source }` or `{ output for var in source if filter }`
     Comprehension {
         output: Box<Expr>,
@@ -628,6 +637,7 @@ impl fmt::Display for ExprKind {
             Self::Try(inner) => write!(f, "{inner}?"),
             Self::FailLit => f.write_str("fail"),
             Self::FailWith(expr) => write!(f, "fail {expr}"),
+            Self::NoneLit => f.write_str("none"),
             Self::Comprehension {
                 output,
                 var,

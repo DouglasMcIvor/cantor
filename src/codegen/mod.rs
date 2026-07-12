@@ -192,12 +192,16 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Map a Kind to the natural LLVM type used inside structs and as tuple ABI types.
-    /// Scalars: Int/Set/Union → i64, Bool → i1.  Tuple → struct of element types.
+    /// Scalars: Int/Set/Union → i64, Bool/Fail/None → i1.  Tuple → struct of
+    /// element types, except a fallible-wire tuple (`Fail`/`None` marker in
+    /// position 0), which always goes through `fail_struct_type` instead of
+    /// the generic per-element recursion below — see `fail_struct_type`'s
+    /// doc comment for why the two must not be allowed to drift apart.
     /// TaggedUnion → `{ i32 tag, i64, …, i64 }` with enough i64 slots for the widest arm.
     pub(crate) fn kind_to_llvm_type(&self, kind: &Kind) -> BasicTypeEnum<'ctx> {
         match kind {
             Kind::Int | Kind::Int64 | Kind::Set(_) => self.context.i64_type().into(),
-            Kind::Bool | Kind::Fail => self.context.bool_type().into(),
+            Kind::Bool | Kind::Fail | Kind::None => self.context.bool_type().into(),
             // Plain i32 register — wraps by construction via ordinary LLVM
             // i32 arithmetic (two's-complement is the default), no nsw/nuw
             // flags (docs/wrapping-and-quotient-sets-plan.md).
@@ -207,6 +211,9 @@ impl<'ctx> Compiler<'ctx> {
             // validity is a proof obligation checked once at `char(n)`
             // construction, not an LLVM-level property.
             Kind::Char => self.context.i32_type().into(),
+            Kind::Tuple(elems) if crate::kind::is_propagation_tuple(elems) => {
+                self.fail_struct_type().into()
+            }
             Kind::Tuple(elems) => {
                 let types: Vec<BasicTypeEnum<'ctx>> =
                     elems.iter().map(|k| self.kind_to_llvm_type(k)).collect();
@@ -225,16 +232,35 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    /// Returns the `{i1, i64}` struct type used for all fallible function returns.
+    /// Returns the `{tag, i64}` struct type used for every fallible function
+    /// return — a range declaring `Fail`, `None`, or both (`T | Fail |
+    /// None`) all share this one wire shape. `tag` is an `i8` (0 = success,
+    /// 1 = propagate as `Fail`, 2 = propagate as `None`), wide enough to
+    /// distinguish all three cases now that two independent propagation tags
+    /// can coexist in one range — a single `i1` flag (the pre-`None` shape)
+    /// could only ever mean "propagate the one tag this range has."
+    ///
+    /// Must exactly match what `kind_to_llvm_type` produces for
+    /// `Kind::Tuple([Kind::Fail | Kind::None, _])` (see its doc comment) —
+    /// `declare_function` computes a fallible function's LLVM return type via
+    /// the latter, while `build_success_struct`/`build_fail_struct`/
+    /// `build_none_struct` build values via this function directly; a
+    /// mismatch between the two would be an LLVM type error at the first
+    /// `return`.
     pub(crate) fn fail_struct_type(&self) -> inkwell::types::StructType<'ctx> {
         self.context.struct_type(
             &[
-                self.context.bool_type().into(),
+                self.context.i8_type().into(),
                 self.context.i64_type().into(),
             ],
             false,
         )
     }
+
+    /// The three tag values written into `fail_struct_type`'s first field.
+    const TAG_SUCCESS: u64 = 0;
+    const TAG_FAIL: u64 = 1;
+    const TAG_NONE: u64 = 2;
 
     /// Serialise `val : arm_kind` into the i64 leaf fields of a tagged-union
     /// struct, starting at `field_idx` (1-based; field 0 is the tag).
@@ -255,7 +281,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(err)?;
                 *field_idx += 1;
             }
-            Kind::Bool | Kind::Fail => {
+            Kind::Bool | Kind::Fail | Kind::None => {
                 let wide = self
                     .builder
                     .build_int_z_extend(val.into_int_value(), i64t, "tu_lb")
@@ -315,54 +341,59 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    /// Build a `{i1=0, i64=payload}` success-tagged struct.
+    /// Build a `{tag=0, i64=payload}` success-tagged struct.
     pub(crate) fn build_success_struct(
         &self,
         payload: BasicValueEnum<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
-        let zero_i1 = self.context.bool_type().const_int(0, false);
-        let s = self.fail_struct_type().get_undef();
-        let s = self
-            .builder
-            .build_insert_value(s, zero_i1, 0, "sv_flag")
-            .map_err(|e| CompileError::ice(e.to_string()))?
-            .into_struct_value();
-        let s = self
-            .builder
-            .build_insert_value(s, payload, 1, "sv_payload")
-            .map_err(|e| CompileError::ice(e.to_string()))?
-            .into_struct_value();
-        Ok(s.into())
+        self.build_tagged_struct(Self::TAG_SUCCESS, payload, "sv")
     }
 
-    /// Build a `{i1=1, i64=payload}` fail-tagged struct.
+    /// Build a `{tag=1, i64=payload}` fail-tagged struct.
     pub(crate) fn build_fail_struct(
         &self,
         payload: BasicValueEnum<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
-        let one_i1 = self.context.bool_type().const_int(1, false);
+        self.build_tagged_struct(Self::TAG_FAIL, payload, "fv")
+    }
+
+    /// Build a `{tag=2, i64=0}` none-tagged struct. `none` carries no
+    /// payload (unlike `fail expr`), so the payload field is always zero.
+    pub(crate) fn build_none_struct(&self) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let zero = self.context.i64_type().const_int(0, false).into();
+        self.build_tagged_struct(Self::TAG_NONE, zero, "nv")
+    }
+
+    fn build_tagged_struct(
+        &self,
+        tag: u64,
+        payload: BasicValueEnum<'ctx>,
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let tag_val = self.context.i8_type().const_int(tag, false);
         let s = self.fail_struct_type().get_undef();
         let s = self
             .builder
-            .build_insert_value(s, one_i1, 0, "fv_flag")
+            .build_insert_value(s, tag_val, 0, &format!("{name}_flag"))
             .map_err(|e| CompileError::ice(e.to_string()))?
             .into_struct_value();
         let s = self
             .builder
-            .build_insert_value(s, payload, 1, "fv_payload")
+            .build_insert_value(s, payload, 1, &format!("{name}_payload"))
             .map_err(|e| CompileError::ice(e.to_string()))?
             .into_struct_value();
         Ok(s.into())
     }
 
-    /// Coerce a value to `{i1=0, i64=val}` when one branch of an `if` is a fail struct.
-    /// Fail structs pass through unchanged.
+    /// Coerce a value to `{tag=0, i64=val}` when one branch of an `if` is
+    /// already a propagation struct (`Fail`- or `None`-tagged). Propagation
+    /// structs pass through unchanged.
     pub(crate) fn coerce_to_fail_struct(
         &self,
         val: BasicValueEnum<'ctx>,
         kind: &Kind,
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
-        if matches!(kind, Kind::Tuple(e) if e.first() == Some(&Kind::Fail)) {
+        if matches!(kind, Kind::Tuple(e) if crate::kind::is_propagation_tuple(e)) {
             return Ok(val);
         }
         let payload = match kind {
@@ -447,10 +478,10 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Wrap a return value for a fallible function if needed.
     ///
-    /// - Already a fail struct → pass through (e.g. from `FailLit`, `compile_try`)
+    /// - Already a propagation struct → pass through (e.g. from `FailLit`/`NoneLit`, `compile_try`)
     /// - Bool/Signed32/Unsigned32/Char in non-fallible function → widen to i64
     /// - Any other value in non-fallible function → pass through
-    /// - Any non-struct value in fallible function → wrap in `{i1=0, i64=val}`
+    /// - Any non-struct value in fallible function → wrap in `{tag=0, i64=val}`
     pub(crate) fn wrap_return_value(
         &self,
         val: BasicValueEnum<'ctx>,
@@ -461,9 +492,9 @@ impl<'ctx> Compiler<'ctx> {
             // everything else through.
             return self.widen_scalar_to_i64(val, kind, "ret_wide");
         }
-        // Fallible function: ensure the value is a {i1, i64} struct.
-        if matches!(kind, Kind::Tuple(e) if e.first() == Some(&Kind::Fail)) {
-            return Ok(val); // already a fail struct
+        // Fallible function: ensure the value is a {tag, i64} struct.
+        if matches!(kind, Kind::Tuple(e) if crate::kind::is_propagation_tuple(e)) {
+            return Ok(val); // already a propagation struct
         }
         let payload = self.widen_scalar_to_i64(val, kind, "ret_wide")?;
         self.build_success_struct(payload)
@@ -490,9 +521,12 @@ impl<'ctx> Compiler<'ctx> {
         self.fail_bb = if is_fallible {
             let bb = self.context.append_basic_block(function, "fail");
             self.builder.position_at_end(bb);
-            // Bare assert failure returns {i1=1, i64=0} — no typed error code.
+            // Bare assert failure returns {tag=1 (Fail), i64=0} — no typed error code.
             let fail_struct = self.fail_struct_type().const_named_struct(&[
-                self.context.bool_type().const_int(1, false).into(),
+                self.context
+                    .i8_type()
+                    .const_int(Self::TAG_FAIL, false)
+                    .into(),
                 self.context.i64_type().const_int(0, false).into(),
             ]);
             self.builder
@@ -556,9 +590,12 @@ impl<'ctx> Compiler<'ctx> {
         self.fail_bb = if is_fallible {
             let bb = self.context.append_basic_block(function, "fail");
             self.builder.position_at_end(bb);
-            // Bare assert failure returns {i1=1, i64=0} — no typed error code.
+            // Bare assert failure returns {tag=1 (Fail), i64=0} — no typed error code.
             let fail_struct = self.fail_struct_type().const_named_struct(&[
-                self.context.bool_type().const_int(1, false).into(),
+                self.context
+                    .i8_type()
+                    .const_int(Self::TAG_FAIL, false)
+                    .into(),
                 self.context.i64_type().const_int(0, false).into(),
             ]);
             self.builder

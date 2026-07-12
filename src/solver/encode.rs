@@ -121,7 +121,7 @@ pub(crate) fn encode_expr<'tm>(
                 // it has no user-facing basis value to extract, so `from()`
                 // (which unwraps a real `distinct B` back to its `B` basis)
                 // must not match it.
-                if sym.0 == "Fail" {
+                if sym.0 == "Fail" || sym.0 == "None" {
                     continue;
                 }
                 if arg_term.sort() == info.sort {
@@ -196,6 +196,19 @@ pub(crate) fn encode_expr<'tm>(
                 .tm
                 .mk_term(Kind::ApplyUf, &[info.mk.clone(), ctx.tm.mk_integer(0)]);
             Ok(ctx.tm.mk_tuple(&[tag, n]))
+        }
+
+        // `None` is a builtin distinct sort (registered in `build_distinct_preds`)
+        // exactly like `Fail` — mirrors `FailLit` above, minus a payload
+        // (`none` is deliberately bare-only).
+        SemExprKind::NoneLit => {
+            let info = ctx
+                .distinct_preds
+                .get(&Symbol::new("None"))
+                .expect("None must be registered as a builtin distinct sort");
+            Ok(ctx
+                .tm
+                .mk_term(Kind::ApplyUf, &[info.mk.clone(), ctx.tm.mk_integer(0)]))
         }
 
         SemExprKind::Var(sym) => {

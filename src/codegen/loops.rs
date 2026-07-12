@@ -273,7 +273,7 @@ impl<'ctx> Compiler<'ctx> {
         let size_fn_name = match elem_kind {
             Kind::Int if int_is_tagged => "cantor_tagged_set_size_i64",
             Kind::Int | Kind::Int64 => "cantor_set_size_i64",
-            Kind::Bool | Kind::Fail => "cantor_set_size_bool",
+            Kind::Bool | Kind::Fail | Kind::None => "cantor_set_size_bool",
             other => {
                 return Err(CompileError::ice(format!(
                     "Set({other:?}) is not a legal runtime set element kind"
@@ -356,7 +356,7 @@ impl<'ctx> Compiler<'ctx> {
         let get_fn_name = match elem_kind {
             Kind::Int if int_is_tagged => "cantor_tagged_set_get_i64",
             Kind::Int | Kind::Int64 => "cantor_set_get_i64",
-            Kind::Bool | Kind::Fail => "cantor_set_get_bool",
+            Kind::Bool | Kind::Fail | Kind::None => "cantor_set_get_bool",
             other => {
                 return Err(CompileError::ice(format!(
                     "Set({other:?}) is not a legal runtime set element kind"
@@ -385,7 +385,7 @@ impl<'ctx> Compiler<'ctx> {
                     .into(),
                 Kind::Int,
             ),
-            Kind::Bool | Kind::Fail => {
+            Kind::Bool | Kind::Fail | Kind::None => {
                 let i1 = self
                     .builder
                     .build_int_truncate(
@@ -394,11 +394,7 @@ impl<'ctx> Compiler<'ctx> {
                         "elem_bool",
                     )
                     .map_err(|e| CompileError::ice(e.to_string()))?;
-                let elem_k = if *elem_kind == Kind::Fail {
-                    Kind::Fail
-                } else {
-                    Kind::Bool
-                };
+                let elem_k = elem_kind.clone();
                 (i1.into(), elem_k)
             }
             other => {

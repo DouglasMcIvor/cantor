@@ -146,11 +146,24 @@ implementation detail the developer should not rely on.
      `Fail` is a named built-in singleton set; it is the tag, not a generic
      `Option`/`Result` wrapper.
    - **`fail` literal and `fail expr`**: `fail` produces a bare failure; `fail
-     400` constructs a tagged failure with payload 400. Fallible functions return
-     a `{i1, i64}` struct at the LLVM level: flag i1=1 means failure, flag i1=0
-     means success. Success and failure are always distinguishable regardless of
-     the numeric value — `success 400` and `fail 400` are distinct because the
-     flag bit differs.
+     400` constructs a tagged failure with payload 400. Fallible functions
+     return a `{tag, i64}` struct at the LLVM level (`tag` an `i8`): `tag=0`
+     means success, `tag=1` means failure. Success and failure are always
+     distinguishable regardless of the numeric value — `success 400` and
+     `fail 400` are distinct because the tag differs.
+   - **`None` as built-in set, `none` singleton value** — mirrors `Fail` in
+     every respect except payload: a function that may produce "no value"
+     declares `None` in its range (`lookup : Key -> Value | None`), and the
+     bare `none` expression constructs it. Unlike `fail`/`fail expr`, `none`
+     is deliberately payload-free — there is no `none expr` form and no
+     `!!`-style sugar for it. `Fail` and `None` share the same `{tag, i64}`
+     wire struct (`tag=2` means "propagate `none`"), and — unlike most
+     built-in sets — a range may declare both together: `f : Int -> Nat |
+     Fail | None` is legal, and `?` on such a callee propagates whichever
+     tag actually fired unchanged. `?`'s caller-must-declare-the-tag rule
+     (below) applies per tag: a caller using `?` on a call that can produce
+     `None` must itself declare `None` in its range, independently of
+     whether it also needs to declare `Fail`.
    - **Error-union operator `!!`** — `Success !! ErrorSet` desugars at parse
      time to `Success | (Fail * ErrorSet)`. Example: `fetch : Int -> Int !!
      HTTPError`. Semantically equivalent to `Success | (Fail * HTTPError)`.
@@ -159,12 +172,18 @@ implementation detail the developer should not rely on.
    - **Short-circuit (monadic) semantics**, explicit postfix `?` at each
      fallible call site for local visibility: `f(x)?` propagates the failure
      struct from the callee up to the caller unchanged.
-     The caller must also declare `Fail` or `!!` in its range.
-     Using `?` in an infallible function (range without `Fail` or `!!`) is a
-     compile error.
+     The caller must also declare `Fail`/`None`/`!!` in its range, matching
+     whichever tag(s) the callee's own range can produce.
+     Using `?` in an infallible function (range without `Fail`, `None`, or
+     `!!`), or using it on a callee whose propagation tag the caller's own
+     range doesn't include, is a compile error (a `Counterexample`,
+     surfaced the same way an unproved domain/range violation is — not a
+     separate error class).
    - **`assert … else fail expr`** — when the predicate is false, returns
-     `{i1=1, i64=expr}` (a typed failure struct). Useful inside `!!` functions
-     to return a specific error code.
+     `{tag=1, i64=expr}` (a typed failure struct). Useful inside `!!` functions
+     to return a specific error code. There is no `assert … else none` form —
+     `else fail expr`/`else return expr` remain the only two `assert … else`
+     clauses.
    - **`assert … else return expr`** — when the predicate is false, returns
      `expr` directly (early exit with a success value).
    - Three narrowing statements (not function calls); syntax and semantics
@@ -2175,28 +2194,42 @@ Three mechanisms in order of increasing programmer responsibility:
 
 - **`Fail`** — built-in singleton set representing the failure tag. A fallible
   function declares `Fail` in its range: `f : Int -> Nat | Fail`.
-  - `fail` (bare) — produces `{i1=1, i64=0}` at the LLVM level.
-  - `fail expr` — a typed failure with integer payload: `{i1=1, i64=expr}`.
-    Success `n` and `fail n` are always distinct because the i1 flag differs.
-  - At the LLVM level, any function whose range includes `Fail` (directly or
-    via `!!`) returns a `{i1, i64}` struct. Flag i1=0 means success (payload
-    is the return value); flag i1=1 means failure (payload is the error code,
-    or 0 for a bare `fail`).
+  - `fail` (bare) — produces `{tag=1, i64=0}` at the LLVM level.
+  - `fail expr` — a typed failure with integer payload: `{tag=1, i64=expr}`.
+    Success `n` and `fail n` are always distinct because the tag differs.
+  - At the LLVM level, any function whose range includes `Fail` and/or `None`
+    (directly, via `!!`, or both together) returns a `{tag, i64}` struct
+    (`tag` an `i8`). `tag=0` means success (payload is the return value);
+    `tag=1` means failure (payload is the error code, or 0 for a bare
+    `fail`); `tag=2` means the function produced `none` (payload unused).
+    This is one uniform wire shape for every fallible range, regardless of
+    which of `Fail`/`None` it actually declares — see `Kind::is_propagation_tuple`.
+
+- **`None`** — built-in singleton set representing "no value". A function
+  that may produce nothing declares `None` in its range:
+  `lookup : Key -> Value | None`.
+  - `none` (bare, always payload-free) — produces `{tag=2, i64=0}` at the
+    LLVM level. There is no `none expr` form.
+  - `Fail` and `None` may coexist in one range (`T | Fail | None`); `?`
+    propagates whichever tag actually fired, and the caller's own range must
+    include that specific tag (declaring only `Fail` does not license `?` on
+    a callee that can also produce `None`, and vice versa).
 
 - **`!!` error-union** — `Success !! ErrorSet` desugars at parse time to
   `Success | (Fail * ErrorSet)`. No offset encoding, no runtime decoding:
   the failure struct carries the error code directly in the i64 payload field.
   The solver treats `Fail * ErrorSet` union arms using membership constraints
-  on the product set.
+  on the product set. `None` has no equivalent sugar — it is always written
+  out explicitly as `| None`.
 
 - Named domain-specific error sets (e.g. `HTTPError = {400, 503}`) are
   user-defined sets. `T | HTTPError` and `T !! HTTPError` are both represented
-  as `{i1, i64}` at runtime; the error code propagates at face value via `?`.
+  as `{tag, i64}` at runtime; the error code propagates at face value via `?`.
   `T | HTTPError` is plain set union (success values may overlap error codes
-  numerically, distinguished only by the flag). `T !! HTTPError` desugars to
+  numerically, distinguished only by the tag). `T !! HTTPError` desugars to
   `T | (Fail * HTTPError)` and has the same wire format.
 
-### Solver representation of `Fail` (DECIDED)
+### Solver representation of `Fail`/`None` (DECIDED)
 
 The wire format above is a codegen/runtime concern only. Internally, the
 solver previously modelled `Fail` as an ad hoc sentinel integer (`i64::MIN`
@@ -2230,9 +2263,20 @@ code is registering it as a builtin distinct sort and picking its witness
 value, exactly the "only special logic is how to encode the sentinel itself"
 target this was designed against.
 
+`None` (added later) reuses this exact recipe verbatim — its own builtin
+distinct sort, its own single witness value, registered alongside `Fail` in
+the same `build_distinct_preds` call — so it needed zero additional
+cross-kind-union code either, confirming the design generalizes cleanly to
+a second propagation tag. The one place `Fail` and `None` *do* need explicit
+(if small) joint handling is the codegen wire format: `Kind::is_propagation_tuple`
+recognizes either as the marker in position 0 of a fallible-wire `Tuple`, and
+`Compiler::fail_struct_type` builds the one shared `{tag, i64}` struct both
+compile to — see the wire-format section above.
+
 This is a solver-internal representation change only; it does not alter the
-LLVM wire format above (`{i1, i64}`), which remains untouched (see the open
-question below on whether to unify the two).
+LLVM wire format's *shape* (still a 2-field struct, tag + payload) — only
+the tag's width changed, from `i1` to `i8`, to make room for a third state
+(`none`) once `None` was added. See the wire-format section above.
 
 ### Natural numbers and other named subsets
 

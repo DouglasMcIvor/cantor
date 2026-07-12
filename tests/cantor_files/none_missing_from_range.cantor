@@ -1,0 +1,5 @@
+lookup : Int -> Nat | None
+lookup(x) = if x >= 0 then x else none
+
+caller : Int -> Nat
+caller(x) = lookup(x)? + 1

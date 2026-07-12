@@ -21,25 +21,31 @@ use super::{Compiler, JIT_RUNNER_SENTINEL};
 impl<'ctx> Compiler<'ctx> {
     /// Emit `i64 @__cantor_main_runner()` for fallible `main`.
     ///
-    /// Calls `main()` which returns `{i1, i64}`, then:
-    ///  - Success (flag=0): returns the i64 payload directly.
-    ///  - Failure (flag=1): stores the error code to `@__cantor_fail_code`, returns
-    ///    `JIT_RUNNER_SENTINEL` so the Rust caller can detect failure.
+    /// Calls `main()` which returns `{tag, i64}`, then:
+    ///  - Success (tag=0): returns the i64 payload directly.
+    ///  - Not success (tag=1 Fail, tag=2 None): stores the payload to
+    ///    `@__cantor_fail_code` and the tag to `@__cantor_fail_tag`, returns
+    ///    `JIT_RUNNER_SENTINEL` so the Rust caller can detect propagation and
+    ///    tell the two apart.
     ///
-    /// `@__cantor_fail_code` (global i64) can be read by Rust after the call via
-    /// `get_global_value_address` to surface a typed error code to the user.
+    /// `@__cantor_fail_code`/`@__cantor_fail_tag` (global i64/i8) can be read
+    /// by Rust after the call via the getters below to surface a typed error
+    /// code (or "returned none") to the user.
     ///
     /// The sentinel is only used at the thin JIT boundary; all internal codegen
-    /// uses `{i1, i64}` structs directly.
+    /// uses `{tag, i64}` structs directly.
     pub(super) fn emit_fallible_main_runner(
         &self,
         main_fn: FunctionValue<'ctx>,
     ) -> Result<(), CompileError> {
         let i64t = self.context.i64_type();
+        let i8t = self.context.i8_type();
 
-        // Global that the runner fills with the error code on failure.
+        // Globals the runner fills in on a non-success return.
         let fail_code_global = self.module.add_global(i64t, None, "__cantor_fail_code");
         fail_code_global.set_initializer(&i64t.const_int(0, false));
+        let fail_tag_global = self.module.add_global(i8t, None, "__cantor_fail_tag");
+        fail_tag_global.set_initializer(&i8t.const_int(0, false));
 
         let runner =
             self.module
@@ -61,13 +67,23 @@ impl<'ctx> Compiler<'ctx> {
             .left()
             .ok_or_else(|| CompileError::ice("main returned void in runner"))?
             .into_struct_value();
-        let flag = self
+        let tag = self
             .builder
-            .build_extract_value(struct_val, 0, "runner_flag")
+            .build_extract_value(struct_val, 0, "runner_tag")
             .map_err(err)?
             .into_int_value();
+        let zero_i8 = i8t.const_int(0, false);
+        let not_success = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                tag,
+                zero_i8,
+                "runner_not_success",
+            )
+            .map_err(err)?;
         self.builder
-            .build_conditional_branch(flag, fail_bb, ok_bb)
+            .build_conditional_branch(not_success, fail_bb, ok_bb)
             .map_err(err)?;
 
         self.builder.position_at_end(fail_bb);
@@ -79,6 +95,8 @@ impl<'ctx> Compiler<'ctx> {
         self.builder
             .build_store(fail_code_ptr, error_code)
             .map_err(err)?;
+        let fail_tag_ptr = fail_tag_global.as_pointer_value();
+        self.builder.build_store(fail_tag_ptr, tag).map_err(err)?;
         let sentinel = i64t.const_int(JIT_RUNNER_SENTINEL as u64, true);
         self.builder.build_return(Some(&sentinel)).map_err(err)?;
 
@@ -89,8 +107,8 @@ impl<'ctx> Compiler<'ctx> {
             .map_err(err)?;
         self.builder.build_return(Some(&payload)).map_err(err)?;
 
-        // Emit a getter so Rust can read the error code via JIT without needing
-        // inkwell's (missing) `get_global_value_address` API.
+        // Emit getters so Rust can read the error code/tag via JIT without
+        // needing inkwell's (missing) `get_global_value_address` API.
         let getter =
             self.module
                 .add_function("__cantor_get_fail_code", i64t.fn_type(&[], false), None);
@@ -101,6 +119,24 @@ impl<'ctx> Compiler<'ctx> {
             .build_load(i64t, fail_code_global.as_pointer_value(), "fail_code")
             .map_err(err)?;
         self.builder.build_return(Some(&loaded)).map_err(err)?;
+
+        let tag_getter =
+            self.module
+                .add_function("__cantor_get_fail_tag", i64t.fn_type(&[], false), None);
+        let tag_getter_bb = self.context.append_basic_block(tag_getter, "entry");
+        self.builder.position_at_end(tag_getter_bb);
+        let loaded_tag = self
+            .builder
+            .build_load(i8t, fail_tag_global.as_pointer_value(), "fail_tag")
+            .map_err(err)?
+            .into_int_value();
+        let loaded_tag_wide = self
+            .builder
+            .build_int_z_extend(loaded_tag, i64t, "fail_tag_wide")
+            .map_err(err)?;
+        self.builder
+            .build_return(Some(&loaded_tag_wide))
+            .map_err(err)?;
 
         Ok(())
     }
@@ -257,7 +293,7 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(word)
             };
         match kind {
-            Kind::Bool | Kind::Fail => {
+            Kind::Bool | Kind::Fail | Kind::None => {
                 let word = load_word(leaf_idx)?;
                 let narrow = self
                     .builder
@@ -307,7 +343,7 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(), CompileError> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match kind {
-            Kind::Bool | Kind::Fail => {
+            Kind::Bool | Kind::Fail | Kind::None => {
                 let wide = builder
                     .build_int_z_extend(val.into_int_value(), i64t, "bl")
                     .map_err(err)?;

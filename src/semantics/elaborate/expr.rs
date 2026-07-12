@@ -42,9 +42,16 @@ pub(super) fn elaborate_expr(
         ExprKind::FailLit => Ok(SemExpr {
             kind: SemExprKind::FailLit,
             // Matches codegen::compile_expr exactly: at runtime `fail` is the
-            // {i1, i64} fallible-return wrapper, not the bare Fail singleton
+            // {tag, i64} fallible-return wrapper, not the bare Fail singleton
             // that `set_kind` uses for set-position membership checks.
             kind_of: Kind::Tuple(vec![Kind::Fail, Kind::Int]),
+            span,
+        }),
+        ExprKind::NoneLit => Ok(SemExpr {
+            kind: SemExprKind::NoneLit,
+            // Mirrors FailLit exactly, using `None`'s own marker — see
+            // `kind::is_propagation_tuple`.
+            kind_of: Kind::Tuple(vec![Kind::None, Kind::Int]),
             span,
         }),
 

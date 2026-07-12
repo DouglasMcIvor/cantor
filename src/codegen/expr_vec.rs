@@ -698,7 +698,7 @@ impl<'ctx> Compiler<'ctx> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match kind {
             Kind::Int | Kind::Int64 | Kind::Set(_) | Kind::Vector(_) => Ok(vec![val]),
-            Kind::Bool | Kind::Fail => {
+            Kind::Bool | Kind::Fail | Kind::None => {
                 let wide = self
                     .builder
                     .build_int_z_extend(val.into_int_value(), i64t, "ul_b")

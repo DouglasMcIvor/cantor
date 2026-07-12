@@ -166,6 +166,47 @@ pub fn jit_src_zero_arg_fallible(src: &str) -> Result<i64, i64> {
     }
 }
 
+/// Which of `main`'s three possible `{tag, i64}` outcomes actually fired —
+/// `jit_src_zero_arg_fallible`'s `Err(0)` is ambiguous between bare `fail`
+/// and `none` (both have payload/error-code 0), so a range that can produce
+/// `None` needs this instead: it also reads `__cantor_get_fail_tag` to tell
+/// the two propagation tags apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Propagation {
+    Success(i64),
+    Fail(i64),
+    None,
+}
+
+/// Compile a zero-arg `main` whose range can produce `Fail` and/or `None`
+/// and run it, distinguishing all three outcomes via `__cantor_main_runner`,
+/// `__cantor_get_fail_code`, and `__cantor_get_fail_tag`.
+pub fn jit_src_zero_arg_propagation(src: &str) -> Propagation {
+    use cantor::parser::parse_file;
+    let items = parse_file(src).unwrap_or_else(|e| panic!("parse error: {e}"));
+    let ctx = Context::create();
+    let engine = compile_file(&ctx, &items).unwrap_or_else(|e| panic!("compile error: {e}"));
+    unsafe {
+        let runner = engine
+            .get_function::<unsafe extern "C" fn() -> i64>("__cantor_main_runner")
+            .unwrap_or_else(|e| panic!("could not find __cantor_main_runner: {e}"));
+        let result = runner.call();
+        if result != i64::MIN {
+            return Propagation::Success(result);
+        }
+        let tag_getter = engine
+            .get_function::<unsafe extern "C" fn() -> i64>("__cantor_get_fail_tag")
+            .unwrap_or_else(|e| panic!("could not find __cantor_get_fail_tag: {e}"));
+        if tag_getter.call() == 2 {
+            return Propagation::None;
+        }
+        let code_getter = engine
+            .get_function::<unsafe extern "C" fn() -> i64>("__cantor_get_fail_code")
+            .unwrap_or_else(|e| panic!("could not find __cantor_get_fail_code: {e}"));
+        Propagation::Fail(code_getter.call())
+    }
+}
+
 /// Compile `src` and return the LLVM IR as a string without running it.
 ///
 /// Use this to assert whether a construct was handled at compile time

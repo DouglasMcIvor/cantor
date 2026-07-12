@@ -47,7 +47,9 @@ impl<'ctx> Compiler<'ctx> {
 
         match &set_expr.kind {
             SemExprKind::Var(sym) => match builtins::lookup(&sym.0) {
-                Some(builtin) if builtin.kind == Kind::Fail => Ok(bool.const_int(0, false)),
+                Some(builtin) if builtin.kind == Kind::Fail || builtin.kind == Kind::None => {
+                    Ok(bool.const_int(0, false))
+                }
                 // Bool values are represented as i1 (0/1) at runtime.  A value
                 // is in Bool iff it is 0 or 1 as an i64.  Normalise i1 to i64
                 // first so the integer comparisons below are well-typed.
@@ -349,14 +351,14 @@ impl<'ctx> Compiler<'ctx> {
         // `Set(Int)` built while tagging is active can hold a boxed element,
         // which needs magnitude-aware dedup/ordering, so it's built (by
         // `compile_set_lit_value`) and must be queried via the `_tagged_`
-        // entry points instead of the plain raw-ordered ones. `Bool`/`Fail`
-        // are both wire-`i1`, always 0/1-valued, so they share the bool-
-        // backed entry points.
+        // entry points instead of the plain raw-ordered ones. `Bool`/`Fail`/
+        // `None` are all wire-`i1`, always 0/1-valued, so they share the
+        // bool-backed entry points.
         let int_is_tagged = *elem_kind == Kind::Int && self.tagging_active();
         let contains_fn = match elem_kind {
             Kind::Int if int_is_tagged => "cantor_tagged_set_contains_i64",
             Kind::Int | Kind::Int64 => "cantor_set_contains_i64",
-            Kind::Bool | Kind::Fail => "cantor_set_contains_bool",
+            Kind::Bool | Kind::Fail | Kind::None => "cantor_set_contains_bool",
             other => {
                 return Err(CompileError::ice(format!(
                     "Set({other:?}) is not a legal runtime set element kind"
@@ -367,7 +369,7 @@ impl<'ctx> Compiler<'ctx> {
             .module
             .get_function(contains_fn)
             .ok_or_else(|| CompileError::ice(format!("{contains_fn} not declared")))?;
-        let val_i64: BasicValueEnum = if matches!(val_kind, Kind::Bool | Kind::Fail) {
+        let val_i64: BasicValueEnum = if matches!(val_kind, Kind::Bool | Kind::Fail | Kind::None) {
             self.builder
                 .build_int_z_extend(val.into_int_value(), i64t, "val_bool_ext")
                 .map_err(|e| CompileError::ice(e.to_string()))?

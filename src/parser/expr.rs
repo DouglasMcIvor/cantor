@@ -30,6 +30,7 @@ fn token_starts_expr_after_star(tok: &Token) -> bool {
             | Token::LBrace
             | Token::LBracket
             | Token::Fail
+            | Token::NoneLit
             | Token::From
             | Token::Size
     )
@@ -252,6 +253,13 @@ impl<'src> Parser<'src> {
                 } else {
                     Ok(Expr::new(ExprKind::FailLit, span))
                 }
+            }
+            // `none` is deliberately bare-only — no `none expr` payload form
+            // (unlike `fail`/`fail expr`), so it never consumes a following
+            // expression the way `Token::Fail` does above.
+            Token::NoneLit => {
+                self.advance()?;
+                Ok(Expr::new(ExprKind::NoneLit, span))
             }
             _ => self.parse_atom(),
         }

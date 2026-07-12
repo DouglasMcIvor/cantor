@@ -43,6 +43,15 @@ pub enum Kind {
     /// i1 — the `fail` singleton; always has value 1 when constructed.
     /// Used as the flag field in `{i1, i64}` fallible-function return structs.
     Fail,
+    /// i1 — the `none` singleton (member of the builtin `None` set), mirrors
+    /// `Fail` in every respect except that it carries no payload (no `none
+    /// expr` form). Interchangeable with `Fail` as the marker in position 0
+    /// of a fallible-wire `Tuple` — both compile through the same widened
+    /// `{tag, i64}` struct (`codegen::Compiler::fail_struct_type`), so a
+    /// range can declare `Fail`, `None`, or both together (`T | Fail |
+    /// None`) and `?` propagates whichever tag fired unchanged. See
+    /// docs/design-decisions.md §4.
+    None,
     /// i32, two's-complement wrapping, signed reading. A fresh CVC5
     /// uninterpreted sort backed by native `(_ BitVec 32)` — mutually opaque
     /// to `Int`, `Unsigned32`, and every other Kind, the same way `distinct`
@@ -170,6 +179,7 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileEr
         ExprKind::Try(expr) => set_kind(expr, name_defs)?,
         ExprKind::FailLit => Kind::Fail,
         ExprKind::FailWith(expr) => set_kind(expr, name_defs)?,
+        ExprKind::NoneLit => Kind::None,
         ExprKind::Comprehension { source, .. } => set_kind(source, name_defs)?,
         ExprKind::Tuple(exprs) => Kind::Tuple(
             exprs
@@ -189,7 +199,20 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileEr
 /// need genuine structural equality/ordering to dedup and sort by value,
 /// which nothing in the compiler implements yet.
 pub fn is_scalar_word_kind(kind: &Kind) -> bool {
-    matches!(kind, Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail)
+    matches!(
+        kind,
+        Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail | Kind::None
+    )
+}
+
+/// True when `elems` is the shape of a fallible-wire `Tuple` — its first
+/// element is the `Fail` or `None` propagation marker (see `range_kind`'s
+/// doc comment). Both markers are interchangeable from here on down: they
+/// compile through the identical widened `{tag, i64}` struct
+/// (`codegen::Compiler::fail_struct_type`), so nothing downstream needs to
+/// know which one a given tuple actually uses.
+pub fn is_propagation_tuple(elems: &[Kind]) -> bool {
+    matches!(elems.first(), Some(Kind::Fail) | Some(Kind::None))
 }
 
 /// If `arms` has exactly the shape `^`/`|` produces when bridging a
@@ -295,67 +318,100 @@ fn unop_kind(un_op: &UnOp, expr: &Expr, name_defs: &NameDefs) -> Result<Kind, Co
 
 /// The runtime Kind of a function's return value, given its range expression.
 ///
-/// `Fail` is the out-of-band failure sentinel and does not change the Kind of
-/// the successful return values; it is stripped before inspecting the union.
-/// The result drives the LLVM return-struct shape: a range of `Int | Fail`
-/// compiles to `{ i1 flag, i64 value }` with `flag == 1` indicating failure.
-/// Unlike plain `set_kind`, this is range-specific — a parameter can't be
-/// "fallible" the same way, so `set_kind` alone is correct for domains.
+/// `Fail`/`None` are the out-of-band propagation sentinels and do not change
+/// the Kind of the successful return values; whichever is present is
+/// stripped before inspecting the union. The result drives the LLVM
+/// return-struct shape: a range of `Int | Fail`, `Int | None`, or `Int |
+/// Fail | None` all compile to the same `{ tag, i64 }` wire tuple (see
+/// `codegen::Compiler::fail_struct_type`), with `tag == 0` indicating
+/// success. Unlike plain `set_kind`, this is range-specific — a parameter
+/// can't be "fallible" the same way, so `set_kind` alone is correct for
+/// domains.
 pub fn range_kind(range: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileError> {
     match &range.kind {
         ExprKind::Var(sym) => {
-            // Bare `Fail` has its own Kind; it becomes the flag field of {Fail, Int} structs.
+            // Bare `Fail`/`None` each have their own Kind; either becomes
+            // the marker field of the fallible `{tag, i64}` wire tuple.
             if sym.0 == "Fail" {
                 Ok(Kind::Fail)
+            } else if sym.0 == "None" {
+                Ok(Kind::None)
             } else {
                 set_kind(range, name_defs)
             }
         }
-        // `A | B` — any union with a fail arm produces the fallible struct wire type {i1, i64}.
+        // `A | B` — any union with a Fail/None arm produces the fallible `{tag, i64}` wire tuple.
         ExprKind::BinOp {
             op: BinOp::Union,
             lhs,
             rhs,
             ..
-        } => range_fail_kind(range, lhs, rhs, name_defs),
+        } => range_propagation_kind(range, lhs, rhs, name_defs),
         // `A + B + C` — disjoint union; each arm retains its own kind.
         ExprKind::BinOp {
             op: BinOp::Add,
             lhs,
             rhs,
             ..
-        } => range_fail_kind(range, lhs, rhs, name_defs),
+        } => range_propagation_kind(range, lhs, rhs, name_defs),
         _ => set_kind(range, name_defs),
     }
 }
 
-fn is_fail_arm(expr: &Expr) -> bool {
+/// The marker `Kind` for a `Fail`/`Fail * Y`/bare-`None` propagation arm, or
+/// `Option::None` if `expr` isn't one of those shapes. Only `Fail` permits
+/// the `Fail * Y` payload-carrying form — `None` is deliberately bare-only.
+fn propagation_arm_marker(expr: &Expr) -> Option<Kind> {
     match &expr.kind {
-        ExprKind::Var(sym) if sym.0 == "Fail" => true,
+        ExprKind::Var(sym) if sym.0 == "Fail" => Some(Kind::Fail),
+        ExprKind::Var(sym) if sym.0 == "None" => Some(Kind::None),
         ExprKind::BinOp {
             op: BinOp::Mul,
             lhs,
             ..
-        } => {
-            matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail")
-        }
-        _ => false,
+        } => matches!(&lhs.kind, ExprKind::Var(sym) if sym.0 == "Fail").then_some(Kind::Fail),
+        _ => None,
     }
 }
 
-fn range_fail_kind(
+fn range_propagation_kind(
     range: &Expr,
     lhs: &Expr,
     rhs: &Expr,
     name_defs: &NameDefs,
 ) -> Result<Kind, CompileError> {
-    if is_fail_arm(lhs) {
-        Ok(Kind::Tuple(vec![Kind::Fail, set_kind(rhs, name_defs)?]))
-    } else if is_fail_arm(rhs) {
-        Ok(Kind::Tuple(vec![Kind::Fail, set_kind(lhs, name_defs)?]))
-    } else {
-        set_kind(range, name_defs)
+    let marker = propagation_arm_marker(lhs).or_else(|| propagation_arm_marker(rhs));
+    match marker {
+        Some(marker) => Ok(Kind::Tuple(vec![
+            marker,
+            set_kind(strip_propagation_arms(range), name_defs)?,
+        ])),
+        None => set_kind(range, name_defs),
     }
+}
+
+/// Strip every `Fail`/`Fail * Y`/bare-`None` arm from a `|`/`+` union tree,
+/// returning the remaining success-only sub-expression. Mirrors
+/// `solver::sort::success_arm_of_range` — recurses fully through nested
+/// unions (not just the immediate top-level arm), so a genuine three-arm
+/// range like `Nat | Fail | None` reduces all the way to `Nat`, not to
+/// `Nat | Fail` with only the outermost `None` peeled off.
+fn strip_propagation_arms(expr: &Expr) -> &Expr {
+    if let ExprKind::BinOp {
+        op: BinOp::Union | BinOp::Add,
+        lhs,
+        rhs,
+        ..
+    } = &expr.kind
+    {
+        if propagation_arm_marker(rhs).is_some() {
+            return strip_propagation_arms(lhs);
+        }
+        if propagation_arm_marker(lhs).is_some() {
+            return strip_propagation_arms(rhs);
+        }
+    }
+    expr
 }
 
 /// Merge two Kinds into an atomic Kind or a Union
@@ -406,7 +462,8 @@ fn into_union(kind: Kind) -> Vec<Kind> {
 pub enum IfMerge {
     /// Branches already agree — no coercion.
     Same(Kind),
-    /// Either branch is the fallible `{Fail, Int}` wrapper; both become it.
+    /// Either branch is the fallible `{tag, Int}` wrapper (`Fail` or `None`
+    /// marker); both become it.
     CoerceToFailStruct,
     /// Neither branch is already a TaggedUnion, and at least one is a Tuple:
     /// wrap both into a fresh 2-arm union (then = arm 0, else = arm 1).
@@ -437,6 +494,8 @@ impl IfMerge {
     pub fn result_kind(&self) -> Kind {
         match self {
             IfMerge::Same(k) => k.clone(),
+            // The marker choice is arbitrary once either branch is already a
+            // propagation tuple — see `is_propagation_tuple`'s doc comment.
             IfMerge::CoerceToFailStruct => Kind::Tuple(vec![Kind::Fail, Kind::Int]),
             IfMerge::NewTaggedUnion { arms } => Kind::TaggedUnion(arms.clone()),
             IfMerge::MergeTaggedUnions { merged_arms, .. }
@@ -452,7 +511,7 @@ impl IfMerge {
 /// coercion for this today, so this must fail loudly rather than let codegen
 /// build an invalid phi from two different LLVM types.
 pub fn merge_if_branches(then_ty: &Kind, else_ty: &Kind) -> Result<IfMerge, String> {
-    let is_fail_struct = |k: &Kind| matches!(k, Kind::Tuple(e) if e.first() == Some(&Kind::Fail));
+    let is_fail_struct = |k: &Kind| matches!(k, Kind::Tuple(e) if is_propagation_tuple(e));
     if is_fail_struct(then_ty) || is_fail_struct(else_ty) {
         return Ok(IfMerge::CoerceToFailStruct);
     }

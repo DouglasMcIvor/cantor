@@ -38,6 +38,7 @@ fn scalar_kind_sort<'tm>(
         ValKind::Int | ValKind::Int64 => tm.integer_sort(),
         ValKind::Char => distinct_preds.get(&Symbol::new("Char"))?.sort.clone(),
         ValKind::Fail => distinct_preds.get(&Symbol::new("Fail"))?.sort.clone(),
+        ValKind::None => distinct_preds.get(&Symbol::new("None"))?.sort.clone(),
         ValKind::Signed32 => distinct_preds
             .wrapping
             .get(&Symbol::new("Signed32"))?
@@ -70,6 +71,7 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
         ValKind::Int | ValKind::Int64 => "ck_Int".to_string(),
         ValKind::Bool => "ck_Bool".to_string(),
         ValKind::Fail => "ck_Fail".to_string(),
+        ValKind::None => "ck_None".to_string(),
         // Each already has its own unique Kind (unlike `distinct`, which
         // always reports `ValKind::Int` and needs `arm_ctor_name_for_arm`'s
         // symbol-based disambiguation instead) — no name collision risk.
@@ -450,7 +452,8 @@ pub(crate) fn set_sort<'tm>(
         | SemExprKind::Index { .. }
         | SemExprKind::Try(_)
         | SemExprKind::FailLit
-        | SemExprKind::FailWith(_) => unreachable!(
+        | SemExprKind::FailWith(_)
+        | SemExprKind::NoneLit => unreachable!(
             "set_sort: value-position expression in set-expression context: {:?}",
             set_expr.kind
         ),
@@ -461,25 +464,27 @@ pub(crate) fn set_sort<'tm>(
 
 /// Return the success-only arm of a fallible range.
 ///
-/// Strips `Fail` and `Fail * Y` arms from a union, returning the sub-expression
-/// that represents the success set.  Used by the `Try` encoding to assert that,
-/// after `?` propagation, the result lies in the success set.
+/// Strips `Fail`, `Fail * Y`, and bare `None` arms from a union, returning
+/// the sub-expression that represents the success set. Used by the `Try`
+/// encoding to assert that, after `?` propagation, the result lies in the
+/// success set.
 ///
 /// Examples:
-///   `Nat | Fail`              → `Some(Nat)`
-///   `Nat | (Fail * Y)`        → `Some(Nat)`
-///   `Nat | Fail | (Fail * Y)` → `Some(Nat)`
-///   `Fail`                    → `None`
+///   `Nat | Fail`                 → `Some(Nat)`
+///   `Nat | (Fail * Y)`           → `Some(Nat)`
+///   `Nat | Fail | (Fail * Y)`    → `Some(Nat)`
+///   `Nat | Fail | None`          → `Some(Nat)`
+///   `Fail`                       → `None`
 pub(crate) fn success_arm_of_range(range: &SemExpr) -> Option<&SemExpr> {
-    fn is_fail_arm(e: &SemExpr) -> bool {
-        matches!(&e.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
+    fn is_propagation_arm(e: &SemExpr) -> bool {
+        matches!(&e.kind, SemExprKind::Var(sym) if sym.0 == "Fail" || sym.0 == "None")
             || matches!(
                 &e.kind,
                 SemExprKind::CartesianProduct(lhs, _)
                     if matches!(&lhs.kind, SemExprKind::Var(sym) if sym.0 == "Fail")
             )
     }
-    if is_fail_arm(range) {
+    if is_propagation_arm(range) {
         return None;
     }
     if let SemExprKind::BinOp {
@@ -488,10 +493,10 @@ pub(crate) fn success_arm_of_range(range: &SemExpr) -> Option<&SemExpr> {
         rhs,
     } = &range.kind
     {
-        if is_fail_arm(rhs) {
+        if is_propagation_arm(rhs) {
             return success_arm_of_range(lhs);
         }
-        if is_fail_arm(lhs) {
+        if is_propagation_arm(lhs) {
             return success_arm_of_range(rhs);
         }
     }

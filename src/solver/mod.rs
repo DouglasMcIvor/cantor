@@ -707,6 +707,57 @@ fn finish_check<'tm>(
     }
 }
 
+/// Every `?`-ed call site in a body requires the *caller's own* declared
+/// range to include whichever propagation tag(s) (`Fail`/`None`) the
+/// callee's range can produce. Without this, an out-of-contract `?` (e.g.
+/// calling a `Nat | None`-returning function from inside a plain `Nat`
+/// function) would still "prove" fine — nothing in `encode_call`'s
+/// narrowing logic depends on the caller's own range — and then crash
+/// codegen with an LLVM return-type mismatch ICE instead of failing here
+/// with a clear diagnostic. Mirrors `encode_call`'s own "first
+/// arity-matching candidate, first signature" MVP simplification (an
+/// overloaded/multi-signature callee is checked only via its first match,
+/// same as `narrow_try` itself).
+fn check_try_propagation<'a>(
+    try_calls: impl Iterator<Item = (&'a Symbol, Span)>,
+    sig_range: &SemExpr,
+    fn_env: &FunctionEnv<'_>,
+) -> Option<CheckResult> {
+    use crate::semantics::tree::{range_contains_fail, range_contains_none};
+    for (callee, _span) in try_calls {
+        let Some(callee_sig) = fn_env
+            .get(callee)
+            .and_then(|defs| defs.first())
+            .and_then(|def| def.sigs.first())
+        else {
+            continue; // undefined/malformed callee — reported elsewhere
+        };
+        let missing_fail =
+            range_contains_fail(&callee_sig.range) && !range_contains_fail(sig_range);
+        let missing_none =
+            range_contains_none(&callee_sig.range) && !range_contains_none(sig_range);
+        if !missing_fail && !missing_none {
+            continue;
+        }
+        let missing = match (missing_fail, missing_none) {
+            (true, true) => "`Fail` and `None`",
+            (true, false) => "`Fail`",
+            (false, true) => "`None`",
+            (false, false) => unreachable!("checked above"),
+        };
+        return Some(CheckResult::Counterexample {
+            params: HashMap::new(),
+            output: 0,
+            reason: format!(
+                "`{}(...)?` can propagate {missing}, but this function's own return type \
+                 does not include {missing} — add it to the return type",
+                callee.0
+            ),
+        });
+    }
+    None
+}
+
 // ── Block body checker ────────────────────────────────────────────────────────
 
 fn check_block_sig(
@@ -829,6 +880,11 @@ fn check_block_sig(
                 .into(),
         };
     }
+    let mut try_calls = Vec::new();
+    crate::semantics::tree::collect_try_calls_stmts(stmts, &mut try_calls);
+    if let Some(result) = check_try_propagation(try_calls.into_iter(), &sig.range, fn_env) {
+        return result;
+    }
 
     let mut check_ctx = CheckCtx {
         tm: &tm,
@@ -923,6 +979,12 @@ fn check_sig(
         Ok(t) => t,
         Err(msg) => return CheckResult::Unknown(msg),
     };
+
+    let mut try_calls = Vec::new();
+    crate::semantics::tree::collect_try_calls_expr(body, &mut try_calls);
+    if let Some(result) = check_try_propagation(try_calls.into_iter(), &sig.range, fn_env) {
+        return result;
+    }
 
     // See `check_block_sig`'s identical comment: must run before `finish_check`'s
     // negated-goal assertion.
