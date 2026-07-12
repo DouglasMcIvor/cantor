@@ -23,7 +23,7 @@ You probably don't want to read this unless you're me.
     -  `cargo deny` for vulns, dupes and licensing
     -  `cargo +nightly miri test` for UB, aliasing, invalid references
   - "giving every stage a `validate()` method"
-- 'check pred(x) for x in X' keyword for property based testing, unit testing as the degenerate case
+- `check pred(x) for x in X` keyword for property based testing, unit testing as the degenerate case. Sits between `assert` and `require` in strength. Maybe `check ... or assume` for another assume variation.
 - termination checking on recursion and loops with a 'decreases n' annotation to declare a ranking function.
   automatic inference of the ranking function structurally where possible
 - more set comprehensions features
@@ -89,7 +89,6 @@ You probably don't want to read this unless you're me.
   - ordered sets and bags — see "collections direction" above
   - deques and stuff like that?
 - more operators:
-  - quot and rem (instead of modulo)
   - bitwise ops on bytes
   - comparison operators (they are in the lexer but I don't think they are implemented)
 - `Rational` support, including making `/` for `Int` return `Rational`
@@ -98,26 +97,13 @@ You probably don't want to read this unless you're me.
 - operator overloading for things like `List(Byte)`?
   - custom operator overloading syntax like with haskell? I don't care for inventing new ops but supporting existing ones might be important
   - automatic operator overloading for disinct sets, like allowing arithmetic on Litre. See `deriving` below.
-- BigInt runtime support for our unsized `Int` and `Nat` sets, should come after function overloading so that
-  ```
-  foo : Int -> Int
-  ```
-  gets compiled into an `Int64` overload and a `BigInt = Int - Int64` overload. That way if someone writes a main
-  that verifies input is within a reasonable range they should never need to link the big int library.
-  `BigInt` is platform dependent, it just means "can't fit into a machine word" so
-  ```
-  require x not in BigInt
-  assert x not in BigInt
-  ```
-  becomes useful for optimization without needing to know about the target architecture.
-  ChatGPT suggests num-bigint as a mature widely used pure rust impl.
 - constants JIT'd instead of at rust level to get consistency 
 - human intros (familiar with types, newbie with the word type taboo'd) and LLM intro. The human intros would be good to include a bunch of Venn diagrams and ye olde curved arrows between ovals representing functions to visualise the concepts along the way.
 - error messages
   - review and improve error messages
   - suggested constraints in error messages
   - counterexample printing TODOs
-- recursive set definitions:
+- recursive set definitions: **Is this already done?**
   ```
   Tree = Int | Tree * Tree
   Vector : {} | X * Vector
@@ -161,9 +147,7 @@ Algorithm:
   size(x, y : X, Y) = ...
   size(Tree.leaf2(x, y)) = ..
   ```
-- outer IO loop
-  - allow different Output sets, can write pure cantor transformers from one Output to another
-  - eventually lots of different output backends: CLI, TUI, web, SDL, OpenGL, vulkan, etc.
+- more IO backends: CLI, TUI, web, SDL, OpenGL, vulkan, etc
 - write-only side effects via `emit`
 - compiled binaries
 - linker integration
@@ -205,6 +189,7 @@ Algorithm:
   )
   mut m1 : Measurement = Measurement.length(3m) -- requires namespaces to exist first
   mut m2 = Measurement.volume(4l) -- requires mutable range inference to exist first
+  ```
 - automatic range inference
 - pattern matching with `match x { a => ... , b => ...}`?
 - higher order functions: X -> Y is already the set of functions from X -> Y and we can use Haskell precedence rules for X -> Y -> Z.
@@ -310,14 +295,17 @@ Algorithm:
   ```
   not sure how we interpret that to be the Kleene star?
   That should cover all of list, option and error tuples etc.
-- Extend Fable's 'equiv' to cover any proof obligation:
+- Extend Fable's `equiv` to cover any proof obligation:
   forall is:
+  ```
   given x : Int
   given y : Int
   require P(x, y)
+  ```
   there exists is
+  ```
   y = choose { y if P(y) }
-- automatic multithreading for semi-pure core?
+  ```
 - multiple concurrent IO threads? ChatGPT convo suggests developing a _scheduler_ using optimisitic
   concurrency control, taking adaptive measurements on which events conflicts, both statically and dynamically determining state partitions for different event handlers, letting the developer declare that events are `ordered` or `unordered` or `mostly independent` so that we know the "shape" of events. Lots of fun stuff we could do!
 - small runtime sets optimized as bitmasks. Once we get to the homogeneous set level the runtime 
@@ -325,7 +313,6 @@ Algorithm:
   It may make sense to extend this to fairly large sets with vectors of uint64.
   It would be nice to benchmark when this breaks down (time space tradeoff right?)
 - Allow the solver to provide facts to the codegen to allow optimizations or simplify its code.
-- Optimizations! From ChatGPT:
   ```
     The key lever: assumptions become optimisations
 
