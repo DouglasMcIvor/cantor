@@ -58,8 +58,7 @@ pub(super) fn build_distinct_preds<'tm>(
         .iter()
         .filter(|(_, def)| def.kind == DefKind::Distinct)
         .map(|(sym, _)| sym.clone());
-    let with_builtins =
-        user_defined.chain([Symbol::new("Fail"), Symbol::new("Char")]);
+    let with_builtins = user_defined.chain([Symbol::new("Fail"), Symbol::new("Char")]);
 
     with_builtins
         .map(|sym| {

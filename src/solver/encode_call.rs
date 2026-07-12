@@ -84,7 +84,9 @@ pub(crate) fn encode_call<'tm>(
             }),
             Membership::Unconstrained | Membership::Unsupported => {}
         }
-        let result = ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term.clone()]);
+        let result = ctx
+            .tm
+            .mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term.clone()]);
         assert_distinct_round_trip(ctx.tm, ctx.solver, info, &result, &arg_term);
         // maybe_coerce handles distinct→DT coercion; router's final call is a no-op.
         return maybe_coerce(ctx.tm, result, &coerce_to);
@@ -121,13 +123,14 @@ pub(crate) fn encode_call<'tm>(
             ctx.builtin_obligs.push(BuiltinObligation {
                 path_cond: path_cond.clone(),
                 obligation: c,
-                violated_reason:
-                    "argument to char() must be a valid Unicode scalar value \
+                violated_reason: "argument to char() must be a valid Unicode scalar value \
                      (0..=0x10FFFF, excluding surrogates 0xD800..=0xDFFF)"
-                        .to_string(),
+                    .to_string(),
             });
         }
-        let result = ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term.clone()]);
+        let result = ctx
+            .tm
+            .mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term.clone()]);
         assert_distinct_round_trip(ctx.tm, ctx.solver, info, &result, &arg_term);
         return maybe_coerce(ctx.tm, result, &coerce_to);
     }

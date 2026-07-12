@@ -127,19 +127,21 @@ impl<'ctx> Compiler<'ctx> {
             // read back down and return early, since the shared call/return
             // path below assumes the raw result IS the element's LLVM type.
             Kind::Char => {
-                let fn_val = self.module.get_function("cantor_vec_get_i64").ok_or_else(|| {
-                    CompileError::ice("runtime function `cantor_vec_get_i64` not declared")
-                })?;
+                let fn_val = self
+                    .module
+                    .get_function("cantor_vec_get_i64")
+                    .ok_or_else(|| {
+                        CompileError::ice("runtime function `cantor_vec_get_i64` not declared")
+                    })?;
                 let base_i64 = base_val.into_int_value();
                 let idx_i64 = idx_val.into_int_value();
                 let result = self
                     .builder
                     .build_call(fn_val, &[base_i64.into(), idx_i64.into()], "vec_get")
                     .map_err(|e| CompileError::ice(e.to_string()))?;
-                let result_i64 = result
-                    .try_as_basic_value()
-                    .left()
-                    .ok_or_else(|| CompileError::ice("`cantor_vec_get_i64` returned void unexpectedly"))?;
+                let result_i64 = result.try_as_basic_value().left().ok_or_else(|| {
+                    CompileError::ice("`cantor_vec_get_i64` returned void unexpectedly")
+                })?;
                 let truncated = self
                     .builder
                     .build_int_truncate(
