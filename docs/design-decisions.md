@@ -270,8 +270,56 @@ implementation detail the developer should not rely on.
   no pending/buffered `emits` data.
 - Compiler/runtime needs structural-sharing/diffing so unchanged state isn't
   recreated from scratch (persistent data structures, not naive rebuild).
-- OPEN: exact type of Event (built-in union vs user-definable).
-- OPEN: concurrency/async event handling model (strictly queued vs other).
+
+### MVP event loop (`cantor run`) — DECIDED, not yet implemented
+
+- **Event = Output = `Char*`** for v0 — line-based CLIs only. Not
+  user-configurable yet; a fixed part of the `cantor run` contract, not a
+  general `Event`/`Output` mechanism. The eventual extensibility point is a
+  foreign runtime supplying `Output → Event` (see below) rather than
+  widening the built-in `Event`/`Output` sets themselves.
+- **Shape**: `main` has a **2-arity overload** with signature
+  `Char* * S -> Char* * S` for some set `S` the developer chooses (any name,
+  does not have to be called `State`).
+- **Seeding State**: `main` must also have a **0-arity overload**
+  `main : -> S`, reusing ordinary overload-by-arity (§7 "arity is a free
+  dispatch key" — a 0-arity and 2-arity overload of the same name need no
+  disjointness/Kind-agreement proof between them, so this costs nothing new
+  in the solver). Its return value seeds `State` for the first iteration.
+  Missing this overload when a 2-arity event-loop `main` is present is a
+  compile error — **default-construction of an arbitrary set is explicitly
+  deferred**, not attempted in v0 (what the "default" element of a
+  predicate-defined or empty set would even mean is a real open question,
+  not just an implementation gap).
+- **`S` matching**: the 0-arity `main`'s range, the 2-arity `main`'s
+  domain 2nd component, and the 2-arity `main`'s range 2nd component must
+  all be the **same named set, checked by literal identifier equality** —
+  not a general equivalence proof. This is required for soundness, not
+  just style: without it, the driver could feed iteration 2 a `State`
+  value that the 2-arity `main`'s own domain was never proven to accept.
+- **Line-based IO**: one `stdin` line = one `Event` (trailing newline
+  stripped on read); each `Output` is printed followed by a newline.
+- **EOF**: when `stdin` closes, the driver synthesizes one final `Event` —
+  a length-1 `Char*` containing codepoint `4` (ASCII EOT, the traditional
+  Ctrl-D "end of transmission" control character, **not** U+2404 ␄ which is
+  a printable *display glyph* for EOT and could theoretically appear in
+  real input) — calls the 2-arity `main` once more with it, prints the
+  resulting `Output`, then **terminates unconditionally** (does not loop
+  back to read more input regardless of the returned `State`). A program
+  that doesn't special-case this sentinel just echoes the raw control byte
+  back — a documented gotcha, not a soundness issue. No tagged-union
+  `Event` (e.g. `Char* | EOF`) is needed for v0 as a result.
+- **No `Fail`/`raises` integration in the loop for v0** — `Output` is bare
+  `Char*`, not `Char* !! ErrorSet`. Class 2 (`raises`) catching at the event
+  loop boundary (as described elsewhere in this section) remains future work.
+- **Concurrency**: strictly sequential, blocking read loop for v0 — no
+  async/queued event handling.
+- FFI for foreign runtimes (GUI, HTTP server, etc.) is **not implemented in
+  v0**. The intended shape, for whenever it is designed: a foreign runtime
+  supplies `Output → Event` (given the program's last `Output`, produce the
+  next `Event`) — the v0 stdio runtime already has exactly this shape,
+  just hard-coded in Rust (`print(Output)` then `read a line as Event`)
+  rather than pluggable.
 
 ## 7. Compilation model
 
