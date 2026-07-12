@@ -135,14 +135,21 @@ checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 name = "cantor"
 version = "0.1.0"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-schema",
+ "cantor-runtime",
  "cvc5",
  "inkwell",
  "llvm-sys",
- "num-bigint",
  "rustyline",
+]
+
+[[package]]
+name = "cantor-runtime"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "num-bigint",
 ]
 
 [[package]]

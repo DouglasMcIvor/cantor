@@ -1,0 +1,11 @@
+[package]
+name = "cantor-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arrow-array = "59"
+arrow-buffer = "59"
+arrow-schema = "59"
+# Arbitrary-precision integers — int-soundness-plan.md phase 3 (BigInt runtime).
+num-bigint = "0.4"

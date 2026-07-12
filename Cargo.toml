@@ -1,3 +1,6 @@
+[workspace]
+members = ["cantor-runtime"]
+
 [package]
 name = "cantor"
 version = "0.1.0"
@@ -11,12 +14,11 @@ llvm-sys = { version = "180", features = ["prefer-dynamic"] }
 # cvc5 SMT solver — domain/range constraint checking.
 # Requires system packages: libcvc5-1 libcvc5-dev (apt).
 cvc5 = "0.4"
-arrow-array = "59"
-arrow-buffer = "59"
-arrow-schema = "59"
 rustyline = "14"
-# Arbitrary-precision integers — int-soundness-plan.md phase 3 (BigInt runtime).
-num-bigint = "0.4"
+# Set/vector/bigint runtime called from JIT'd and AOT-compiled Cantor code —
+# split into its own crate (no cvc5/inkwell dependency) so a `cantor build`
+# executable links against a lean artifact rather than the whole compiler.
+cantor-runtime = { path = "cantor-runtime" }
 
 [dev-dependencies]
 # (nothing yet)
