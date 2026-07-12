@@ -4,7 +4,8 @@ use inkwell::{
 
 use crate::{ast::Item, error::CompileError, solver::ConstrainedTree};
 
-use super::{Compiler, compile_elaborated, compile_items};
+use super::Compiler;
+use super::compile::{compile_elaborated, compile_items};
 
 impl<'ctx> Compiler<'ctx> {
     /// Consume the compiler and hand the module to a JIT engine.
