@@ -12,6 +12,8 @@ mod let_bindings;
 mod loops;
 #[path = "codegen/named_errors.rs"]
 mod named_errors;
+#[path = "codegen/object.rs"]
+mod object;
 #[path = "codegen/overloads.rs"]
 mod overloads;
 #[path = "codegen/runtime_fns.rs"]

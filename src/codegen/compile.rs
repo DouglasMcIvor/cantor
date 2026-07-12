@@ -377,3 +377,18 @@ pub fn compile_to_ir(ctx: &Context, items: &[Item]) -> Result<String, CompileErr
     let compiler = compile_items(ctx, items)?;
     Ok(compiler.module().print_to_string().to_string())
 }
+
+/// Compile a parsed file straight to a native object file, skipping the
+/// solver — the AOT-backend analogue of `compile_to_ir`, exercised by tests
+/// that only want to check `write_object_file` itself. `cantor build`'s
+/// real entry point goes through `compile_constrained` instead (a verified
+/// `ConstrainedTree`, not raw `items`), exactly like `jit.rs`'s
+/// `compile_file` (unverified) vs `compile_constrained` (verified) split.
+pub fn compile_to_object(
+    ctx: &Context,
+    items: &[Item],
+    path: &std::path::Path,
+) -> Result<(), CompileError> {
+    let compiler = compile_items(ctx, items)?;
+    super::write_object_file(compiler.module(), path)
+}

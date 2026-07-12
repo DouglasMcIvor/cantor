@@ -27,6 +27,7 @@ mod expr_vec;
 mod jit;
 mod loops;
 mod membership;
+mod object;
 mod overload_dispatch;
 mod runtime_decls;
 mod trampoline;
@@ -34,7 +35,9 @@ pub mod wire;
 
 use wire::tagged_union_leaf_count;
 
-pub use compile::compile_to_ir;
+pub use object::write_object_file;
+
+pub use compile::{compile_to_ir, compile_to_object};
 pub use jit::{compile_constrained, compile_file};
 
 /// Sentinel used only at the JIT runner boundary (main.rs → __cantor_main_runner).
