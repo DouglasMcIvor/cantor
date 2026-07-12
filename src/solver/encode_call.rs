@@ -6,7 +6,7 @@
 //! obligation, and callee-contract assertion), while `encode.rs` keeps the
 //! expression router and its non-call arms.
 
-use cvc5::{Kind, Term, TermManager};
+use cvc5::{Kind, Solver, Term, TermManager};
 
 use crate::{
     ast::DefKind,
@@ -16,7 +16,7 @@ use crate::{
 };
 
 use super::NameDefs;
-use super::membership::{Membership, SolverPreds, membership_constraint};
+use super::membership::{DistinctInfo, Membership, SolverPreds, membership_constraint};
 use super::sort::{
     extract_success_value, is_product_range, maybe_coerce, set_sort, success_arm_of_range,
 };
@@ -84,7 +84,8 @@ pub(crate) fn encode_call<'tm>(
             }),
             Membership::Unconstrained | Membership::Unsupported => {}
         }
-        let result = ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term]);
+        let result = ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term.clone()]);
+        assert_distinct_round_trip(ctx.tm, ctx.solver, info, &result, &arg_term);
         // maybe_coerce handles distinct→DT coercion; router's final call is a no-op.
         return maybe_coerce(ctx.tm, result, &coerce_to);
     }
@@ -126,7 +127,8 @@ pub(crate) fn encode_call<'tm>(
                         .to_string(),
             });
         }
-        let result = ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term]);
+        let result = ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term.clone()]);
+        assert_distinct_round_trip(ctx.tm, ctx.solver, info, &result, &arg_term);
         return maybe_coerce(ctx.tm, result, &coerce_to);
     }
 
@@ -555,4 +557,30 @@ fn char_info_for_constructor<'a, 'tm>(
         return None;
     }
     distinct_preds.get(&Symbol::new("Char"))
+}
+
+/// Assert the round-trip identity `from_D(mk_D(arg)) == arg` for one specific
+/// constructor call's argument term.
+///
+/// `mk`/`from` are declared as two independent free uninterpreted functions
+/// (`build_distinct_preds`) with no inverse axiom connecting them, so without
+/// this the solver has no way to derive e.g. `from(char(65)) == 65` — a
+/// ground fact that's true by construction but otherwise invisible to it.
+/// Asserted unconditionally (not gated on `path_cond`): it's a definitional
+/// property of this call's own `mk`/`from` pair, true regardless of whether
+/// the basis obligation on `arg` happens to hold, not a fact about program
+/// behaviour along a particular path. Ground (no quantifier) and scoped to
+/// this one call's argument term, so it can't cause the quantifier-related
+/// hangs `QuotientInfo`'s doc comment warns about — it says nothing about
+/// any other application of `mk`/`from`.
+fn assert_distinct_round_trip<'tm>(
+    tm: &'tm TermManager,
+    solver: &mut Solver<'tm>,
+    info: &DistinctInfo<'tm>,
+    result: &Term<'tm>,
+    arg_term: &Term<'tm>,
+) {
+    let unwrapped = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), result.clone()]);
+    let round_trip = tm.mk_term(Kind::Equal, &[unwrapped, arg_term.clone()]);
+    solver.assert_formula(round_trip);
 }

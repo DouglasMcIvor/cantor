@@ -1355,9 +1355,13 @@ reach for it less. `distinct` sets are fully proof-capable (IMPLEMENTED):
 each `D = distinct B` gets its own uninterpreted CVC5 sort plus
 uninterpreted constructor/destructor functions `mk_D : Int -> D` and
 `from_D : D -> Int`; basis-set constraints are emitted on demand at each
-constructor / `from` site (no global axioms; logic `ALL`). The
-auto-provided constructor (`litre : Nat -> Litre`) and the built-in
-destructor `from` are identity operations at runtime.
+constructor / `from` site (no global axioms; logic `ALL`). Each constructor
+call site also asserts the ground round-trip fact `from_D(mk_D(arg)) ==
+arg`, so a literal round-trip like `from(litre(5)) == 5` is provable —
+`mk_D`/`from_D` have no relationship otherwise, being independent free
+uninterpreted functions. The auto-provided constructor (`litre : Nat ->
+Litre`) and the built-in destructor `from` are identity operations at
+runtime.
 
 ### Quotient sets (`L / canon`) (DECIDED for this slice,
     docs/wrapping-and-quotient-sets-plan.md)

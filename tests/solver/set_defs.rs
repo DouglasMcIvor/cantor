@@ -108,6 +108,22 @@ unwrap(x) = from(x)
 }
 
 #[test]
+fn distinct_set_from_literal_roundtrip_proved() {
+    // from(litre(5)) == 5 — encode_call.rs's `assert_distinct_round_trip`
+    // asserts the ground fact `from_D(mk_D(arg)) == arg` at each `distinct`
+    // constructor call site, so the solver can derive this even though
+    // `mk_Litre`/`from_Litre` are otherwise independent free uninterpreted
+    // functions with no built-in inverse relationship.
+    proved(
+        "
+Litre = distinct Nat
+five_litres : -> {5}
+five_litres() = from(litre(5))
+",
+    );
+}
+
+#[test]
 fn distinct_set_range_without_constructor_counterexample() {
     // 273 is a plain integer, not wrapped with kelvin(); solver rejects it
     counterexample(

@@ -140,9 +140,19 @@ codepoint(c) = from(c)
     );
 }
 
-// Note: `from(char(65))` is *not* provably `65` — `mk_Char`/`from_Char` are
-// free uninterpreted functions with no inverse axiom, so the solver can't
-// derive a round-trip identity for a literal. Confirmed this is a
-// pre-existing characteristic of the `distinct` encoding in general (not
-// something new to `Char`): `from(litre(5))` isn't provably `5` either.
-// Not tested here since it'd just be asserting a known solver limitation.
+#[test]
+fn char_from_literal_roundtrip_proved() {
+    // `from(char(65)) == 65` — encode_call.rs's `assert_distinct_round_trip`
+    // asserts `from_D(mk_D(arg)) == arg` as a ground fact at each `distinct`
+    // constructor call site (ex-Char too), giving the solver the inverse
+    // link `mk_Char`/`from_Char` otherwise lack as independent free
+    // uninterpreted functions. See `set_defs.rs`'s
+    // `distinct_set_from_literal_roundtrip_proved` for the general
+    // (non-Char) `distinct` case.
+    proved(
+        "
+codepoint_of_a : -> {65}
+codepoint_of_a() = from(char(65))
+",
+    );
+}
