@@ -105,6 +105,31 @@ pub(crate) fn encode_call<'tm>(
         return maybe_coerce(ctx.tm, result, &coerce_to);
     }
 
+    // Auto-generated constructor: `char(n)` for the builtin `Char` distinct
+    // sort (docs/design-decisions.md §13). Unlike Signed32/Unsigned32, not
+    // every `Int` is a valid Unicode scalar — emit a basis obligation (like
+    // `litre(n)` above) using the hardcoded `unicode_scalar_valid` predicate
+    // instead of `membership_constraint` over a `NameDef` (Char has none).
+    if args.len() == 1
+        && let Some(info) = char_info_for_constructor(callee, ctx.distinct_preds)
+    {
+        let arg_term = enc!(&args[0])?;
+        if let Membership::Constrained(c) =
+            super::membership::unicode_scalar_valid(ctx.tm, arg_term.clone())
+        {
+            ctx.builtin_obligs.push(BuiltinObligation {
+                path_cond: path_cond.clone(),
+                obligation: c,
+                violated_reason:
+                    "argument to char() must be a valid Unicode scalar value \
+                     (0..=0x10FFFF, excluding surrogates 0xD800..=0xDFFF)"
+                        .to_string(),
+            });
+        }
+        let result = ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term]);
+        return maybe_coerce(ctx.tm, result, &coerce_to);
+    }
+
     let arg_terms: Vec<Term<'_>> = args.iter().map(|a| enc!(a)).collect::<Result<_, _>>()?;
 
     let overload_set = ctx
@@ -516,4 +541,18 @@ fn wrapping_info_for_constructor<'a, 'tm>(
     let first = chars.next()?;
     let capitalized = first.to_uppercase().collect::<String>() + chars.as_str();
     distinct_preds.wrapping.get(&Symbol::new(capitalized))
+}
+
+/// If `callee` is `char`, the auto-generated constructor for the builtin
+/// `Char` distinct sort (`build_distinct_preds`), return its `DistinctInfo`.
+/// Fixed single name, unlike `distinct_def_for_constructor`'s scan over
+/// `name_defs` — `Char` is a language builtin, not user-declared.
+fn char_info_for_constructor<'a, 'tm>(
+    callee: &Symbol,
+    distinct_preds: &'a SolverPreds<'tm>,
+) -> Option<&'a super::membership::DistinctInfo<'tm>> {
+    if callee.0 != "char" {
+        return None;
+    }
+    distinct_preds.get(&Symbol::new("Char"))
 }

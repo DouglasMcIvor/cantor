@@ -1859,6 +1859,67 @@ sort/Kind entirely, with their own LLVM register width.
   `Signed16`, `Signed64`, …) are a mechanical repeat of this slice, not
   attempted yet.
 
+### `Char` — Unicode scalar values (DECIDED for this slice)
+
+A builtin scalar holding a Unicode scalar value: `0..=0x10FFFF`, excluding
+the surrogate range `0xD800..=0xDFFF`. `Char*` (Kleene star) is Cantor's
+string type — it falls out of the existing `Vector(X)` machinery for free,
+no dedicated string type or syntax needed (`ExprKind::KleeneStar` already
+elaborates any `X*` to `Kind::Vector(X)`, `kind.rs`).
+
+Architecturally `Char` is a **hybrid** of two existing recipes, not a copy of
+either:
+
+- **Solver representation: like `Fail`/user `distinct` sets, not like
+  `Signed32`.** `Char` is registered as a builtin distinct sort in
+  `build_distinct_preds` (`solver/preds.rs`) — own opaque CVC5 sort, `mk_Char :
+  Int → Char_sort` / `from_Char : Char_sort → Int` — the same recipe `Fail`
+  and user `distinct` sets use. Unlike `Signed32`/`Unsigned32`, `char(n)`'s
+  constructor is **not total**: not every `Int` is a valid Unicode scalar
+  value, so it emits a genuine basis obligation (`unicode_scalar_valid`,
+  `solver/membership.rs`) at the call site, the same shape `litre(n)`'s basis
+  obligation uses — just checked against a hardcoded predicate instead of a
+  Cantor-expressible basis set (there's no integer range-literal syntax yet
+  to write one). `from(c)` is total and needs no obligation, exactly like
+  `from()` on any other `distinct` value.
+- **Codegen representation: like `Signed32`/`Unsigned32`, not like user
+  `distinct`.** User `distinct` sets stay `Kind::Int`-shaped (tagged i64) at
+  the LLVM level; `Char` instead gets its own `Kind::Char`, a plain
+  unboxed `i32` register carrying the raw codepoint — needed so `Char*` is
+  distinguishable from `Int*` at the `Kind` level (for pretty-printing
+  strings as text, and eventually IO), which a `Kind::Int` reuse would have
+  made impossible. `char(n)`'s codegen is a plain untag + `i32` truncate,
+  **no runtime range check** — a `BuiltinObligation` that can't be proved
+  makes the *whole file* fail to compile (`check_file` reports it as a
+  counterexample/unknown and codegen never runs), the same guarantee
+  `litre(n)`'s basis obligation already relies on. This is different from
+  the genuinely graduated proved→elided/unknown→runtime-trap treatment
+  `assert` gets (§4) — `BuiltinObligation`s (domain/basis checks inserted by
+  the compiler, not user-written `assert`s) have no runtime-check fallback
+  today; they must be proved or the program doesn't compile, same as `/`'s
+  `NonZeroInt` obligation.
+- **`Char*` costs almost nothing extra.** `Vector(Char)` reuses the plain
+  `cantor_vec_*_i64` Arrow `Int64Array` runtime functions verbatim — zero new
+  runtime code — via the same zero-extend-into-i64-on-push,
+  truncate-back-to-i32-on-get trick `extract_union_leaves`
+  (`codegen/expr_vec.rs`) already uses for Signed32/Unsigned32 union-vector
+  leaves, just applied to plain vectors (builder/get/len/concat dispatch)
+  too.
+- **Disjoint, no arithmetic.** No implicit coercion to/from `Int` anywhere
+  (mirrors the `Bool`/`Int` disjointness rule above) — you must go through
+  `char(n)`/`from(c)`. No `+ - * neg` or ordering comparisons on `Char` in
+  this slice: codepoint arithmetic isn't meaningful (could easily produce a
+  surrogate, breaking the validity invariant `char()` establishes), and
+  ordering isn't needed yet to prove out the underlying plumbing.
+
+**Explicitly deferred**, tracked in `backlog.md`:
+- `'a'`/`"hello"` literal syntax (lexer + parser) — `char(n)` numeric
+  construction only for now.
+- Ordering comparisons (`< <= > >=`) on `Char`.
+- A packed UTF-8 representation for `Char*` — it stays a boxed-i64-per-
+  character Arrow vector, matching the "32-bit codepoints now, UTF-8 later"
+  phasing the rest of the IO roadmap will need anyway.
+
 ### Narrowing back to IntN
 
 Three mechanisms in order of increasing programmer responsibility:

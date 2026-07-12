@@ -1,0 +1,4 @@
+-- `Char*` reuses `Vector(Int)`'s `_i64` Arrow storage, so ordinary `xs[i]`
+-- indexing works — truncated back to the i32 Char register on the way out.
+main : -> Char
+main() = [char(72), char(101), char(108), char(108), char(111)][1]

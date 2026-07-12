@@ -56,6 +56,15 @@ pub enum Kind {
     /// `Signed32` even though both share the same bit-pattern space — see
     /// `Kind::Signed32`'s doc comment.
     Unsigned32,
+    /// i32 — a Unicode scalar value (`0..=0x10FFFF`, excluding the surrogate
+    /// range `0xD800..=0xDFFF`). Unlike `Signed32`/`Unsigned32`, *not* every
+    /// bit pattern in the register is a valid `Char` — validity is a genuine
+    /// proof obligation discharged once at construction (`char(n)`, solver
+    /// side: a builtin distinct sort with a basis obligation, same recipe as
+    /// `Fail`/user `distinct`; codegen side: truncate + a runtime range-check
+    /// trap when unproved). Disjoint from `Int` and every other Kind — no
+    /// arithmetic, no implicit coercion. See docs/design-decisions.md §13.
+    Char,
     /// i64 (pointer-as-i64) — heap-allocated sorted array of the boxed
     /// element Kind. Only single-i64-word Kinds (`Int`, `Int64`, `Bool`,
     /// `Fail`) can appear here today — `set_kind`'s `Set(X)` arm is the

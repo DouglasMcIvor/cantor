@@ -40,6 +40,7 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
         // symbol-based disambiguation instead) — no name collision risk.
         ValKind::Signed32 => "ck_Signed32".to_string(),
         ValKind::Unsigned32 => "ck_Unsigned32".to_string(),
+        ValKind::Char => "ck_Char".to_string(),
         ValKind::Set(_) => "ck_Set".to_string(),
         ValKind::Tuple(inner) => {
             let s = inner

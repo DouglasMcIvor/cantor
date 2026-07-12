@@ -350,12 +350,44 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
             // everything else (`Bool`, `Int64`, `Set`, …) is a plain i64.
             let display = if main_return_kind == Kind::Int {
                 format_tagged_int(result)
+            } else if main_return_kind == Kind::Char {
+                format_char(result)
+            } else if main_return_kind == Kind::Vector(Box::new(Kind::Char)) {
+                format_char_vector(result)
             } else {
                 result.to_string()
             };
             println!("\nmain() = {display}");
         }
     }
+}
+
+/// Decode a `Char` leaf (zero-extended to i64 by the trampoline, same
+/// convention as `Unsigned32`) into its display form — the actual character,
+/// not the bare codepoint. Only valid Unicode scalar values can ever reach
+/// here: `char(n)` proves it once at construction, so `char::from_u32` is
+/// infallible.
+fn format_char(word: i64) -> String {
+    let v = word as u32;
+    let c = char::from_u32(v)
+        .unwrap_or_else(|| panic!("ICE: Char leaf {v} is not a valid Unicode scalar"));
+    format!("{c}")
+}
+
+/// Decode a `Char*` (`Vector(Char)`) pointer-as-i64 into its text — reuses
+/// `Vector(Int)`'s `_i64` Arrow runtime verbatim (docs/design-decisions.md
+/// §13). Shared by `format_kind_val`'s `Vector(Char)` arm and the
+/// non-fallible scalar-main path below, which bypasses `format_kind_val`
+/// entirely for any return Kind other than `Tuple`.
+fn format_char_vector(vec_ptr: i64) -> String {
+    let len = cantor::runtime::cantor_vec_len_i64(vec_ptr);
+    (0..len)
+        .map(|i| {
+            let cp = cantor::runtime::cantor_vec_get_i64(vec_ptr, i) as u32;
+            char::from_u32(cp)
+                .unwrap_or_else(|| panic!("ICE: Char* element {cp} is not a valid Unicode scalar"))
+        })
+        .collect::<String>()
 }
 
 /// Decode a possibly-tagged `Int` word (int-soundness-plan phase 3 step 4b —
@@ -374,11 +406,15 @@ fn format_tagged_int(word: i64) -> String {
 fn count_kind_leaves(kind: &Kind) -> usize {
     match kind {
         Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail | Kind::Set(_) => 1,
-        Kind::Signed32 | Kind::Unsigned32 => 1,
+        Kind::Signed32 | Kind::Unsigned32 | Kind::Char => 1,
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
         // TODO: tagged-union IR — count tag field + widest arm
         Kind::TaggedUnion(_) => 1,
-        Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in CLI output"),
+        // A Vector is always a single pointer-as-i64 leaf, regardless of
+        // element kind (see `codegen::wire::leaf_count`'s matching arm) —
+        // decoding the pointed-to elements (`format_kind_val`) is the part
+        // that's only implemented for `Char*` so far.
+        Kind::Vector(_) => 1,
     }
 }
 
@@ -409,6 +445,11 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
             *offset += 1;
             format!("{v}")
         }
+        Kind::Char => {
+            let v = buf[*offset];
+            *offset += 1;
+            format_char(v)
+        }
         Kind::Int => {
             let v = buf[*offset];
             *offset += 1;
@@ -426,6 +467,11 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
             let v = buf[*offset];
             *offset += 1;
             format!("<tagged-union {v}>")
+        }
+        Kind::Vector(ek) if **ek == Kind::Char => {
+            let vec_ptr = buf[*offset];
+            *offset += 1;
+            format_char_vector(vec_ptr)
         }
         Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in CLI output"),
     }

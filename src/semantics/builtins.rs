@@ -96,6 +96,16 @@ pub fn lookup(name: &str) -> Option<BuiltinSet> {
             kind: Kind::Unsigned32,
             bound: IntBound::Any,
         }),
+        // A Unicode scalar value — a builtin *distinct* sort (like `Fail`),
+        // not an `Int` subset, so `bound` is meaningless filler here too.
+        // Unlike Signed32/Unsigned32, not every `Int` is a valid `Char`;
+        // validity (`0..=0x10FFFF`, excluding surrogates) is a proof
+        // obligation checked once at `char(n)` construction, not encoded via
+        // `IntBound`. See docs/design-decisions.md §13.
+        "Char" => Some(BuiltinSet {
+            kind: Kind::Char,
+            bound: IntBound::Any,
+        }),
         _ => None,
     }
 }

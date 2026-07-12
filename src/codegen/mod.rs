@@ -197,6 +197,11 @@ impl<'ctx> Compiler<'ctx> {
             // i32 arithmetic (two's-complement is the default), no nsw/nuw
             // flags (docs/wrapping-and-quotient-sets-plan.md).
             Kind::Signed32 | Kind::Unsigned32 => self.context.i32_type().into(),
+            // Also a plain i32 register (a Unicode scalar value) — unlike
+            // Signed32/Unsigned32, not every bit pattern is valid, but
+            // validity is a proof obligation checked once at `char(n)`
+            // construction, not an LLVM-level property.
+            Kind::Char => self.context.i32_type().into(),
             Kind::Tuple(elems) => {
                 let types: Vec<BasicTypeEnum<'ctx>> =
                     elems.iter().map(|k| self.kind_to_llvm_type(k)).collect();
@@ -267,7 +272,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(err)?;
                 *field_idx += 1;
             }
-            Kind::Unsigned32 => {
+            Kind::Unsigned32 | Kind::Char => {
                 let wide = self
                     .builder
                     .build_int_z_extend(val.into_int_value(), i64t, "tu_lu32")
@@ -375,7 +380,9 @@ impl<'ctx> Compiler<'ctx> {
     /// zero-extends, `Signed32`/`Unsigned32` (i32) sign-/zero-extend
     /// respectively (docs/wrapping-and-quotient-sets-plan.md — mirrors the
     /// existing `Bool` widen exactly, just with a different width/extend
-    /// kind), anything already i64-shaped passes through unchanged.
+    /// kind), `Char` (i32) zero-extends (same as `Unsigned32` — codepoints
+    /// are non-negative), anything already i64-shaped passes through
+    /// unchanged.
     fn widen_scalar_to_i64(
         &self,
         val: BasicValueEnum<'ctx>,
@@ -395,7 +402,7 @@ impl<'ctx> Compiler<'ctx> {
                 .build_int_s_extend(val.into_int_value(), i64t, name)
                 .map_err(err)?
                 .into(),
-            Kind::Unsigned32 => self
+            Kind::Unsigned32 | Kind::Char => self
                 .builder
                 .build_int_z_extend(val.into_int_value(), i64t, name)
                 .map_err(err)?
@@ -406,7 +413,7 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Inverse of `widen_scalar_to_i64`: narrow an incoming i64 parameter
     /// down to its declared Kind's natural register width — `Bool` (i1),
-    /// `Signed32`/`Unsigned32` (i32, same truncation regardless of
+    /// `Signed32`/`Unsigned32`/`Char` (i32, same truncation regardless of
     /// signedness — sign only matters for how the bits are *interpreted*,
     /// e.g. `bvslt` vs `bvult` at the solver layer, comparisons/`from()` at
     /// codegen, never for the truncation itself). Anything else passes
@@ -424,7 +431,7 @@ impl<'ctx> Compiler<'ctx> {
                 .build_int_truncate(val.into_int_value(), self.context.bool_type(), name)
                 .map_err(err)?
                 .into(),
-            Kind::Signed32 | Kind::Unsigned32 => self
+            Kind::Signed32 | Kind::Unsigned32 | Kind::Char => self
                 .builder
                 .build_int_truncate(val.into_int_value(), self.context.i32_type(), name)
                 .map_err(err)?
@@ -436,7 +443,7 @@ impl<'ctx> Compiler<'ctx> {
     /// Wrap a return value for a fallible function if needed.
     ///
     /// - Already a fail struct → pass through (e.g. from `FailLit`, `compile_try`)
-    /// - Bool/Signed32/Unsigned32 in non-fallible function → widen to i64
+    /// - Bool/Signed32/Unsigned32/Char in non-fallible function → widen to i64
     /// - Any other value in non-fallible function → pass through
     /// - Any non-struct value in fallible function → wrap in `{i1=0, i64=val}`
     pub(crate) fn wrap_return_value(

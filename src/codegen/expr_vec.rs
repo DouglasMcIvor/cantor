@@ -48,6 +48,19 @@ fn vec_builder_fns(
             "cantor_vec_builder_finish_bool",
             "cantor_vec_len_bool",
         )),
+        // `Char*` (docs/design-decisions.md §13) reuses the plain `_i64`
+        // Arrow `Int64Array` family verbatim — zero new runtime code — via
+        // the same zero-extend-into-i64 trick already used for
+        // Signed32/Unsigned32 union-vector leaves (`extract_union_leaves`
+        // below). The i32<->i64 conversion happens at the two call sites
+        // (`compile_tuple_as_vector`'s push, `compile_vector_elem_get`'s get),
+        // not here.
+        Kind::Char => Ok((
+            "cantor_vec_builder_new_i64",
+            "cantor_vec_builder_push_i64",
+            "cantor_vec_builder_finish_i64",
+            "cantor_vec_len_i64",
+        )),
         Kind::Vector(_) => Ok((
             "cantor_list_vec_builder_new",
             "cantor_list_vec_builder_push",
@@ -67,6 +80,7 @@ pub(crate) fn vector_len_fn_name(ek: &Kind) -> Result<&'static str, CompileError
     Ok(match ek {
         Kind::Int => "cantor_vec_len_i64",
         Kind::Bool => "cantor_vec_len_bool",
+        Kind::Char => "cantor_vec_len_i64",
         Kind::Vector(_) => "cantor_list_vec_len",
         Kind::Tuple(_) => "cantor_struct_vec_len",
         Kind::TaggedUnion(_) => "cantor_union_vec_len",
@@ -108,6 +122,34 @@ impl<'ctx> Compiler<'ctx> {
         let get_fn = match ek {
             Kind::Int => "cantor_vec_get_i64",
             Kind::Bool => "cantor_vec_get_bool",
+            // `Char*` reuses the `_i64` Arrow storage (`vec_builder_fns`),
+            // but the element itself is an i32 register — truncate the i64
+            // read back down and return early, since the shared call/return
+            // path below assumes the raw result IS the element's LLVM type.
+            Kind::Char => {
+                let fn_val = self.module.get_function("cantor_vec_get_i64").ok_or_else(|| {
+                    CompileError::ice("runtime function `cantor_vec_get_i64` not declared")
+                })?;
+                let base_i64 = base_val.into_int_value();
+                let idx_i64 = idx_val.into_int_value();
+                let result = self
+                    .builder
+                    .build_call(fn_val, &[base_i64.into(), idx_i64.into()], "vec_get")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                let result_i64 = result
+                    .try_as_basic_value()
+                    .left()
+                    .ok_or_else(|| CompileError::ice("`cantor_vec_get_i64` returned void unexpectedly"))?;
+                let truncated = self
+                    .builder
+                    .build_int_truncate(
+                        result_i64.into_int_value(),
+                        self.context.i32_type(),
+                        "vec_get_char",
+                    )
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                return Ok((truncated.into(), Kind::Char));
+            }
             Kind::Vector(_) => "cantor_list_vec_get",
             Kind::Tuple(field_kinds) => {
                 return self.compile_struct_vec_index(base_val, idx_val, field_kinds);
@@ -386,7 +428,7 @@ impl<'ctx> Compiler<'ctx> {
                     inner_ptr
                 }
                 (Kind::Vector(_), Kind::Vector(_)) => elem,
-                (_, Kind::Bool) => self
+                (_, Kind::Bool | Kind::Char) => self
                     .builder
                     .build_int_z_extend(elem.into_int_value(), i64t, "vec_elem_ext")
                     .map_err(err)?
@@ -624,7 +666,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(err)?;
                 Ok(vec![wide.into()])
             }
-            Kind::Unsigned32 => {
+            Kind::Unsigned32 | Kind::Char => {
                 let wide = self
                     .builder
                     .build_int_z_extend(val.into_int_value(), i64t, "ul_u32")
@@ -760,7 +802,7 @@ impl<'ctx> Compiler<'ctx> {
         // `Vector(Int)` storage is representation-agnostic i64 words (see
         // the matching comment in `compile_tuple_as_vector`) — push `val` as
         // whatever representation it already has.
-        let push_val: BasicValueEnum<'ctx> = if *val_kind == Kind::Bool {
+        let push_val: BasicValueEnum<'ctx> = if matches!(val_kind, Kind::Bool | Kind::Char) {
             self.builder
                 .build_int_z_extend(
                     val.into_int_value(),

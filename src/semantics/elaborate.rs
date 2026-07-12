@@ -196,6 +196,11 @@ fn builtin_call_kind(callee: &Symbol, args_len: usize, name_defs: &NameDefs) -> 
     // checked *before* falling through to the `distinct`-only default below.
     match crate::semantics::builtins::lookup(&capitalized) {
         Some(b) if b.kind == Kind::Signed32 || b.kind == Kind::Unsigned32 => Some(b.kind),
+        // `char(n)` (this module's docs/design-decisions.md §13 "Char"):
+        // like Signed32/Unsigned32, Char genuinely gets its own runtime Kind
+        // (i32, disjoint from Int), so must be checked here too rather than
+        // falling through to the `distinct`-only `Kind::Int` default below.
+        Some(b) if b.kind == Kind::Char => Some(b.kind),
         _ => {
             // Auto-generated constructor `d(x)` for `D = distinct B`.
             //

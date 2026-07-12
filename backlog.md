@@ -67,7 +67,10 @@ You probably don't want to read this unless you're me.
   - `Int32`, `Int(32)` and their Nat cousins as LLVM iN values, right now all are i64.
   - `Float32` and `Float64` as distinct sets, `FiniteFloat32` and explicit `posZero`, `negZero`, `nan` values
   - `Signed32`, `Unsigned32` etc for wrapping arithmetic distinct from `Int` and `Nat`
-  - `Char` (unicode), our string type is `Char*` which is just too perfect to be true.
+  - `Char` (unicode) — DONE for numeric construction (`char(n)`/`from(c)`, `Char*` as strings,
+    docs/design-decisions.md §13). Still open: `'a'`/`"hello"` literal syntax (lexer + parser),
+    ordering comparisons (`< <= > >=`), and a packed UTF-8 representation for `Char*` (currently
+    a boxed-i64-per-character Arrow vector, same as `Int*`).
   - `Byte`, `Bits32`, `Bits(435)` generic etc
   - `Size`, `Word` (platform dependent)
 - more containers:

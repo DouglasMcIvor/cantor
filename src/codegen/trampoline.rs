@@ -191,7 +191,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(err)?;
                 *leaf_idx += 1;
             }
-            Kind::Signed32 | Kind::Unsigned32 => {
+            Kind::Signed32 | Kind::Unsigned32 | Kind::Char => {
                 let wide = if *kind == Kind::Signed32 {
                     builder.build_int_s_extend(val.into_int_value(), i64t, "w32")
                 } else {

@@ -35,16 +35,21 @@ use super::{CheckResult, FunctionEnv, NameDefs, configured_solver};
 /// No global axioms are needed; basis constraints are emitted on-demand when
 /// `litre(n)` or `from(x)` is encoded.
 ///
-/// `Fail` is registered here too, as a builtin distinct sort — it never
-/// appears in `name_defs` (it's resolved via `builtins::lookup`, not a user
-/// definition), so it's added unconditionally alongside the user-defined
-/// ones. This is the only Fail-specific step in the whole cross-kind union
-/// pipeline: once `Fail` has its own uninterpreted CVC5 sort, every other
-/// piece (cross-kind detection in `set_sort`, datatype construction in
-/// `build_union_datatype_sort`, membership, coercion) already treats any
-/// distinct-sort arm generically, so `Int | Fail` / `Int | (Fail * Y)` need
-/// no Fail-specific code beyond this registration. See
-/// docs/design-decisions.md §13 ("Solver representation of `Fail`").
+/// `Fail` and `Char` are registered here too, as builtin distinct sorts —
+/// neither appears in `name_defs` (both are resolved via `builtins::lookup`,
+/// not a user definition), so they're added unconditionally alongside the
+/// user-defined ones. This is the only Fail-specific step in the whole
+/// cross-kind union pipeline: once `Fail` has its own uninterpreted CVC5
+/// sort, every other piece (cross-kind detection in `set_sort`, datatype
+/// construction in `build_union_datatype_sort`, membership, coercion)
+/// already treats any distinct-sort arm generically, so `Int | Fail` /
+/// `Int | (Fail * Y)` need no Fail-specific code beyond this registration.
+/// See docs/design-decisions.md §13 ("Solver representation of `Fail`").
+///
+/// `Char` reuses the exact same recipe, but — unlike `Fail` — its
+/// constructor (`char(n)`, `solver::encode_call`) carries a genuine basis
+/// obligation (not every `Int` is a valid Unicode scalar), so it's *not*
+/// total the way `Fail`'s single witness value is.
 pub(super) fn build_distinct_preds<'tm>(
     tm: &'tm TermManager,
     name_defs: &NameDefs,
@@ -53,9 +58,10 @@ pub(super) fn build_distinct_preds<'tm>(
         .iter()
         .filter(|(_, def)| def.kind == DefKind::Distinct)
         .map(|(sym, _)| sym.clone());
-    let with_fail = user_defined.chain(std::iter::once(Symbol::new("Fail")));
+    let with_builtins =
+        user_defined.chain([Symbol::new("Fail"), Symbol::new("Char")]);
 
-    with_fail
+    with_builtins
         .map(|sym| {
             let sort = tm.mk_uninterpreted_sort(&sym.0);
             let mk = tm.mk_const(

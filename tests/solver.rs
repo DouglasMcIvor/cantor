@@ -2,6 +2,8 @@
 mod blocks;
 #[path = "solver/bool_ops.rs"]
 mod bool_ops;
+#[path = "solver/char.rs"]
+mod char_tests;
 #[path = "solver/cross_kind_unions.rs"]
 mod cross_kind_unions;
 #[path = "solver/destructuring.rs"]

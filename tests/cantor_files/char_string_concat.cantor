@@ -1,0 +1,8 @@
+-- `++` on two Char* parameters — dispatches to the plain `cantor_vec_concat_i64`
+-- runtime function, same as `Vector(Int)`, since element pointers are
+-- representation-agnostic (docs/design-decisions.md §13).
+concat2 : Char* * Char* -> Char*
+concat2(xs, ys) = xs ++ ys
+
+main : -> Char*
+main() = concat2([char(72), char(105)], [char(33)])

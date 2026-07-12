@@ -497,7 +497,7 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         let concat_fn = match &elem_kind {
-            Kind::Int => "cantor_vec_concat_i64",
+            Kind::Int | Kind::Char => "cantor_vec_concat_i64",
             Kind::Bool => "cantor_vec_concat_bool",
             Kind::Vector(_) => "cantor_list_vec_concat",
             Kind::Tuple(_) => "cantor_struct_vec_concat",
@@ -534,17 +534,20 @@ impl<'ctx> Compiler<'ctx> {
         // `from(x)` — built-in destructor. Identity at runtime for `distinct`
         // values (preserves the argument's actual Kind, Int or Int64,
         // whichever it already is — a pure pass-through, not a fresh value).
-        // For a Signed32/Unsigned32 argument (docs/wrapping-and-quotient-
-        // sets-plan.md) it's genuinely not identity: sign-/zero-extend the
-        // i32 register up to i64, then tag it (a raw i64 straight from a
-        // 32-bit register always fits `Int64`, so `ensure_tagged` is always
-        // sound here, never the boxed-BigInt path) to produce a proper
-        // `Kind::Int` value — the wire type `Kind::Int` always means tagged.
+        // For a Signed32/Unsigned32/Char argument (docs/wrapping-and-
+        // quotient-sets-plan.md, docs/design-decisions.md §13) it's
+        // genuinely not identity: sign-/zero-extend the i32 register up to
+        // i64, then tag it (a raw i64 straight from a 32-bit register always
+        // fits `Int64`, so `ensure_tagged` is always sound here, never the
+        // boxed-BigInt path) to produce a proper `Kind::Int` value — the
+        // wire type `Kind::Int` always means tagged.
         if callee.0 == "from" && args.len() == 1 {
             let (val, kind) = self.compile_expr(&args[0], env)?;
-            if matches!(kind, Kind::Signed32 | Kind::Unsigned32) {
+            if matches!(kind, Kind::Signed32 | Kind::Unsigned32 | Kind::Char) {
                 let i64t = self.context.i64_type();
                 let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+                // Char is always zero-extended, same as Unsigned32 — codepoints
+                // are non-negative.
                 let wide = if kind == Kind::Signed32 {
                     self.builder
                         .build_int_s_extend(val.into_int_value(), i64t, "from_s32")
@@ -557,6 +560,30 @@ impl<'ctx> Compiler<'ctx> {
                 return Ok((tagged.into(), Kind::Int));
             }
             return Ok((val, kind));
+        }
+
+        // Auto-generated constructor `char(n)` for the builtin `Char`
+        // distinct sort (docs/design-decisions.md §13). Checked *before* the
+        // `distinct_names` identity path below (which would otherwise treat
+        // `char` as an ordinary user `distinct` constructor and wrongly pass
+        // the argument through unchanged) — same reasoning as checking
+        // Signed32/Unsigned32 first. No runtime range-check needed here:
+        // unlike `assert`, a `BuiltinObligation` that can't be proved makes
+        // the whole file fail to compile (`check_file` reports it as a
+        // counterexample/unknown and codegen never runs) — same guarantee
+        // `litre(n)`'s basis obligation already relies on. By the time this
+        // code runs, every `char(n)` call site's argument is already proved
+        // valid, so a plain untag + truncate is sound, exactly like
+        // `signed32(n)`/`unsigned32(n)` below.
+        if callee.0 == "char" && args.len() == 1 {
+            let (val, arg_kind) = self.compile_expr(&args[0], env)?;
+            let raw = self.ensure_raw_int64(val.into_int_value(), &arg_kind)?;
+            let i32t = self.context.i32_type();
+            let truncated = self
+                .builder
+                .build_int_truncate(raw, i32t, "char_ctor")
+                .map_err(|e| CompileError::ice(e.to_string()))?;
+            return Ok((truncated.into(), Kind::Char));
         }
 
         // Auto-generated constructor `d(x)` for `D = distinct B`; identity at

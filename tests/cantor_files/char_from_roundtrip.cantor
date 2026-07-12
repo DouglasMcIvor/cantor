@@ -1,0 +1,5 @@
+-- from() unwraps a Char back to its underlying codepoint — total (no
+-- obligation on the way out; validity was already proved once at
+-- construction), same shape as Signed32/Unsigned32's from().
+main : -> Bool
+main() = from(char(97)) == 97

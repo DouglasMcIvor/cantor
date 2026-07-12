@@ -203,6 +203,23 @@ pub(crate) fn membership_constraint<'tm>(
                     Membership::Constrained(tm.mk_boolean(false))
                 }
             }
+            // `Char` is registered as a builtin distinct sort too (`build_distinct_preds`),
+            // same rule as `Fail` above — a term of exactly the `Char` sort is
+            // trivially a member (validity was already proved once, at
+            // `char(n)` construction — see `encode_call.rs`); anything else
+            // is definitely not `Char`.
+            Some(b) if b.kind == ValKind::Char => {
+                let char_sort = distinct_preds
+                    .get(&Symbol::new("Char"))
+                    .expect("Char must be registered as a builtin distinct sort")
+                    .sort
+                    .clone();
+                if t.sort() == char_sort {
+                    Membership::Unconstrained
+                } else {
+                    Membership::Constrained(tm.mk_boolean(false))
+                }
+            }
             // Bool = {0, 1} (false = 0, true = 1).
             // • boolean-sort terms are trivially in Bool — no constraint needed.
             // • integer-sort terms (e.g. from a Bool|Nat domain) need t = 0 OR t = 1.
@@ -825,4 +842,34 @@ fn outside<'tm>(tm: &'tm TermManager, t: Term<'tm>, min: i64, max: i64) -> Membe
     let lt = tm.mk_term(Kind::Lt, &[t.clone(), lo]);
     let gt = tm.mk_term(Kind::Gt, &[t, hi]);
     Membership::Constrained(tm.mk_term(Kind::Or, &[lt, gt]))
+}
+
+/// The basis obligation for `char(n)` (`solver::encode_call`): `n` is a valid
+/// Unicode scalar value iff `0 <= n <= 0x10FFFF` and `n` isn't a surrogate
+/// (`0xD800..=0xDFFF`). `t` here is the plain-`Int` argument term, *not* yet
+/// wrapped in `mk_Char` — this is the same "check the raw basis value before
+/// constructing" shape as `litre(n)`'s obligation
+/// (`encode_call.rs::distinct_def_for_constructor`), just with a hardcoded
+/// predicate instead of a `membership_constraint` over a user set expression
+/// (there's no Cantor-expressible basis set for this yet — no range-literal
+/// syntax exists).
+pub(crate) fn unicode_scalar_valid<'tm>(tm: &'tm TermManager, t: Term<'tm>) -> Membership<'tm> {
+    let Some(t) = to_integer_term(t) else {
+        return Membership::Constrained(tm.mk_boolean(false));
+    };
+    let in_range = {
+        let lo = tm.mk_integer(0);
+        let hi = tm.mk_integer(0x10FFFF);
+        let geq = tm.mk_term(Kind::Geq, &[t.clone(), lo]);
+        let leq = tm.mk_term(Kind::Leq, &[t.clone(), hi]);
+        tm.mk_term(Kind::And, &[geq, leq])
+    };
+    let not_surrogate = {
+        let lo = tm.mk_integer(0xD800);
+        let hi = tm.mk_integer(0xDFFF);
+        let lt = tm.mk_term(Kind::Lt, &[t.clone(), lo]);
+        let gt = tm.mk_term(Kind::Gt, &[t, hi]);
+        tm.mk_term(Kind::Or, &[lt, gt])
+    };
+    Membership::Constrained(tm.mk_term(Kind::And, &[in_range, not_surrogate]))
 }

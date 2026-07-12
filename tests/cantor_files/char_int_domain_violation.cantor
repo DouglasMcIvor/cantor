@@ -1,0 +1,11 @@
+-- Char is fully disjoint from Int (docs/design-decisions.md §13) — a raw
+-- Int literal is never a member, exactly like passing a plain Int where a
+-- `distinct`/Signed32 value is expected.
+identity_char : Char -> Char
+identity_char(x) = x
+
+bad : -> Char
+bad() = identity_char(65)
+
+main : -> Char
+main() = char(65)

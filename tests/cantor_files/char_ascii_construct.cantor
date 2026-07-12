@@ -1,0 +1,3 @@
+-- char(n) constructs a Char from a proved-valid Unicode scalar value.
+main : -> Char
+main() = char(65)

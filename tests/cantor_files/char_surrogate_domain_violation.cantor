@@ -1,0 +1,5 @@
+-- Not every Int is a valid Unicode scalar value — char()'s basis obligation
+-- rejects a surrogate codepoint at compile time (0xD800 == 55296), the same
+-- graduated proof-obligation treatment `/`'s NonZeroInt check gets.
+main : -> Char
+main() = char(55296)

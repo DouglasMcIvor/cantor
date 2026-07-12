@@ -1,0 +1,5 @@
+-- `Char*` (Kleene star over Char) falls out of the existing Vector(X)
+-- machinery for free (docs/design-decisions.md §13) — printed as text, not
+-- a list of codepoints.
+main : -> Char*
+main() = [char(72), char(101), char(108), char(108), char(111)]
