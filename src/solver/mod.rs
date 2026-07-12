@@ -746,6 +746,16 @@ fn check_block_sig(
     let mut overload_obligs: Vec<self::obligations::OverloadCallObligation<'_>> = Vec::new();
     let mut ssa_counter = 0usize;
     let mut constraint_env: HashMap<Symbol, SemExpr> = HashMap::new();
+    // Seed constraint_env with each Set(_)/Vector(_)-kind parameter's declared
+    // range, so `for x in a_param` can extract the element-kind hypothesis
+    // the same way a `mut`-local Set/Vector binding already does (see
+    // `blocks.rs`'s `MutLet` arms) — otherwise `check_for_inductive_step`
+    // only sees the bare parameter name and has no way to recover its range.
+    for (name, part) in param_names.iter().zip(domain_parts.iter()) {
+        if matches!(part.kind_of, ValKind::Set(_) | ValKind::Vector(_)) {
+            constraint_env.insert(name.clone(), (*part).clone());
+        }
+    }
     let mut has_runtime_assert = false;
     let mut immutable_names: HashSet<Symbol> = HashSet::new();
 

@@ -375,6 +375,15 @@ pub(super) fn check_for_inductive_step<'tm>(
             {
                 return Some(args[0].clone());
             }
+            // Vector iteration (`X*`, parameter or `mut` local): the
+            // declared constraint is the raw `KleeneStar(elem)` set
+            // expression (see `mod.rs`'s constraint_env seeding for
+            // Vector-kind params, and `blocks.rs`'s `MutLet` handling for
+            // Vector-kind locals) — extract `elem` as the per-iteration
+            // hypothesis, same role as `Set(elem)`'s `args[0]` above.
+            if let SemExprKind::KleeneStar(elem) = &c.kind {
+                return Some((**elem).clone());
+            }
             None
         })
     } else {

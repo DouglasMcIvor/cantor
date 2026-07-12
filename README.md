@@ -603,6 +603,21 @@ Vectors of tuples (`(Nat * Nat)*`) and nested vectors (`Nat**`) work the same wa
 Vectors are resticted to have a length representable by a single machine word. If you are writing for a system with segmented memory then you'll need to split your incredibly long vectors into segments!
 Hopefully that will help you feel right at home.
 
+#### Iterating a vector
+
+`for x in xs` iterates a runtime `X*` value — a function parameter or a `mut` local — in index order, binding `x` to each element in turn. It's the same loop syntax as [for-in over a set](#for-in-loops), and the same invariant machinery applies: the element's declared set (`X` in `xs : X*`) becomes the per-iteration hypothesis, so an accumulator's invariant is checked against it exactly as it would be for `Set(X)`.
+
+```haskell
+sum : Nat* -> Nat
+sum(xs) {
+    mut acc: Nat = 0
+    for x in xs {
+        acc := acc + x
+    }
+    acc
+}
+```
+
 #### Scalars and tuples coerce to sequences
 
 Every scalar `n` may be used where a length-1 sequence is expected, and every tuple
@@ -696,12 +711,12 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 - **Set comprehensions** — `{ expr for x in S if pred(x) }` in domain/range/`in`/`for` positions; finite literal sources unrolled statically; infinite named sources encoded as SMT predicates
 - **Product Set values (aka tuples)** — `f : Int * Int -> Int * Int`; tuple literals `(e1, e2)`; positional projection `t.0`, `t.1`; tuples as parameters and return values; the compiler proves tuple domain and range claims end-to-end; `cantor run` prints tuple results as `(a, b)`. Disambiguation: `f(x, y)` with two params = two scalars; `f(t)` with one param = single tuple.
 - **Fixed-length arrays** — `X * N` in a signature desugars to the N-fold Cartesian product `X * X * … * X`; array literals `[e1, e2, e3]` are syntactic sugar for tuple literals `(e1, e2, e3)`; bracket indexing `t[N]` is an alias for `t.N`
-- **Variable-length vectors** — `X*` (Kleene star) for runtime-variable-length sequences; `len(xs)` for cardinality; `xs[i]` with a runtime index; `xs ++ ys` concatenation; vectors of tuples `(A * B)*` (columnar Arrow backing) and nested vectors `X**` (ListArray backing). Scalars and tuples coerce to sequences at membership level (a scalar `n` may stand in for the length-1 sequence `[n]`, an N-tuple for the length-N sequence — a coercion, not an identity), so `foo() = 5 : Nat*` is valid and the compiler boxes the scalar automatically at function boundaries. Length-narrowing set difference: `Nat* - Nat` restricts to length ≠ 1, `Nat* - Nat - {[]}` to length ≥ 2. Bounds safety: literal-length vectors with literal indices are proved statically; runtime-length or runtime-index access generates a bounds obligation — a counterexample is reported unless the compiler can prove the index is always valid, otherwise an `assert` inserts a runtime guard
+- **Variable-length vectors** — `X*` (Kleene star) for runtime-variable-length sequences; `len(xs)` for cardinality; `xs[i]` with a runtime index; `xs ++ ys` concatenation; `for x in xs` iterates a vector parameter or `mut` local in index order, same invariant machinery as `for x in s` over a `Set(X)`; vectors of tuples `(A * B)*` (columnar Arrow backing) and nested vectors `X**` (ListArray backing). Scalars and tuples coerce to sequences at membership level (a scalar `n` may stand in for the length-1 sequence `[n]`, an N-tuple for the length-N sequence — a coercion, not an identity), so `foo() = 5 : Nat*` is valid and the compiler boxes the scalar automatically at function boundaries. Length-narrowing set difference: `Nat* - Nat` restricts to length ≠ 1, `Nat* - Nat - {[]}` to length ≥ 2. Bounds safety: literal-length vectors with literal indices are proved statically; runtime-length or runtime-index access generates a bounds obligation — a counterexample is reported unless the compiler can prove the index is always valid, otherwise an `assert` inserts a runtime guard
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis; every call site carries a proof obligation that the arguments lie in the callee's declared domain (for overloads: in at least one of them), so an out-of-domain call — including a recursive one — is a counterexample, never a silent assumption; `?` narrows the result to the success arm per-signature, guarded by that signature's domain
 - **Function overloading with multiple bodies** — multiple `FunctionDef`s may share one name (alongside today's existing multiple-signatures-one-body form), each with its own implementation. Overload domains must be **provably disjoint**; overlap is a compile error with a witness value, checked pairwise via the same domain/range machinery as everywhere else. Overloads may differ in arity as well as domain — arity alone is a free, always-static dispatch key, so it needs no proof. Call-site resolution is itself a proof obligation: static-proof-first (a direct call, zero runtime cost) with a runtime membership-test dispatch chain as the always-safe fallback when a call can't be resolved at compile time; the chain's final else-arm is unreachable by proof (union coverage), but still traps loudly at runtime rather than assuming it
 - **Unified named definitions** — constants (`pi : Nat = 314`) and compile-time set definitions (`Colour = {1, 2, 3}`) share the same one-line syntax and the same AST node; both are auto-inlined at compile time; constants are checked against their range annotation
-- **Block bodies with `while` and `for x in S` loops** — imperative-style bodies with `while cond { stmts }` and `for x in {e1, e2, …} { stmts }`, `mut name: Set = expr` locals (set annotation is the declared loop invariant), sequenced statements, and `if-then-else`
+- **Block bodies with `while` and `for x in S` loops** — imperative-style bodies with `while cond { stmts }` and `for x in {e1, e2, …} { stmts }` (also over runtime `Set(X)` and `Vector(X)` values), `mut name: Set = expr` locals (set annotation is the declared loop invariant), sequenced statements, and `if-then-else`
 - **Runtime sets** — `Set(Int)` and `Set(Bool)` as first-class heap-allocated values; `mut s : Set(Int) = {…}` creates a sorted-unique set; `for x in s` iterates; `x in s` / `x not in s` test membership; `size(s)` returns cardinality; duplicates are collapsed silently
 - **`require` / `assert` / `assume`** — static and graduated runtime proof obligations
 - **`Fail` and `?`** — monadic error propagation; fallible functions declare `| Fail` in their range; `?` short-circuits on failure
@@ -721,8 +736,6 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 
 ## On the roadmap
 
-- **Vector iteration** — `for x in xs` over a `X*` vector; the remaining iteration pattern to complement the existing `len`, `xs[i]`, and `++` operations. Includes support for a `Size` set that aliases the machine word size, e.g. `Nat64`.
-
 - **Pattern matching** — `match x { Shape.Circle(r) => …, Shape.Rect(w, h) => … }` or some similar syntax for pattern matching over named union sets (function overloading with multiple bodies now works today — see Features above)
 
 - **Namespaces and named structured data** — Named product sets (`Point = distinct (x: Metre, y: Metre)`; field access via `p.x`), and named union sets (`Shape = distinct (Circle: Nat | Rect: Nat * Nat)`; construction via `Shape.Circle(r)`). Products have projections, coproducts have injections — the syntax makes the duality explicit.
@@ -737,7 +750,7 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 
 - **Module system** — imports, library compilation, separate checking; one file = one module, `::` path separator.
 
-- **More built-in values and collections** — floats, rationals, characters, bytes, ordered sets, maps.
+- **More built-in values and collections** — floats, rationals, characters, bytes, maps, `Size`/`Nat64` (a set aliasing the machine word size); bags as `X* / sort` (quotient by permutation) and ordered sets as sets-with-enumerators rather than a new literal bracket — see `docs/design-decisions.md`'s "collections direction".
 
 - **Generics** — a single new keyword `given` introduces a compile-time variable into scope; `require` states constraints on it. The generic body is checked once at *definition* time against the `require` facts alone (the Rust-trait model, not the C++-template model), so instantiation can never fail post-hoc — it only proves the concrete set satisfies the stated constraints. Reduces to an overload generator with no other new machinery: `given A; require A <= Countable; population : Habitat(A) -> Nat`.
 

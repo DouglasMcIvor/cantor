@@ -1,0 +1,15 @@
+-- Vector iteration (README "on the roadmap"): `for x in xs` over a runtime
+-- `X*` vector, both as a function parameter and as a `mut` local.
+-- Expected result: sum([3, 4, 5]) = 12.
+
+sum : Nat* -> Nat
+sum(xs) {
+    mut acc: Nat = 0
+    for x in xs {
+        acc := acc + x
+    }
+    acc
+}
+
+main : -> Nat
+main() = sum([3, 4, 5])

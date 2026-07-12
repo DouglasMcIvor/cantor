@@ -649,6 +649,92 @@ f(n) {
     );
 }
 
+// ── For-in over vectors (`X*`) ─────────────────────────────────────────────────
+//
+// Vector iteration (README "on the roadmap"): the element-hypothesis
+// extraction previously only recognised `Set(ElemKind)` constructor calls in
+// `constraint_env`, so a `Nat*`-constrained iterable (parameter or `mut`
+// local) fell through to `Membership::Unsupported` — reported `Unknown` —
+// even though codegen has supported `for x in xs` over `Vector` since the
+// sequence-unification work.
+
+#[test]
+fn for_in_vector_param_proves_nat_invariant() {
+    proved(
+        r#"
+sum : Nat* -> Nat
+sum(xs) {
+    mut acc: Nat = 0
+    for x in xs {
+        acc := acc + x
+    }
+    acc
+}"#,
+    );
+}
+
+#[test]
+fn for_in_vector_param_counterexample_when_invariant_fails() {
+    // Int* gives no element-kind constraint (Int has no bound — see
+    // `IntBound::Any` in membership_constraint), so no quantified domain
+    // fact gets asserted for `xs` at all; the counterexample search stays
+    // fully decidable and finds x very negative, breaking acc ∈ Nat.
+    let src = r#"
+f : Int* -> Nat
+f(xs) {
+    mut acc: Nat = 10
+    for x in xs {
+        acc := acc + x
+    }
+    acc
+}"#;
+    let results = check(src);
+    assert!(
+        matches!(results[0].1, CheckResult::Counterexample { .. }),
+        "expected Counterexample (element x : Int is unconstrained, can be very negative), got {:?}",
+        results[0].1
+    );
+}
+
+#[test]
+fn for_in_vector_param_unknown_when_invariant_too_weak() {
+    // Mirrors `for_in_unknown_when_no_constraint`: the loop's own inductive
+    // step trivially holds (acc : Int is unconstrained by the loop body),
+    // but that invariant is too weak to imply the function's declared Nat
+    // range at loop exit.
+    let src = r#"
+f : Nat* -> Nat
+f(xs) {
+    mut acc: Int = 0
+    for x in xs {
+        acc := acc + x
+    }
+    acc
+}"#;
+    let results = check(src);
+    assert!(
+        matches!(results[0].1, CheckResult::Unknown(_)),
+        "expected Unknown when loop invariant is too weak to imply the range, got {:?}",
+        results[0].1
+    );
+}
+
+#[test]
+fn for_in_mut_local_vector_proves_nat_invariant() {
+    proved(
+        r#"
+f : -> Nat
+f() {
+    mut xs: Nat* = [1, 2, 3]
+    mut acc: Nat = 0
+    for x in xs {
+        acc := acc + x
+    }
+    acc
+}"#,
+    );
+}
+
 // ── Loop-body built-in obligations ────────────────────────────────────────────
 //
 // Obligations produced while encoding a loop body (division domains, call-site

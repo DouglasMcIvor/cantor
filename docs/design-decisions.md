@@ -1258,6 +1258,34 @@ for x in runtime_set { acc := acc + x }
 for x in a_sequence { acc := acc + x }
 ```
 
+*Vector iteration* (README roadmap item, DONE 2026-07-12): codegen already
+handled `Kind::Vector` iteration; the gap was solver-side —
+`check_for_inductive_step`'s element-hypothesis extraction only recognised
+`Set(ElemKind)` constructor calls in `constraint_env`, so a `Nat*`-constrained
+iterable (parameter or `mut` local) fell through to `Membership::Unsupported`
+(`Unknown`) even though the loop was perfectly provable. Fixed by (1)
+recognising the raw `KleeneStar(elem)` constraint shape alongside
+`Set(elem)`'s call-arm in the extraction, and (2) seeding `constraint_env`
+with each `Set(_)`/`Vector(_)`-kind *parameter*'s declared range at function
+entry (previously only `mut`-local bindings were seeded there, so a vector
+*parameter*'s range was never recoverable from its bare variable name at all).
+
+**Known pre-existing gap surfaced while fixing this** (not caused by the fix,
+reproduces on `main` before it too): a function with *any* `Vector`-kind
+parameter carries a quantified sequence-membership fact
+(`∀i. nth(xs,i) ∈ X`) into every solver query for that function, including
+ones with no relationship to the parameter at all. cvc5's quantifier
+instantiation is incomplete for `SAT`-seeking queries (counterexample
+search) in the presence of such facts — even a trivially-negative,
+completely `xs`-independent counterexample can come back `Unknown` instead
+of a concrete witness. `UNSAT` proofs (the common case — a body that's
+actually correct) are unaffected, which is why ordinary code proves fine;
+it's specifically the "prove there's a bug" path that can go quietly
+incomplete for any function that happens to take a vector parameter.
+Deferred — needs its own investigation (cvc5 tuning, e.g.
+`--finite-model-find`, or restructuring how the domain fact is asserted so
+it's only pulled in when the body actually indexes/iterates the vector).
+
 Naming the loop variable with an uppercase letter (`for X in S`) promises
 the value is known at compile time and forces the compiler to verify the
 iterable is statically materializable — a lightweight opt-in to

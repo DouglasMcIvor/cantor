@@ -218,6 +218,38 @@ fn vec_length_narrowing_control_counterexample() {
     );
 }
 
+// ── Vector iteration (`for x in xs` over `X*`) ───────────────────────────────
+
+#[test]
+fn vector_iteration_all_proved() {
+    let out = run_file("vector_iteration.cantor");
+    assert_eq!(
+        out.code, 0,
+        "vector_iteration.cantor should exit 0\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected all proved:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn vector_iteration_run_sums_vector_param() {
+    let out = run_subcommand("vector_iteration.cantor");
+    assert_eq!(
+        out.code, 0,
+        "vector_iteration.cantor run should exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 12"),
+        "expected 'main() = 12' in output:\n{}",
+        out.stdout
+    );
+}
+
 // ── Kleene-star membership over tuple-sorted terms ───────────────────────────
 //
 // A local variable with a fixed-arity tuple kind (`Nat * 3`), checked against
