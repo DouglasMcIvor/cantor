@@ -3,17 +3,6 @@ You probably don't want to read this unless you're me.
 
 # To do
 
-- cvc5 quantifier-completeness gap for `Vector`-kind parameters (found 2026-07-12
-  while fixing vector iteration): any function with an `X*` parameter carries a
-  quantified `∀i. nth(xs,i) ∈ X` domain fact into every solver query for that
-  function, and cvc5's quantifier instantiation is incomplete for SAT-seeking
-  (counterexample) queries in its presence — even a counterexample totally
-  unrelated to `xs` can come back Unknown instead of a concrete witness. UNSAT
-  proofs are unaffected (that's why ordinary correct code still proves fine).
-  Needs its own investigation: cvc5 tuning (`--finite-model-find`?) or only
-  asserting the domain fact when the body actually indexes/iterates the
-  vector, rather than unconditionally at every param. See
-  docs/design-decisions.md's "for x in S loops" section for the repro.
 - more testing
   - some property based tests! we have a lot of unit tests but could go further, `proptest` crate recommended
   - fuzzing too, `cargo-fuzz` crate recommended

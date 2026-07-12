@@ -44,6 +44,10 @@ pub(super) fn validate_disjoint_unions(
             let tm = TermManager::new();
             let mut solver = Solver::new(&tm);
             solver.set_logic("ALL");
+            // See `check_name_def`'s comment in mod.rs for the mbqi rationale —
+            // `lhs`/`rhs` may themselves be `X*` sets, producing a quantified
+            // membership constraint on `t` below.
+            solver.set_option("mbqi", "true");
             // See `check_name_def`'s comment in mod.rs for the nl-cov rationale.
             solver.set_option("nl-cov", "true");
             if timeout_ms > 0 {

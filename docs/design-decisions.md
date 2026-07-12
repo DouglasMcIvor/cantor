@@ -1270,21 +1270,29 @@ with each `Set(_)`/`Vector(_)`-kind *parameter*'s declared range at function
 entry (previously only `mut`-local bindings were seeded there, so a vector
 *parameter*'s range was never recoverable from its bare variable name at all).
 
-**Known pre-existing gap surfaced while fixing this** (not caused by the fix,
-reproduces on `main` before it too): a function with *any* `Vector`-kind
-parameter carries a quantified sequence-membership fact
-(`∀i. nth(xs,i) ∈ X`) into every solver query for that function, including
-ones with no relationship to the parameter at all. cvc5's quantifier
-instantiation is incomplete for `SAT`-seeking queries (counterexample
-search) in the presence of such facts — even a trivially-negative,
-completely `xs`-independent counterexample can come back `Unknown` instead
-of a concrete witness. `UNSAT` proofs (the common case — a body that's
-actually correct) are unaffected, which is why ordinary code proves fine;
-it's specifically the "prove there's a bug" path that can go quietly
-incomplete for any function that happens to take a vector parameter.
-Deferred — needs its own investigation (cvc5 tuning, e.g.
-`--finite-model-find`, or restructuring how the domain fact is asserted so
-it's only pulled in when the body actually indexes/iterates the vector).
+**Pre-existing gap surfaced while fixing this — FIXED same day (2026-07-12)**:
+a function with *any* `Vector`-kind parameter carries a quantified
+sequence-membership fact (`∀i. nth(xs,i) ∈ X`) into every solver query for
+that function, including ones with no relationship to the parameter at all.
+`configured_solver` (the main per-function solver) and `check_name_def`
+both already set cvc5's `mbqi` option (model-based quantifier
+instantiation) for exactly this reason — the comment on `configured_solver`
+even says so — but two *other* call sites that spin up their own isolated
+`Solver::new` for a sub-query copied the surrounding options
+(`produce-models`, `nl-cov`, `tlimit`) without copying `mbqi`:
+`check_require` (blocks.rs — backs every `:=` reassignment check) and
+`check_loop_inductive_step` (loops.rs — backs `while`/`for` invariant
+checks). Without `mbqi`, cvc5's quantifier instantiation is incomplete for
+`SAT`-seeking queries (counterexample search) in the presence of a
+quantified fact — even a trivially-negative, completely `xs`-independent
+counterexample came back `Unknown` instead of a concrete witness. `UNSAT`
+proofs were unaffected (why ordinary correct code always proved fine
+regardless). Fixed by adding `mbqi` to both sites, plus
+`validate_disjoint_unions` (disjointness.rs) which has the same
+fresh-solver shape and can face the same issue when a disjoint union's
+operands are themselves `X*` sets. Regression test:
+`assign_violates_constraint_counterexample_with_unrelated_vector_param` in
+tests/solver/loops.rs.
 
 Naming the loop variable with an uppercase letter (`for X in S`) promises
 the value is known at compile time and forces the compiler to verify the

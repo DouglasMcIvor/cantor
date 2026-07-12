@@ -113,6 +113,36 @@ f() {
     );
 }
 
+// `check_require` (which backs `:=` reassignment checks) spins up its own
+// isolated `tmp` solver seeded from every fact asserted on the main solver
+// so far — including, for a function with a `Vector`-kind parameter, a
+// quantified `∀i. nth(xs,i) ∈ Nat` domain fact that has nothing to do with
+// this assignment at all. That `tmp` solver used to omit the `mbqi`
+// (model-based quantifier instantiation) option present on every other
+// solver instance in this module, so cvc5 would report `Unknown` for an
+// otherwise-trivial counterexample query merely because *some* quantified
+// formula was in scope. Fixed by setting `mbqi` on `check_require`'s (and
+// `check_loop_inductive_step`'s, and `validate_disjoint_unions`'s) solver
+// too, matching `configured_solver`/`check_name_def`.
+#[test]
+fn assign_violates_constraint_counterexample_with_unrelated_vector_param() {
+    let results = check(
+        r#"
+f : Nat* -> Nat
+f(xs) {
+    mut acc: Nat = 5
+    acc := 0 - 1
+    acc
+}"#,
+    );
+    assert!(
+        matches!(results[0].1, CheckResult::Counterexample { .. }),
+        "expected Counterexample (acc := -1 violates Nat) even with an unused \
+         Nat* param in scope, got {:?}",
+        results[0].1
+    );
+}
+
 #[test]
 fn assign_constraint_narrower_than_range_still_enforced() {
     // Even though the function range is Int (permissive), the declared
@@ -675,23 +705,25 @@ sum(xs) {
 
 #[test]
 fn for_in_vector_param_counterexample_when_invariant_fails() {
-    // Int* gives no element-kind constraint (Int has no bound — see
-    // `IntBound::Any` in membership_constraint), so no quantified domain
-    // fact gets asserted for `xs` at all; the counterexample search stays
-    // fully decidable and finds x very negative, breaking acc ∈ Nat.
+    // acc's own invariant step fails regardless of what `x` is (acc - 10 can
+    // go negative) — this only became decidable once `check_loop_inductive_step`'s
+    // isolated solver got `mbqi` (see the `assign_violates_constraint_...
+    // _with_unrelated_vector_param` regression test above for the root
+    // cause): without it, the `∀i. nth(xs,i) ∈ Nat` domain fact for the very
+    // `xs` this loop iterates was enough to make cvc5 report Unknown here.
     let src = r#"
-f : Int* -> Nat
+f : Nat* -> Nat
 f(xs) {
-    mut acc: Nat = 10
+    mut acc: Nat = 5
     for x in xs {
-        acc := acc + x
+        acc := acc - 10
     }
     acc
 }"#;
     let results = check(src);
     assert!(
         matches!(results[0].1, CheckResult::Counterexample { .. }),
-        "expected Counterexample (element x : Int is unconstrained, can be very negative), got {:?}",
+        "expected Counterexample (acc - 10 ∉ Nat), got {:?}",
         results[0].1
     );
 }
