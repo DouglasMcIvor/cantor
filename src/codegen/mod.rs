@@ -715,6 +715,40 @@ fn eval_const(expr: &Expr, known: &HashMap<Symbol, i64>) -> Result<i64, CompileE
     }
 }
 
+/// Find the declared `(FunctionValue, SemFunctionDef)` for a given name and
+/// arity among `decls` — used by the MVP event loop (docs/design-
+/// decisions.md §6) to pick out `main`'s two overloads (0-arity seed,
+/// 2-arity step) by shape after they've been mangled apart by `declare_function`.
+fn find_by_name_arity<'ctx, 'a>(
+    decls: &[(
+        FunctionValue<'ctx>,
+        &'a crate::semantics::tree::SemFunctionDef,
+    )],
+    name: &str,
+    arity: usize,
+) -> Option<(
+    FunctionValue<'ctx>,
+    &'a crate::semantics::tree::SemFunctionDef,
+)> {
+    decls
+        .iter()
+        .copied()
+        .find(|(_, def)| def.name.0 == name && def.params.len() == arity)
+}
+
+/// True when `(param_kinds, return_kind)` matches the MVP event loop's fixed
+/// v0 shape `Char* * S -> Char* * S` (docs/design-decisions.md §6) — 2
+/// params, first param `Char*`, 2-element tuple return whose first element
+/// is also `Char*`. Kind-only: the (stronger) identifier-equality checks on
+/// `S` already happened in `solver::event_loop::validate_event_loop_main`
+/// before this function's `ConstrainedTree` could exist at all.
+fn is_event_loop_step_shape(param_kinds: &[Kind], return_kind: &Kind) -> bool {
+    let is_char_star = |k: &Kind| matches!(k, Kind::Vector(elem) if **elem == Kind::Char);
+    param_kinds.len() == 2
+        && is_char_star(&param_kinds[0])
+        && matches!(return_kind, Kind::Tuple(elems) if elems.len() == 2 && is_char_star(&elems[0]))
+}
+
 /// Compile every function in `items` into a single JIT module.
 /// Elaborates `items` up front, then delegates to `compile_elaborated`.
 /// Both `compile_file` and `compile_to_ir` use this — they don't require a
@@ -903,8 +937,11 @@ pub(super) fn compile_elaborated<'ctx>(
         })
         .collect();
 
-    // Pass 2 — compile bodies with constants available.
-    for (fn_val, def) in decls {
+    // Pass 2 — compile bodies with constants available. Borrows `decls`
+    // (both elements are `Copy`) rather than consuming it, so the MVP event
+    // loop's trampoline emission below can still look functions up by name/
+    // arity afterward without redoing the declare pass.
+    for &(fn_val, def) in decls.iter() {
         let is_fallible = def
             .sigs
             .iter()
@@ -934,7 +971,10 @@ pub(super) fn compile_elaborated<'ctx>(
         }
     }
 
-    // Emit trampolines for `main` depending on its return kind.
+    // Emit trampolines for `main` depending on its return kind. Only reached
+    // when plain `main` is unmangled, i.e. there's exactly one `main` — the
+    // MVP event loop's 2-overload `main` (below) is mangled instead (an
+    // overload set of size 2), so this block is naturally a no-op for it.
     if let Some(main_fn) = compiler.module.get_function("main") {
         let ret_kind = compiler
             .fn_return_kinds
@@ -948,10 +988,37 @@ pub(super) fn compile_elaborated<'ctx>(
             }
             // Regular tuple main: emit the existing ptr-buffer trampoline.
             Kind::Tuple(_) => {
-                compiler.emit_tuple_main_trampoline(main_fn, &ret_kind)?;
+                compiler.emit_into_trampoline(main_fn, &ret_kind, "cantor_main_into")?;
             }
             _ => {}
         }
+    }
+
+    // MVP IO event loop (docs/design-decisions.md §6): `main` overloaded as
+    // a 2-arity `Char* * S -> Char* * S` step plus a 0-arity `main : -> S`
+    // seed. Shape/identifier validity is already guaranteed here —
+    // `compile_constrained` only ever runs on a `ConstrainedTree` that
+    // `solver::event_loop::validate_event_loop_main` already accepted — so
+    // this is a Kind-only re-scan to find the two mangled overloads, not a
+    // repeat of that validation.
+    if let Some((step_fn, step_def)) = find_by_name_arity(&decls, "main", 2)
+        && is_event_loop_step_shape(&step_def.param_kinds, &step_def.return_kind)
+    {
+        let Kind::Tuple(out_elems) = &step_def.return_kind else {
+            unreachable!("is_event_loop_step_shape already checked this is a 2-elem Tuple");
+        };
+        let event_kind = &step_def.param_kinds[0];
+        let output_kind = &out_elems[0];
+        let state_kind = &out_elems[1];
+
+        let (seed_fn, _) = find_by_name_arity(&decls, "main", 0).ok_or_else(|| {
+            CompileError::ice(
+                "event-loop main missing its 0-arity seed overload — \
+                 should have been rejected by validate_event_loop_main",
+            )
+        })?;
+        compiler.emit_into_trampoline(seed_fn, state_kind, "cantor_initial_state")?;
+        compiler.emit_event_loop_step(step_fn, event_kind, state_kind, output_kind)?;
     }
 
     Ok(compiler)

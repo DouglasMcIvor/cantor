@@ -24,6 +24,7 @@ mod disjointness;
 mod encode;
 mod encode_call;
 mod encode_ctrl;
+mod event_loop;
 mod int64_split;
 mod loops;
 mod membership;
@@ -64,6 +65,7 @@ use self::disjointness::{check_overload_disjointness, validate_disjoint_unions};
 use self::encode::{
     EncodeCtx, Env, boolean_value, encode_expr, integer_value, mk_decomposed_tuple,
 };
+use self::event_loop::validate_event_loop_main;
 use self::membership::{Membership, SolverPreds, membership_constraint};
 use self::obligations::{
     BuiltinObligation, OverflowObligation, decide_overflow_obligations, decide_overload_resolutions,
@@ -173,6 +175,12 @@ pub fn check_file(
             fn_env.entry(def.name.clone()).or_default().push(def);
         }
     }
+
+    // MVP IO event loop (docs/design-decisions.md §6): a structural/shape
+    // check on `main`, not a proof obligation — short-circuits here via `?`
+    // rather than folding into `results` below. No-op for files that don't
+    // declare an event-loop-shaped `main` at all.
+    validate_event_loop_main(&fn_env)?;
 
     // Overflow-check outcomes (int-soundness-plan phase 1) live entirely
     // outside `results`/`CheckResult`/`all_proved` below — an unproved one

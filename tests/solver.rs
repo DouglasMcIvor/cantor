@@ -10,6 +10,8 @@ mod cross_kind_unions;
 mod destructuring;
 #[path = "solver/encode.rs"]
 mod encode;
+#[path = "solver/event_loop.rs"]
+mod event_loop;
 #[path = "solver/helpers.rs"]
 mod helpers;
 #[path = "solver/if_else.rs"]

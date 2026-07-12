@@ -12,6 +12,8 @@ mod constants_and_bool;
 mod equiv;
 #[path = "cli/error_handling.rs"]
 mod error_handling;
+#[path = "cli/event_loop.rs"]
+mod event_loop;
 #[path = "cli/helpers.rs"]
 mod helpers;
 #[path = "cli/overflow.rs"]

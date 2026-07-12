@@ -1,5 +1,6 @@
 mod repl;
 
+use std::io::BufRead;
 use std::process;
 
 use inkwell::context::Context;
@@ -241,6 +242,17 @@ fn main() {
 }
 
 fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
+    // MVP IO event loop (docs/design-decisions.md §6): a 2-arity `main`
+    // shaped like `Char* * S -> Char* * S` takes over `cantor run` entirely
+    // — dispatch to the event-loop driver instead of the zero-arg path
+    // below. Shape/identifier validity was already fully verified by
+    // `solver::event_loop::validate_event_loop_main` before this
+    // `ConstrainedTree` could exist, so this is a Kind-only re-scan.
+    if let Some(state_kind) = find_event_loop_state_kind(&tree) {
+        run_event_loop(tree, path, src, state_kind);
+        return;
+    }
+
     let has_main = tree.items.iter().any(|item| match item {
         Item::FunctionDef(def) => def.name.0 == "main" && def.params.is_empty(),
         Item::NameDef(_) | Item::EquivDecl { .. } => false,
@@ -360,6 +372,125 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
             println!("\nmain() = {display}");
         }
     }
+}
+
+/// MVP IO event loop (docs/design-decisions.md §6) detection: find the
+/// State `Kind` of a 2-arity `main` shaped like `Char* * S -> Char* * S`, if
+/// the file defines one. `None` means this file just isn't using the
+/// event-loop feature (an ordinary zero-arg `main`, or none at all).
+fn find_event_loop_state_kind(tree: &ConstrainedTree) -> Option<Kind> {
+    tree.sem_items.iter().find_map(|item| match item {
+        SemItem::FunctionDef(def)
+            if def.name.0 == "main"
+                && is_event_loop_step_shape(&def.param_kinds, &def.return_kind) =>
+        {
+            let Kind::Tuple(elems) = &def.return_kind else {
+                unreachable!("is_event_loop_step_shape already checked this is a Tuple");
+            };
+            Some(elems[1].clone())
+        }
+        _ => None,
+    })
+}
+
+/// True when `(param_kinds, return_kind)` matches the MVP event loop's fixed
+/// v0 shape `Char* * S -> Char* * S`. Duplicates `codegen`'s private
+/// predicate of the same name (a few lines) rather than exposing it across
+/// the lib/bin crate boundary just for this.
+fn is_event_loop_step_shape(param_kinds: &[Kind], return_kind: &Kind) -> bool {
+    let is_char_star = |k: &Kind| matches!(k, Kind::Vector(elem) if **elem == Kind::Char);
+    param_kinds.len() == 2
+        && is_char_star(&param_kinds[0])
+        && matches!(return_kind, Kind::Tuple(elems) if elems.len() == 2 && is_char_star(&elems[0]))
+}
+
+/// MVP IO event loop driver (docs/design-decisions.md §6): compiles the
+/// event-loop `main` and drives it against `stdin`, one line per `Event`,
+/// until `stdin` closes — at which point it feeds one final synthetic
+/// `Event` (a length-1 `Char*` containing codepoint 4, ASCII EOT) and
+/// terminates unconditionally, regardless of the `State` that final call
+/// returns.
+fn run_event_loop(tree: ConstrainedTree, path: &str, src: &str, state_kind: Kind) {
+    let ctx = Context::create();
+    let engine = match compile_constrained(&ctx, &tree, path, src) {
+        Ok(e) => e,
+        Err(e) => {
+            print_compile_error(path, &e, src);
+            process::exit(1);
+        }
+    };
+
+    let n_state_leaves = count_kind_leaves(&state_kind);
+    let mut state_buf = vec![0i64; n_state_leaves];
+    unsafe {
+        let seed = engine
+            .get_function::<unsafe extern "C" fn(*mut i64)>("cantor_initial_state")
+            .unwrap_or_else(|e| {
+                eprintln!("internal error: could not find `cantor_initial_state`: {e}");
+                process::exit(1);
+            });
+        seed.call(state_buf.as_mut_ptr());
+    }
+
+    let step = unsafe {
+        engine
+            .get_function::<unsafe extern "C" fn(*mut i64, *mut i64)>("cantor_step")
+            .unwrap_or_else(|e| {
+                eprintln!("internal error: could not find `cantor_step`: {e}");
+                process::exit(1);
+            })
+    };
+
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+
+    loop {
+        let (event_ptr, is_final) = match lines.next() {
+            Some(Ok(line)) => (encode_char_star(&line), false),
+            Some(Err(e)) => {
+                eprintln!("error reading stdin: {e}");
+                process::exit(1);
+            }
+            None => (encode_eot_event(), true),
+        };
+
+        let mut in_buf = Vec::with_capacity(1 + n_state_leaves);
+        in_buf.push(event_ptr);
+        in_buf.extend_from_slice(&state_buf);
+
+        let mut out_buf = vec![0i64; 1 + n_state_leaves];
+        unsafe {
+            step.call(in_buf.as_mut_ptr(), out_buf.as_mut_ptr());
+        }
+
+        println!("{}", format_char_vector(out_buf[0]));
+        state_buf.copy_from_slice(&out_buf[1..]);
+
+        if is_final {
+            break;
+        }
+    }
+}
+
+/// Build a `Char*` (heap-allocated Arrow-backed vector) from a Rust `&str`,
+/// one element per Unicode scalar value — the same runtime representation
+/// JIT'd Cantor code itself builds array literals into, just called
+/// directly since the driver runs as ordinary native Rust, not JIT'd code.
+fn encode_char_star(s: &str) -> i64 {
+    let builder = cantor::runtime::cantor_vec_builder_new_i64();
+    for c in s.chars() {
+        cantor::runtime::cantor_vec_builder_push_i64(builder, c as i64);
+    }
+    cantor::runtime::cantor_vec_builder_finish_i64(builder)
+}
+
+/// The synthetic final `Event` fed to an event-loop `main` when `stdin`
+/// closes: a length-1 `Char*` containing codepoint 4 (ASCII EOT, the
+/// traditional Ctrl-D "end of transmission" control character — not
+/// U+2404 ␄, which is a printable *display glyph* for EOT and could
+/// theoretically appear in real input). docs/design-decisions.md §6.
+fn encode_eot_event() -> i64 {
+    encode_char_star("\u{4}")
 }
 
 /// Decode a `Char` leaf (zero-extended to i64 by the trampoline, same

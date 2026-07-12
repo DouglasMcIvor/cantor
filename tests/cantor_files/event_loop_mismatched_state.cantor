@@ -1,0 +1,12 @@
+-- MVP IO event loop (docs/design-decisions.md §6): State must be the same
+-- named set in both the domain's and range's second component — `Digit`
+-- and `Other` are different named sets even though both alias the same
+-- underlying values, so this must be rejected at compile time.
+Digit = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+Other = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+
+main : Char* * Digit -> Char* * Other
+main(event, state) = (event, 0)
+
+main : -> Digit
+main() = 0

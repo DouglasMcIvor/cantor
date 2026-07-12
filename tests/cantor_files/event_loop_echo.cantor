@@ -1,0 +1,11 @@
+-- MVP IO event loop (docs/design-decisions.md §6): a 2-arity `main` shaped
+-- `Char* * S -> Char* * S`, paired with a 0-arity `main : -> S` seed.
+-- Echoes each line back with a `:`-separated counter suffix, so a test can
+-- observe both `Event` pass-through and `State` persisting across calls.
+Digit = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+
+main : Char* * Digit -> Char* * Digit
+main(event, state) = (event ++ [char(58), char(48 + state)], if state < 9 then state + 1 else 0)
+
+main : -> Digit
+main() = 0

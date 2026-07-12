@@ -110,6 +110,16 @@ pub enum CompileError {
         name: String,
         span: Span,
     },
+    /// The event-loop `main` contract (docs/design-decisions.md §6) is
+    /// violated: a 2-arity `main` overload looks like it's attempting the
+    /// `Char* * S -> Char* * S` shape but State isn't a named set, State
+    /// differs between domain and range, or there's no matching `main : ->
+    /// S` seed overload. A structural/shape check, not a proof obligation
+    /// — there's nothing for cvc5 to prove here.
+    EventLoopMainShape {
+        detail: String,
+        span: Span,
+    },
     // Future: DomainViolation, RangeViolation (driven by cvc5 unsat core)
     /// A compiler invariant was violated — a bug in Cantor's compiler
     /// itself, not something the developer can fix by editing their
@@ -155,6 +165,9 @@ impl std::fmt::Display for CompileError {
                     "cannot verify well-foundedness of recursive set `{name}` — \
                      every union arm depends on `{name}` itself with no base case"
                 )
+            }
+            Self::EventLoopMainShape { detail, .. } => {
+                write!(f, "event-loop `main`: {detail}")
             }
             Self::Ice {
                 detail,
@@ -211,6 +224,7 @@ impl CompileError {
             Self::Unsupported { span, .. } => Some(*span),
             Self::InvalidSetExpression { span, .. } => Some(*span),
             Self::IllFoundedRecursiveSet { span, .. } => Some(*span),
+            Self::EventLoopMainShape { span, .. } => Some(*span),
             Self::Ice { .. } => None,
         }
     }

@@ -1,0 +1,7 @@
+-- MVP IO event loop (docs/design-decisions.md §6): a 2-arity event-loop
+-- `main` with no matching 0-arity `main : -> Digit` seed overload — must be
+-- rejected at compile time, not silently left unseeded.
+Digit = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+
+main : Char* * Digit -> Char* * Digit
+main(event, state) = (event, state)

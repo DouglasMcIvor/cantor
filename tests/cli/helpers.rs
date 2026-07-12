@@ -67,6 +67,37 @@ pub fn run_subcommand(name: &str) -> Output {
     run(&["run", path.to_str().unwrap()])
 }
 
+/// Like `run_subcommand`, but pipes `input` to the child's `stdin` instead
+/// of leaving it closed (`run`'s plain `.output()` closes stdin immediately,
+/// which is itself a valid — if trivial — "EOF right away" test case for an
+/// event-loop program). Mirrors `run_repl`'s piping, with `run <fixture>`
+/// args instead of the bare REPL invocation.
+pub fn run_subcommand_with_stdin(name: &str, input: &str) -> Output {
+    let path = fixture(name);
+    let mut cmd = cantor();
+    cmd.arg("run")
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("failed to spawn cantor binary");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .expect("failed to write to stdin");
+    drop(child.stdin.take());
+    let out = child
+        .wait_with_output()
+        .expect("failed to wait for cantor binary");
+    Output {
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code: out.status.code().unwrap_or(-1),
+    }
+}
+
 pub fn run_llvm_ir(name: &str) -> Output {
     let path = fixture(name);
     run(&["llvm-ir", path.to_str().unwrap()])
