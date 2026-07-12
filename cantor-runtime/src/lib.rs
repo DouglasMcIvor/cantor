@@ -752,4 +752,5 @@ pub extern "C" fn cantor_dispatch_unreachable(msg_ptr: i64) {
 }
 
 mod bigint;
+pub mod event_loop;
 pub use bigint::*;

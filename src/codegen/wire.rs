@@ -30,3 +30,20 @@ pub fn leaf_count(kind: &Kind) -> usize {
 pub fn tagged_union_leaf_count(arms: &[Kind]) -> usize {
     arms.iter().map(leaf_count).max().unwrap_or(0)
 }
+
+/// True when `(param_kinds, return_kind)` matches the MVP IO event loop's
+/// fixed v0 shape `Char* * S -> Char* * S` (docs/design-decisions.md §6) — 2
+/// params, first param `Char*`, 2-element tuple return whose first element
+/// is also `Char*`. Kind-only: the (stronger) identifier-equality checks on
+/// `S` already happened in `solver::event_loop::validate_event_loop_main`
+/// before a `ConstrainedTree` exposing this shape could exist at all.
+///
+/// Shared by `compile.rs` (decides which trampolines to emit), `main.rs`
+/// (JIT event-loop dispatch), and `aot.rs` (AOT event-loop dispatch) — one
+/// definition of the shape instead of three copies drifting apart.
+pub fn is_event_loop_step_shape(param_kinds: &[Kind], return_kind: &Kind) -> bool {
+    let is_char_star = |k: &Kind| matches!(k, Kind::Vector(elem) if **elem == Kind::Char);
+    param_kinds.len() == 2
+        && is_char_star(&param_kinds[0])
+        && matches!(return_kind, Kind::Tuple(elems) if elems.len() == 2 && is_char_star(&elems[0]))
+}

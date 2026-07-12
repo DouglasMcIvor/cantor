@@ -5,12 +5,15 @@
 use std::path::Path;
 
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
 
-use crate::error::CompileError;
+use crate::{error::CompileError, solver::ConstrainedTree};
+
+use super::compile::compile_elaborated;
 
 /// Verify `module` and write it to `path` as a native object file for the
 /// host target, using the host's exact CPU/feature set — mirrors a plain
@@ -43,4 +46,26 @@ pub fn write_object_file(module: &Module, path: &Path) -> Result<(), CompileErro
     target_machine
         .write_to_file(module, FileType::Object, path)
         .map_err(|e| CompileError::ice(e.to_string()))
+}
+
+/// Compile an already fully-proved file straight to a native object file —
+/// the AOT counterpart of `jit.rs`'s `compile_constrained`. Only reachable
+/// once `solver::check_file` has returned a `ConstrainedTree`; `cantor
+/// build`'s entry point (`aot.rs`) is the only caller.
+pub fn compile_constrained_to_object(
+    ctx: &Context,
+    tree: &ConstrainedTree,
+    path: &str,
+    src: &str,
+    out: &Path,
+) -> Result<(), CompileError> {
+    let compiler = compile_elaborated(
+        ctx,
+        &tree.items,
+        &tree.sem_items,
+        tree.overflow_checks.clone(),
+        Some((path.to_string(), src.to_string())),
+        tree.overload_resolution.clone(),
+    )?;
+    write_object_file(compiler.module(), out)
 }

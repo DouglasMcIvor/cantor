@@ -17,6 +17,7 @@ use crate::{
     span::{Span, Symbol},
 };
 
+mod aot;
 mod arith;
 mod blocks;
 mod coerce;
@@ -37,6 +38,7 @@ use wire::tagged_union_leaf_count;
 
 pub use object::write_object_file;
 
+pub use aot::{build_executable, find_event_loop_state_kind};
 pub use compile::{compile_to_ir, compile_to_object};
 pub use jit::{compile_constrained, compile_file};
 

@@ -22,6 +22,7 @@ use crate::{
     span::{Span, Symbol},
 };
 
+use super::wire::is_event_loop_step_shape;
 use super::{Compiler, Env, OverloadEntry};
 
 /// Evaluate a constant expression at compile time.
@@ -79,19 +80,6 @@ fn find_by_name_arity<'ctx, 'a>(
         .iter()
         .copied()
         .find(|(_, def)| def.name.0 == name && def.params.len() == arity)
-}
-
-/// True when `(param_kinds, return_kind)` matches the MVP event loop's fixed
-/// v0 shape `Char* * S -> Char* * S` (docs/design-decisions.md §6) — 2
-/// params, first param `Char*`, 2-element tuple return whose first element
-/// is also `Char*`. Kind-only: the (stronger) identifier-equality checks on
-/// `S` already happened in `solver::event_loop::validate_event_loop_main`
-/// before this function's `ConstrainedTree` could exist at all.
-fn is_event_loop_step_shape(param_kinds: &[Kind], return_kind: &Kind) -> bool {
-    let is_char_star = |k: &Kind| matches!(k, Kind::Vector(elem) if **elem == Kind::Char);
-    param_kinds.len() == 2
-        && is_char_star(&param_kinds[0])
-        && matches!(return_kind, Kind::Tuple(elems) if elems.len() == 2 && is_char_star(&elems[0]))
 }
 
 /// Compile every function in `items` into a single JIT module.
