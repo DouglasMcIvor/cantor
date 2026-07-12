@@ -83,20 +83,7 @@ where
         .filter(|n| ctx.constraint_env.contains_key(*n))
         .collect();
 
-    let mut tmp = Solver::new(ctx.tm);
-    tmp.set_logic("ALL");
-    tmp.set_option("produce-models", "true");
-    // See `check_name_def`'s comment in mod.rs for the mbqi rationale — any
-    // fact seeded from `ctx.outer_solver`'s assertions below may include a
-    // quantified `X*` domain constraint (from an unrelated vector parameter),
-    // and without MBQI cvc5 can report Unknown even for a query that has
-    // nothing to do with that quantifier.
-    tmp.set_option("mbqi", "true");
-    // See `check_name_def`'s comment in mod.rs for the nl-cov rationale.
-    tmp.set_option("nl-cov", "true");
-    if ctx.timeout_ms > 0 {
-        tmp.set_option("tlimit", &ctx.timeout_ms.to_string());
-    }
+    let mut tmp = super::configured_solver(ctx.tm, ctx.timeout_ms);
 
     // Seed from everything asserted on the enclosing solver so far — not just
     // a separately-threaded fact list — so call contracts established before

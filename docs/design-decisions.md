@@ -1294,6 +1294,16 @@ operands are themselves `X*` sets. Regression test:
 `assign_violates_constraint_counterexample_with_unrelated_vector_param` in
 tests/solver/loops.rs.
 
+**Follow-up refactor (same day)**: the underlying cause was duplication —
+`configured_solver` was already the intended single source of cvc5 option
+configuration, but `check_name_def`, `check_require`, and
+`validate_disjoint_unions` each hand-rolled their own `Solver::new` +
+`set_option` sequence instead of calling it, which is exactly how the
+`mbqi` omission happened in the first place. All three (plus
+`check_loop_inductive_step`, added when the `mbqi` fix landed) now call
+`configured_solver` directly — no more hand-rolled option lists anywhere in
+the solver module, so this class of bug can't recur by construction.
+
 Naming the loop variable with an uppercase letter (`for X in S`) promises
 the value is known at compile time and forces the compiler to verify the
 iterable is statically materializable — a lightweight opt-in to

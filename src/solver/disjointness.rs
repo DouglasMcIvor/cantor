@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use cvc5::{Kind, Solver, Term, TermManager};
+use cvc5::{Kind, Term, TermManager};
 
 use crate::kind::Kind as ValKind;
 use crate::semantics::tree::{SemExpr, SemFunctionDef, sem_param_set_exprs};
@@ -42,17 +42,7 @@ pub(super) fn validate_disjoint_unions(
             }
 
             let tm = TermManager::new();
-            let mut solver = Solver::new(&tm);
-            solver.set_logic("ALL");
-            // See `check_name_def`'s comment in mod.rs for the mbqi rationale —
-            // `lhs`/`rhs` may themselves be `X*` sets, producing a quantified
-            // membership constraint on `t` below.
-            solver.set_option("mbqi", "true");
-            // See `check_name_def`'s comment in mod.rs for the nl-cov rationale.
-            solver.set_option("nl-cov", "true");
-            if timeout_ms > 0 {
-                solver.set_option("tlimit", &timeout_ms.to_string());
-            }
+            let mut solver = configured_solver(&tm, timeout_ms);
             // No `fn_env` available in this auxiliary check (it's about
             // disjoint-union/overload-domain well-formedness, not general
             // membership), so quotient-set membership here safely degrades

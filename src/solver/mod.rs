@@ -327,21 +327,7 @@ fn check_name_def(
         return result;
     }
     let tm = TermManager::new();
-    let mut solver = Solver::new(&tm);
-    solver.set_logic("ALL");
-    solver.set_option("produce-models", "true");
-    // Sequence membership uses universally-quantified constraints (∀i. guard → elem∈X).
-    // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
-    // for existential goals arising from negated universals (counterexample direction).
-    solver.set_option("mbqi", "true");
-    // nl-cov (libpoly-based covering/CAD) replaces cvc5's default heuristic
-    // nonlinear-arithmetic engine, which can hang for minutes on self-multiplication
-    // bounds checks (`x * x` against an Int32/Int64-sized range) — see
-    // docs/design-decisions.md's nl-cov note.
-    solver.set_option("nl-cov", "true");
-    if timeout_ms > 0 {
-        solver.set_option("tlimit", &timeout_ms.to_string());
-    }
+    let mut solver = configured_solver(&tm, timeout_ms);
 
     let distinct_preds = build_solver_preds(&tm, name_defs, fn_env);
     let env = Env::new();
@@ -442,6 +428,18 @@ fn check_name_def(
 // encode_block, plus check_block_sig's loop-invariant Unknown carve-out).
 
 /// Configure a solver with the options both checkers need.
+/// The single source of cvc5 option configuration for *every* solver
+/// instance this module creates — the main per-function solver as well as
+/// every isolated sub-query solver (`check_require`, `check_loop_inductive_step`,
+/// `validate_disjoint_unions`, `check_name_def`'s constant check, …). Call
+/// this rather than hand-rolling `Solver::new` + `set_option` calls: a prior
+/// version of this codebase had two sub-query call sites that duplicated
+/// this list by hand and silently dropped `mbqi`, which made cvc5 report
+/// `Unknown` for completely unrelated counterexample queries whenever a
+/// quantified `X*` domain fact merely happened to be in scope (see
+/// `docs/design-decisions.md`'s "for x in S loops" section for the
+/// post-mortem). One function, called everywhere, closes off that whole
+/// class of bug.
 fn configured_solver<'tm>(tm: &'tm TermManager, timeout_ms: u64) -> Solver<'tm> {
     let mut solver = Solver::new(tm);
     solver.set_logic("ALL");
@@ -450,7 +448,10 @@ fn configured_solver<'tm>(tm: &'tm TermManager, timeout_ms: u64) -> Solver<'tm> 
     // MBQI (model-based quantifier instantiation) finds concrete sequence witnesses
     // for existential goals arising from negated universals (counterexample direction).
     solver.set_option("mbqi", "true");
-    // See the matching comment in `check_name_def` above — same nl-cov rationale.
+    // nl-cov (libpoly-based covering/CAD) replaces cvc5's default heuristic
+    // nonlinear-arithmetic engine, which can hang for minutes on self-multiplication
+    // bounds checks (`x * x` against an Int32/Int64-sized range) — see
+    // docs/design-decisions.md's nl-cov note.
     solver.set_option("nl-cov", "true");
     if timeout_ms > 0 {
         solver.set_option("tlimit", &timeout_ms.to_string());

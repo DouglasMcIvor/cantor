@@ -891,20 +891,7 @@ pub(crate) fn check_require<'tm>(
     param_terms: &[Term<'tm>],
     timeout_ms: u64,
 ) -> CheckResult {
-    let mut tmp = Solver::new(tm);
-    tmp.set_logic("ALL");
-    tmp.set_option("produce-models", "true");
-    // See `check_name_def`'s comment in mod.rs for the mbqi rationale — any
-    // fact seeded from `solver.get_assertions()` below may include a
-    // quantified `X*` domain constraint (from an unrelated vector parameter),
-    // and without MBQI cvc5 can report Unknown even for a query that has
-    // nothing to do with that quantifier.
-    tmp.set_option("mbqi", "true");
-    // See `check_name_def`'s comment in mod.rs for the nl-cov rationale.
-    tmp.set_option("nl-cov", "true");
-    if timeout_ms > 0 {
-        tmp.set_option("tlimit", &timeout_ms.to_string());
-    }
+    let mut tmp = super::configured_solver(tm, timeout_ms);
 
     for fact in solver.get_assertions() {
         tmp.assert_formula(fact);
