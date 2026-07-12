@@ -28,7 +28,9 @@ use crate::{
 fn is_compile_time_value(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Var(sym) => starts_uppercase(&sym.0),
-        ExprKind::SetLit(_) | ExprKind::IntLit(_) | ExprKind::BoolLit(_) => true,
+        ExprKind::SetLit(_) | ExprKind::IntLit(_) | ExprKind::BoolLit(_) | ExprKind::CharLit(_) => {
+            true
+        }
         // `L / canon` — only `lhs` need be compile-time; `canon` is a
         // (correctly lowercase) function reference, not a value to check.
         ExprKind::BinOp {

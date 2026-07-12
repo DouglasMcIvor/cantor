@@ -115,3 +115,170 @@ fn char_star_concat() {
         out.stdout
     );
 }
+
+// ── `'c'`/`"cat"` literal syntax ─────────────────────────────────────────────
+
+#[test]
+fn char_literal_prints_as_the_actual_character() {
+    let out = run_subcommand("char_literal_construct.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = A"),
+        "expected 'A' to print as 'A':\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn char_literal_from_roundtrip() {
+    let out = run_subcommand("char_literal_from_roundtrip.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 1"),
+        "expected from('a') == 97:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn char_literal_ascii_escapes() {
+    let out = run_subcommand("char_literal_escape.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 1"),
+        "expected '\\n'/'\\t' to decode to 10/9:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn char_literal_unicode_escape() {
+    let out = run_subcommand("char_literal_unicode_escape.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 1"),
+        "expected '\\u{{1F600}}' to decode to 128512:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn char_literal_as_function_arg_widens_across_call_boundary() {
+    // Regression test: passing a Char value as an argument to a
+    // user-defined function needs the caller to widen the i32 register up
+    // to the uniform i64 ABI slot — previously only builtins (`char`/`from`)
+    // ever crossed this boundary, so no code path actually did this.
+    let out = run_subcommand("char_literal_as_function_arg.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 65"),
+        "expected codepoint('A') == 65:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn char_literal_empty_is_a_parse_error() {
+    let out = run_file("char_literal_empty.cantor");
+    assert_ne!(out.code, 0, "should refuse to parse:\n{}", out.stdout);
+    assert!(
+        out.stderr.contains("empty char literal"),
+        "expected an empty-char-literal diagnostic on stderr:\n{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn char_literal_multi_char_is_a_parse_error() {
+    let out = run_file("char_literal_multi.cantor");
+    assert_ne!(out.code, 0, "should refuse to parse:\n{}", out.stdout);
+    assert!(
+        out.stderr.contains("exactly one character"),
+        "expected a multi-char diagnostic on stderr:\n{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn string_literal_prints_as_text() {
+    let out = run_subcommand("string_literal_construct.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = Hello"),
+        "expected \"Hello\" to print as text:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn string_literal_empty_has_length_zero() {
+    let out = run_subcommand("string_literal_empty.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 0"),
+        "expected len(\"\") == 0:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn string_literal_indexing() {
+    let out = run_subcommand("string_literal_index.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = e"),
+        "expected \"Hello\"[1] == 'e':\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn string_literal_concat_of_two_bare_literals() {
+    // Regression test: `++` on two bare Tuple literals with no already-
+    // Vector operand (`kind::ConcatMerge::CoerceBothToVector`) — previously
+    // an unconditional `scalarize_to_int` call in `compile_binop` crashed on
+    // any multi-field Tuple operand before `++`'s own dispatch ever ran.
+    let out = run_subcommand("string_literal_concat.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = Hi!"),
+        "expected \"Hi\" ++ \"!\" == \"Hi!\":\n{}",
+        out.stdout
+    );
+}

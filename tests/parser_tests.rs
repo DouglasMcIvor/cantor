@@ -56,6 +56,62 @@ fn parse_identifier() {
     assert!(matches!(parse("foo"), ExprKind::Var(sym) if sym.0 == "foo"));
 }
 
+#[test]
+fn parse_char_literal() {
+    assert!(matches!(parse("'a'"), ExprKind::CharLit('a')));
+}
+
+#[test]
+fn parse_char_literal_escape() {
+    assert!(matches!(parse(r"'\n'"), ExprKind::CharLit('\n')));
+}
+
+#[test]
+fn parse_string_literal_desugars_to_tuple_of_char_lits() {
+    // "cat" is sugar for a Tuple of CharLits — see `Expr::string_lit` — so
+    // strings need no dedicated ExprKind of their own.
+    let ExprKind::Tuple(elems) = parse("\"cat\"") else {
+        panic!("expected a Tuple");
+    };
+    let chars: Vec<char> = elems
+        .iter()
+        .map(|e| match e.kind {
+            ExprKind::CharLit(c) => c,
+            ref other => panic!("expected CharLit, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(chars, vec!['c', 'a', 't']);
+}
+
+#[test]
+fn parse_empty_string_literal_desugars_to_empty_tuple() {
+    assert!(matches!(parse("\"\""), ExprKind::Tuple(elems) if elems.is_empty()));
+}
+
+#[test]
+fn parse_string_concat() {
+    let ExprKind::BinOp {
+        op: BinOp::Concat,
+        lhs,
+        rhs,
+    } = parse("\"Hi\" ++ \"!\"")
+    else {
+        panic!("expected a Concat BinOp");
+    };
+    assert!(matches!(lhs.kind, ExprKind::Tuple(_)));
+    assert!(matches!(rhs.kind, ExprKind::Tuple(_)));
+}
+
+#[test]
+fn parse_empty_char_literal_errors() {
+    assert!(parse_err("''").contains("empty char literal"));
+}
+
+#[test]
+fn parse_unterminated_char_literal_errors() {
+    assert!(parse_err("'a").contains("unterminated"));
+}
+
 // ── Arithmetic ────────────────────────────────────────────────────────────────
 
 #[test]

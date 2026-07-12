@@ -7,6 +7,8 @@ use crate::{error::CompileError, span::Span};
 pub enum Token {
     // Literals
     Int(i64),
+    Char(char),
+    Str(String),
 
     // Keywords — expressions
     True,
@@ -90,6 +92,8 @@ impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Token::Int(n) => write!(f, "{n}"),
+            Token::Char(c) => write!(f, "{c:?}"),
+            Token::Str(s) => write!(f, "{s:?}"),
             Token::Ident(s) => write!(f, "`{s}`"),
             Token::True => f.write_str("true"),
             Token::False => f.write_str("false"),
@@ -196,6 +200,143 @@ impl<'src> Lexer<'src> {
         Ok((Token::Int(n), Span::new(start as u32, self.pos as u32)))
     }
 
+    /// Decode one escape sequence, having already consumed the leading `\`.
+    /// `escape_start` is the position of the `\` itself, used for error spans.
+    fn scan_escape(&mut self, escape_start: usize) -> Result<char, CompileError> {
+        let Some(c) = self.advance_char() else {
+            return Err(CompileError::InvalidEscape {
+                found: "\\".to_owned(),
+                span: Span::new(escape_start as u32, self.pos as u32),
+            });
+        };
+        match c {
+            'n' => Ok('\n'),
+            't' => Ok('\t'),
+            'r' => Ok('\r'),
+            '0' => Ok('\0'),
+            '\\' => Ok('\\'),
+            '\'' => Ok('\''),
+            '"' => Ok('"'),
+            'u' => self.scan_unicode_escape(escape_start),
+            other => Err(CompileError::InvalidEscape {
+                found: format!("\\{other}"),
+                span: Span::new(escape_start as u32, self.pos as u32),
+            }),
+        }
+    }
+
+    /// `\u{1F600}` — already consumed `\u`; expects `{`, 1-6 hex digits, `}`.
+    fn scan_unicode_escape(&mut self, escape_start: usize) -> Result<char, CompileError> {
+        let fail = |reason: &str, end: usize| CompileError::InvalidUnicodeEscape {
+            reason: reason.to_owned(),
+            span: Span::new(escape_start as u32, end as u32),
+        };
+        if self.peek_char() != Some('{') {
+            return Err(fail("expected `{` after `\\u`", self.pos));
+        }
+        self.advance_char();
+        let digits_start = self.pos;
+        while matches!(self.peek_char(), Some(c) if c.is_ascii_hexdigit()) {
+            self.advance_char();
+        }
+        let digits = &self.src[digits_start..self.pos];
+        if digits.is_empty() {
+            return Err(fail(
+                "expected at least one hex digit inside `\\u{...}`",
+                self.pos,
+            ));
+        }
+        if self.peek_char() != Some('}') {
+            return Err(fail("expected closing `}` after hex digits", self.pos));
+        }
+        self.advance_char();
+        let cp = u32::from_str_radix(digits, 16)
+            .map_err(|_| fail("hex digits do not fit in a u32", self.pos))?;
+        char::from_u32(cp).ok_or_else(|| {
+            fail(
+                "not a valid Unicode scalar value (out of range or a surrogate)",
+                self.pos,
+            )
+        })
+    }
+
+    fn scan_char_literal(&mut self, start: usize) -> Result<(Token, Span), CompileError> {
+        let ch = match self.peek_char() {
+            None | Some('\n') => {
+                return Err(CompileError::UnterminatedLiteral {
+                    quote: '\'',
+                    span: Span::new(start as u32, self.pos as u32),
+                });
+            }
+            Some('\'') => {
+                return Err(CompileError::InvalidCharLiteral {
+                    reason: "empty char literal".to_owned(),
+                    span: Span::new(start as u32, self.pos as u32 + 1),
+                });
+            }
+            Some('\\') => {
+                let escape_start = self.pos;
+                self.advance_char();
+                self.scan_escape(escape_start)?
+            }
+            Some(c) => {
+                self.advance_char();
+                c
+            }
+        };
+        match self.peek_char() {
+            Some('\'') => {
+                self.advance_char();
+                Ok((Token::Char(ch), Span::new(start as u32, self.pos as u32)))
+            }
+            None | Some('\n') => Err(CompileError::UnterminatedLiteral {
+                quote: '\'',
+                span: Span::new(start as u32, self.pos as u32),
+            }),
+            Some(_) => {
+                // More than one scalar value before the closing quote.
+                while !matches!(self.peek_char(), Some('\'' | '\n') | None) {
+                    self.advance_char();
+                }
+                let has_close = self.peek_char() == Some('\'');
+                if has_close {
+                    self.advance_char();
+                }
+                Err(CompileError::InvalidCharLiteral {
+                    reason: "must contain exactly one character".to_owned(),
+                    span: Span::new(start as u32, self.pos as u32),
+                })
+            }
+        }
+    }
+
+    fn scan_string_literal(&mut self, start: usize) -> Result<(Token, Span), CompileError> {
+        let mut s = String::new();
+        loop {
+            match self.peek_char() {
+                None | Some('\n') => {
+                    return Err(CompileError::UnterminatedLiteral {
+                        quote: '"',
+                        span: Span::new(start as u32, self.pos as u32),
+                    });
+                }
+                Some('"') => {
+                    self.advance_char();
+                    return Ok((Token::Str(s), Span::new(start as u32, self.pos as u32)));
+                }
+                Some('\\') => {
+                    let escape_start = self.pos;
+                    self.advance_char();
+                    s.push(self.scan_escape(escape_start)?);
+                }
+                Some(c) => {
+                    self.advance_char();
+                    s.push(c);
+                }
+            }
+        }
+    }
+
     fn scan_ident_or_keyword(&mut self, start: usize) -> (Token, Span) {
         while matches!(self.peek_char(), Some(c) if c.is_alphanumeric() || c == '_') {
             self.advance_char();
@@ -260,6 +401,8 @@ impl<'src> Lexer<'src> {
                 c if c.is_alphabetic() || c == '_' => {
                     return Ok(self.scan_ident_or_keyword(start));
                 }
+                '\'' => return self.scan_char_literal(start),
+                '"' => return self.scan_string_literal(start),
                 '+' => {
                     if self.peek_char() == Some('+') {
                         self.advance_char();

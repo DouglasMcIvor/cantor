@@ -1,0 +1,8 @@
+-- `""` desugars to an empty Tuple, coercing to the empty `Char*` at the
+-- call-site (via `str_len`'s declared parameter kind) same as any other
+-- empty array literal.
+str_len : Char* -> Nat
+str_len(s) = len(s)
+
+main : -> Nat
+main() = str_len("")

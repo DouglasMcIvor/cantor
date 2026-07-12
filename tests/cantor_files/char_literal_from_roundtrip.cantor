@@ -1,0 +1,5 @@
+-- from() unwraps a Char literal back to its underlying codepoint — the same
+-- `mk_Char`/`from_Char` round-trip fact `char(n)` gets is asserted for
+-- literal `'a'` too (see `SemExprKind::CharLit`'s encoding in solver/encode.rs).
+main : -> Bool
+main() = from('a') == 97

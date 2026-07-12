@@ -1,0 +1,3 @@
+-- `'\n'`/`'\t'` — the minimal escape set (n t r 0 \ ' ").
+main : -> Bool
+main() = from('\n') == 10 and from('\t') == 9

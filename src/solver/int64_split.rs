@@ -453,6 +453,7 @@ fn expr_contains_mul(expr: &SemExpr) -> bool {
         SemExprKind::Mul(_, _) => true,
         SemExprKind::IntLit(_)
         | SemExprKind::BoolLit(_)
+        | SemExprKind::CharLit(_)
         | SemExprKind::Var(_)
         | SemExprKind::FailLit => false,
         SemExprKind::Add(l, r)

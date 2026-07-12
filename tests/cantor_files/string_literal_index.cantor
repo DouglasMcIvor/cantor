@@ -1,0 +1,3 @@
+-- `"Hello"[1]` — indexing a string literal returns the Char at that position.
+main : -> Char
+main() = "Hello"[1]

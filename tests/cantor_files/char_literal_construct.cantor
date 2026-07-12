@@ -1,0 +1,5 @@
+-- `'A'` constructs a Char directly — always a valid Unicode scalar value by
+-- construction (Rust's `char` excludes surrogates), so unlike `char(n)` it
+-- carries no basis obligation to prove.
+main : -> Char
+main() = 'A'

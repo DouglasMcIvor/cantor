@@ -34,6 +34,11 @@ pub(super) fn elaborate_expr(
             kind_of: Kind::Bool,
             span,
         }),
+        ExprKind::CharLit(c) => Ok(SemExpr {
+            kind: SemExprKind::CharLit(*c),
+            kind_of: Kind::Char,
+            span,
+        }),
         ExprKind::FailLit => Ok(SemExpr {
             kind: SemExprKind::FailLit,
             // Matches codegen::compile_expr exactly: at runtime `fail` is the

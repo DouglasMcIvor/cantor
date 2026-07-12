@@ -156,3 +156,57 @@ codepoint_of_a() = from(char(65))
 ",
     );
 }
+
+// ── `'c'` literal construction ────────────────────────────────────────────────
+
+#[test]
+fn char_literal_proved_with_no_obligation() {
+    // Unlike `char(n)`, a literal is valid by construction — there is no
+    // basis obligation to discharge at all, so this proves trivially even
+    // though 0x10FFFF..=surrogate reasoning is never invoked.
+    proved(
+        "
+letter : -> Char
+letter() = 'A'
+",
+    );
+}
+
+#[test]
+fn char_literal_identity_proved() {
+    proved_all(
+        "
+id : Char -> Char
+id(c) = c
+
+main : -> Char
+main() = id('x')
+",
+    );
+}
+
+#[test]
+fn char_literal_is_not_a_plain_int_counterexample() {
+    // `Char` stays fully disjoint from `Int` even for literal construction —
+    // same disjointness `char(n)`'s constructor gets.
+    counterexample(
+        "
+bad : Int -> Char
+bad(n) = n
+",
+    );
+}
+
+#[test]
+fn char_literal_from_roundtrip_proved() {
+    // `from('A')` — the same `mk_Char`/`from_Char` round-trip fact
+    // `char(n)`'s literal-argument sibling gets (see
+    // `char_from_literal_roundtrip_proved` above), asserted directly for
+    // `SemExprKind::CharLit` in `solver/encode.rs`.
+    proved(
+        "
+codepoint_of_a : -> {65}
+codepoint_of_a() = from('A')
+",
+    );
+}

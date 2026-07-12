@@ -1,5 +1,27 @@
 use super::helpers::*;
 
+// ── `++` on two bare literal Tuples (neither already `Vector`) ──────────────
+
+#[test]
+fn direct_literal_concat_of_two_bare_arrays() {
+    // Regression test found while adding char/string literals
+    // (`kind::ConcatMerge::CoerceBothToVector`): `[1,2] ++ [3,4]` with no
+    // already-`Vector`-typed operand used to crash `compile_binop`'s
+    // unconditional `scalarize_to_int` call before `++` ever got a chance
+    // to dispatch.
+    let out = run_subcommand("vectors_direct_literal_concat.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 4"),
+        "expected len([1,2] ++ [3,4]) == 4:\n{}",
+        out.stdout
+    );
+}
+
 // ── Kleene-star vectors (X* via sequence theory) ─────────────────────────────
 
 #[test]

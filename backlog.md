@@ -67,10 +67,13 @@ You probably don't want to read this unless you're me.
   - `Int32`, `Int(32)` and their Nat cousins as LLVM iN values, right now all are i64.
   - `Float32` and `Float64` as distinct sets, `FiniteFloat32` and explicit `posZero`, `negZero`, `nan` values
   - `Signed32`, `Unsigned32` etc for wrapping arithmetic distinct from `Int` and `Nat`
-  - `Char` (unicode) — DONE for numeric construction (`char(n)`/`from(c)`, `Char*` as strings,
-    docs/design-decisions.md §13). Still open: `'a'`/`"hello"` literal syntax (lexer + parser),
-    ordering comparisons (`< <= > >=`), and a packed UTF-8 representation for `Char*` (currently
-    a boxed-i64-per-character Arrow vector, same as `Int*`).
+  - `Char` (unicode) — DONE for numeric construction (`char(n)`/`from(c)`, `Char*` as strings) and
+    `'a'`/`"hello"` literal syntax (lexer + parser, no basis obligation — a Rust `char` is valid
+    by construction) (docs/design-decisions.md §13). Still open: ordering comparisons
+    (`< <= > >=`), a packed UTF-8 representation for `Char*` (currently a boxed-i64-per-character
+    Arrow vector, same as `Int*`), and `Char` literals in set-expression position (e.g.
+    `{'a', 'b'}` as a domain restriction — blocked on `solver::sort::set_sort`'s `SetLit` arm
+    hardcoding integer sort for every domain literal).
   - `Byte`, `Bits32`, `Bits(435)` generic etc
   - `Size`, `Word` (platform dependent)
 - more containers:

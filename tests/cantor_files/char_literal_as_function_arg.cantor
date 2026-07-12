@@ -1,0 +1,10 @@
+-- Passing a Char literal as an argument to a user-defined function exercises
+-- the call-site ABI widening (i32 register -> i64 uniform parameter slot) —
+-- previously only `char(n)`/`from(c)`'s own special-cased codegen ever
+-- crossed this boundary; a real function call never had a Char argument
+-- widened before this fixture.
+codepoint : Char -> Int
+codepoint(c) = from(c)
+
+main : -> Int
+main() = codepoint('A')

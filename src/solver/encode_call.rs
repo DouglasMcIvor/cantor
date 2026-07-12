@@ -576,7 +576,7 @@ fn char_info_for_constructor<'a, 'tm>(
 /// this one call's argument term, so it can't cause the quantifier-related
 /// hangs `QuotientInfo`'s doc comment warns about — it says nothing about
 /// any other application of `mk`/`from`.
-fn assert_distinct_round_trip<'tm>(
+pub(crate) fn assert_distinct_round_trip<'tm>(
     tm: &'tm TermManager,
     solver: &mut Solver<'tm>,
     info: &DistinctInfo<'tm>,

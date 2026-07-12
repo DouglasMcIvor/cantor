@@ -281,15 +281,9 @@ impl<'ctx> Compiler<'ctx> {
                 _ => (v, arg_kind),
             };
 
-            // All function parameters are i64 (uniform ABI); widen Bool args.
-            let v_i64 = if arg_kind == Kind::Bool {
-                self.builder
-                    .build_int_z_extend(v.into_int_value(), self.context.i64_type(), "arg_bool_ext")
-                    .map_err(|e| CompileError::ice(e.to_string()))?
-                    .into()
-            } else {
-                v
-            };
+            // All function parameters are i64 (uniform ABI); widen any
+            // narrower scalar (Bool i1, Signed32/Unsigned32/Char i32).
+            let v_i64 = self.widen_scalar_to_i64(v, &arg_kind, "arg_ext")?;
             compiled_arg_values.push(v_i64);
         }
         let compiled_args: Vec<_> = compiled_arg_values.iter().map(|&v| v.into()).collect();

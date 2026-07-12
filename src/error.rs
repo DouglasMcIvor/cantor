@@ -49,6 +49,31 @@ pub enum CompileError {
         text: String,
         span: Span,
     },
+    /// `'` was not followed by exactly one Unicode scalar value (accounting
+    /// for escapes) before the closing `'` — `''`, `'ab'`, or an unterminated
+    /// `'a`.
+    InvalidCharLiteral {
+        reason: String,
+        span: Span,
+    },
+    /// A string literal (`"..."`) or char literal (`'...'`) ran off the end
+    /// of the line/file before its closing quote.
+    UnterminatedLiteral {
+        quote: char,
+        span: Span,
+    },
+    /// `\x` inside a char/string literal where `x` isn't one of the
+    /// supported escapes (`n t r 0 \ ' " u`).
+    InvalidEscape {
+        found: String,
+        span: Span,
+    },
+    /// `\u{...}` — malformed hex digits, missing braces, or a codepoint that
+    /// isn't a valid Unicode scalar value (out of range, or a surrogate).
+    InvalidUnicodeEscape {
+        reason: String,
+        span: Span,
+    },
     NamingConvention {
         message: String,
         span: Span,
@@ -107,6 +132,14 @@ impl std::fmt::Display for CompileError {
             }
             Self::InvalidIntLiteral { text, .. } => {
                 write!(f, "invalid integer literal `{text}`")
+            }
+            Self::InvalidCharLiteral { reason, .. } => write!(f, "invalid char literal: {reason}"),
+            Self::UnterminatedLiteral { quote, .. } => {
+                write!(f, "unterminated literal, expected closing `{quote}`")
+            }
+            Self::InvalidEscape { found, .. } => write!(f, "unknown escape sequence `{found}`"),
+            Self::InvalidUnicodeEscape { reason, .. } => {
+                write!(f, "invalid unicode escape: {reason}")
             }
             Self::NamingConvention { message, .. } => write!(f, "naming: {message}"),
             Self::OverloadKindMismatch { name, detail, .. } => {
@@ -169,6 +202,10 @@ impl CompileError {
             Self::UndefinedFunction { span, .. } => Some(*span),
             Self::UnexpectedToken { span, .. } => Some(*span),
             Self::InvalidIntLiteral { span, .. } => Some(*span),
+            Self::InvalidCharLiteral { span, .. } => Some(*span),
+            Self::UnterminatedLiteral { span, .. } => Some(*span),
+            Self::InvalidEscape { span, .. } => Some(*span),
+            Self::InvalidUnicodeEscape { span, .. } => Some(*span),
             Self::NamingConvention { span, .. } => Some(*span),
             Self::OverloadKindMismatch { span, .. } => Some(*span),
             Self::Unsupported { span, .. } => Some(*span),

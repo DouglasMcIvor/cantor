@@ -396,6 +396,7 @@ pub(crate) fn set_sort<'tm>(
         }
         SemExprKind::IntLit(_)
         | SemExprKind::BoolLit(_)
+        | SemExprKind::CharLit(_)
         | SemExprKind::Add(..)
         | SemExprKind::Sub(..)
         | SemExprKind::Mul(..)

@@ -1,0 +1,10 @@
+-- `[1,2] ++ [3,4]` directly, with neither side already `Vector`-typed —
+-- regression test for `kind::ConcatMerge::CoerceBothToVector`
+-- (found while adding char/string literals: `compile_binop` used to run an
+-- unconditional `scalarize_to_int` on both operands before `++`'s own
+-- dispatch, crashing on any multi-field Tuple operand).
+check_len : Nat* -> Nat
+check_len(xs) = len(xs)
+
+main : -> Nat
+main() = check_len([1, 2] ++ [3, 4])

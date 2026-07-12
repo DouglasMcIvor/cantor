@@ -25,6 +25,21 @@ impl Expr {
         Self::new(ExprKind::BoolLit(b), Span::dummy())
     }
 
+    pub fn char_lit(c: char) -> Self {
+        Self::new(ExprKind::CharLit(c), Span::dummy())
+    }
+
+    /// `"..."` desugars at construction time to a `Tuple` of `CharLit`s —
+    /// reuses the exact same Tuple→`Vector(Char)` coercion machinery that
+    /// `[char(72), char(101), …]` already exercises, so strings need no
+    /// dedicated `SemExprKind`/solver/codegen support of their own.
+    pub fn string_lit(s: &str) -> Self {
+        Self::new(
+            ExprKind::Tuple(s.chars().map(Expr::char_lit).collect()),
+            Span::dummy(),
+        )
+    }
+
     pub fn var(name: &str) -> Self {
         Self::new(ExprKind::Var(Symbol::new(name)), Span::dummy())
     }
@@ -104,6 +119,10 @@ impl Expr {
 pub enum ExprKind {
     IntLit(i64),
     BoolLit(bool),
+    /// `'c'` — a single Unicode scalar value. Always valid by construction
+    /// (the lexer only ever produces a Rust `char`, which excludes
+    /// surrogates), so unlike `char(n)` it carries no basis obligation.
+    CharLit(char),
     Var(Symbol),
     BinOp {
         op: BinOp,
@@ -559,6 +578,7 @@ impl fmt::Display for ExprKind {
         match self {
             Self::IntLit(n) => write!(f, "{n}"),
             Self::BoolLit(b) => write!(f, "{b}"),
+            Self::CharLit(c) => write!(f, "{c:?}"),
             Self::Var(sym) => write!(f, "{sym}"),
             Self::UnOp { op, expr } => match op {
                 UnOp::Neg => write!(f, "-{expr}"),

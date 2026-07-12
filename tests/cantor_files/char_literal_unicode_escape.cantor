@@ -1,0 +1,3 @@
+-- `'\u{1F600}'` — Rust-style hex codepoint escape (😀 = U+1F600).
+main : -> Bool
+main() = from('\u{1F600}') == 128512

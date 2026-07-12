@@ -152,6 +152,22 @@ pub(crate) fn encode_expr<'tm>(
         SemExprKind::IntLit(n) => Ok(ctx.tm.mk_integer(*n)),
         SemExprKind::BoolLit(b) => Ok(ctx.tm.mk_boolean(*b)),
 
+        // `'c'` — always a valid Unicode scalar value by construction (Rust's
+        // `char` excludes surrogates), so unlike `char(n)` this needs no
+        // `unicode_scalar_valid` basis obligation — just apply `mk_Char`
+        // directly and assert the same `from(mk_Char(n)) == n` round-trip
+        // fact `char(n)` gets, so e.g. `from('A') == 65` stays provable.
+        SemExprKind::CharLit(c) => {
+            let info = ctx
+                .distinct_preds
+                .get(&Symbol::new("Char"))
+                .expect("Char must be registered as a builtin distinct sort");
+            let n = ctx.tm.mk_integer(*c as u32 as i64);
+            let result = ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), n.clone()]);
+            super::encode_call::assert_distinct_round_trip(ctx.tm, ctx.solver, info, &result, &n);
+            Ok(result)
+        }
+
         // `Fail` is a builtin distinct sort (registered in `build_distinct_preds`)
         // with one canonical witness value — the witness is never observed (see
         // the `from()` guard below), so any fixed integer works. `fail` applies

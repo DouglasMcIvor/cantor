@@ -14,6 +14,17 @@ fn lex_all(src: &str) -> Vec<Token> {
     tokens
 }
 
+fn lex_err(src: &str) -> String {
+    let mut lexer = Lexer::new(src);
+    loop {
+        match lexer.next_token() {
+            Ok((Token::Eof, _)) => panic!("expected a lex error for {src:?}, got Eof"),
+            Ok(_) => continue,
+            Err(e) => return e.to_string(),
+        }
+    }
+}
+
 // ── Literals ──────────────────────────────────────────────────────────────────
 
 #[test]
@@ -29,6 +40,101 @@ fn lex_zero() {
 #[test]
 fn lex_large_integer() {
     assert_eq!(lex_all("1000000"), vec![Token::Int(1_000_000), Token::Eof]);
+}
+
+// ── Char/string literals ──────────────────────────────────────────────────────
+
+#[test]
+fn lex_char_literal() {
+    assert_eq!(lex_all("'a'"), vec![Token::Char('a'), Token::Eof]);
+}
+
+#[test]
+fn lex_char_literal_unicode() {
+    assert_eq!(lex_all("'λ'"), vec![Token::Char('λ'), Token::Eof]);
+}
+
+#[test]
+fn lex_string_literal() {
+    assert_eq!(
+        lex_all("\"cat\""),
+        vec![Token::Str("cat".into()), Token::Eof]
+    );
+}
+
+#[test]
+fn lex_empty_string_literal() {
+    assert_eq!(lex_all("\"\""), vec![Token::Str(String::new()), Token::Eof]);
+}
+
+#[test]
+fn lex_char_escapes() {
+    assert_eq!(lex_all(r"'\n'"), vec![Token::Char('\n'), Token::Eof]);
+    assert_eq!(lex_all(r"'\t'"), vec![Token::Char('\t'), Token::Eof]);
+    assert_eq!(lex_all(r"'\r'"), vec![Token::Char('\r'), Token::Eof]);
+    assert_eq!(lex_all(r"'\0'"), vec![Token::Char('\0'), Token::Eof]);
+    assert_eq!(lex_all(r"'\\'"), vec![Token::Char('\\'), Token::Eof]);
+    assert_eq!(lex_all(r"'\''"), vec![Token::Char('\''), Token::Eof]);
+    assert_eq!(lex_all(r#"'\"'"#), vec![Token::Char('"'), Token::Eof]);
+}
+
+#[test]
+fn lex_string_escapes() {
+    assert_eq!(
+        lex_all(r#""a\tb\nc""#),
+        vec![Token::Str("a\tb\nc".into()), Token::Eof]
+    );
+}
+
+#[test]
+fn lex_unicode_escape() {
+    assert_eq!(lex_all(r"'\u{1F600}'"), vec![Token::Char('😀'), Token::Eof]);
+    assert_eq!(lex_all(r"'\u{41}'"), vec![Token::Char('A'), Token::Eof]);
+}
+
+#[test]
+fn lex_empty_char_literal_errors() {
+    assert!(lex_err("''").contains("empty char literal"));
+}
+
+#[test]
+fn lex_multi_char_literal_errors() {
+    assert!(lex_err("'ab'").contains("exactly one character"));
+}
+
+#[test]
+fn lex_unterminated_char_literal_errors() {
+    assert!(lex_err("'a").contains("unterminated"));
+}
+
+#[test]
+fn lex_unterminated_char_literal_at_newline_errors() {
+    assert!(lex_err("'a\nb").contains("unterminated"));
+}
+
+#[test]
+fn lex_unterminated_string_literal_errors() {
+    assert!(lex_err("\"abc").contains("unterminated"));
+}
+
+#[test]
+fn lex_unknown_escape_errors() {
+    assert!(lex_err(r"'\q'").contains("unknown escape"));
+}
+
+#[test]
+fn lex_unicode_escape_surrogate_errors() {
+    assert!(lex_err(r"'\u{D800}'").contains("surrogate"));
+}
+
+#[test]
+fn lex_unicode_escape_out_of_range_errors() {
+    assert!(lex_err(r"'\u{110000}'").contains("invalid unicode escape"));
+}
+
+#[test]
+fn lex_unicode_escape_missing_brace_errors() {
+    assert!(lex_err(r"'\u41'").contains("expected `{`"));
 }
 
 // ── Keywords ──────────────────────────────────────────────────────────────────

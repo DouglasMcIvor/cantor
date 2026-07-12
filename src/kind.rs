@@ -96,6 +96,21 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileEr
     Ok(match &set_expr.kind {
         ExprKind::IntLit { .. } => Kind::Int,
         ExprKind::BoolLit { .. } => Kind::Bool,
+        // Deliberately *not* handled here (unlike IntLit/BoolLit): a Char
+        // domain-literal set (`{'a', 'b'}` in signature position) would need
+        // `solver::sort::set_sort`'s `SetLit` arm to stop hardcoding
+        // `tm.integer_sort()` — a real gap, not just a missing arm here.
+        // Out of scope for value-position char/string literals; left as a
+        // clear `Unsupported` below rather than silently mis-sorting.
+        ExprKind::CharLit(_) => {
+            return Err(CompileError::Unsupported {
+                feature: "a Char literal in set-expression position (e.g. `{'a', 'b'}` as a \
+                          domain/range restriction) — char/string literals are supported in \
+                          value position only so far"
+                    .to_string(),
+                span: set_expr.span,
+            });
+        }
         ExprKind::Var(sym) => {
             if let Some(builtin) = builtins::lookup(&sym.0) {
                 builtin.kind
@@ -524,6 +539,11 @@ pub enum ConcatMerge {
     CoerceLhsToVector,
     /// `rhs` is a `Tuple`; coerce it into a `Vector` matching `lhs`'s element kind.
     CoerceRhsToVector,
+    /// Both sides are bare `Tuple` literals (e.g. `"Hi" ++ "!"`, `[1] ++ [2]`)
+    /// with no already-`Vector` operand to take the element kind from —
+    /// coerce both into a `Vector` of the element kind taken from whichever
+    /// tuple is non-empty.
+    CoerceBothToVector,
 }
 
 /// Decide how `lhs ++ rhs` merges, and the resulting (always-`Vector`) Kind.
@@ -536,6 +556,17 @@ pub fn merge_concat_kinds(lhs: &Kind, rhs: &Kind) -> Result<(ConcatMerge, Kind),
         }
         (Kind::Vector(ek), Kind::Tuple(_)) => {
             Ok((ConcatMerge::CoerceRhsToVector, Kind::Vector(ek.clone())))
+        }
+        (Kind::Tuple(a), Kind::Tuple(b)) => {
+            let elem = a.first().or_else(|| b.first()).ok_or_else(|| {
+                "`++` on two empty literals needs a Vector-typed operand or a declared \
+                 signature to determine the element kind"
+                    .to_string()
+            })?;
+            Ok((
+                ConcatMerge::CoerceBothToVector,
+                Kind::Vector(Box::new(elem.clone())),
+            ))
         }
         _ => Err(format!(
             "`++` requires vector (X*) operands, got {lhs:?} ++ {rhs:?}"

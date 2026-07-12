@@ -30,6 +30,9 @@ pub struct SemExpr {
 pub enum SemExprKind {
     IntLit(i64),
     BoolLit(bool),
+    /// `'c'` — always valid by construction (Rust's `char` excludes
+    /// surrogates), so unlike `char(n)` it carries no basis obligation.
+    CharLit(char),
     Var(Symbol),
 
     /// Value-position `+`.
@@ -416,6 +419,10 @@ impl SemExpr {
         Self::new(SemExprKind::BoolLit(b), Kind::Bool, Span::dummy())
     }
 
+    pub fn char_lit(c: char) -> Self {
+        Self::new(SemExprKind::CharLit(c), Kind::Char, Span::dummy())
+    }
+
     pub fn var(name: &str, kind_of: Kind) -> Self {
         Self::new(SemExprKind::Var(Symbol::new(name)), kind_of, Span::dummy())
     }
@@ -571,6 +578,7 @@ impl std::fmt::Display for SemExprKind {
         match self {
             SemExprKind::IntLit(n) => write!(f, "{n}"),
             SemExprKind::BoolLit(b) => write!(f, "{b}"),
+            SemExprKind::CharLit(c) => write!(f, "{c:?}"),
             SemExprKind::Var(sym) => write!(f, "{sym}"),
             SemExprKind::UnOp { op, expr } => match op {
                 UnOp::Neg => write!(f, "-{expr}"),

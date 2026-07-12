@@ -1,0 +1,3 @@
+-- `''` — a char literal must contain exactly one Unicode scalar value.
+main : -> Char
+main() = ''

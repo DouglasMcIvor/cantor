@@ -1,0 +1,4 @@
+-- `"Hi" ++ "!"` — `++` on two bare string literals, neither already
+-- `Vector`-shaped, coerces both sides via `ConcatMerge::CoerceBothToVector`.
+main : -> Char*
+main() = "Hi" ++ "!"

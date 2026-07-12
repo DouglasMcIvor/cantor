@@ -34,6 +34,10 @@ impl<'ctx> Compiler<'ctx> {
                 let v = self.context.bool_type().const_int(*b as u64, false);
                 Ok((v.into(), Kind::Bool))
             }
+            SemExprKind::CharLit(c) => {
+                let v = self.context.i32_type().const_int(*c as u32 as u64, false);
+                Ok((v.into(), Kind::Char))
+            }
             SemExprKind::Var(sym) => env.get(sym).map(|(v, t)| (*v, t.clone())).ok_or_else(|| {
                 CompileError::UndefinedVariable {
                     name: sym.0.clone(),
@@ -328,6 +332,11 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 return Ok((pred.into(), Kind::Bool));
             }
+            // `++` operands are vectors (or literal Tuples being coerced to
+            // one) — never the `{i1, i64}`-shaped values `scalarize_to_int`
+            // below assumes, so this must dispatch before that call, exactly
+            // like `In`/`NotIn` above.
+            BinOp::Concat => return self.compile_vec_concat(lhs, rhs, env, _span),
             _ => {}
         }
 
@@ -447,7 +456,7 @@ impl<'ctx> Compiler<'ctx> {
             BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
                 Err(CompileError::ice("set operations not yet implemented"))
             }
-            BinOp::Concat => self.compile_vec_concat(lhs, rhs, env, _span),
+            BinOp::Concat => unreachable!("handled above, before scalarize_to_int"),
         }
     }
 
@@ -473,10 +482,11 @@ impl<'ctx> Compiler<'ctx> {
             _ => unreachable!("merge_concat_kinds always returns a Vector result Kind"),
         };
 
+        use crate::kind::ConcatMerge;
         let (lv, _lk) = match mode {
-            crate::kind::ConcatMerge::CoerceLhsToVector => {
+            ConcatMerge::CoerceLhsToVector | ConcatMerge::CoerceBothToVector => {
                 let Kind::Tuple(elems) = &lk else {
-                    unreachable!("CoerceLhsToVector guarantees a Tuple lhs")
+                    unreachable!("CoerceLhsToVector/CoerceBothToVector guarantees a Tuple lhs")
                 };
                 let elems = elems.clone();
                 self.compile_tuple_as_vector(lv, &elems, &elem_kind)?
@@ -484,9 +494,9 @@ impl<'ctx> Compiler<'ctx> {
             _ => (lv, lk),
         };
         let (rv, _rk) = match mode {
-            crate::kind::ConcatMerge::CoerceRhsToVector => {
+            ConcatMerge::CoerceRhsToVector | ConcatMerge::CoerceBothToVector => {
                 let Kind::Tuple(elems) = &rk else {
-                    unreachable!("CoerceRhsToVector guarantees a Tuple rhs")
+                    unreachable!("CoerceRhsToVector/CoerceBothToVector guarantees a Tuple rhs")
                 };
                 let elems = elems.clone();
                 self.compile_tuple_as_vector(rv, &elems, &elem_kind)?

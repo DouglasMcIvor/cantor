@@ -1917,12 +1917,68 @@ either:
   ordering isn't needed yet to prove out the underlying plumbing.
 
 **Explicitly deferred**, tracked in `backlog.md`:
-- `'a'`/`"hello"` literal syntax (lexer + parser) — `char(n)` numeric
-  construction only for now.
 - Ordering comparisons (`< <= > >=`) on `Char`.
 - A packed UTF-8 representation for `Char*` — it stays a boxed-i64-per-
   character Arrow vector, matching the "32-bit codepoints now, UTF-8 later"
   phasing the rest of the IO roadmap will need anyway.
+
+#### `'a'`/`"hello"` literal syntax (DONE)
+
+`'a'` (`Token::Char`/`ExprKind::CharLit`/`SemExprKind::CharLit`) and
+`"hello"` (`Token::Str`, desugared at *parse time* into a `Tuple` of
+`CharLit`s — see `Expr::string_lit`) round out the numeric-only `char(n)`
+construction above.
+
+- **No basis obligation, unlike `char(n)`.** A literal's codepoint is a
+  Rust `char`, which by construction already excludes surrogates and is
+  always `<= 0x10FFFF` — so `unicode_scalar_valid` never needs to run for
+  one. `solver::encode`'s `CharLit` arm applies `mk_Char` directly and still
+  asserts the `from(mk_Char(n)) == n` round-trip ground fact (reusing
+  `encode_call::assert_distinct_round_trip`), so `from('A') == 65` stays
+  provable exactly like `from(char(65)) == 65`.
+- **Strings need no dedicated `SemExprKind`/solver/codegen support at
+  all.** `"hello"` is sugar for `('h', 'e', 'l', 'l', 'o')` — a plain
+  `Tuple` of `CharLit`s — which coerces to `Vector(Char)` via the exact
+  same machinery `[char(72), char(101), …]` already exercised. Confirmed by
+  writing the literal syntax *before* fixing two adjacent gaps that
+  syntax immediately exposed (next two bullets): before those fixes,
+  `"Hi" ++ "!"` and any `Char`-parametered user function call would have
+  failed even though the Tuple/coercion story was supposed to already
+  support them.
+- **Found and fixed: `++` on two bare literal Tuples.**
+  `kind::merge_concat_kinds` previously only coerced *one* side of `lhs ++
+  rhs` into a `Vector` (whichever side wasn't already Tuple-shaped) — with
+  two bare literals (`"Hi" ++ "!"`, `[1,2] ++ [3,4]`) neither side has a
+  `Vector` to borrow an element kind from, so it hit the `Err` catch-all.
+  New `ConcatMerge::CoerceBothToVector` arm takes the element kind from
+  whichever tuple is non-empty and coerces both. Also had to reorder
+  `codegen::compile_binop`'s dispatch: it unconditionally scalarized both
+  operands to `Int` for every operator *before* switching on which
+  operator it actually was, which crashed on any multi-field Tuple operand
+  — `Concat` now dispatches to `compile_vec_concat` before that
+  scalarization runs, same as the pre-existing `In`/`NotIn` special case
+  right above it. Not Char-specific — plain `Int`/`Bool` array literals had
+  the identical bug, just never exercised by an existing test.
+- **Found and fixed: Char/Signed32/Unsigned32 arguments at a real call
+  boundary.** Passing a `Char` (or `Signed32`/`Unsigned32`) value as an
+  argument to a *user-defined* function needs the caller to widen the i32
+  register up to the uniform i64 ABI parameter slot
+  (`codegen::wire`/`Compiler::widen_scalar_to_i64`). The call-argument prep
+  loop in `codegen::expr_call` only ever widened `Bool` — every existing
+  Signed32/Unsigned32 test only called `identity32`/`accept_u32`-style
+  functions from a *rejected* (counterexample) program, so codegen never
+  actually ran for them; `char`/`from` are special-cased builtins compiled
+  in-register, never crossing a real `build_call`. `'a'` passed to a
+  genuine user function (`codepoint('a')`) was the first thing to actually
+  exercise this path. Fixed by reusing `widen_scalar_to_i64` generically
+  instead of the bespoke `Bool`-only zero-extend.
+- **Deliberately not supported: `Char` literals in set-expression
+  position** (e.g. `{'a', 'b'}` as a domain/range restriction). Unlike
+  `IntLit`/`BoolLit`, `kind::set_kind` rejects a bare `CharLit` there with
+  `Unsupported` — `solver::sort::set_sort`'s `SetLit` arm hardcodes
+  `tm.integer_sort()` for every domain-literal set today, which would
+  silently mis-sort a `Char`-valued one. Fixing that generically is future
+  work; value position (the actual literal syntax feature) doesn't need it.
 
 ### Narrowing back to IntN
 

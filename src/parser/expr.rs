@@ -19,6 +19,8 @@ fn token_starts_expr_after_star(tok: &Token) -> bool {
     matches!(
         tok,
         Token::Int(_)
+            | Token::Char(_)
+            | Token::Str(_)
             | Token::True
             | Token::False
             | Token::Ident(_)
@@ -270,6 +272,21 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 Ok(Expr::new(ExprKind::BoolLit(false), span))
             }
+            Token::Char(c) => {
+                self.advance()?;
+                Ok(Expr::new(ExprKind::CharLit(c), span))
+            }
+            Token::Str(s) => {
+                self.advance()?;
+                // Desugars to a `Tuple` of `CharLit`s — see `Expr::string_lit`.
+                // Built inline (not via that helper) so every element gets
+                // the whole string token's span rather than `Span::dummy()`.
+                let elems = s
+                    .chars()
+                    .map(|c| Expr::new(ExprKind::CharLit(c), span))
+                    .collect();
+                Ok(Expr::new(ExprKind::Tuple(elems), span))
+            }
             Token::Ident(name) => {
                 self.advance()?;
                 if self.peek() == &Token::LParen {
@@ -458,6 +475,8 @@ impl<'src> Parser<'src> {
         matches!(
             self.peek(),
             Token::Int(_)
+                | Token::Char(_)
+                | Token::Str(_)
                 | Token::True
                 | Token::False
                 | Token::Ident(_)
