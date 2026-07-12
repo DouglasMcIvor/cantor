@@ -2,7 +2,10 @@ This is my personal backlog/random things I've learned or want to remember.
 You probably don't want to read this unless you're me.
 
 # To do
-
+ 
+- `none` value and `None` set, currently missing
+- `Char` literals in set-expression position (e.g. `{'a', 'b'}` as a domain restriction — blocked on `solver::sort::set_sort`'s `SetLit` arm hardcoding integer sort for every domain literal).
+- function overloads - support different kinds, currently only `foo : Nat`, `foo : NegInt` would work not `Bool`
 - more testing
   - some property based tests! we have a lot of unit tests but could go further, `proptest` crate recommended
   - fuzzing too, `cargo-fuzz` crate recommended
@@ -18,14 +21,11 @@ You probably don't want to read this unless you're me.
   - Lots nice built in static analysis
     -  `cargo udeps` and `cargo machete`
     -  `cargo deny` for vulns, dupes and licensing
-    -  `cargo llvm-cov` for coverage - try again to publish to GitHub pages
     -  `cargo +nightly miri test` for UB, aliasing, invalid references
   - "giving every stage a `validate()` method"
 - 'check pred(x) for x in X' keyword for property based testing, unit testing as the degenerate case
 - termination checking on recursion and loops with a 'decreases n' annotation to declare a ranking function.
-  automatic inference of the ranking function structurally where possible 
-- `none` value and `None` set, currently missing
-- function overloads - support different kinds, currently only `foo : Nat`, `foo : NegInt` would work not `Bool`
+  automatic inference of the ranking function structurally where possible
 - more set comprehensions features
   - math syntax `{x*2 | x ∈ Nat, x > 0}` as sugar for the python form (deferred)
   - multi-binder `{x+y for x in A for y in B}` desugaring to Cartesian product (deferred)
@@ -66,14 +66,9 @@ You probably don't want to read this unless you're me.
 - more basic values:
   - `Int32`, `Int(32)` and their Nat cousins as LLVM iN values, right now all are i64.
   - `Float32` and `Float64` as distinct sets, `FiniteFloat32` and explicit `posZero`, `negZero`, `nan` values
-  - `Signed32`, `Unsigned32` etc for wrapping arithmetic distinct from `Int` and `Nat`
-  - `Char` (unicode) — DONE for numeric construction (`char(n)`/`from(c)`, `Char*` as strings) and
-    `'a'`/`"hello"` literal syntax (lexer + parser, no basis obligation — a Rust `char` is valid
-    by construction) (docs/design-decisions.md §13). Still open: ordering comparisons
-    (`< <= > >=`), a packed UTF-8 representation for `Char*` (currently a boxed-i64-per-character
-    Arrow vector, same as `Int*`), and `Char` literals in set-expression position (e.g.
-    `{'a', 'b'}` as a domain restriction — blocked on `solver::sort::set_sort`'s `SetLit` arm
-    hardcoding integer sort for every domain literal).
+  - `SignedN`, `UnsignedN` for N != 32
+  - `Char` ordering comparisons
+  - a packed UTF-8 representation for `Char*` (currently a boxed-i64-per-character)
   - `Byte`, `Bits32`, `Bits(435)` generic etc
   - `Size`, `Word` (platform dependent)
 - more containers:
