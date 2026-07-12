@@ -1,0 +1,13 @@
+main : -> Nat
+main() = 1
+
+main : Char* * Nat -> Char* * Nat
+main(text, n) {
+  mut i : Nat = n
+  mut out : Char* = text
+  while i > 0 {
+    out := out ++ " " ++ text
+    i := i - 1
+  }
+  (out, n + 1)
+}

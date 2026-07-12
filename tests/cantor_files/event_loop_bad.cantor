@@ -1,0 +1,11 @@
+-- Event-loop `main` with a genuine counterexample: `state + 1` isn't
+-- wrapped back into `Digit`, so `state = 9` produces `10`, outside the
+-- domain. Used by tests/cli/build.rs to confirm `cantor build` refuses to
+-- link an unproved file, same as `cantor run` already refuses to execute one.
+Digit = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+
+main : Char* * Digit -> Char* * Digit
+main(event, state) = (event, state + 1)
+
+main : -> Digit
+main() = 0
