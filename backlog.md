@@ -71,6 +71,19 @@ You probably don't want to read this unless you're me.
   - a packed UTF-8 representation for `Char*` (currently a boxed-i64-per-character)
   - `Byte`, `Bits32`, `Bits(435)` generic etc
   - `Size`, `Word` (platform dependent)
+- string interpolation like `"hello {name}"` that calls `show(name)`, can use `distinct` to define `Hex` and then implement a `show : Hex -> Char*` overload.
+  Formatting will need higher order functions to let us wrap/decorate the format call:
+  ```
+  Formatter = Char* -> Char*
+  
+  given A
+  uppercase : A -> Formatter * A
+  uppercase(x) = (toupper, x)
+  
+  given A
+  show : Formatter * A -> Char*
+  show(f, x) = f(show(x))
+  ```
 - more containers:
   - maps
   - ordered sets and bags — see "collections direction" above
@@ -123,19 +136,6 @@ Algorithm:
   * set → hash table of chunks
   * map → hash table of key/value chunks
   * string → rope of UTF-8 chunks
-- multi-binder `for a, b in xs` is *always* element destructuring — never an implicit
-  enumerate, which would be ambiguous for e.g. `(Nat * Nat)*` iterables (the loop's
-  meaning would depend on the element set). Index iteration is
-  `for i, x in graph(xs)` (or `enumerate(xs)`); falls out from destructuring + for-in
-  once `graph` exists.
-- destructuring assignment should work when we "don't provide enough binders" so that
-  ```
-  x, y = (1, 2, 3)
-
-  x = 1
-  y = (2, 3)
-  ```
-  are equivalent, without needing cons lists. The rule is simply "tail goes into the last binder".
 - could also add: tuple-level constraint `x, y : Int * Nat = ...`; nested patterns; `_` wildcard; per-binding mutability
 - allow overloading with literals, like `factorial(0) = 1` as sugar for the domain being `{0}`
 - nice syntax for guards, e.g.
@@ -399,9 +399,6 @@ Algorithm:
 
 # Open questions
 
-- Does all of overloading, generics and dynamic dispatch collapse into the one thing? Either the compiler proves a particular definition is used or else it outputs a vtable?
-- I wanted 'emit' for write only effects, but when we added multithreading we will need synchronoisation. Is that a problem?
-I guess it depends on how we handle threading.
 - Memory model - leaning toward (from ChatGPT):
   ```
   persistent structures
@@ -415,6 +412,4 @@ I guess it depends on how we handle threading.
   The persistent state can use tracing GC _during the diff_. This is also simultaneous with IO so can naturally run in parallel.
   The only gap left is that the mutable arena could grow too large. Later on we could add pages to the arena to allow partial clean up like with tcmalloc and marking the pages available to the OS!
 - How to define exception handlers?
-- More generally, how to define the IO loop?
-- Should we have a way to write programs without the IO loop runtime? If so how?
 
