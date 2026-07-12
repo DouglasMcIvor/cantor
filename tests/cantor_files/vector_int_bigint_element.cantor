@@ -1,10 +1,13 @@
--- Aspirational: Vector(Int)/Set(Int) elements are documented as deliberately
--- out of scope for arbitrary-precision support (int-soundness-plan.md, step
--- 4b's "Vector(Int)/Set(Int)/runtime-Set for-loop storage" entry) -- an
--- element that doesn't fit raw i64 currently aborts loudly via
--- `ensure_raw_int64` rather than corrupting anything, but it does abort
--- rather than compute the correct (BigInt-backed) answer. See
--- tests/cli/bigint.rs's `known_issues` section.
+-- Vector(Int) elements are documented as deliberately out of scope for
+-- arbitrary-precision support (int-soundness-plan.md, step 4b's
+-- "Vector(Int)/Set(Int)/runtime-Set for-loop storage" entry): an element
+-- that doesn't fit raw i64 aborts loudly (a container-specific message, see
+-- `cantor_bigint_to_i64_container`) rather than computing the correct
+-- (BigInt-backed) answer or, worse, silently corrupting it. See
+-- tests/cli/bigint.rs's container-elements comment block for the full
+-- history (this was briefly, unsoundly "fixed" by skipping the boundary
+-- conversion instead, then reverted once that broke local vector-let
+-- bindings elsewhere).
 big : -> Int
 big() = 4611686018427387904 * 2
 

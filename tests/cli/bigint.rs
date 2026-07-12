@@ -208,37 +208,65 @@ mod small_value_membership_regression {
     }
 }
 
-// ── Container elements (found in review, 2026-07-05; now fixed) ─────────────
+// ── Container elements (found in review, 2026-07-05; revisited 2026-07-12) ──
 //
 // `Vector(Int)`/`Set(Int)` elements were documented as out of scope for
 // BigInt (int-soundness-plan.md step 4b): a boxed element aborted via
 // `ensure_raw_int64` rather than computing the correct answer.
 //
-// `Vector(Int)` was fixed by no longer decoding/re-encoding at the vector
-// push/read boundary at all — `Int64Array` storage is representation-
-// agnostic, so a tagged (possibly boxed) word round-trips through it
-// unchanged; `Tuple`/`TaggedUnion` element storage already worked this way.
+// A 2026-07-05 review "fixed" `Vector(Int)` by deleting the decode/re-encode
+// at the vector push/read boundary entirely, reasoning that `Int64Array`
+// storage is representation-agnostic so a tagged (possibly boxed) word
+// round-trips through it unchanged. That reasoning silently assumed push and
+// read always happen under the *same* function's tagging state.
 //
-// `Set(Int)` needed more: a canonical/deduped comparison, since two
-// different boxed allocations holding the same value must still dedup to
-// one set entry (they're not `==` as raw pointers). Fixed with a new
-// `CantorTaggedIntSet` (runtime/bigint.rs) that orders/dedups by decoded
-// magnitude (`tagged_cmp`, shared with `cantor_bigint_cmp`) instead of raw
-// i64 value, used instead of the plain `cantor_set_*_i64` family whenever
-// `tagging_active()` — see `compile_set_lit_value`/`compile_runtime_contains`/
-// `compile_for_in`'s runtime-set loop.
+// **2026-07-12: that assumption is false, and reinstating the boundary
+// conversion is the actual fix.** Found while fixing an unrelated solver gap
+// (local `X*`/`X**` `let`/`mut` bindings were opaque integers, so `cantor run`
+// could never actually *execute* a local vector-literal binding). Once that
+// opacity was removed, `xss[i][j]`
+// on a local `Nat**` literal started silently returning *half* the correct
+// value (or crashing on odd values) under `cantor run`: `current_bare_int_kind()`
+// — whether a function's `Int` values are raw or tagged — is decided per
+// *function* (Step A promotion), independently for the function that builds
+// the literal vs. whichever reads it back; a value pushed while raw and read
+// back while the caller expects tagged (or vice versa) is exactly the case
+// "round-trips unchanged" doesn't handle. Reinstated the boundary conversion
+// (`compile_tuple_as_vector`/`compile_scalar_as_singleton_vector` untag via
+// the new `ensure_raw_int64_container` before pushing;
+// `compile_vector_elem_get` retags via `ensure_tagged` after reading),
+// restoring the *original* documented contract: `Vector(Int)` storage is
+// genuinely `Int64`-only, and a value that doesn't fit aborts loudly (now
+// with a container-specific message — `cantor_bigint_to_i64_container` — not
+// `ensure_raw_int64`'s "compiler invariant violated" wording, since this is
+// an expected language limitation, not a compiler bug). See
+// docs/int-soundness-plan.md's container note for the full account.
+//
+// `Set(Int)` is unaffected — it's genuinely BigInt-capable (not Int64-only),
+// via its own canonical/deduped representation, untouched by this: two
+// different boxed allocations holding the same value must still dedup to one
+// set entry (they're not `==` as raw pointers). Uses `CantorTaggedIntSet`
+// (runtime/bigint.rs), which orders/dedups by decoded magnitude
+// (`tagged_cmp`, shared with `cantor_bigint_cmp`) instead of raw i64 value,
+// instead of the plain `cantor_set_*_i64` family whenever `tagging_active()`
+// — see `compile_set_lit_value`/`compile_runtime_contains`/`compile_for_in`'s
+// runtime-set loop.
 #[test]
-fn vector_of_int_holding_a_boxed_element_reads_back_correctly() {
+fn vector_of_int_element_outside_i64_range_aborts_loudly() {
+    // `big() = 4611686018427387904 * 2` is 9223372036854775808 — one past
+    // `i64::MAX` — so pushing it into an `Int*` aborts rather than silently
+    // corrupting/truncating it, per the restored "containers are Int64-only"
+    // contract above.
     let out = run_subcommand("vector_int_bigint_element.cantor");
-    assert_eq!(
+    assert_ne!(
         out.code, 0,
-        "expected exit 0:\n{}\n{}",
+        "expected a nonzero exit (loud abort):\n{}\n{}",
         out.stdout, out.stderr
     );
     assert!(
-        out.stdout.contains("main() = 9223372036854775808"),
-        "expected the boxed element to read back exactly:\n{}",
-        out.stdout
+        out.stderr.contains("Int64-only"),
+        "expected the container-specific abort message, not a generic/compiler-bug one:\n{}",
+        out.stderr
     );
 }
 

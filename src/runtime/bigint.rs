@@ -127,6 +127,33 @@ pub extern "C" fn cantor_bigint_to_i64(word: i64) -> i64 {
     }
 }
 
+/// Same decode as [`cantor_bigint_to_i64`], but for the `Vector(Int)`/
+/// `Set(Int)` storage boundary (int-soundness-plan.md's "deliberately stayed
+/// raw" container note) rather than a solver-proved call boundary — hitting
+/// the failure case here is a legitimate, expected language limitation (a
+/// genuinely-unbounded `Int` value pushed into a container that is Int64-only
+/// by design), never a compiler bug, so it gets its own message rather than
+/// `cantor_bigint_to_i64`'s "compiler invariant violated" wording.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_bigint_to_i64_container(word: i64) -> i64 {
+    if word & 1 == 0 {
+        word >> 1
+    } else {
+        let ptr = (word & !1) as *const CantorBigInt;
+        match i64::try_from(unsafe { &(*ptr).0 }) {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!(
+                    "cantor: a Vector(Int)/Set(Int) element is outside the Int64 range — \
+                     containers of Int are Int64-only by design (see \
+                     docs/int-soundness-plan.md), not arbitrary-precision"
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_bigint_add(a: i64, b: i64) -> i64 {
     if let Some((x, y)) = both_small(a, b) {

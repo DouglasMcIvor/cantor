@@ -12,10 +12,28 @@ use crate::{
 
 use super::CheckResult;
 use super::NameDefs;
-use super::encode::{EncodeCtx, Env, encode_expr, integer_value, proj_from_tuple, tuple_arity};
+use super::encode::{
+    EncodeCtx, Env, coerce_to_sequence, encode_expr, integer_value, proj_from_tuple, tuple_arity,
+};
 use super::loops::{LoopCtx, check_for_inductive_step, check_inductive_step};
 use super::membership::{Membership, SolverPreds, membership_constraint};
 use super::obligations::BuiltinObligation;
+use super::sort::set_sort;
+
+/// The full `Seq(elem)` sort for a `let`/`mut` binding's declared `X*`
+/// constraint, used by `coerce_to_sequence` to convert an array-literal
+/// (tuple-sorted) RHS into a real `Seq` term — including, for a nested vector
+/// like `Nat**`, recursively coercing each element. Returns `None` when the
+/// constraint's sort can't be determined (propagates to `coerce_to_sequence`'s
+/// integer fallback for the `[]` case).
+fn declared_vector_seq_sort<'tm>(
+    tm: &'tm TermManager,
+    constraint: &SemExpr,
+    name_defs: &NameDefs,
+    distinct_preds: &SolverPreds<'tm>,
+) -> Option<Sort<'tm>> {
+    set_sort(tm, constraint, distinct_preds, name_defs).filter(|s| s.is_sequence())
+}
 
 // ── Loop predicate ────────────────────────────────────────────────────────────
 
@@ -148,32 +166,27 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::Let {
                 name,
                 constraint,
-                value: _,
-                ..
-            } if matches!(constraint.kind_of, ValKind::Vector(_)) => {
-                // Immutable runtime vector (X*): opaque integer (Arrow array pointer).
-                // Vector literals can't be represented in the QF sequence theory
-                // without knowing the exact element values, so we skip value encoding
-                // and return Unknown for the function's body check — the JIT handles
-                // correctness at runtime.
-                let fresh_name = format!("{}_{}", name.0, ctx.ssa_counter);
-                *ctx.ssa_counter += 1;
-                let fresh = ctx
-                    .encode
-                    .tm
-                    .mk_const(ctx.encode.tm.integer_sort(), &fresh_name);
-                ctx.immutable_names.insert(name.clone());
-                env.insert(name.clone(), fresh);
-            }
-
-            SemStmt::Let {
-                name,
-                constraint,
                 value,
                 ..
             } => {
                 let val = encode_expr(value, env, &mut ctx.encode, top_guard.clone(), None)
                     .map_err(CheckResult::Unknown)?;
+                // Local `X*` bindings: an array-literal RHS encodes as a tuple —
+                // coerce to a genuine `Seq` term so `++`/`len`/indexing/reassignment
+                // all see a real sequence-sorted value, matching how X*-kind
+                // function parameters are already encoded.
+                let val = if matches!(constraint.kind_of, ValKind::Vector(_)) {
+                    let seq_sort = declared_vector_seq_sort(
+                        ctx.encode.tm,
+                        constraint,
+                        ctx.encode.name_defs,
+                        ctx.encode.distinct_preds,
+                    );
+                    coerce_to_sequence(ctx.encode.tm, val, seq_sort)
+                        .map_err(CheckResult::Unknown)?
+                } else {
+                    val
+                };
                 let ssa_name = format!("{}_{}", name.0, ctx.ssa_counter);
                 *ctx.ssa_counter += 1;
                 // The fresh SSA constant must carry the value's own sort —
@@ -228,28 +241,24 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::MutLet {
                 name,
                 constraint,
-                value: _,
-                ..
-            } if matches!(constraint.kind_of, ValKind::Vector(_)) => {
-                // Mutable runtime vector (X*): opaque integer (Arrow array pointer).
-                let fresh_name = format!("{}_{}", name.0, ctx.ssa_counter);
-                *ctx.ssa_counter += 1;
-                let fresh = ctx
-                    .encode
-                    .tm
-                    .mk_const(ctx.encode.tm.integer_sort(), &fresh_name);
-                ctx.constraint_env.insert(name.clone(), constraint.clone());
-                env.insert(name.clone(), fresh);
-            }
-
-            SemStmt::MutLet {
-                name,
-                constraint,
                 value,
                 ..
             } => {
                 let val = encode_expr(value, env, &mut ctx.encode, top_guard.clone(), None)
                     .map_err(CheckResult::Unknown)?;
+                // Same array-literal-to-sequence coercion as the `Let` case above.
+                let val = if matches!(constraint.kind_of, ValKind::Vector(_)) {
+                    let seq_sort = declared_vector_seq_sort(
+                        ctx.encode.tm,
+                        constraint,
+                        ctx.encode.name_defs,
+                        ctx.encode.distinct_preds,
+                    );
+                    coerce_to_sequence(ctx.encode.tm, val, seq_sort)
+                        .map_err(CheckResult::Unknown)?
+                } else {
+                    val
+                };
                 let ssa_name = format!("{}_{}", name.0, ctx.ssa_counter);
                 *ctx.ssa_counter += 1;
                 // The fresh SSA constant must carry the value's own sort —
@@ -566,6 +575,23 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::Assign { name, value, .. } => {
                 let val = encode_expr(value, env, &mut ctx.encode, top_guard.clone(), None)
                     .map_err(CheckResult::Unknown)?;
+                // Same array-literal-to-sequence coercion as `MutLet` — a bare
+                // `xs := [1, 2, 3]` reassignment encodes as a tuple otherwise,
+                // breaking the "X*-kind bindings are always Seq-sorted" invariant
+                // that `++`/`len`/indexing/further `:=` depend on.
+                let val = match ctx.constraint_env.get(name) {
+                    Some(constraint) if matches!(constraint.kind_of, ValKind::Vector(_)) => {
+                        let seq_sort = declared_vector_seq_sort(
+                            ctx.encode.tm,
+                            constraint,
+                            ctx.encode.name_defs,
+                            ctx.encode.distinct_preds,
+                        );
+                        coerce_to_sequence(ctx.encode.tm, val, seq_sort)
+                            .map_err(CheckResult::Unknown)?
+                    }
+                    _ => val,
+                };
                 let ssa_name = format!("{}_{}", name.0, ctx.ssa_counter);
                 *ctx.ssa_counter += 1;
                 // The fresh SSA constant must carry the value's own sort —

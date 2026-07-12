@@ -817,6 +817,36 @@ sequence theory guarantees `len ≥ 0` intrinsically; no explicit assertion is n
 to prove `len(xs) ∈ Nat`.  `len` is only valid on Kleene-star (sequence) values;
 applying it to any other value is a compile-time error.
 
+*Local `let`/`mut` bindings* (fixed 2026-07-12): a block-body binding declared
+`X*` (e.g. `xs : Nat* = [1, 2]`) now gets the same real `Seq`-sort encoding as
+an `X*`-kind function *parameter*, reusing `++`'s existing tuple→sequence
+coercion (`coerce_to_sequence`) at the `let`/`mut`/`:=` binding sites — an
+array-literal RHS is coerced, recursively for a nested vector (`Nat**` etc.,
+each element re-coerced too), and the empty-literal `[]` case uses the
+binding's declared element sort rather than guessing `Int`. Previously such
+bindings were opaque, unconstrained integers (a heap-pointer placeholder,
+same idea as a runtime `Set`), so any further `++`/`len`/indexing/
+reassignment came back `Unknown` and the declared-range obligation was never
+actually checked at the binding site — this blocked `cantor run` outright for
+any function using this (very natural) pattern, including a self-referential
+loop like `while … { out := out ++ more }`.
+
+**Known limitation, not fixed by the above**: proving a Kleene-star
+membership obligation (the `∀i. nth(t,i) ∈ X` formula above) for a
+*range-constrained* element kind (`Nat*`, `Int*`, …) combined with loop
+induction over a self-referentially-growing sequence (`out := out ++ …`
+inside a `while` loop) can make cvc5 hang indefinitely — confirmed past 70s,
+well beyond the CLI's own default 60s `--timeout`, the same class of issue as
+"cvc5 doesn't honor tlimit for some quantifier shapes" noted elsewhere in this
+doc. Not a soundness gap (it never returns a wrong answer, just doesn't
+return), and not new — vector-let opacity simply made the query shape
+unreachable before. An *unconstrained* element kind (`Char*`, `Bool*` — the
+Kleene-star membership obligation is trivially `Unconstrained`, no quantifier
+generated at all) is unaffected and provably fast; self-referential `++` in a
+loop is only currently practical for those. TODO: revisit the
+Kleene-star-membership/loop-induction interaction for range-constrained
+element kinds.
+
 *Combinations*:
 - **Products containing `X*`** (e.g. `Nat* * Int`): `set_sort` recursively builds a
   `mk_tuple_sort([Seq Int, Int])`.  Membership projects with `ApplySelector`

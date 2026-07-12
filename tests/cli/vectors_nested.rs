@@ -31,29 +31,76 @@ fn vectors_nested_pure_fns_proved() {
 
 #[test]
 fn vectors_nested_run_outer_len() {
-    // vectors_nested.cantor also defines concat_nested, which is Unknown
-    // (early-return solver limitation, unrelated to outer_len) — the
-    // ConstrainedTree gate is whole-file, so `cantor run` refuses even
-    // though `main` itself never calls concat_nested.
+    // `Nat**` local-vector-let bindings (block_nested, concat_nested) are now
+    // real-sequence-encoded and correctly proved (previously opaque-integer
+    // Unknown). The whole-file gate still refuses `cantor run` here, but now
+    // for a different, pre-existing, unrelated reason: inner_len/get_elem
+    // index a fixed position into an unconstrained `Nat**`/`Nat*` parameter
+    // with no minimum-length guarantee, a genuine known gap in these
+    // fixtures' signatures (see `vectors_nested_pure_fns_proved`), which the
+    // solver correctly reports as a Counterexample, not Unknown.
     let out = run_subcommand("vectors_nested.cantor");
-    assert_run_refused_due_to_unknown(&out);
+    assert_run_refused(&out);
+    assert!(
+        !out.stdout.contains("  unknown  "),
+        "expected no `unknown` line (only the known inner_len/get_elem \
+         counterexamples):\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("counterexample  inner_len"),
+        "expected inner_len's known counterexample:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("counterexample  get_elem"),
+        "expected get_elem's known counterexample:\n{}",
+        out.stdout
+    );
 }
 
 #[test]
 fn vectors_nested_deep_index_and_concat() {
-    // concat_len (early-return) is Unknown; the whole-file ConstrainedTree
-    // gate means `cantor run` now refuses regardless of get_deep's own proof.
+    // `Nat**` local-vector-let bindings are now real-sequence-encoded: both
+    // get_deep (nested `xss[i][j]` indexing) and concat_len (`++`) are
+    // proved, and `cantor run` actually executes main() = get_deep() = 50
+    // (xss[1][2] on [[10,20],[30,40,50]]) — previously Unknown/refused.
     let out = run_subcommand("vectors_nested_index.cantor");
-    assert_run_refused_due_to_unknown(&out);
+    assert_eq!(
+        out.code, 0,
+        "run should exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 50"),
+        "expected 'main() = 50':\n{}",
+        out.stdout
+    );
 }
 
 // ── Triple-nested vectors (Nat***) ───────────────────────────────────────────
 
 #[test]
 fn vectors_triple_nested_run_deep_index() {
-    // Same early-return Unknown pattern as the other vectors_* fixtures.
+    // `Nat***` local-vector-let bindings are now real-sequence-encoded and
+    // correctly proved (get_deep, concat_triple). The whole-file gate still
+    // refuses `cantor run`, but now for a different, pre-existing, unrelated
+    // reason: middle_len indexes a fixed position into an unconstrained
+    // `Nat***` parameter with no minimum-length guarantee (same known gap as
+    // vectors_nested.cantor's inner_len/get_elem).
     let out = run_subcommand("vectors_triple_nested.cantor");
-    assert_run_refused_due_to_unknown(&out);
+    assert_run_refused(&out);
+    assert!(
+        !out.stdout.contains("  unknown  "),
+        "expected no `unknown` line (only the known middle_len \
+         counterexample):\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("counterexample  middle_len"),
+        "expected middle_len's known counterexample:\n{}",
+        out.stdout
+    );
 }
 
 // ── Struct vectors ((A * B)*) ────────────────────────────────────────────────
@@ -93,10 +140,21 @@ fn vectors_struct_pure_fns_proved() {
 
 #[test]
 fn vectors_struct_run_outer_len() {
-    // vectors_struct.cantor also defines concat_struct, which is Unknown
-    // (early-return solver limitation) — whole-file gate refuses the run.
+    // `(Nat * Nat)*` local-vector-let bindings (block_struct_len,
+    // block_struct_index, concat_struct) are now real-sequence-encoded and
+    // correctly proved (previously opaque-integer Unknown) — `cantor run`
+    // now actually executes main() = pair_vec_len(make_pairs()) = 3.
     let out = run_subcommand("vectors_struct.cantor");
-    assert_run_refused_due_to_unknown(&out);
+    assert_eq!(
+        out.code, 0,
+        "run should exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 3"),
+        "expected 'main() = 3':\n{}",
+        out.stdout
+    );
 }
 
 #[test]
@@ -124,13 +182,22 @@ fn vectors_struct_literal_index_proj() {
 
 #[test]
 fn vectors_struct_block_index_and_concat() {
-    // Same fixture/reason as vectors_struct_run_outer_len — no counterexamples,
-    // but concat_struct's Unknown result still refuses the whole-file run.
+    // Same fixture as vectors_struct_run_outer_len — everything proves and
+    // runs cleanly now, no counterexamples and no unknowns.
     let out = run_subcommand("vectors_struct.cantor");
-    assert_run_refused_due_to_unknown(&out);
+    assert_eq!(
+        out.code, 0,
+        "run should exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
     assert!(
         !out.stdout.contains("  counterexample  "),
         "unexpected counterexample:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  unknown  "),
+        "unexpected unknown:\n{}",
         out.stdout
     );
 }
@@ -140,16 +207,13 @@ fn vectors_struct_block_index_and_concat() {
 #[test]
 fn vectors_extended_no_counterexamples() {
     // Block-body functions using `return` on `let`-bound vector locals
-    // (block_coerce_len, concat_lit, bool_concat_len) are correctly Unknown —
-    // the solver can't yet reason about len()/++ on an opaque runtime vector
-    // binding, a separate, known gap from `return` itself.
+    // (block_coerce_len, concat_lit, bool_concat_len) are now real-sequence-
+    // encoded and correctly proved (previously opaque-integer Unknown).
     //
     // get_second is a genuine, expected exception: it indexes a fixed
     // position into an unconstrained `Nat*` parameter with no minimum-length
-    // guarantee, which the solver now correctly reports as a Counterexample
-    // now that `return` is checked at all (previously masked behind the
-    // blanket "early return unsupported" Unknown). This is deliberately left
-    // as-is rather than tightening the fixture's signature.
+    // guarantee, which the solver correctly reports as a Counterexample —
+    // deliberately left as-is rather than tightening the fixture's signature.
     let out = run_file("vectors_extended.cantor");
     assert!(
         out.stdout.contains("counterexample  get_second"),
@@ -169,11 +233,20 @@ fn vectors_extended_no_counterexamples() {
 
 #[test]
 fn vectors_extended_concat_coerce_block_len() {
-    // concat_lit uses an early `return` — Unknown (solver limitation), so
-    // the whole-file ConstrainedTree gate refuses `cantor run`, even though
-    // main() itself (which calls concat_lit) would compute the right answer.
+    // concat_lit's local `Nat*` `let`s (xs, ys, zs) are now real-sequence-
+    // encoded and correctly proved — `cantor run` executes main() =
+    // concat_lit() = len([1,2] ++ [3,4]) = 4.
     let out = run_subcommand("vectors_extended_concat.cantor");
-    assert_run_refused_due_to_unknown(&out);
+    assert_eq!(
+        out.code, 0,
+        "run should exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 4"),
+        "expected 'main() = 4':\n{}",
+        out.stdout
+    );
 }
 
 #[test]
@@ -194,8 +267,18 @@ fn vectors_extended_index_elem() {
 
 #[test]
 fn vectors_extended_bool_concat_len() {
-    // bool_concat_len uses an early `return` — Unknown (solver limitation),
-    // so `cantor run` refuses even though main() would compute the right answer.
+    // bool_concat_len's local `Bool*` `let`s are now real-sequence-encoded
+    // and correctly proved — `cantor run` executes main() = bool_concat_len()
+    // = len([true,false] ++ [false,true,true]) = 5.
     let out = run_subcommand("vectors_extended_bool_concat.cantor");
-    assert_run_refused_due_to_unknown(&out);
+    assert_eq!(
+        out.code, 0,
+        "run should exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 5"),
+        "expected 'main() = 5':\n{}",
+        out.stdout
+    );
 }

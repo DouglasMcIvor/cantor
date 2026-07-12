@@ -857,25 +857,45 @@ at all, and a stray one would break the very `TaggedUnion`-arm matching
   its *real* declared Kind (`fn_param_kinds`) immediately before its call;
   each candidate's result is re-encoded to tagged before the `phi`.
 - **`Vector(Int)`/`Set(Int)`/runtime-`Set` `for`-loop storage — deliberately
-  stayed raw, decode-on-read/encode-on-write at the boundary; both fixed
-  2026-07-05 (post-review).** This was an explicit, documented scope line,
-  not an oversight: making container *elements* genuinely arbitrary-precision
-  needs a canonical (i.e. never-duplicated) tagged representation for `Set`
-  dedup/equality — two *different* boxed heap allocations holding the same
-  integer are not `==` as raw pointers, so `cantor_set_insert_i64`/
-  `cantor_set_contains_i64` would silently break set semantics the moment a
-  boxed value entered a set.
+  stayed raw, decode-on-read/encode-on-write at the boundary.** This was an
+  explicit, documented scope line, not an oversight: making container
+  *elements* genuinely arbitrary-precision needs a canonical (i.e.
+  never-duplicated) tagged representation for `Set` dedup/equality — two
+  *different* boxed heap allocations holding the same integer are not `==`
+  as raw pointers, so `cantor_set_insert_i64`/`cantor_set_contains_i64` would
+  silently break set semantics the moment a boxed value entered a set.
 
-  `Vector(Int)` has no such problem — it's an ordered sequence, no
-  dedup/equality involved — so a review found the raw decode/re-encode at
-  its four construction/read sites (`compile_tuple_as_vector`,
-  `compile_scalar_as_singleton_vector`, `compile_index`/`compile_proj`) was
-  pure unnecessary work: `Int64Array` storage is representation-agnostic
-  (it's just an i64 word either way), so a tagged (possibly boxed) element
-  round-trips through it correctly with zero runtime changes — exactly
-  like `Tuple`/`TaggedUnion` payload leaves already did, which never needed
-  this dance in the first place. Fixed by deleting the coercion calls at
-  those four sites.
+  A 2026-07-05 post-review "fix" deleted the raw decode/re-encode at
+  `Vector(Int)`'s four construction/read sites (`compile_tuple_as_vector`,
+  `compile_scalar_as_singleton_vector`, `compile_index`/`compile_proj`),
+  reasoning that `Int64Array` storage is representation-agnostic (just an
+  i64 word either way) so a tagged (possibly boxed) element round-trips
+  through it unchanged with zero runtime changes — exactly like
+  `Tuple`/`TaggedUnion` payload leaves, which never needed this dance.
+
+  **2026-07-12: that reasoning silently assumed push and read always happen
+  under the *same* function's tagging state, and reinstating the boundary
+  conversion (reverting the 2026-07-05 deletion) is the actual fix.** Found
+  while fixing an unrelated solver gap (local `X*`/`X**` `let`/`mut` bindings
+  were opaque integers, so `cantor run` could never actually *execute* a
+  local vector-literal binding at all). Once that opacity was removed,
+  `xss[i][j]` on a local `Nat**` literal started silently returning *half*
+  the correct value (or crashing on an odd value) under `cantor run`:
+  `current_bare_int_kind()` — whether a function's `Int` values are raw or
+  tagged — is decided per *function* (Step A promotion), independently for
+  whichever function builds the vector literal vs. whichever later reads an
+  element back; a value pushed while raw and read back while tagged (or vice
+  versa) is exactly the case "round-trips unchanged" doesn't handle.
+  Reinstated the boundary conversion: `compile_tuple_as_vector`/
+  `compile_scalar_as_singleton_vector` untag (`ensure_raw_int64_container`,
+  a copy of `ensure_raw_int64` with a container-specific, non-alarming abort
+  message — `cantor_bigint_to_i64_container`) before pushing;
+  `compile_vector_elem_get` retags (`ensure_tagged`) after reading. This
+  restores the *original* documented contract below: `Vector(Int)` storage
+  is genuinely `Int64`-only, and a value that doesn't fit aborts loudly
+  (this is an expected language limitation, not a compiler bug, unlike
+  `ensure_raw_int64`'s original call sites) rather than silently computing a
+  wrong answer.
 
   `Set(Int)` needed the canonical representation after all: a new
   `CantorTaggedIntSet` (`runtime/bigint.rs`) orders/dedups by *decoded*
@@ -938,9 +958,12 @@ at all, and a stray one would break the very `TaggedUnion`-arm matching
 
 **What's still open, deliberately deferred:** the emitted-IR assertion for
 a proved-`Int64` call eliding all promotion codegen; the both-small
-early-exit codegen optimization for `cantor_bigint_cmp` call sites; a
-clearer abort message for the `Set`/`Vector(Int)` "doesn't fit raw i64"
-boundary case.
+early-exit codegen optimization for `cantor_bigint_cmp` call sites. (A
+clearer abort message for the `Vector(Int)` "doesn't fit raw i64" boundary
+case was done 2026-07-12, alongside reinstating the boundary conversion
+itself — see the container-storage entry above; `Set(Int)`'s own path never
+hits this abort at all, it's genuinely BigInt-capable via
+`CantorTaggedIntSet`.)
 
 **`BigInt` as an ordinary named set — DONE (2026-07-05).** `require`/
 `assert x not in BigInt` now work, exactly as predicted above: no new

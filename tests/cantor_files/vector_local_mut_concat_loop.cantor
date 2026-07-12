@@ -1,0 +1,19 @@
+-- Local `mut Char*`/`Nat*` bindings, reassigned via self-referential `++`
+-- inside a `while` loop -- the exact pattern from the original bug report
+-- (a hand-written program hit "`++` requires vector (X*) operands" because
+-- local vector-typed `let`/`mut` bindings were opaque integers to the solver,
+-- so `cantor run` always refused with Unknown). Now real-sequence-encoded.
+
+repeat_greeting : Char* * Nat -> Nat
+repeat_greeting(text, n) {
+    mut i : Nat = n
+    mut out : Char* = text
+    while i > 0 {
+        out := out ++ text
+        i := i - 1
+    }
+    len(out)
+}
+
+main : -> Nat
+main() = repeat_greeting(['h', 'i'], 3)

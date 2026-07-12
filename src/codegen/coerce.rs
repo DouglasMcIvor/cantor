@@ -496,6 +496,46 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Same as [`Self::ensure_raw_int64`], for the `Vector(Int)`/`Set(Int)`
+    /// storage boundary rather than a solver-proved call boundary — those
+    /// containers are Int64-only by design (int-soundness-plan.md), so a
+    /// value that doesn't fit is an expected language limitation, not a
+    /// compiler bug. Calls `cantor_bigint_to_i64_container`, which carries
+    /// the corresponding (non-alarming) abort message.
+    pub(crate) fn ensure_raw_int64_container(
+        &self,
+        val: inkwell::values::IntValue<'ctx>,
+        kind: &Kind,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CompileError> {
+        if !self.tagging_active() {
+            return Ok(val);
+        }
+        match kind {
+            Kind::Int64 => Ok(val),
+            Kind::Int => {
+                let to_i64 = self
+                    .module
+                    .get_function("cantor_bigint_to_i64_container")
+                    .ok_or_else(|| {
+                        CompileError::ice("cantor_bigint_to_i64_container not declared")
+                    })?;
+                let call = self
+                    .builder
+                    .build_call(to_i64, &[val.into()], "untag_i64_container")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                call.try_as_basic_value()
+                    .left()
+                    .map(|v| v.into_int_value())
+                    .ok_or_else(|| {
+                        CompileError::ice("cantor_bigint_to_i64_container returned void")
+                    })
+            }
+            other => Err(CompileError::ice(format!(
+                "ensure_raw_int64_container: expected an Int/Int64 value, got {other:?}"
+            ))),
+        }
+    }
+
     /// Narrow a `TaggedUnion(arms)` value down to a plain scalar `expected`
     /// Kind by dropping the tag and reading the single i64 payload field.
     ///

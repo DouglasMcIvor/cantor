@@ -451,27 +451,55 @@ fn encode_unop<'tm>(
 /// If `term` is tuple-sorted (from an array literal like `[1, 2, 3]`),
 /// convert it by wrapping each element in `SeqUnit` and concatenating.
 /// Otherwise return an error: `++` only works on vector (X*) values.
-fn coerce_to_sequence<'tm>(tm: &'tm TermManager, term: Term<'tm>) -> Result<Term<'tm>, String> {
+///
+/// `target_seq_sort`: the full `Seq(elem)` sort this term is meant to have,
+/// when known from context (e.g. a `let`/`mut` binding's declared `X*`
+/// constraint). Used two ways: as the element sort for an empty-tuple (`[]`)
+/// term (which carries no sort information of its own), and — for a *nested*
+/// vector like `Nat**` — to recursively coerce each element (itself a tuple
+/// from an inner array literal like `[1, 2]`) into a real sequence too,
+/// rather than wrapping a still-tuple-sorted element straight in `SeqUnit`
+/// (which produces a `Seq` whose elements have mismatched sorts and aborts
+/// cvc5 with "expecting comparable terms in concat"). Falls back to integer
+/// element sort / no recursive coercion when `None` (the `++`-only call sites
+/// don't have a declared target sort to hand).
+pub(crate) fn coerce_to_sequence<'tm>(
+    tm: &'tm TermManager,
+    term: Term<'tm>,
+    target_seq_sort: Option<Sort<'tm>>,
+) -> Result<Term<'tm>, String> {
     if term.sort().is_sequence() {
         return Ok(term);
     }
     if term.sort().is_tuple() {
         let dt = term.sort().datatype();
         let n_elems = dt.constructor(0).num_selectors();
+        let elem_sort = target_seq_sort.map(|s| s.sequence_element_sort());
         if n_elems == 0 {
-            // Empty tuple [] → empty sequence.  Element sort must be inferred from
-            // context; we use integer as the fallback since `[]` only makes sense
-            // for a known element-sort vector — the solver will constrain further.
-            return Ok(tm.mk_empty_sequence(tm.integer_sort()));
+            // Empty tuple [] → empty sequence, in the caller-supplied element
+            // sort if known, else integer as a last-resort fallback.
+            return Ok(tm.mk_empty_sequence(elem_sort.unwrap_or_else(|| tm.integer_sort())));
         }
-        // Non-empty: fold SeqUnit(elem_i) with SeqConcat.
+        // Non-empty: fold SeqUnit(elem_i) with SeqConcat. Each element is
+        // recursively coerced first when the declared element sort is itself
+        // a sequence sort (nested vector) and the element is still tuple-sorted.
+        let coerce_elem = |field: Term<'tm>| -> Result<Term<'tm>, String> {
+            match &elem_sort {
+                Some(es) if es.is_sequence() && field.sort().is_tuple() => {
+                    coerce_to_sequence(tm, field, Some(es.clone()))
+                }
+                _ => Ok(field),
+            }
+        };
         let ctor = dt.constructor(0);
         let first_sel = ctor.selector(0);
         let first_elem = tm.mk_term(Kind::ApplySelector, &[first_sel.term(), term.clone()]);
+        let first_elem = coerce_elem(first_elem)?;
         let mut seq = tm.mk_term(Kind::SeqUnit, &[first_elem]);
         for i in 1..n_elems {
             let sel = ctor.selector(i);
             let elem = tm.mk_term(Kind::ApplySelector, &[sel.term(), term.clone()]);
+            let elem = coerce_elem(elem)?;
             let unit = tm.mk_term(Kind::SeqUnit, &[elem]);
             seq = tm.mk_term(Kind::SeqConcat, &[seq, unit]);
         }
@@ -573,8 +601,8 @@ fn encode_binop<'tm>(
     // `xs ++ ys` — vector concatenation.  Both operands must be sequence-sorted.
     // If either is a tuple (from an array literal), coerce it to a sequence first.
     if *op == BinOp::Concat {
-        let l_seq = coerce_to_sequence(ctx.tm, l.clone())?;
-        let r_seq = coerce_to_sequence(ctx.tm, r.clone())?;
+        let l_seq = coerce_to_sequence(ctx.tm, l.clone(), None)?;
+        let r_seq = coerce_to_sequence(ctx.tm, r.clone(), None)?;
         return Ok(ctx.tm.mk_term(Kind::SeqConcat, &[l_seq, r_seq]));
     }
 

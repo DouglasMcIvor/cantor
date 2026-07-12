@@ -72,6 +72,33 @@ fn vectors_runtime_run_returns_len_of_composed_vector() {
     );
 }
 
+// ── Vectors: local `mut` bindings reassigned via `++` inside a loop ─────────
+
+#[test]
+fn vector_local_mut_concat_loop_runs_and_computes_correct_length() {
+    // Regression test for the original bug report: `mut out : Char* = text;
+    // while ... { out := out ++ text; ... }` used to come back Unknown
+    // (local vector-typed `let`/`mut` bindings were opaque integers to the
+    // solver), which meant `cantor run` always refused to execute this
+    // pattern at all.
+    let out = run_subcommand("vector_local_mut_concat_loop.cantor");
+    assert_eq!(
+        out.code, 0,
+        "run should exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected all proved:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("main() = 8"),
+        "expected len(['h','i'] repeated 4 times) == 8:\n{}",
+        out.stdout
+    );
+}
+
 // ── Vectors: repeated products and array literals ─────────────────────────────
 
 #[test]

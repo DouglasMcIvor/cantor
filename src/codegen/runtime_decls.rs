@@ -214,6 +214,15 @@ impl<'ctx> Compiler<'ctx> {
             .add_function("cantor_bigint_from_i64", i64t.fn_type(i, false), None);
         self.module
             .add_function("cantor_bigint_to_i64", i64t.fn_type(i, false), None);
+        // `Vector(Int)`/`Set(Int)` storage boundary — same decode as
+        // `cantor_bigint_to_i64`, distinct abort message (see that
+        // function's doc comment): hitting the failure case here is an
+        // expected language limitation, not a compiler bug.
+        self.module.add_function(
+            "cantor_bigint_to_i64_container",
+            i64t.fn_type(i, false),
+            None,
+        );
         self.module
             .add_function("cantor_bigint_add", i64t.fn_type(ii, false), None);
         self.module

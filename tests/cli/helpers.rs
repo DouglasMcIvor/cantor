@@ -171,15 +171,3 @@ pub fn assert_run_refused(out: &Output) {
         out.stderr
     );
 }
-
-/// Assert that `cantor run` refused to execute because at least one signature
-/// was `Unknown` — the `ConstrainedTree` proof gate means this is no longer
-/// the "warning: ... running anyway" case it used to be.
-pub fn assert_run_refused_due_to_unknown(out: &Output) {
-    assert_run_refused(out);
-    assert!(
-        out.stdout.contains("  unknown  "),
-        "expected an `unknown` line in the check report:\n{}",
-        out.stdout
-    );
-}

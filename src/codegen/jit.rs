@@ -240,6 +240,10 @@ impl<'ctx> Compiler<'ctx> {
                     runtime::cantor_bigint_to_i64 as *const () as usize,
                 ),
                 (
+                    "cantor_bigint_to_i64_container",
+                    runtime::cantor_bigint_to_i64_container as *const () as usize,
+                ),
+                (
                     "cantor_bigint_add",
                     runtime::cantor_bigint_add as *const () as usize,
                 ),

@@ -441,3 +441,144 @@ f() = -1
 ",
     );
 }
+
+// ── X*-kind local `let`/`mut` bindings (real Seq encoding, not opaque) ───────
+//
+// Local `let`/`mut` bindings whose declared kind is `X*` (as opposed to `X*3`
+// fixed-arity tuples, already covered above) used to be encoded as an opaque,
+// unconstrained integer — any further `++`/`len`/indexing/reassignment came
+// back Unknown, and the declared-range obligation was never actually checked
+// at the binding site. Fixed to reuse the same real-`Seq`-sort encoding
+// function parameters already had.
+
+// `len()` on a `let`-bound `Nat*` array literal.
+#[test]
+fn local_let_vector_len_proved() {
+    proved(
+        "
+f : -> Nat
+f() {
+    xs : Nat* = [1, 2, 3]
+    len(xs)
+}
+",
+    );
+}
+
+// `++` between two `let`-bound `Nat*` array literals, then `len`.
+#[test]
+fn local_let_vector_concat_len_proved() {
+    proved(
+        "
+f : -> Nat
+f() {
+    xs : Nat* = [1, 2]
+    ys : Nat* = [3, 4]
+    zs : Nat* = xs ++ ys
+    len(zs)
+}
+",
+    );
+}
+
+// `mut` reassignment via self-referential `++` (`out := out ++ ys`).
+#[test]
+fn local_mut_vector_self_concat_proved() {
+    proved(
+        "
+f : -> Nat
+f() {
+    mut out : Nat* = [1, 2]
+    out := out ++ [3, 4, 5]
+    len(out)
+}
+",
+    );
+}
+
+// Same self-referential `++`, but inside a `while` loop, with `Char*` (an
+// element kind whose membership obligation is `Unconstrained` — any `Char`
+// is valid) — this is the original bug report's exact pattern and shape
+// (loop induction must pick up the real `Seq` sort from the binding, not an
+// opaque integer), and it proves quickly.
+#[test]
+fn local_mut_vector_self_concat_in_loop_proved() {
+    proved(
+        "
+f : -> Nat
+f() {
+    mut i : Nat = 3
+    mut out : Char* = ['a', 'b']
+    while i > 0 {
+        out := out ++ ['c']
+        i := i - 1
+    }
+    len(out)
+}
+",
+    );
+}
+
+// Same shape, but with `Nat*` (a *range-constrained* element kind — the
+// Kleene-star membership obligation is a real `∀i. nth(t,i) ≥ 0`, not
+// `Unconstrained`) — currently hangs cvc5 indefinitely (confirmed past 70s,
+// well beyond the CLI's own 60s default `--timeout`, matching the
+// project's known "cvc5 doesn't honor tlimit for some quantifier shapes"
+// class of issue — see `tests/cli/helpers.rs`'s module doc). Not a
+// soundness gap (it would never return a wrong answer) and not something
+// this change introduced — vector-let opacity simply made this query shape
+// unreachable before. TODO: revisit the Kleene-star-membership /
+// loop-induction interaction for range-constrained element kinds; until
+// then, self-referential `++` in a loop is only practical for element kinds
+// with no scalar constraint (`Char*`/`Bool*`, see the test above).
+#[test]
+#[ignore = "cvc5 hangs indefinitely (confirmed past 70s) on the Kleene-star \
+            membership obligation for a range-constrained element kind \
+            (Nat*) combined with loop induction over a self-referential \
+            `++` — see the doc comment above"]
+fn local_mut_vector_self_concat_in_loop_range_constrained_hangs() {
+    proved(
+        "
+f : -> Nat
+f() {
+    mut i : Nat = 3
+    mut out : Nat* = [1, 2]
+    while i > 0 {
+        out := out ++ [9]
+        i := i - 1
+    }
+    len(out)
+}
+",
+    );
+}
+
+// Nested vector (`Nat**`) local `let` binding: indexing two levels deep.
+#[test]
+fn local_let_nested_vector_deep_index_proved() {
+    proved(
+        "
+f : -> Nat
+f() {
+    xss : Nat** = [[10, 20], [30, 40, 50]]
+    xss[1][2]
+}
+",
+    );
+}
+
+// The declared-range obligation is still genuinely checked at the binding
+// site (not vacuously true) — a `Nat*` local can't hold a negative element,
+// even though the function's own range (`Nat`, from `len`) never sees it.
+#[test]
+fn local_let_vector_range_violation_counterexample() {
+    counterexample(
+        "
+f : -> Nat
+f() {
+    xs : Nat* = [1, -2, 3]
+    len(xs)
+}
+",
+    );
+}

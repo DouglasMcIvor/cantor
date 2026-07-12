@@ -120,7 +120,31 @@ impl<'ctx> Compiler<'ctx> {
         idx_val: BasicValueEnum<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let get_fn = match ek {
-            Kind::Int => "cantor_vec_get_i64",
+            // `Vector(Int)` storage is always a raw (untagged) `Int64` word
+            // (see `compile_tuple_as_vector`'s push-side comment) — re-tag it
+            // to match the current function's tagging-active `Kind::Int`
+            // representation before returning, since the shared call/return
+            // path below assumes the raw result IS the element's final
+            // representation. A no-op when `!tagging_active()`.
+            Kind::Int => {
+                let fn_val = self
+                    .module
+                    .get_function("cantor_vec_get_i64")
+                    .ok_or_else(|| {
+                        CompileError::ice("runtime function `cantor_vec_get_i64` not declared")
+                    })?;
+                let base_i64 = base_val.into_int_value();
+                let idx_i64 = idx_val.into_int_value();
+                let result = self
+                    .builder
+                    .build_call(fn_val, &[base_i64.into(), idx_i64.into()], "vec_get")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                let result_i64 = result.try_as_basic_value().left().ok_or_else(|| {
+                    CompileError::ice("`cantor_vec_get_i64` returned void unexpectedly")
+                })?;
+                let tagged = self.ensure_tagged(result_i64.into_int_value(), &Kind::Int64)?;
+                return Ok((tagged.into(), Kind::Int));
+            }
             Kind::Bool => "cantor_vec_get_bool",
             // `Char*` reuses the `_i64` Arrow storage (`vec_builder_fns`),
             // but the element itself is an i32 register — truncate the i64
@@ -179,10 +203,9 @@ impl<'ctx> Compiler<'ctx> {
             .try_as_basic_value()
             .left()
             .ok_or_else(|| CompileError::ice(format!("`{get_fn}` returned void unexpectedly")))?;
-        // `Vector(Int)` storage is representation-agnostic i64 words (see
-        // `compile_tuple_as_vector`'s comment) — whatever representation an
-        // element was pushed in (tagged or raw) is exactly what comes back,
-        // no decode/re-encode needed.
+        // Reached only for `Bool` (never tagged) and `Vector(_)` (an opaque
+        // pointer, never tagged either) — both need no boundary conversion,
+        // unlike `Int`/`Char` above.
         Ok((result_val, ek.clone()))
     }
 
@@ -435,10 +458,31 @@ impl<'ctx> Compiler<'ctx> {
                     .build_int_z_extend(elem.into_int_value(), i64t, "vec_elem_ext")
                     .map_err(err)?
                     .into(),
-                // `Vector(Int)` storage is representation-agnostic i64 words
-                // — push whatever representation the element already has
-                // (tagged or raw), no decode needed.
-                _ => elem,
+                // `Vector(Int)` storage is always a raw (untagged) `Int64`
+                // word (docs/int-soundness-plan.md's Step 4b: containers stay
+                // Int64-only, deliberately not made arbitrary-precision) —
+                // but the element as compiled here may be a *tagged* `Kind::Int`
+                // word (small-int shifted, or a boxed BigInt pointer) whenever
+                // the enclosing function is tagging-active. Its current
+                // representation is `current_bare_int_kind()`, NOT `outer_ek`
+                // (a pre-codegen semantic Kind that never distinguishes
+                // raw/tagged) — untag from that before pushing. A genuine
+                // BigInt element aborts loudly (container-specific message,
+                // not `ensure_raw_int64`'s "compiler bug" wording — this is
+                // an expected language limitation) rather than silently
+                // storing (and later misreading) a truncated/mistagged word.
+                (Kind::Int, _) => self
+                    .ensure_raw_int64_container(
+                        elem.into_int_value(),
+                        &self.current_bare_int_kind(),
+                    )?
+                    .into(),
+                (other_elem_kind, other_outer_kind) => {
+                    return Err(CompileError::ice(format!(
+                        "compile_tuple_as_vector: no push rule for vector element kind \
+                         {other_elem_kind:?} from literal element kind {other_outer_kind:?}"
+                    )));
+                }
             };
             self.builder
                 .build_call(
@@ -801,9 +845,10 @@ impl<'ctx> Compiler<'ctx> {
             .left()
             .ok_or_else(|| CompileError::ice("singleton builder new returned void"))?;
 
-        // `Vector(Int)` storage is representation-agnostic i64 words (see
-        // the matching comment in `compile_tuple_as_vector`) — push `val` as
-        // whatever representation it already has.
+        // Same push-side untagging as `compile_tuple_as_vector` — `Vector(Int)`
+        // storage is always raw `Int64`, so a tagged `Kind::Int` value (per
+        // `current_bare_int_kind()`, not `val_kind`, which never distinguishes
+        // raw/tagged) needs converting down before it's pushed.
         let push_val: BasicValueEnum<'ctx> = if matches!(val_kind, Kind::Bool | Kind::Char) {
             self.builder
                 .build_int_z_extend(
@@ -812,6 +857,9 @@ impl<'ctx> Compiler<'ctx> {
                     "singleton_ext",
                 )
                 .map_err(err)?
+                .into()
+        } else if matches!(elem_kind, Kind::Int) {
+            self.ensure_raw_int64_container(val.into_int_value(), &self.current_bare_int_kind())?
                 .into()
         } else {
             val
