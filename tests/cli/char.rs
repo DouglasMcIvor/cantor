@@ -264,6 +264,87 @@ fn string_literal_indexing() {
     );
 }
 
+// ── Char literals in set-expression position (`{'a', 'b'}` as a domain) ────
+
+#[test]
+fn char_set_literal_as_domain_proved() {
+    let out = run_subcommand("char_set_lit_domain.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = a"),
+        "expected f('a') == 'a' under domain {{'a', 'b'}}:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn char_set_literal_domain_violation_is_a_counterexample() {
+    let out = run_file("char_set_lit_domain_violation.cantor");
+    assert_ne!(out.code, 0, "should refuse to run:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("counterexample  main"),
+        "expected a counterexample for main:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("not in its declared domain"),
+        "expected a domain-violation reason:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn char_set_literal_in_expression() {
+    let out = run_subcommand("char_set_lit_membership.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 1"),
+        "expected 'a' in {{'a', 'b'}} to be true:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn char_set_literal_in_difference_domain_proved() {
+    // Regression test for a completeness bug found during development: see
+    // the fixture's own comment for the full story.
+    let out = run_subcommand("char_set_lit_difference_domain.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = b"),
+        "expected f('b') == 'b' under domain Char - {{'a'}}:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn char_set_literal_in_difference_domain_violation_is_a_counterexample() {
+    let out = run_file("char_set_lit_difference_domain_violation.cantor");
+    assert_ne!(out.code, 0, "should refuse to run:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("counterexample  main"),
+        "expected a counterexample for main:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("not in its declared domain"),
+        "expected a domain-violation reason:\n{}",
+        out.stdout
+    );
+}
+
 #[test]
 fn string_literal_concat_of_two_bare_literals() {
     // Regression test: `++` on two bare Tuple literals with no already-

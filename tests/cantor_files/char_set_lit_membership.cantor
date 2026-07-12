@@ -1,0 +1,8 @@
+-- `x in {'a', 'b'}` — a genuine runtime `in` expression, not just a
+-- signature domain (which can be statically elided). Exercises
+-- codegen::membership::compile_membership's SetLit arm for Char elements.
+check : Char -> Bool
+check(x) = x in {'a', 'b'}
+
+main : -> Bool
+main() = check('a')

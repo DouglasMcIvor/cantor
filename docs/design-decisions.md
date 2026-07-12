@@ -1972,13 +1972,50 @@ construction above.
   genuine user function (`codepoint('a')`) was the first thing to actually
   exercise this path. Fixed by reusing `widen_scalar_to_i64` generically
   instead of the bespoke `Bool`-only zero-extend.
-- **Deliberately not supported: `Char` literals in set-expression
-  position** (e.g. `{'a', 'b'}` as a domain/range restriction). Unlike
-  `IntLit`/`BoolLit`, `kind::set_kind` rejects a bare `CharLit` there with
-  `Unsupported` — `solver::sort::set_sort`'s `SetLit` arm hardcodes
-  `tm.integer_sort()` for every domain-literal set today, which would
-  silently mis-sort a `Char`-valued one. Fixing that generically is future
-  work; value position (the actual literal syntax feature) doesn't need it.
+- **`Char` literals in set-expression position** (e.g. `{'a', 'b'}` as a
+  domain/range restriction) are supported. `kind::set_kind`'s `CharLit` arm
+  now returns `Kind::Char` like `IntLit`/`BoolLit`, and `solver::sort::
+  set_sort`'s `SetLit` arm derives its CVC5 sort from the elaborated element
+  Kind (`scalar_kind_sort`) instead of hardcoding `tm.integer_sort()` — a
+  homogeneous literal set of any scalar builtin Kind (`Int`, `Bool`, `Char`,
+  `Fail`, `Signed32`, `Unsigned32`) now gets its own natural sort; a
+  heterogeneous or structural one (`Tuple`/`TaggedUnion`/`Vector`/`Set`
+  elements) reports `Unknown` rather than guessing.
+  - `membership_constraint`'s `SetLit` arm was generalized the same way
+    (`literal_element_predicate`) — this had a latent soundness gap: for a
+    non-integer-sorted `t`, the old code returned `Constrained(false)`
+    unconditionally, which — because domain-membership results get
+    `solver.assert_formula`'d directly as a hypothesis (`build_param_terms`)
+    — would have made *any* claim about a function with such a domain
+    vacuously "provable". It was unreachable in practice only because
+    `kind::set_kind` blocked every non-`Int`/`Bool` literal upstream; fixing
+    that upstream restriction required fixing this too.
+  - Comparing a `Char` literal element against `t` uses `from_Char(t) == n`,
+    not `t == mk_Char(n)`: this function has no `&mut Solver` to assert the
+    `from(mk_Char(n)) == n` round-trip fact `solver::encode`'s own `CharLit`
+    arm gives every *value-position* literal, so `t == mk_Char(n)` would be
+    sound but incomplete — cvc5 has no reason to know `mk_Char(97) !=
+    mk_Char(98)` unless both literals' round-trips happen to already be
+    asserted elsewhere in the same proof. This was caught empirically: `f :
+    Char - {'a'} -> Char` called with `'b'` was spuriously reported as a
+    counterexample under the first (`mk_Char`-based) version. Comparing the
+    *decoded* codepoint via the already-deterministic `from` function needs
+    no injectivity assumption about `mk_Char` between unrelated literals at
+    all.
+  - `codegen::membership::compile_membership`'s `SetLit` arm (the runtime
+    `x in {...}` check, always reachable regardless of whether the solver
+    statically proved everything — unlike a signature's own domain check,
+    which can be elided) gained a matching `Char`/`Bool` arm: both are raw,
+    untagged sub-i64 registers (i32 codepoint / i1) at the LLVM level, so
+    it widens to i64 and reuses `build_int_set_membership` with `tagged =
+    false`.
+  - Still out of scope: a `Char`-valued literal in *value* position (e.g.
+    `mut s : Set(Char) = {'a', 'b'}`, a genuine runtime `Set(_)` value) is
+    unaffected by this — `kind::is_scalar_word_kind` still excludes `Char`,
+    since runtime sets need real structural equality/ordering to dedup and
+    sort by value, which nothing implements yet. That's a separate,
+    larger feature; only the *set-expression-position* (domain/range/`in`)
+    restriction is lifted here.
 
 ### Narrowing back to IntN
 

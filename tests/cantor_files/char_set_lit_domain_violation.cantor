@@ -1,0 +1,7 @@
+-- 'c' is not a member of the domain literal `{'a', 'b'}` — a real
+-- counterexample, not a silent pass.
+f : {'a', 'b'} -> Char
+f(x) = x
+
+main : -> Char
+main() = f('c')

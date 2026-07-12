@@ -14,10 +14,45 @@ use crate::{
     ast::BinOp,
     kind::Kind as ValKind,
     semantics::tree::{SemExpr, SemExprKind, flatten_any_union, flatten_cartesian_product},
+    span::Symbol,
 };
 
 use super::NameDefs;
 use super::membership::{DistinctPreds, SolverPreds};
+
+/// Map a scalar element `ValKind` to its CVC5 sort — used by `set_sort`'s
+/// `SetLit` arm so a domain literal's sort follows its elaborated element
+/// Kind (`kind::set_kind`'s `SetLit` arm) instead of assuming integer.
+///
+/// Returns `None` for structural/heterogeneous kinds (`Tuple`, `TaggedUnion`,
+/// `Vector`, `Set`) — a mixed-kind or structural set literal has no single
+/// natural sort here; callers propagate `None` to `Unknown` rather than
+/// guessing, same as any other not-yet-representable sort in this module.
+fn scalar_kind_sort<'tm>(
+    tm: &'tm TermManager,
+    kind: &ValKind,
+    distinct_preds: &SolverPreds<'tm>,
+) -> Option<Sort<'tm>> {
+    Some(match kind {
+        ValKind::Bool => tm.boolean_sort(),
+        ValKind::Int | ValKind::Int64 => tm.integer_sort(),
+        ValKind::Char => distinct_preds.get(&Symbol::new("Char"))?.sort.clone(),
+        ValKind::Fail => distinct_preds.get(&Symbol::new("Fail"))?.sort.clone(),
+        ValKind::Signed32 => distinct_preds
+            .wrapping
+            .get(&Symbol::new("Signed32"))?
+            .d_sort
+            .clone(),
+        ValKind::Unsigned32 => distinct_preds
+            .wrapping
+            .get(&Symbol::new("Unsigned32"))?
+            .d_sort
+            .clone(),
+        ValKind::Tuple(_) | ValKind::TaggedUnion(_) | ValKind::Vector(_) | ValKind::Set(_) => {
+            return None;
+        }
+    })
+}
 
 // ── Cross-kind union datatype naming ─────────────────────────────────────────
 
@@ -252,8 +287,14 @@ pub(crate) fn set_sort<'tm>(
                 tm.integer_sort()
             }
         }
-        // Set literals {0}, {1, 2, 3} — elements are integers.
-        SemExprKind::SetLit(_) => tm.integer_sort(),
+        // Set literals {0}, {1, 2, 3}, {'a', 'b'} — the sort follows the
+        // elaborated element Kind (`kind::set_kind`'s `SetLit` arm), not a
+        // hardcoded integer, so e.g. a homogeneous Char literal set gets
+        // Char's own uninterpreted sort. Heterogeneous/structural element
+        // kinds propagate `None` (Unknown) — not yet supported here.
+        SemExprKind::SetLit(_) => {
+            return scalar_kind_sort(tm, &set_expr.kind_of, distinct_preds);
+        }
         // Comprehensions {x for x in S} — elements are integers.
         SemExprKind::Comprehension { .. } => tm.integer_sort(),
         // Built-in set constructors Set(Int), Set(Bool) — variable holds an i64 pointer.

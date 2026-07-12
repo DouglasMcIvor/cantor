@@ -1,0 +1,7 @@
+-- Companion to char_set_lit_difference_domain.cantor: 'a' IS excluded from
+-- `Char - {'a'}`, so this call is a genuine counterexample.
+f : Char - {'a'} -> Char
+f(x) = x
+
+main : -> Char
+main() = f('a')

@@ -99,6 +99,44 @@ impl<'ctx> Compiler<'ctx> {
                 }
             },
 
+            // Char/Bool set literals: both are raw, untagged sub-i64 registers
+            // (i32 codepoint / i1 respectively — `codegen::expr`'s `CharLit`/
+            // `BoolLit` arms) — widen to i64 first, exactly like the `Bool`
+            // named-set arm above, then compare directly (`tagged` is an
+            // `Int`-only concept, never applies here).
+            //
+            // Mixed-kind set literals never reach here: `kind::set_kind`'s
+            // `SetLit` arm would give them a `TaggedUnion` Kind, which
+            // `solver::sort::scalar_kind_sort` reports as `Unknown` rather
+            // than assigning a sort — so any signature using one is rejected
+            // before codegen runs. Detecting the (uniform) element kind from
+            // the first element is therefore enough.
+            SemExprKind::SetLit(elements)
+                if matches!(
+                    elements.first().map(|e| &e.kind),
+                    Some(SemExprKind::CharLit(_) | SemExprKind::BoolLit(_))
+                ) =>
+            {
+                let val_i64 = if val.get_type().get_bit_width() != 64 {
+                    b.build_int_z_extend(val, i64, "scalar_to_i64_mem")
+                        .map_err(|e| CompileError::ice(e.to_string()))?
+                } else {
+                    val
+                };
+                let vals: Vec<i64> = elements
+                    .iter()
+                    .map(|elem| match &elem.kind {
+                        SemExprKind::CharLit(c) => Ok(*c as u32 as i64),
+                        SemExprKind::BoolLit(bv) => Ok(*bv as i64),
+                        _ => Err(CompileError::ice(
+                            "mixed-kind set literal reached codegen — should have been \
+                             rejected earlier as an unsupported domain sort",
+                        )),
+                    })
+                    .collect::<Result<_, _>>()?;
+                self.build_int_set_membership(val_i64, &vals, false)
+            }
+
             SemExprKind::SetLit(elements) => {
                 let vals: Vec<i64> = elements
                     .iter()

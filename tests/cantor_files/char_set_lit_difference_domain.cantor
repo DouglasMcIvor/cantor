@@ -1,0 +1,15 @@
+-- Regression test: `Char - {'a'}` as a domain, called with 'b' (a value
+-- genuinely outside the excluded literal). This caught a real completeness
+-- bug during development: comparing `t == mk_Char(n)` directly (with no
+-- `from(mk_Char(n)) == n` round-trip fact for the *domain literal's own*
+-- 'a', since `membership_constraint` has no solver access to assert one)
+-- left cvc5 unable to prove `mk_Char(97) != mk_Char(98)`, so a
+-- perfectly valid call to `f('b')` was spuriously reported as a
+-- counterexample. Fixed by comparing `from(t) == n` instead, which needs no
+-- injectivity fact about `mk_Char` at all (see membership.rs's
+-- `literal_element_predicate`).
+f : Char - {'a'} -> Char
+f(x) = x
+
+main : -> Char
+main() = f('b')

@@ -144,6 +144,66 @@ pub(super) fn eval_const_int(expr: &SemExpr) -> Option<i64> {
     }
 }
 
+/// Build the predicate `t == elem` for one literal `SetLit` element, so its
+/// membership arm can compare `t` against each element at the element's own
+/// natural sort instead of assuming integer. Returns `None` for anything
+/// that isn't one of these literal shapes — the caller reports `Unsupported`
+/// rather than silently treating an un-encodable element as "never a member"
+/// (which would be unsound wherever the resulting `Membership::Constrained`
+/// is asserted as a domain hypothesis — see `build_param_terms`). A literal
+/// whose *natural* sort doesn't match `t`'s own sort can never equal `t` —
+/// that's `Some(false)`, not `None` (`None` means "don't know how to
+/// encode this element at all", not "definitely not equal").
+fn literal_element_predicate<'tm>(
+    tm: &'tm TermManager,
+    t: Term<'tm>,
+    e: &SemExpr,
+    distinct_preds: &SolverPreds<'tm>,
+) -> Option<Term<'tm>> {
+    if let Some(n) = eval_const_int(e) {
+        return Some(if t.sort().is_integer() {
+            tm.mk_term(Kind::Equal, &[t, tm.mk_integer(n)])
+        } else {
+            tm.mk_boolean(false)
+        });
+    }
+    Some(match &e.kind {
+        SemExprKind::BoolLit(b) => {
+            if t.sort().is_boolean() {
+                tm.mk_term(Kind::Equal, &[t, tm.mk_boolean(*b)])
+            } else {
+                tm.mk_boolean(false)
+            }
+        }
+        // `'c'` — compare via `from_Char(t) == n`, *not* `t == mk_Char(n)`.
+        // This function has no `&mut Solver` to assert onto, so it can't
+        // give this specific literal its own `from(mk_Char(n)) == n`
+        // round-trip fact (see `solver::encode`'s `CharLit` arm, which does
+        // have solver access and asserts exactly that whenever a literal is
+        // encoded in value position). Without that fact, `t == mk_Char(n)`
+        // would be sound but incomplete: cvc5 has no reason to know
+        // `mk_Char(97) != mk_Char(98)` unless *both* literals' round-trips
+        // happen to already be asserted elsewhere in the same proof — e.g.
+        // `t' == mk_Char(97)` could be found consistent with a model where
+        // `mk_Char(97) == mk_Char(98)`, spuriously refuting `t ∈ Char -
+        // {'a'}` for `t = mk_Char(98)`. `from` is already the correct,
+        // deterministic inverse for any legitimately-constructed Char value
+        // (every construction site — `char(n)`, `'c'` in value position —
+        // asserts its own round-trip), so comparing its *decoded* codepoint
+        // needs no injectivity assumption about `mk_Char` at all.
+        SemExprKind::CharLit(c) => {
+            let info = distinct_preds.get(&Symbol::new("Char"))?;
+            if t.sort() == info.sort {
+                let from_t = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), t]);
+                tm.mk_term(Kind::Equal, &[from_t, tm.mk_integer(*c as u32 as i64)])
+            } else {
+                tm.mk_boolean(false)
+            }
+        }
+        _ => return None,
+    })
+}
+
 /// Pass through a cvc5 term only if it's already integer-sorted, for use in
 /// arithmetic membership constraints against scalar (integer-valued) sets.
 ///
@@ -329,26 +389,23 @@ pub(crate) fn membership_constraint<'tm>(
                 return Membership::Constrained(tm.mk_boolean(false));
             }
             // t ∈ {v₁, v₂, …}  ↔  t == v₁  ∨  t == v₂  ∨  …
-            // Constant-fold integer expressions (including negation like `-1`).
-            let Some(t_int) = to_integer_term(t) else {
-                return Membership::Constrained(tm.mk_boolean(false));
-            };
-            // Build equality terms for each element.  `[]` (empty tuple = empty
-            // sequence) is never equal to a scalar, so it contributes `false` to the
-            // disjunction and is simply skipped.  Unknown elements return Unsupported.
+            // Each element is encoded at its own natural sort
+            // (`literal_element_predicate`) rather than assuming integer, so
+            // e.g. `t ∈ {'a', 'b'}` works when `t` is Char-sorted. `[]`
+            // (empty tuple = empty sequence) is never equal to a scalar, so
+            // it contributes `false` to the disjunction and is simply
+            // skipped. An element whose predicate can't be built at all is
+            // genuinely unsupported syntax → Unsupported.
             let mut eqs: Vec<Term<'_>> = Vec::new();
             for e in elements {
                 if matches!(&e.kind, SemExprKind::Tuple(parts) if parts.is_empty()) {
                     // Scalar ≠ empty sequence — skip (contributes false).
                     continue;
                 }
-                match eval_const_int(e) {
-                    Some(n) => {
-                        let n_term = tm.mk_integer(n);
-                        eqs.push(tm.mk_term(Kind::Equal, &[t_int.clone(), n_term]));
-                    }
-                    None => return Membership::Unsupported,
-                }
+                let Some(pred) = literal_element_predicate(tm, t.clone(), e, distinct_preds) else {
+                    return Membership::Unsupported;
+                };
+                eqs.push(pred);
             }
             Membership::Constrained(match eqs.len() {
                 0 => tm.mk_boolean(false),

@@ -1,0 +1,9 @@
+-- A Char literal set `{'a', 'b'}` as a domain restriction (set-expression
+-- position) — solver::sort::set_sort's SetLit arm derives the CVC5 sort from
+-- the elaborated element Kind instead of hardcoding integer, so this is now
+-- provable end to end.
+f : {'a', 'b'} -> Char
+f(x) = x
+
+main : -> Char
+main() = f('a')
