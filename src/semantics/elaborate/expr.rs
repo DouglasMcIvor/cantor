@@ -7,7 +7,7 @@ use crate::error::CompileError;
 use crate::kind::{self, Kind, set_kind};
 use crate::semantics::tree::*;
 
-use super::{Ctx, Env, Position, builtin_call_kind, not_yet_implemented};
+use super::{Ctx, Env, Position, builtin_call_kind, canonical_bucket_kind, not_yet_implemented};
 
 pub(super) fn elaborate_expr(
     expr: &ast::Expr,
@@ -181,13 +181,61 @@ pub(super) fn elaborate_expr(
             {
                 k
             } else {
-                ctx.fn_sigs
-                    .get(callee)
-                    .map(|s| s.return_kind.clone())
-                    .ok_or_else(|| CompileError::UndefinedFunction {
-                        name: callee.0.clone(),
-                        span,
-                    })?
+                let sigs =
+                    ctx.fn_sigs
+                        .get(callee)
+                        .ok_or_else(|| CompileError::UndefinedFunction {
+                            name: callee.0.clone(),
+                            span,
+                        })?;
+                if let [only] = sigs.as_slice() {
+                    // The overwhelmingly common case: exactly one `FunctionDef`
+                    // of this name, so there's nothing to disambiguate — use
+                    // its return Kind unconditionally, same as before this
+                    // function did any Kind-matching at all. Deliberately
+                    // skips the argument-Kind match below: a single-signature
+                    // callee's argument may legitimately coerce into its
+                    // declared param Kind (e.g. sequence-unification's
+                    // scalar-to-`Vector` boxing at a call boundary) without
+                    // the two Kinds being identical, and this function has no
+                    // general coercion-compatibility check — only real
+                    // overload sets need one, via the exact-Kind match below.
+                    only.return_kind.clone()
+                } else {
+                    // A genuine overload set (2+ `FunctionDef`s of this name):
+                    // every argument's Kind is already known (elaborated
+                    // above), so which overload this call could possibly mean
+                    // is always statically decidable — match on (arity,
+                    // param-Kind bucket) exactly like
+                    // `check_overload_kind_agreement` buckets declarations,
+                    // canonicalizing `Int64` to `Int` the same way (nothing in
+                    // ordinary source elaboration ever produces a literal
+                    // `Kind::Int64` argument, but this keeps the two
+                    // canonicalizations in lockstep on principle).
+                    //
+                    // TODO: this exact-Kind match doesn't account for
+                    // coercion (e.g. a scalar argument boxing into a
+                    // `Vector`-Kinded overload) the way the single-signature
+                    // branch above does — no existing overload set combines
+                    // Kind-heterogeneity with a coercion-eligible Kind, so
+                    // this is deferred rather than designed for speculatively.
+                    sigs.iter()
+                        .find(|s| {
+                            s.param_kinds.len() == sem_args.len()
+                                && s.param_kinds.iter().zip(&sem_args).all(|(p, a)| {
+                                    canonical_bucket_kind(p) == canonical_bucket_kind(&a.kind_of)
+                                })
+                        })
+                        .map(|s| s.return_kind.clone())
+                        .ok_or_else(|| CompileError::NoMatchingOverload {
+                            name: callee.0.clone(),
+                            detail: format!(
+                                "no declared overload accepts {} argument(s) of the given Kind(s)",
+                                sem_args.len()
+                            ),
+                            span,
+                        })?
+                }
             };
             Ok(SemExpr {
                 kind: SemExprKind::Call {

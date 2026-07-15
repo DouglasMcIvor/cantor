@@ -42,9 +42,9 @@ impl<'ctx> Compiler<'ctx> {
         match self.overload_dispatch.get(&callee.0) {
             None => Ok((callee.0.clone(), CallTarget::Direct(callee.0.clone()))),
             Some(entries) => {
-                let matching: Vec<&OverloadEntry> =
+                let arity_matching: Vec<&OverloadEntry> =
                     entries.iter().filter(|e| e.arity == args.len()).collect();
-                if matching.is_empty() {
+                if arity_matching.is_empty() {
                     return Err(CompileError::ice(format!(
                         "no overload of `{}` accepts {} argument(s) — the solver should have \
                          rejected this call before codegen ever saw it",
@@ -52,6 +52,44 @@ impl<'ctx> Compiler<'ctx> {
                         args.len()
                     )));
                 }
+                // backlog.md "function overloads — support different kinds":
+                // with more than one arity-matching candidate, further filter
+                // to the ones whose declared parameter Kinds match this
+                // call's actual argument Kinds (already elaborated, always
+                // statically known) — mirrors `solver::encode_call`'s
+                // identical filter and its rationale exactly. Skipped when
+                // there's already exactly one arity match (the common case,
+                // where an argument may legitimately coerce into the
+                // declared param Kind, e.g. sequence-unification's
+                // scalar-to-`Vector` boxing, without an exact Kind match).
+                // Falls back to `arity_matching` unfiltered if nothing
+                // matches by Kind — should never happen for a call the
+                // solver already accepted, but stays a soft fallback rather
+                // than a new panic surface.
+                let matching: Vec<&OverloadEntry> = if arity_matching.len() <= 1 {
+                    arity_matching
+                } else {
+                    let filtered: Vec<&OverloadEntry> = arity_matching
+                        .iter()
+                        .filter(|e| {
+                            self.fn_param_kinds.get(&e.mangled_name).is_some_and(|ks| {
+                                ks.len() == args.len()
+                                    && ks.iter().zip(args).all(|(p, a)| {
+                                        crate::semantics::elaborate::canonical_bucket_kind(p)
+                                            == crate::semantics::elaborate::canonical_bucket_kind(
+                                                &a.kind_of,
+                                            )
+                                    })
+                            })
+                        })
+                        .copied()
+                        .collect();
+                    if filtered.is_empty() {
+                        arity_matching
+                    } else {
+                        filtered
+                    }
+                };
                 if let [only] = matching.as_slice() {
                     Ok((
                         only.mangled_name.clone(),

@@ -415,23 +415,44 @@ instead of JIT-executing in-process.
     disjointness proof between differently-arity overloads; the
     Kind-agreement rule below and the disjointness obligation both apply
     only within a (name, arity) group.
-  - Every overload of a given (name, arity) must still agree on the Kind of
-    each parameter/return position (same rule multiple-signatures-one-body
-    already had). Phase 3's `Int64`/`BigInt` split gets one narrow,
-    compiler-generated exception to this (**IMPLEMENTED** — int-soundness-plan
-    phase 3 step 2, 2026-07-04; see that doc's "Phase 3 — BigInt runtime"
-    section) — **not** a general relaxation for user-written overloads: the
-    exception only works because there's a single canonical Kind every group
-    member converts into at an unresolved call's runtime-dispatch merge point,
-    which the Int64/BigInt pair has (tagged `Int` is canonical, raw `Int64`
-    converts into it) but an arbitrary pair of user-chosen Kinds does not in
-    general. Discussed 2026-07-04; general user-facing Kind-polymorphic
-    overloading recorded as a deferred idea in §12 rather than folded into
-    phase 3. Implementing this required adding `Kind::Int64` as a genuinely
-    new variant (§13) — `Int64` and unbounded `Int` collapsed to the same
-    `Kind::Int` before this step, so there was no mismatch to except in the
-    first place; `Kind::Int64` is reserved for the phase 3 split alone and
-    isn't produced by ordinary elaboration of the `Int64` named set.
+  - **Overloads may span different Kinds, dispatched on parameter Kind alone
+    (IMPLEMENTED, backlog.md "function overloads — support different
+    kinds", 2026-07-15)**: within a (name, arity) group, overloads are
+    further partitioned into buckets by *parameter*-Kind tuple (`Kind::Int64`
+    folded into `Kind::Int`, so the phase 3 split pair below still lands in
+    one bucket). Different buckets need no relation to each other at all —
+    e.g. `f : Bool -> Bool` and `f : Nat -> Nat` coexist freely — because an
+    argument's Kind is always known statically in this language (no runtime
+    union of Kinds at a single expression node), so which bucket a call
+    belongs to is always decidable with zero solver calls, exactly like
+    arity above. Within one bucket, every member must still agree on the
+    Kind of each parameter position *and* the return Kind (same rule
+    multiple-signatures-one-body already had) — unlike the cross-bucket
+    case, two overloads sharing a parameter-Kind bucket can only be told
+    apart by a domain check that may fall back to runtime dispatch, and an
+    unresolved runtime dispatch needs one canonical Kind to merge every
+    candidate's result into. Phase 3's `Int64`/`BigInt` split gets one
+    narrow, compiler-generated exception to *that* same-bucket return-Kind
+    rule (**IMPLEMENTED** — int-soundness-plan phase 3 step 2, 2026-07-04;
+    see that doc's "Phase 3 — BigInt runtime" section): the exception works
+    because there's a single canonical Kind the pair converts into at their
+    shared merge point (tagged `Int` is canonical, raw `Int64` converts into
+    it), which is exactly what the parameter-Kind bucketing guarantees for
+    it and would not for an arbitrary same-bucket pair chosen freely by a
+    user. Implementing the Int64 split required adding `Kind::Int64` as a
+    genuinely new variant (§13) — `Int64` and unbounded `Int` collapsed to
+    the same `Kind::Int` before that step, so there was no mismatch to
+    except in the first place; `Kind::Int64` is reserved for the phase 3
+    split alone and isn't produced by ordinary elaboration of the `Int64`
+    named set.
+    - Known gap (not yet implemented): the cross-bucket dispatch above
+      assumes an argument's Kind exactly matches one bucket's parameter
+      Kind — it doesn't account for *coercion* (e.g. a scalar argument
+      boxing into a `Vector`-Kinded overload via sequence unification). No
+      existing overload set combines Kind-heterogeneity with a
+      coercion-eligible Kind, so this is deferred rather than designed for
+      speculatively; single-signature (non-overloaded) callees are
+      unaffected and keep coercing exactly as before.
   - Automatic domain-partition inference (compiler infers a good overload
     split rather than requiring hand-declaration) is an explicitly deferred
     future feature.
@@ -1764,18 +1785,22 @@ Other open items (lower priority, not blocking):
   ordered sets as sets-with-enumerators, per backlog.md "collections
   direction" (DECIDED 2026-07-06 — no new literal brackets); iterators/
   generators.
-- **General Kind-polymorphic overloading (user-facing)** — let a user-written
-  overload set span multiple `Kind`s (today `check_overload_kind_agreement`
-  rejects this unconditionally; only phase 3's compiler-generated
-  `Int64`/`BigInt` split gets a narrow, structural exception — see §7).
-  Raised 2026-07-04: `Kind` is meant to be invisible to the user (§13 "Value
-  layers"), so rejecting an overload set purely on a `Kind` mismatch is
-  already a `Kind` leak. Generalizing requires a canonical-Kind-plus-
-  conversion mechanism for arbitrary user-chosen Kind pairs (how the
-  canonical Kind is chosen/declared, what conversions the compiler may
-  assume) — phase 3's Int64/BigInt work is the one concrete instance to
-  generalize from once it exists, not a reason to design the general case
-  up front.
+- **Kind-polymorphic dispatch over a Kind-ambiguous argument** — a user-written
+  overload set spanning multiple `Kind`s at one parameter position is now
+  supported for the statically-resolvable case, where every call's argument
+  already has one concrete Kind (**IMPLEMENTED**, see §7). What's still
+  deferred: calling such an overload set with an argument whose Kind is
+  itself ambiguous at that position — e.g. a `Bool | Nat`-Kinded
+  (`TaggedUnion`) value — which would need genuine runtime dispatch on the
+  value's tag, plus a canonical-Kind-plus-conversion merge point for the
+  results (raised 2026-07-04, before the statically-resolvable case existed;
+  still the open part). One option worth exploring when this is picked up:
+  the union Kind itself may already be the natural canonical merge
+  representation (a `Bool`-returning arm and a `Nat`-returning arm could
+  both feed into a `Bool | Nat` result), reusing the `TaggedUnion` machinery
+  heterogeneous set literals already established rather than inventing a
+  new canonical-Kind mechanism from scratch — not designed further than
+  that yet.
 - **Phase 4 idea (wide-intermediate optimization for checked arithmetic)** —
   see int-soundness-plan.md's "Phase 4" section. Compute unproved checked
   ops at double width (i128) so a single operation's exact result is always

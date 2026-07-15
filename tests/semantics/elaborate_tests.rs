@@ -504,15 +504,43 @@ fn overloads_with_mismatched_return_kind_are_rejected() {
     );
 }
 
-/// Same check, but the disagreement is in a parameter position instead of
-/// the return Kind.
+/// Unlike a return-Kind-only mismatch (previous test), a *parameter*-Kind
+/// mismatch alone is allowed (backlog.md "function overloads — support
+/// different kinds"): `f : Int -> Int` and `f : Bool -> Int` put each
+/// overload in its own parameter-Kind bucket (`bucket_key`), so there's
+/// nothing to agree on between them — an argument's Kind is always known
+/// statically, so a call can never be ambiguous between the two, unlike
+/// the same-parameter-Kind case where a domain check might have to fall
+/// back to runtime dispatch and needs one canonical return Kind to merge
+/// into.
 #[test]
-fn overloads_with_mismatched_param_kind_are_rejected() {
+fn overloads_with_only_param_kind_mismatch_are_allowed() {
     let items = parse_file("f : Int -> Int\nf(x) = x\nf : Bool -> Int\nf(x) = 0")
         .unwrap_or_else(|e| panic!("parse error: {e}"));
     assert!(
-        elaborate(&items).is_err(),
-        "expected elaborate to reject overloads that disagree on a parameter Kind"
+        elaborate(&items).is_ok(),
+        "expected elaborate to allow overloads that disagree only on a parameter Kind"
+    );
+}
+
+/// backlog.md's top item: user-declared overloads spanning different Kinds
+/// (here `Bool` vs `Nat`, both `Kind::Bool`/`Kind::Int`) should be allowed —
+/// unlike phase 3's narrow `Int`/`Int64` `compiler_generated_split` exception,
+/// this needs no canonical merge Kind because a heterogeneous-Kind call is
+/// *always* statically resolvable (every argument already has one concrete
+/// elaborated Kind — see `docs/design-decisions.md` §12 "General
+/// Kind-polymorphic overloading"). `check_overload_kind_agreement` now
+/// buckets a (name, arity) group by param-Kind-tuple first, only requiring
+/// agreement *within* a bucket, rather than requiring one Kind for the
+/// whole group.
+#[test]
+fn overloads_with_different_kinds_are_allowed() {
+    let items = parse_file("f : Bool -> Bool\nf(x) = x\nf : Nat -> Nat\nf(x) = x")
+        .unwrap_or_else(|e| panic!("parse error: {e}"));
+    assert!(
+        elaborate(&items).is_ok(),
+        "user-declared overloads spanning different Kinds should be allowed, \
+         since resolution at any call site is always statically decidable"
     );
 }
 
@@ -593,10 +621,14 @@ fn compiler_generated_int64_bigint_split_bypasses_kind_agreement() {
 
 #[test]
 fn compiler_generated_split_exception_is_specific_to_int_and_int64() {
-    // Both marked, but the mismatch isn't the Int/Int64 pairing — still an error.
+    // Both marked, and both share a parameter-Kind bucket (`Int`) — so this
+    // isn't the differing-parameter-Kind case `bucket_key` now lets through
+    // unconditionally (see `overloads_with_only_param_kind_mismatch_are_-
+    // allowed`); it's a same-bucket return-Kind mismatch that isn't the
+    // Int/Int64 pairing, which must still be an error.
     let items = vec![
         dummy_def("foo", vec![Kind::Int], Kind::Int, true),
-        dummy_def("foo", vec![Kind::Bool], Kind::Bool, true),
+        dummy_def("foo", vec![Kind::Int], Kind::Bool, true),
     ];
     assert!(
         check_overload_kind_agreement(&items).is_err(),

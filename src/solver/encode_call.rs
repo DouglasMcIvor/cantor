@@ -148,12 +148,50 @@ pub(crate) fn encode_call<'tm>(
     // overload-set level, the per-signature `DomainMatch::Mismatch` arm
     // below). Indices are positions in the whole same-name `Vec`, matching
     // codegen's mangled-name table and `ConstrainedTree::overload_resolution`.
-    let candidates: Vec<(usize, &SemFunctionDef)> = overload_set
+    let arity_matching: Vec<(usize, &SemFunctionDef)> = overload_set
         .iter()
         .enumerate()
         .filter(|(_, def)| def.params.len() == args.len())
         .map(|(i, def)| (i, *def))
         .collect();
+
+    // backlog.md "function overloads — support different kinds": with more
+    // than one arity-matching candidate, further filter to the ones whose
+    // parameter-Kind bucket matches this call's *actual* argument Kinds
+    // (already elaborated, always statically known) — otherwise a
+    // Kind-heterogeneous overload set (e.g. `f : Bool -> Bool` alongside
+    // `f : Nat -> Nat`) would let a mismatched-sort candidate reach
+    // `membership_constraint` below and build a nonsensical cross-sort SMT
+    // term. Skipped entirely when there's at most one arity-matching
+    // candidate — that's the single-signature common case, where the
+    // argument may legitimately *coerce* into the declared param Kind
+    // (e.g. sequence-unification's scalar-to-`Vector` boxing) without an
+    // exact match, and there is nothing to disambiguate anyway. Falls back
+    // to `arity_matching` unfiltered if nothing matches by Kind — should
+    // never happen for a tree that passed elaboration (which already
+    // guarantees some bucket matches), but this stays a soft fallback
+    // rather than a hard error since this module reports failures as
+    // `Unknown`/counterexamples, not compiler panics.
+    let candidates: Vec<(usize, &SemFunctionDef)> = if arity_matching.len() <= 1 {
+        arity_matching
+    } else {
+        let filtered: Vec<(usize, &SemFunctionDef)> = arity_matching
+            .iter()
+            .filter(|(_, def)| {
+                def.param_kinds.len() == args.len()
+                    && def.param_kinds.iter().zip(args).all(|(p, a)| {
+                        crate::semantics::elaborate::canonical_bucket_kind(p)
+                            == crate::semantics::elaborate::canonical_bucket_kind(&a.kind_of)
+                    })
+            })
+            .copied()
+            .collect();
+        if filtered.is_empty() {
+            arity_matching
+        } else {
+            filtered
+        }
+    };
 
     push_call_domain_obligation(callee, &candidates, args, &arg_terms, ctx, &path_cond)?;
 

@@ -105,6 +105,33 @@ fn arity_uniquely_resolved_overload_compiles_to_a_direct_call() {
     );
 }
 
+/// backlog.md's top item: a call whose argument has a concrete `Bool` Kind
+/// compiles to a direct call to the `Bool` overload — no membership test, no
+/// dispatch chain, no phi merge — since a `Bool`-Kinded overload and a
+/// `Nat`-Kinded overload of the same name/arity can never both be runtime
+/// candidates for the same call (the argument's Kind, and therefore which
+/// overload it can possibly match, is fixed at compile time).
+/// `Compiler::resolve_overload_call_target` filters `matching` by comparing
+/// each `OverloadEntry`'s stored param Kinds (`fn_param_kinds`, already
+/// keyed per-candidate by mangled name) against the call's actual argument
+/// Kinds, not just arity.
+#[test]
+fn kind_uniquely_resolved_overload_compiles_to_a_direct_call() {
+    let ir = ir_for_src(
+        "f : Bool -> Bool\n\
+         f(x) = x\n\
+         f : Nat -> Nat\n\
+         f(x) = x\n\
+         main : -> Bool\n\
+         main() = f(true)",
+    );
+    assert!(
+        !ir.contains("ov_trap"),
+        "a Bool-Kinded argument should resolve to the Bool overload alone, \
+         with no dispatch chain:\n{ir}"
+    );
+}
+
 #[test]
 fn runtime_dispatch_picks_the_correct_branch_for_each_input() {
     // Belt-and-braces execution check at the codegen layer (JIT-evaluated

@@ -268,10 +268,16 @@ fn check_pair_disjoint(
     }
 }
 
-/// Pairwise-disjointness obligations for every (name, arity) group with more
-/// than one member in `fn_env` — groups of differing arity for the same
-/// name need no check (arity alone is always statically decidable, so it
-/// already makes them disjoint).
+/// Pairwise-disjointness obligations for every (name, arity, parameter-Kind
+/// bucket) group with more than one member in `fn_env` — groups of differing
+/// arity need no check (arity alone is always statically decidable, so it
+/// already makes them disjoint), and neither do groups of differing
+/// parameter Kind (backlog.md "function overloads — support different
+/// kinds": a `Bool` value and an `Int` value can never be equal, so two
+/// overloads whose parameter Kinds genuinely differ are automatically
+/// disjoint too — see `crate::semantics::elaborate::check_overload_kind_-
+/// agreement`'s doc comment for why bucketing on parameter Kind alone is
+/// always sound here).
 pub(super) fn check_overload_disjointness(
     fn_env: &FunctionEnv<'_>,
     name_defs: &NameDefs,
@@ -279,11 +285,29 @@ pub(super) fn check_overload_disjointness(
 ) -> Vec<(String, Vec<(String, CheckResult)>)> {
     let mut out = Vec::new();
     for (name, defs) in fn_env {
-        let mut by_arity: HashMap<usize, Vec<&SemFunctionDef>> = HashMap::new();
+        // Linear-scan grouping (not a `HashMap`) since `Kind` has no `Hash`
+        // impl and overload sets are always small — mirrors
+        // `elaborate::check_overload_kind_agreement`'s own bucketing.
+        let bucket_key = |def: &SemFunctionDef| -> (usize, Vec<ValKind>) {
+            (
+                def.params.len(),
+                def.param_kinds
+                    .iter()
+                    .map(crate::semantics::elaborate::canonical_bucket_kind)
+                    .collect(),
+            )
+        };
+        let mut groups: Vec<Vec<&SemFunctionDef>> = Vec::new();
         for def in defs {
-            by_arity.entry(def.params.len()).or_default().push(*def);
+            match groups
+                .iter_mut()
+                .find(|group| bucket_key(group[0]) == bucket_key(def))
+            {
+                Some(group) => group.push(*def),
+                None => groups.push(vec![*def]),
+            }
         }
-        for group in by_arity.values() {
+        for group in &groups {
             if group.len() < 2 {
                 continue;
             }

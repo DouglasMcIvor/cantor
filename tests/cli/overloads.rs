@@ -60,6 +60,26 @@ fn overlapping_overload_domains_refuse_to_run_with_witness() {
     );
 }
 
+/// backlog.md's top item: `f : Bool -> Bool` and `f : Nat -> Nat` coexist as
+/// one overload set even though they disagree on Kind (see
+/// `tests/semantics/elaborate_tests.rs::overloads_with_different_kinds_are_allowed`
+/// and the sibling tests in `tests/solver/overloads.rs` and
+/// `tests/codegen/overloads.rs` for the specific layers involved).
+#[test]
+fn overloads_spanning_different_kinds_run_correctly() {
+    let out = run_subcommand("overload_different_kinds.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 3"),
+        "expected f(3) via the Nat overload:\n{}",
+        out.stdout
+    );
+}
+
 #[test]
 fn recursion_where_one_overload_calls_another_runs_correctly() {
     // `count_down`'s NatPos overload recurses into itself and eventually the

@@ -3,7 +3,6 @@ You probably don't want to read this unless you're me.
 
 # To do
  
-- function overloads - support different kinds, currently only `foo : Nat`, `foo : NegInt` would work not `Bool`
 - more testing
   - some property based tests! we have a lot of unit tests but could go further, `proptest` crate recommended
   - fuzzing too, `cargo-fuzz` crate recommended

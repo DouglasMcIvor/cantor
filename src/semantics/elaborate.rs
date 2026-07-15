@@ -43,13 +43,21 @@ enum Position {
     Set,
 }
 
+/// One `FunctionDef`'s Kind signature, keyed by name in `Ctx::fn_sigs` —
+/// there may be several per name (arity- and/or param-Kind-bucket-
+/// distinguished overloads), so `Call` elaboration (`expr.rs`) matches a
+/// call's already-elaborated argument Kinds against `param_kinds` here to
+/// pick the right one's `return_kind`, rather than assuming one signature
+/// per name (see `check_overload_kind_agreement`'s doc comment for why
+/// matching on Kind alone is always unambiguous).
 struct FnSig {
+    param_kinds: Vec<Kind>,
     return_kind: Kind,
 }
 
 struct Ctx<'a> {
     name_defs: &'a NameDefs,
-    fn_sigs: HashMap<Symbol, FnSig>,
+    fn_sigs: HashMap<Symbol, Vec<FnSig>>,
 }
 
 type Env = HashMap<Symbol, Kind>;
@@ -73,22 +81,26 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
 
     super::wellfounded::check_well_founded(items, &name_defs)?;
 
-    // First pass: every function's return Kind, derived from its first
-    // signature — mirrors `codegen::Compiler`'s existing rule that
-    // overloaded signatures must agree on the Kind of each position.
+    // First pass: every function's parameter Kinds and return Kind, derived
+    // from its first signature — mirrors `codegen::Compiler`'s existing rule
+    // that overloaded signatures must agree on the Kind of each position
+    // *within* a parameter-Kind bucket (`check_overload_kind_agreement`).
     // Needed up front so `Call` nodes can resolve a callee's return Kind
-    // regardless of declaration order.
-    let mut fn_sigs = HashMap::new();
+    // regardless of declaration order. One `Vec` entry per `FunctionDef` of
+    // this name (not deduplicated by bucket) — `Call` elaboration below
+    // matches the call's own argument Kinds against `param_kinds` to pick
+    // the right entry, so a same-name/different-arity or same-name/
+    // different-Kind-bucket overload never sees another's return Kind.
+    let mut fn_sigs: HashMap<Symbol, Vec<FnSig>> = HashMap::new();
     for item in items {
         if let Item::FunctionDef(def) = item
             && let Some(sig) = def.sigs.first()
         {
-            fn_sigs.insert(
-                def.name.clone(),
-                FnSig {
-                    return_kind: crate::kind::range_kind(&sig.range, &name_defs)?,
-                },
-            );
+            let param_kinds = function_param_kinds(sig, def.params.len(), &name_defs)?;
+            fn_sigs.entry(def.name.clone()).or_default().push(FnSig {
+                param_kinds,
+                return_kind: crate::kind::range_kind(&sig.range, &name_defs)?,
+            });
         }
     }
 
@@ -104,13 +116,24 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
     Ok(sem_items)
 }
 
-/// int-soundness-plan phase 2: multiple `FunctionDef`s may share a name,
-/// forming an overload set — but only across definitions of the *same*
-/// arity (differing arity is itself a free, always-static dispatch key, so
-/// there's nothing to agree on there). Within a same-name-same-arity group,
-/// every member must still agree on the Kind of each parameter position and
-/// on the return Kind, exactly as today's multiple-signatures-one-body
-/// feature already requires within a single `FunctionDef`.
+/// int-soundness-plan phase 2 / backlog.md "function overloads — support
+/// different kinds": multiple `FunctionDef`s may share a name, forming an
+/// overload set — but only across definitions of the *same* arity (differing
+/// arity is itself a free, always-static dispatch key, so there's nothing to
+/// agree on there). Within a same-name-same-arity group, members are further
+/// partitioned into Kind buckets (`bucket_key`, one per distinct parameter-
+/// Kind tuple, modulo the `Int`/`Int64` split identification below): every
+/// member of one bucket must still agree exactly on the Kind of each
+/// parameter position and on the return Kind, exactly as today's multiple-
+/// signatures-one-body feature already requires within a single
+/// `FunctionDef`. Different buckets need no relation to each other at all —
+/// a `Bool` value and an `Int` value can never be equal, so two overloads
+/// whose Kind signatures genuinely differ are automatically disjoint (see
+/// design-decisions.md §7/§12: this works because `Kind` is always
+/// statically known per call-site argument in this language, so resolving
+/// *which* bucket a call belongs to never needs a runtime/solver decision —
+/// unlike resolving *within* a bucket, where two overloads can share a Kind
+/// but still need a domain-disjointness proof).
 ///
 /// int-soundness-plan phase 3 (step 2): one narrow, structural exception —
 /// a position may disagree between `Kind::Int` and `Kind::Int64` when
@@ -119,8 +142,11 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
 /// produces `compiler_generated_split = true` yet (step 4 will, generating
 /// exactly this `Int64`/`BigInt` pair from one unbounded-`Int` signature —
 /// see design-decisions.md §7 and int-soundness-plan.md's "Phase 3"
-/// section), so every mismatch reaching this function today still errors
-/// exactly as it did before this exception existed.
+/// section). `bucket_key` folds `Int64` into `Int` for exactly this reason:
+/// the split's two overloads must land in the *same* bucket (so the
+/// existing Int64/BigInt disjointness+dispatch machinery still applies to
+/// them), while an unrelated `Bool` overload of the same name/arity lands in
+/// a genuinely separate bucket.
 pub fn check_overload_kind_agreement(sem_items: &[SemItem]) -> Result<(), CompileError> {
     let mut groups: HashMap<(Symbol, usize), Vec<&SemFunctionDef>> = HashMap::new();
     for item in sem_items {
@@ -132,36 +158,50 @@ pub fn check_overload_kind_agreement(sem_items: &[SemItem]) -> Result<(), Compil
         }
     }
     for defs in groups.values() {
-        let Some((first, rest)) = defs.split_first() else {
-            continue;
-        };
-        for other in rest {
-            let mismatched =
-                other.return_kind != first.return_kind || other.param_kinds != first.param_kinds;
-            if !mismatched {
-                continue;
-            }
-            if first.compiler_generated_split
-                && other.compiler_generated_split
-                && kinds_agree_for_split(&first.return_kind, &other.return_kind)
-                && first.param_kinds.len() == other.param_kinds.len()
-                && first
-                    .param_kinds
-                    .iter()
-                    .zip(&other.param_kinds)
-                    .all(|(a, b)| kinds_agree_for_split(a, b))
+        // Partition `defs` into Kind buckets — linear scan (not a HashMap)
+        // since `Kind` has no `Hash` impl and overload sets are always small.
+        let mut buckets: Vec<Vec<&SemFunctionDef>> = Vec::new();
+        for def in defs {
+            match buckets
+                .iter_mut()
+                .find(|bucket| bucket_key(bucket[0]) == bucket_key(def))
             {
-                continue;
+                Some(bucket) => bucket.push(def),
+                None => buckets.push(vec![def]),
             }
-            return Err(CompileError::OverloadKindMismatch {
-                name: other.name.0.clone(),
-                detail: format!(
-                    "an earlier overload has param kinds {:?} and return kind {:?}, \
-                     but this one has {:?} and {:?}",
-                    first.param_kinds, first.return_kind, other.param_kinds, other.return_kind
-                ),
-                span: other.span,
-            });
+        }
+        for bucket in &buckets {
+            let Some((first, rest)) = bucket.split_first() else {
+                continue;
+            };
+            for other in rest {
+                let mismatched = other.return_kind != first.return_kind
+                    || other.param_kinds != first.param_kinds;
+                if !mismatched {
+                    continue;
+                }
+                if first.compiler_generated_split
+                    && other.compiler_generated_split
+                    && kinds_agree_for_split(&first.return_kind, &other.return_kind)
+                    && first.param_kinds.len() == other.param_kinds.len()
+                    && first
+                        .param_kinds
+                        .iter()
+                        .zip(&other.param_kinds)
+                        .all(|(a, b)| kinds_agree_for_split(a, b))
+                {
+                    continue;
+                }
+                return Err(CompileError::OverloadKindMismatch {
+                    name: other.name.0.clone(),
+                    detail: format!(
+                        "an earlier overload has param kinds {:?} and return kind {:?}, \
+                         but this one has {:?} and {:?}",
+                        first.param_kinds, first.return_kind, other.param_kinds, other.return_kind
+                    ),
+                    span: other.span,
+                });
+            }
         }
     }
     Ok(())
@@ -175,6 +215,33 @@ pub fn check_overload_kind_agreement(sem_items: &[SemItem]) -> Result<(), Compil
 /// generated overload pairs; every other mismatch still errors.
 fn kinds_agree_for_split(a: &Kind, b: &Kind) -> bool {
     a == b || matches!((a, b), (Kind::Int, Kind::Int64) | (Kind::Int64, Kind::Int))
+}
+
+/// Folds `Kind::Int64` to `Kind::Int` (the only identification
+/// `check_overload_kind_agreement`'s buckets make — see that function's doc
+/// comment) so the phase 3 `Int64`/`BigInt` split's two overloads land in one
+/// bucket while any other genuine Kind difference (e.g. `Bool` vs `Int`)
+/// lands in separate ones.
+pub(crate) fn canonical_bucket_kind(k: &Kind) -> Kind {
+    match k {
+        Kind::Int64 => Kind::Int,
+        other => other.clone(),
+    }
+}
+
+/// The Kind signature that determines which bucket a `SemFunctionDef` falls
+/// into — see `check_overload_kind_agreement`. Deliberately **param Kinds
+/// only**, not the return Kind: two overloads whose *parameter* Kinds differ
+/// can never be confused at a call site (the argument's Kind already picks
+/// the bucket, statically, with no domain check and therefore no merge point
+/// to define), so their return Kinds are free to differ too. Two overloads
+/// that share a parameter-Kind bucket, on the other hand, can be resolved
+/// only by a domain check that may fall back to runtime dispatch — and an
+/// unresolved runtime dispatch needs one canonical Kind to merge every
+/// candidate's result into, which is exactly what same-bucket return-Kind
+/// agreement (checked below) guarantees.
+fn bucket_key(def: &SemFunctionDef) -> Vec<Kind> {
+    def.param_kinds.iter().map(canonical_bucket_kind).collect()
 }
 
 /// `codegen::compile_call`'s built-in identity/cardinality calls — never

@@ -87,6 +87,19 @@ pub enum CompileError {
         detail: String,
         span: Span,
     },
+    /// A call to an overloaded name (backlog.md "function overloads —
+    /// support different kinds") whose argument Kinds don't match any
+    /// declared overload's parameter-Kind bucket — e.g. calling `f(true)`
+    /// when only `f : Nat -> Nat` exists. Unlike an out-of-*domain* call
+    /// (a solver-checked runtime obligation, since a value's domain
+    /// membership isn't always statically decidable), an argument's Kind
+    /// is always known at elaboration time, so this is caught here rather
+    /// than deferred to the solver.
+    NoMatchingOverload {
+        name: String,
+        detail: String,
+        span: Span,
+    },
     /// Valid Cantor the compiler doesn't implement yet.
     Unsupported {
         feature: String,
@@ -155,6 +168,9 @@ impl std::fmt::Display for CompileError {
             Self::OverloadKindMismatch { name, detail, .. } => {
                 write!(f, "overloads of `{name}` disagree: {detail}")
             }
+            Self::NoMatchingOverload { name, detail, .. } => {
+                write!(f, "no overload of `{name}` matches: {detail}")
+            }
             Self::Unsupported { feature, .. } => write!(f, "not yet supported: {feature}"),
             Self::InvalidSetExpression { detail, .. } => {
                 write!(f, "invalid set expression: {detail}")
@@ -221,6 +237,7 @@ impl CompileError {
             Self::InvalidUnicodeEscape { span, .. } => Some(*span),
             Self::NamingConvention { span, .. } => Some(*span),
             Self::OverloadKindMismatch { span, .. } => Some(*span),
+            Self::NoMatchingOverload { span, .. } => Some(*span),
             Self::Unsupported { span, .. } => Some(*span),
             Self::InvalidSetExpression { span, .. } => Some(*span),
             Self::IllFoundedRecursiveSet { span, .. } => Some(*span),

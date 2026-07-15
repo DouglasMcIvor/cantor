@@ -1,0 +1,8 @@
+f : Bool -> Bool
+f(x) = x
+
+f : Nat -> Nat
+f(x) = x
+
+main : -> Nat
+main() = f(3)
