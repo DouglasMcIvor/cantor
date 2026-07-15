@@ -1,0 +1,7 @@
+-- 2 is not a member of the heterogeneous domain literal `{1, 'a'}` — a real
+-- counterexample, not a silent pass or an `Unknown`.
+f : {1, 'a'} -> Int
+f(x) = 5
+
+main : -> Int
+main() = f(2)

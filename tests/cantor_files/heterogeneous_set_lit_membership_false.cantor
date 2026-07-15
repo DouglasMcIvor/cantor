@@ -1,0 +1,7 @@
+-- Same heterogeneous literal as heterogeneous_set_lit_membership.cantor, but
+-- checking a value that is a member of none of its arms (Int, Char, Bool).
+check : Int -> Bool
+check(x) = x in {1, 'a', true}
+
+main : -> Bool
+main() = check(2)

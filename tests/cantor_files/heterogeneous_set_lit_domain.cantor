@@ -1,0 +1,11 @@
+-- A heterogeneous domain literal `{1, 'a'}` (mixed Int and Char elements) —
+-- solver::sort::set_sort's SetLit arm only knows how to derive a sort for a
+-- single scalar Kind, so semantics::elaborate desugars this into a union of
+-- homogeneous-Kind sub-literals (`{1} | {'a'}`) and lets the existing
+-- cross-kind union datatype machinery handle it, same as any other `A | B`
+-- domain.
+f : {1, 'a'} -> Int
+f(x) = 5
+
+main : -> Int
+main() = f(1)

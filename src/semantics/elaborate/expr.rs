@@ -240,8 +240,37 @@ pub(super) fn elaborate_expr(
                 .iter()
                 .map(|e| elaborate_expr(e, Position::Value, ctx, env))
                 .collect::<Result<Vec<_>, _>>()?;
-            let kind_of = match pos {
-                Position::Set => kind_of_for_set()?,
+            match pos {
+                Position::Set => {
+                    let kind_of = kind_of_for_set()?;
+                    // A heterogeneous domain literal (e.g. `{1, 'a'}`) has no
+                    // single natural CVC5 sort as one `SetLit` node —
+                    // `solver::sort::set_sort`'s `SetLit` arm only knows how
+                    // to build a sort for one scalar Kind. Desugar into a
+                    // union of homogeneous-Kind sub-literals (e.g.
+                    // `{1} | {'a'}`), grouped by first occurrence exactly
+                    // like `kind::union_if_distinct`'s own grouping, so the
+                    // `|` arm's existing cross-kind datatype machinery
+                    // (`build_union_datatype_sort`) handles it for free
+                    // instead of needing bespoke SetLit-specific DT support.
+                    // `Kind::TaggedUnion(arms)` here is either the empty
+                    // literal `{}` (`arms` empty — `union_if_distinct` of
+                    // zero kinds) or a genuinely heterogeneous literal
+                    // (`arms.len() >= 2` — `union_if_distinct` never wraps a
+                    // single unique Kind). Only the latter needs desugaring;
+                    // `{}` falls through to the plain `SetLit` arm below,
+                    // same as before this desugaring existed.
+                    if let Kind::TaggedUnion(arms) = &kind_of
+                        && !arms.is_empty()
+                    {
+                        return Ok(desugar_heterogeneous_set_lit(sem_elements, span));
+                    }
+                    Ok(SemExpr {
+                        kind: SemExprKind::SetLit(sem_elements),
+                        kind_of,
+                        span,
+                    })
+                }
                 Position::Value => {
                     // Matches compile_set_lit_value: a non-empty, homogeneous
                     // literal of a scalar Kind constructs a genuine runtime
@@ -265,14 +294,14 @@ pub(super) fn elaborate_expr(
                     if sem_elements.iter().any(|e| e.kind_of != first.kind_of) {
                         return Err(CompileError::ice("mixed element kinds in set literal"));
                     }
-                    Kind::Set(Box::new(first.kind_of.clone()))
+                    let kind_of = Kind::Set(Box::new(first.kind_of.clone()));
+                    Ok(SemExpr {
+                        kind: SemExprKind::SetLit(sem_elements),
+                        kind_of,
+                        span,
+                    })
                 }
-            };
-            Ok(SemExpr {
-                kind: SemExprKind::SetLit(sem_elements),
-                kind_of,
-                span,
-            })
+            }
         }
 
         ExprKind::Try(inner) => {
@@ -454,4 +483,51 @@ fn vector_elem_kind(ek: &Kind) -> Result<Kind, CompileError> {
             "indexing into Vector({other:?}) is not supported"
         ))),
     }
+}
+
+/// Rewrite a heterogeneous domain literal's already-elaborated elements
+/// (`kind_of` isn't a single Kind — see the `ExprKind::SetLit` `Position::Set`
+/// arm) into a left-nested `BinOp::Union` of homogeneous-Kind `SetLit` groups,
+/// e.g. `{1, 'a', 2}` → `({1, 2} | {'a'})`.
+///
+/// Grouping is by first occurrence of each distinct `Kind`, matching
+/// `kind::union_if_distinct`'s own grouping order exactly, so the resulting
+/// tree's Kind (built incrementally the same way `merge_into_union` would)
+/// is identical to the single `TaggedUnion` `kind_of_for_set()` already
+/// computed for the un-desugared literal.
+fn desugar_heterogeneous_set_lit(sem_elements: Vec<SemExpr>, span: crate::span::Span) -> SemExpr {
+    let mut groups: Vec<(Kind, Vec<SemExpr>)> = Vec::new();
+    for e in sem_elements {
+        match groups.iter_mut().find(|(k, _)| *k == e.kind_of) {
+            Some((_, g)) => g.push(e),
+            None => groups.push((e.kind_of.clone(), vec![e])),
+        }
+    }
+    let mut groups = groups.into_iter();
+    let (first_kind, first_elems) = groups
+        .next()
+        .expect("desugar_heterogeneous_set_lit: caller only calls this for TaggedUnion kind_of, which implies at least one element group");
+    let mut acc = SemExpr {
+        kind: SemExprKind::SetLit(first_elems),
+        kind_of: first_kind.clone(),
+        span,
+    };
+    let mut acc_kinds = vec![first_kind];
+    for (kind_of, elems) in groups {
+        acc_kinds.push(kind_of.clone());
+        acc = SemExpr {
+            kind: SemExprKind::BinOp {
+                op: ast::BinOp::Union,
+                lhs: Box::new(acc),
+                rhs: Box::new(SemExpr {
+                    kind: SemExprKind::SetLit(elems),
+                    kind_of,
+                    span,
+                }),
+            },
+            kind_of: Kind::TaggedUnion(acc_kinds.clone()),
+            span,
+        };
+    }
+    acc
 }

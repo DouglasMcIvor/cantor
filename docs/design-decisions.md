@@ -2128,8 +2128,24 @@ construction above.
   Kind (`scalar_kind_sort`) instead of hardcoding `tm.integer_sort()` — a
   homogeneous literal set of any scalar builtin Kind (`Int`, `Bool`, `Char`,
   `Fail`, `Signed32`, `Unsigned32`) now gets its own natural sort; a
-  heterogeneous or structural one (`Tuple`/`TaggedUnion`/`Vector`/`Set`
-  elements) reports `Unknown` rather than guessing.
+  structural one (`Tuple`/`TaggedUnion`/`Vector`/`Set` elements) reports
+  `Unknown` rather than guessing.
+  - **A *heterogeneous* scalar literal** (e.g. `{1, 'a'}`, mixing scalar
+    builtin Kinds) is also now supported, not just homogeneous ones —
+    `scalar_kind_sort` still has no single natural CVC5 sort for a
+    `TaggedUnion` `kind_of`, so `semantics::elaborate::expr`'s `SetLit`
+    `Position::Set` arm desugars it at elaboration time into a left-nested
+    `BinOp::Union` of homogeneous-Kind sub-literals (`{1, 'a'}` →
+    `{1} | {'a'}`), grouped by first occurrence exactly like
+    `kind::union_if_distinct`. This reuses the union arm's existing
+    cross-kind datatype machinery (`build_union_datatype_sort`,
+    `membership_constraint_for_dt`) for free instead of adding
+    SetLit-specific multi-arm DT support — a manually-written `{1} | {'a'}`
+    domain already worked before this change, so the fix is purely a
+    desugaring at the AST→SemanticTree boundary, not new solver machinery.
+    The empty literal `{}` (`kind_of` is `TaggedUnion([])`, not a "real"
+    heterogeneous case) is explicitly excluded from the desugar to avoid an
+    empty union tree.
   - `membership_constraint`'s `SetLit` arm was generalized the same way
     (`literal_element_predicate`) — this had a latent soundness gap: for a
     non-integer-sorted `t`, the old code returned `Constrained(false)`

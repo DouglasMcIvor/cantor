@@ -3,7 +3,6 @@ You probably don't want to read this unless you're me.
 
 # To do
  
-- heterogeneous set literals in set-expression position (e.g. `{1, 'a'}` as a domain) — `solver::sort::scalar_kind_sort` reports `Unknown` for these today rather than building the cross-kind union datatype `set_sort` already knows how to build for `A | B`-style unions; homogeneous literal sets of any scalar builtin Kind work fine (`{'a', 'b'}`, `{true, false}`, …).
 - function overloads - support different kinds, currently only `foo : Nat`, `foo : NegInt` would work not `Bool`
 - more testing
   - some property based tests! we have a lot of unit tests but could go further, `proptest` crate recommended

@@ -1,0 +1,8 @@
+-- `x in {1, 'a', true}` — a genuine runtime membership check against a
+-- 3-way heterogeneous literal (mixed Int/Char/Bool elements), not just a
+-- signature domain (which can be statically elided).
+check : Int -> Bool
+check(x) = x in {1, 'a', true}
+
+main : -> Bool
+main() = check(1)

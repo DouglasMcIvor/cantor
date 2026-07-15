@@ -190,3 +190,66 @@ fn kleene_disjoint_union_not_disjoint_counterexample() {
         out.stdout
     );
 }
+
+// ── Heterogeneous set literals in set-expression position (`{1, 'a'}`) ─────
+
+#[test]
+fn heterogeneous_set_literal_as_domain_proved() {
+    let out = run_subcommand("heterogeneous_set_lit_domain.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 5"),
+        "expected f(1) == 5 under domain {{1, 'a'}}:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn heterogeneous_set_literal_domain_violation_is_a_counterexample() {
+    let out = run_file("heterogeneous_set_lit_domain_violation.cantor");
+    assert_ne!(out.code, 0, "should refuse to run:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("counterexample  main"),
+        "expected a counterexample for main:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("not in its declared domain"),
+        "expected a domain-violation reason:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn heterogeneous_set_literal_membership_true() {
+    let out = run_subcommand("heterogeneous_set_lit_membership.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 1"),
+        "expected 1 in {{1, 'a', true}} to be true:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn heterogeneous_set_literal_membership_false() {
+    let out = run_subcommand("heterogeneous_set_lit_membership_false.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 0"),
+        "expected 2 in {{1, 'a', true}} to be false:\n{}",
+        out.stdout
+    );
+}
