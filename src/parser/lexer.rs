@@ -9,6 +9,13 @@ pub enum Token {
     Int(i64),
     Char(char),
     Str(String),
+    /// `"a{expr}b"` — an interpolated string with at least one `{expr}`
+    /// chunk. A plain string with no unescaped `{` still lexes as the
+    /// simpler `Token::Str` above; this variant only appears once
+    /// interpolation is actually present, so no other token/parser code
+    /// needs to change for the (overwhelmingly common) non-interpolated
+    /// case. Desugared into a `++`/`show(...)` chain in `parser::expr`.
+    InterpStr(Vec<StrPart>),
 
     // Keywords — expressions
     True,
@@ -90,12 +97,27 @@ pub enum Token {
     Eof,
 }
 
+/// One chunk of an interpolated string, produced by the lexer's
+/// brace-depth-aware scan (`Lexer::scan_string_literal`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum StrPart {
+    /// Literal text between/around `{...}` chunks, escapes already decoded.
+    Lit(String),
+    /// The raw, not-yet-parsed source text of one `{expr}` chunk (braces
+    /// excluded) plus its span within the *original* source file — the
+    /// parser re-lexes/re-parses this text with a fresh `Parser` and shifts
+    /// the resulting spans by `span.start` so error messages still point at
+    /// the right place in the original file.
+    Expr(String, Span),
+}
+
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Token::Int(n) => write!(f, "{n}"),
             Token::Char(c) => write!(f, "{c:?}"),
             Token::Str(s) => write!(f, "{s:?}"),
+            Token::InterpStr(_) => f.write_str("interpolated string"),
             Token::Ident(s) => write!(f, "`{s}`"),
             Token::True => f.write_str("true"),
             Token::False => f.write_str("false"),
@@ -313,8 +335,15 @@ impl<'src> Lexer<'src> {
         }
     }
 
+    /// Scans `"..."`, splitting on unescaped `{expr}` chunks into
+    /// interpolation parts. `{{`/`}}` are the escapes for a literal
+    /// `{`/`}`. A string with no unescaped `{` at all still produces the
+    /// plain `Token::Str` (zero behaviour change for the non-interpolated
+    /// case, which is the overwhelming majority of string literals).
     fn scan_string_literal(&mut self, start: usize) -> Result<(Token, Span), CompileError> {
-        let mut s = String::new();
+        let mut parts: Vec<StrPart> = Vec::new();
+        let mut lit = String::new();
+        let mut interpolated = false;
         loop {
             match self.peek_char() {
                 None | Some('\n') => {
@@ -325,16 +354,160 @@ impl<'src> Lexer<'src> {
                 }
                 Some('"') => {
                     self.advance_char();
-                    return Ok((Token::Str(s), Span::new(start as u32, self.pos as u32)));
+                    let end = Span::new(start as u32, self.pos as u32);
+                    if !interpolated {
+                        return Ok((Token::Str(lit), end));
+                    }
+                    parts.push(StrPart::Lit(std::mem::take(&mut lit)));
+                    return Ok((Token::InterpStr(parts), end));
+                }
+                Some('{') => {
+                    self.advance_char();
+                    if self.peek_char() == Some('{') {
+                        self.advance_char();
+                        lit.push('{');
+                        continue;
+                    }
+                    interpolated = true;
+                    parts.push(StrPart::Lit(std::mem::take(&mut lit)));
+                    let expr_start = self.pos;
+                    self.scan_interp_expr_body(start)?;
+                    let expr_end = self.pos;
+                    let raw = self.src[expr_start..expr_end].to_owned();
+                    self.advance_char(); // the matching '}', left unconsumed by the scan above
+                    parts.push(StrPart::Expr(
+                        raw,
+                        Span::new(expr_start as u32, expr_end as u32),
+                    ));
+                }
+                Some('}') => {
+                    self.advance_char();
+                    if self.peek_char() == Some('}') {
+                        self.advance_char();
+                        lit.push('}');
+                    } else {
+                        return Err(CompileError::InvalidInterpolation {
+                            reason: "`}` with no matching `{` — write `}}` for a literal `}`"
+                                .to_owned(),
+                            span: Span::new(self.pos as u32 - 1, self.pos as u32),
+                        });
+                    }
                 }
                 Some('\\') => {
                     let escape_start = self.pos;
                     self.advance_char();
-                    s.push(self.scan_escape(escape_start)?);
+                    lit.push(self.scan_escape(escape_start)?);
                 }
                 Some(c) => {
                     self.advance_char();
-                    s.push(c);
+                    lit.push(c);
+                }
+            }
+        }
+    }
+
+    /// Scans forward from the first character of an embedded `{expr}`
+    /// interpolation body to the matching unescaped `}`, without consuming
+    /// it — `self.pos` ends pointing exactly at that `}`. Tracks
+    /// `( [ {`/`) ] }` nesting (all sharing one depth counter — this only
+    /// needs to find the right boundary, not fully validate bracket
+    /// matching; the recursive re-parse of the extracted text does that)
+    /// so a nested call/tuple/set-literal/comprehension doesn't terminate
+    /// the scan early, and skips over `'...'`/`"..."` literals verbatim
+    /// (escapes included) so a brace/paren inside one of those — including
+    /// a further nested interpolation — doesn't miscount.
+    fn scan_interp_expr_body(&mut self, str_start: usize) -> Result<(), CompileError> {
+        let mut depth: i32 = 0;
+        loop {
+            match self.peek_char() {
+                None => {
+                    return Err(CompileError::InvalidInterpolation {
+                        reason: "unterminated `{` — no matching `}` before the string ended"
+                            .to_owned(),
+                        span: Span::new(str_start as u32, self.pos as u32),
+                    });
+                }
+                Some('}') if depth == 0 => return Ok(()),
+                Some('}') => {
+                    depth -= 1;
+                    self.advance_char();
+                }
+                Some('{' | '(' | '[') => {
+                    depth += 1;
+                    self.advance_char();
+                }
+                Some(')' | ']') => {
+                    depth -= 1;
+                    self.advance_char();
+                }
+                Some('\'') => self.skip_char_literal_verbatim()?,
+                Some('"') => self.skip_string_literal_verbatim()?,
+                Some(_) => {
+                    self.advance_char();
+                }
+            }
+        }
+    }
+
+    /// Skips over a `'...'` char literal without decoding it, for the
+    /// benefit of `scan_interp_expr_body`'s brace-depth scan — a literal
+    /// `'{'`/`'}'`/`'('`/`')'` must not affect bracket counting.
+    fn skip_char_literal_verbatim(&mut self) -> Result<(), CompileError> {
+        let start = self.pos;
+        self.advance_char(); // opening '\''
+        match self.peek_char() {
+            None | Some('\n') => {
+                return Err(CompileError::UnterminatedLiteral {
+                    quote: '\'',
+                    span: Span::new(start as u32, self.pos as u32),
+                });
+            }
+            Some('\\') => {
+                self.advance_char();
+                self.advance_char();
+            }
+            Some(_) => {
+                self.advance_char();
+            }
+        }
+        if self.peek_char() == Some('\'') {
+            self.advance_char();
+            Ok(())
+        } else {
+            Err(CompileError::UnterminatedLiteral {
+                quote: '\'',
+                span: Span::new(start as u32, self.pos as u32),
+            })
+        }
+    }
+
+    /// Skips over a `"..."` string literal without decoding it — same
+    /// reasoning as `skip_char_literal_verbatim`. Deliberately does not
+    /// recurse into its own `{expr}` interpolation chunks (if any): the
+    /// brace-depth scan here only needs the *outer* string's closing quote,
+    /// nested interpolation is re-discovered independently when this
+    /// substring is itself re-lexed later.
+    fn skip_string_literal_verbatim(&mut self) -> Result<(), CompileError> {
+        let start = self.pos;
+        self.advance_char(); // opening '"'
+        loop {
+            match self.peek_char() {
+                None | Some('\n') => {
+                    return Err(CompileError::UnterminatedLiteral {
+                        quote: '"',
+                        span: Span::new(start as u32, self.pos as u32),
+                    });
+                }
+                Some('"') => {
+                    self.advance_char();
+                    return Ok(());
+                }
+                Some('\\') => {
+                    self.advance_char();
+                    self.advance_char();
+                }
+                Some(_) => {
+                    self.advance_char();
                 }
             }
         }

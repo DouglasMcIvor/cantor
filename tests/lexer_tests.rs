@@ -86,6 +86,125 @@ fn lex_string_escapes() {
     );
 }
 
+// ── String interpolation ──────────────────────────────────────────────────────
+
+#[test]
+fn lex_interp_single_chunk() {
+    use cantor::parser::lexer::StrPart;
+    assert_eq!(
+        lex_all(r#""a{x}b""#),
+        vec![
+            Token::InterpStr(vec![
+                StrPart::Lit("a".into()),
+                StrPart::Expr("x".into(), cantor::span::Span::new(3, 4)),
+                StrPart::Lit("b".into()),
+            ]),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn lex_interp_leading_and_trailing_chunks_can_be_empty() {
+    use cantor::parser::lexer::StrPart;
+    assert_eq!(
+        lex_all(r#""{x}""#),
+        vec![
+            Token::InterpStr(vec![
+                StrPart::Lit(String::new()),
+                StrPart::Expr("x".into(), cantor::span::Span::new(2, 3)),
+                StrPart::Lit(String::new()),
+            ]),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn lex_interp_multiple_chunks() {
+    use cantor::parser::lexer::StrPart;
+    assert_eq!(
+        lex_all(r#""{x}{y}""#),
+        vec![
+            Token::InterpStr(vec![
+                StrPart::Lit(String::new()),
+                StrPart::Expr("x".into(), cantor::span::Span::new(2, 3)),
+                StrPart::Lit(String::new()),
+                StrPart::Expr("y".into(), cantor::span::Span::new(5, 6)),
+                StrPart::Lit(String::new()),
+            ]),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn lex_interp_escaped_braces_stay_plain_str() {
+    // No unescaped `{` at all ⇒ still the plain, non-interpolated token.
+    assert_eq!(
+        lex_all("\"{{literal}}\""),
+        vec![Token::Str("{literal}".into()), Token::Eof]
+    );
+}
+
+#[test]
+fn lex_interp_nested_braces_in_expr_dont_terminate_early() {
+    use cantor::parser::lexer::StrPart;
+    assert_eq!(
+        lex_all(r#""{ {1,2,3} }""#),
+        vec![
+            Token::InterpStr(vec![
+                StrPart::Lit(String::new()),
+                StrPart::Expr(" {1,2,3} ".into(), cantor::span::Span::new(2, 11)),
+                StrPart::Lit(String::new()),
+            ]),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn lex_interp_nested_string_in_expr_dont_terminate_early() {
+    use cantor::parser::lexer::StrPart;
+    assert_eq!(
+        lex_all(r#""{show("}")}""#),
+        vec![
+            Token::InterpStr(vec![
+                StrPart::Lit(String::new()),
+                StrPart::Expr(r#"show("}")"#.into(), cantor::span::Span::new(2, 11)),
+                StrPart::Lit(String::new()),
+            ]),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn lex_interp_nested_char_in_expr_dont_terminate_early() {
+    use cantor::parser::lexer::StrPart;
+    assert_eq!(
+        lex_all(r#""{'{'}""#),
+        vec![
+            Token::InterpStr(vec![
+                StrPart::Lit(String::new()),
+                StrPart::Expr("'{'".into(), cantor::span::Span::new(2, 5)),
+                StrPart::Lit(String::new()),
+            ]),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn lex_interp_unterminated_brace_errors() {
+    assert!(lex_err(r#""a{x"#).contains("no matching `}`"));
+}
+
+#[test]
+fn lex_interp_stray_close_brace_errors() {
+    assert!(lex_err(r#""a}b""#).contains("no matching `{`"));
+}
+
 #[test]
 fn lex_unicode_escape() {
     assert_eq!(lex_all(r"'\u{1F600}'"), vec![Token::Char('😀'), Token::Eof]);

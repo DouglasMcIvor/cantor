@@ -2,7 +2,7 @@
 //! and the postfix `?`/`.N`/`[expr]`/Kleene-star operators.
 
 use super::Parser;
-use super::lexer::Token;
+use super::lexer::{StrPart, Token};
 
 use crate::{
     ast::{BinOp, Expr, ExprKind, UnOp},
@@ -21,6 +21,7 @@ fn token_starts_expr_after_star(tok: &Token) -> bool {
         Token::Int(_)
             | Token::Char(_)
             | Token::Str(_)
+            | Token::InterpStr(_)
             | Token::True
             | Token::False
             | Token::Ident(_)
@@ -295,6 +296,10 @@ impl<'src> Parser<'src> {
                     .collect();
                 Ok(Expr::new(ExprKind::Tuple(elems), span))
             }
+            Token::InterpStr(parts) => {
+                self.advance()?;
+                desugar_interp_parts(parts, span)
+            }
             Token::Ident(name) => {
                 self.advance()?;
                 if self.peek() == &Token::LParen {
@@ -485,6 +490,7 @@ impl<'src> Parser<'src> {
             Token::Int(_)
                 | Token::Char(_)
                 | Token::Str(_)
+                | Token::InterpStr(_)
                 | Token::True
                 | Token::False
                 | Token::Ident(_)
@@ -511,4 +517,71 @@ impl<'src> Parser<'src> {
         }
         Ok(expr)
     }
+}
+
+/// Desugars an interpolated string's parts (`Token::InterpStr`, produced by
+/// `Lexer::scan_string_literal`) into a left-associated `++` chain over
+/// literal-chunk `Tuple`s and `show(...)` calls — e.g. `"n={x}!"` becomes
+/// `('n', '=') ++ show(x) ++ ('!')`, reusing the exact `Tuple`-of-`CharLit`
+/// shape `Expr::string_lit`/plain `Token::Str` already produces so every
+/// piece coerces to `Vector(Char)` via existing machinery, no new solver/
+/// codegen support needed for the string parts themselves. Each `{expr}`
+/// chunk is parsed independently (`super::parse_expr`, the same free
+/// function `Parser::new` + `parse_expr_eof` wraps) via a fresh `Lexer`/
+/// `Parser` over its own raw source text, then `Expr::shift_spans`/
+/// `CompileError::shift_span` move every resulting span from "offset 0
+/// within the extracted substring" to its real position in the original
+/// file — so a mistake inside `{...}` still points at the right column.
+fn desugar_interp_parts(parts: Vec<StrPart>, token_span: Span) -> Result<Expr, CompileError> {
+    let mut pieces: Vec<Expr> = Vec::new();
+    for part in parts {
+        match part {
+            StrPart::Lit(s) => {
+                // Empty chunks (e.g. the leading/trailing `Lit` around a
+                // string that starts/ends with `{...}`, or between two
+                // adjacent `{...}{...}` chunks) are omitted rather than
+                // contributing an empty `Tuple(vec![])` — an empty tuple
+                // doesn't coerce cleanly to `Vector` (`kind::merge_concat_kinds`
+                // needs a non-empty tuple on at least one side to borrow an
+                // element Kind from).
+                if s.is_empty() {
+                    continue;
+                }
+                let elems = s
+                    .chars()
+                    .map(|c| Expr::new(ExprKind::CharLit(c), token_span))
+                    .collect();
+                pieces.push(Expr::new(ExprKind::Tuple(elems), token_span));
+            }
+            StrPart::Expr(raw, chunk_span) => {
+                let mut expr =
+                    super::parse_expr(&raw).map_err(|e| e.shift_span(chunk_span.start))?;
+                expr.shift_spans(chunk_span.start);
+                pieces.push(Expr::new(
+                    ExprKind::Call {
+                        callee: Symbol::new("show"),
+                        args: vec![expr],
+                    },
+                    chunk_span,
+                ));
+            }
+        }
+    }
+    // `interpolated` (the flag guarding `Token::InterpStr` vs plain
+    // `Token::Str`) is only ever set once at least one `{expr}` chunk was
+    // scanned, so `pieces` always has at least one element here.
+    let mut iter = pieces.into_iter();
+    let first = iter
+        .next()
+        .expect("interpolated string must have at least one {expr} chunk");
+    Ok(iter.fold(first, |acc, next| {
+        Expr::new(
+            ExprKind::BinOp {
+                op: BinOp::Concat,
+                lhs: Box::new(acc),
+                rhs: Box::new(next),
+            },
+            token_span,
+        )
+    }))
 }

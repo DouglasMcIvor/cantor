@@ -117,6 +117,68 @@ impl Expr {
             Span::dummy(),
         )
     }
+
+    /// Recursively adds `offset` to every span in this expression tree —
+    /// used when this expression was parsed from an extracted substring
+    /// (a string interpolation `{expr}` chunk, `parser::expr`'s
+    /// `desugar_interp_parts`) whose own spans start at 0, so the tree ends
+    /// up pointing at the right place in the *original* source file.
+    pub fn shift_spans(&mut self, offset: u32) {
+        self.span.start += offset;
+        self.span.end += offset;
+        match &mut self.kind {
+            ExprKind::IntLit(_)
+            | ExprKind::BoolLit(_)
+            | ExprKind::CharLit(_)
+            | ExprKind::Var(_)
+            | ExprKind::FailLit
+            | ExprKind::NoneLit => {}
+            ExprKind::BinOp { lhs, rhs, .. } => {
+                lhs.shift_spans(offset);
+                rhs.shift_spans(offset);
+            }
+            ExprKind::UnOp { expr, .. } => expr.shift_spans(offset),
+            ExprKind::Call { args, .. } => {
+                for a in args {
+                    a.shift_spans(offset);
+                }
+            }
+            ExprKind::If {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                cond.shift_spans(offset);
+                then_expr.shift_spans(offset);
+                else_expr.shift_spans(offset);
+            }
+            ExprKind::SetLit(elems) | ExprKind::Tuple(elems) => {
+                for e in elems {
+                    e.shift_spans(offset);
+                }
+            }
+            ExprKind::Try(e) | ExprKind::FailWith(e) | ExprKind::KleeneStar(e) => {
+                e.shift_spans(offset);
+            }
+            ExprKind::Comprehension {
+                output,
+                source,
+                filter,
+                ..
+            } => {
+                output.shift_spans(offset);
+                source.shift_spans(offset);
+                if let Some(f) = filter {
+                    f.shift_spans(offset);
+                }
+            }
+            ExprKind::Proj { base, .. } => base.shift_spans(offset),
+            ExprKind::Index { base, index } => {
+                base.shift_spans(offset);
+                index.shift_spans(offset);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

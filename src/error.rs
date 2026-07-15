@@ -74,6 +74,13 @@ pub enum CompileError {
         reason: String,
         span: Span,
     },
+    /// A `"..."` string interpolation `{expr}` chunk is malformed: an
+    /// unescaped `}` in literal text with no matching `{` (write `}}` for a
+    /// literal `}`), or a `{` with no matching `}` before the string ends.
+    InvalidInterpolation {
+        reason: String,
+        span: Span,
+    },
     NamingConvention {
         message: String,
         span: Span,
@@ -164,6 +171,9 @@ impl std::fmt::Display for CompileError {
             Self::InvalidUnicodeEscape { reason, .. } => {
                 write!(f, "invalid unicode escape: {reason}")
             }
+            Self::InvalidInterpolation { reason, .. } => {
+                write!(f, "invalid string interpolation: {reason}")
+            }
             Self::NamingConvention { message, .. } => write!(f, "naming: {message}"),
             Self::OverloadKindMismatch { name, detail, .. } => {
                 write!(f, "overloads of `{name}` disagree: {detail}")
@@ -225,6 +235,37 @@ impl CompileError {
         Some(offset_to_line_col(src, span.start))
     }
 
+    /// Shifts this error's span (if it carries one) by `offset` — used when
+    /// the error came from re-parsing an extracted substring (a string
+    /// interpolation `{expr}` chunk, `parser::expr`'s `desugar_interp_parts`)
+    /// so it still points at the right place in the *original* source file
+    /// rather than at an offset-0 position within the extracted text. ICEs
+    /// carry a Rust location, not a Cantor span, so are untouched.
+    pub fn shift_span(mut self, offset: u32) -> Self {
+        let span = match &mut self {
+            Self::UndefinedVariable { span, .. } => span,
+            Self::UndefinedFunction { span, .. } => span,
+            Self::UnexpectedToken { span, .. } => span,
+            Self::InvalidIntLiteral { span, .. } => span,
+            Self::InvalidCharLiteral { span, .. } => span,
+            Self::UnterminatedLiteral { span, .. } => span,
+            Self::InvalidEscape { span, .. } => span,
+            Self::InvalidUnicodeEscape { span, .. } => span,
+            Self::InvalidInterpolation { span, .. } => span,
+            Self::NamingConvention { span, .. } => span,
+            Self::OverloadKindMismatch { span, .. } => span,
+            Self::NoMatchingOverload { span, .. } => span,
+            Self::Unsupported { span, .. } => span,
+            Self::InvalidSetExpression { span, .. } => span,
+            Self::IllFoundedRecursiveSet { span, .. } => span,
+            Self::EventLoopMainShape { span, .. } => span,
+            Self::Ice { .. } => return self,
+        };
+        span.start += offset;
+        span.end += offset;
+        self
+    }
+
     fn span(&self) -> Option<Span> {
         match self {
             Self::UndefinedVariable { span, .. } => Some(*span),
@@ -235,6 +276,7 @@ impl CompileError {
             Self::UnterminatedLiteral { span, .. } => Some(*span),
             Self::InvalidEscape { span, .. } => Some(*span),
             Self::InvalidUnicodeEscape { span, .. } => Some(*span),
+            Self::InvalidInterpolation { span, .. } => Some(*span),
             Self::NamingConvention { span, .. } => Some(*span),
             Self::OverloadKindMismatch { span, .. } => Some(*span),
             Self::NoMatchingOverload { span, .. } => Some(*span),
