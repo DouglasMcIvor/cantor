@@ -19,8 +19,13 @@
 //! time (`kind::set_kind`'s `DefKind::Distinct` arm) and so shows as its
 //! raw underlying integer — a known, documented limitation, not a bug.
 //!
-//! `TaggedUnion` (`T | Fail | ...`) is not yet implemented here — see the
-//! `Kind::TaggedUnion` arm below.
+//! A general `TaggedUnion` (e.g. `(Int * Int) | Int`) does real runtime tag
+//! dispatch (`compile_show_tagged_union`) — a genuine LLVM branch per arm,
+//! not a `select`-chain, since evaluating an inactive arm's `show()` would
+//! reinterpret garbage leaf bits as that arm's Kind. This is a *different*
+//! wire shape from `T | Fail`/`T | None` (`compile_show_fail_struct`'s
+//! `{i8 tag, i64 payload}` struct) — the two never overlap, see
+//! `extract_kind_from_leaves`'s doc comment for why.
 
 use inkwell::{
     IntPredicate,
@@ -119,10 +124,7 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Vector(ek) if **ek == Kind::Char => Ok(val),
             Kind::Vector(ek) => self.compile_show_vector(ek, val, span),
             Kind::Set(ek) => self.compile_show_set(ek, val, span),
-            Kind::TaggedUnion(_) => Err(CompileError::Unsupported {
-                feature: "show on a union value (T | Fail | ...)".to_owned(),
-                span,
-            }),
+            Kind::TaggedUnion(arms) => self.compile_show_tagged_union(arms, val, span),
         }
     }
 
@@ -306,6 +308,120 @@ impl<'ctx> Compiler<'ctx> {
             (&none_str, none_bb_end),
             (&success_str, success_bb_end),
         ]);
+        Ok(phi.as_basic_value())
+    }
+
+    /// A general `TaggedUnion(arms)` value — real per-arm runtime dispatch
+    /// (a genuine `switch` + N basic blocks), never a `select`-chain: an
+    /// inactive arm's leaf bits are garbage for any *other* arm's Kind
+    /// (unlike `compile_tagged_union_seq_index`'s sequence-unification
+    /// case, `expr_vec.rs`, where every arm shares one element Kind and
+    /// reinterpreting bits is always safe), so evaluating every arm
+    /// unconditionally would be unsound — could dereference a bogus
+    /// pointer if one arm is e.g. a `Vector`.
+    fn compile_show_tagged_union(
+        &self,
+        arms: &[Kind],
+        val: BasicValueEnum<'ctx>,
+        span: Span,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+        let struct_val = val.into_struct_value();
+        let agg = AggregateValueEnum::StructValue(struct_val);
+        let tag = self
+            .builder
+            .build_extract_value(struct_val, 0, "show_tu_tag")
+            .map_err(err)?
+            .into_int_value();
+
+        let function = self
+            .current_fn
+            .ok_or_else(|| CompileError::ice("show on a union value outside a function"))?;
+        let after_bb = self.context.append_basic_block(function, "show_tu_after");
+        let trap_bb = self.context.append_basic_block(function, "show_tu_trap");
+
+        let i32t = self.context.i32_type();
+        let arm_bbs: Vec<_> = (0..arms.len())
+            .map(|i| {
+                self.context
+                    .append_basic_block(function, &format!("show_tu_arm{i}"))
+            })
+            .collect();
+        let cases: Vec<_> = arm_bbs
+            .iter()
+            .enumerate()
+            .map(|(i, bb)| (i32t.const_int(i as u64, false), *bb))
+            .collect();
+        self.builder
+            .build_switch(tag, trap_bb, &cases)
+            .map_err(err)?;
+
+        let mut incoming: Vec<(BasicValueEnum<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> =
+            Vec::with_capacity(arms.len());
+        for (i, arm_kind) in arms.iter().enumerate() {
+            self.builder.position_at_end(arm_bbs[i]);
+            let mut field_idx = 1u32;
+            let decoded = self.extract_kind_from_leaves(agg, arm_kind, &mut field_idx)?;
+            let shown = self.compile_show(arm_kind, decoded, span)?;
+            self.builder
+                .build_unconditional_branch(after_bb)
+                .map_err(err)?;
+            incoming.push((shown, self.builder.get_insert_block().unwrap()));
+        }
+
+        // Defensive trap — the solver proves the tag is always one of
+        // `arms`' indices (union coverage), so this is unreachable at
+        // runtime in any proved program; same safety-net convention as
+        // `overload_dispatch.rs`'s `cantor_dispatch_unreachable` (a loud
+        // trap rather than a silent `unreachable`, in case that proof is
+        // ever wrong).
+        self.builder.position_at_end(trap_bb);
+        let msg = match &self.overflow_ctx {
+            Some((path, src)) => {
+                let (line, col) = crate::span::offset_to_line_col(src, span.start);
+                format!(
+                    "{path}:{line}:{col}: show on a TaggedUnion hit an out-of-range tag \
+                     (internal error — the solver should have proved union coverage)"
+                )
+            }
+            None => "show on a TaggedUnion hit an out-of-range tag (internal error — the \
+                     solver should have proved union coverage)"
+                .to_owned(),
+        };
+        let msg_global = self
+            .builder
+            .build_global_string_ptr(&msg, "show_tu_trap_msg")
+            .map_err(err)?;
+        let msg_i64 = self
+            .builder
+            .build_ptr_to_int(
+                msg_global.as_pointer_value(),
+                self.context.i64_type(),
+                "show_tu_trap_msg_i64",
+            )
+            .map_err(err)?;
+        let trap_fn = self
+            .module
+            .get_function("cantor_dispatch_unreachable")
+            .ok_or_else(|| CompileError::ice("cantor_dispatch_unreachable not declared"))?;
+        self.builder
+            .build_call(trap_fn, &[msg_i64.into()], "show_tu_trap_call")
+            .map_err(err)?;
+        self.builder.build_unreachable().map_err(err)?;
+
+        self.builder.position_at_end(after_bb);
+        let phi = self
+            .builder
+            .build_phi(self.context.i64_type(), "show_tu_result")
+            .map_err(err)?;
+        let incoming_refs: Vec<(
+            &dyn inkwell::values::BasicValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
+        )> = incoming
+            .iter()
+            .map(|(v, bb)| (v as &dyn inkwell::values::BasicValue<'ctx>, *bb))
+            .collect();
+        phi.add_incoming(&incoming_refs);
         Ok(phi.as_basic_value())
     }
 

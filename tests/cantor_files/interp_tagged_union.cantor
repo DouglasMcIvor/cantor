@@ -1,0 +1,9 @@
+-- String interpolation directly on a TaggedUnion-typed variable.
+f : Int -> (Int * Int) | Int
+f(x) = if x == 0 then (1, 2) else x
+
+main : -> Char*
+main() {
+    x : (Int * Int) | Int = f(7)
+    "result: {x}"
+}

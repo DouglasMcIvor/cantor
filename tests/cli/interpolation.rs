@@ -160,19 +160,50 @@ fn show_on_t_or_fail_or_none_actual_none_shows_none() {
 }
 
 #[test]
-fn show_on_a_general_multi_arm_union_is_not_yet_supported() {
+fn show_on_a_general_multi_arm_union_does_real_tag_dispatch() {
     // A genuine TaggedUnion (not the specialized `T | Fail`/`T | None` wire
-    // shape) must fail loudly, not silently misbehave — Commit 3 scope,
-    // not yet implemented. `show`'s error is raised during codegen (inside
-    // `compile_show`), which only runs under `cantor run`/`llvm-ir`/`build`
-    // — bare `cantor <path>` only proves, so it wouldn't reach this code
-    // path at all.
-    let out = run_subcommand("show_general_union_unsupported.cantor");
-    assert_ne!(out.code, 0, "should refuse to run:\n{}", out.stdout);
+    // shape) — each arm is decoded from its own leaf slots and shown with
+    // its own Kind, via a real runtime branch per arm.
+    let out = run_subcommand("show_tagged_union.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
     assert!(
-        out.stderr.contains("not yet supported") && out.stderr.contains("show on a union value"),
-        "expected a not-yet-supported diagnostic:\n{}",
-        out.stderr
+        out.stdout.contains("main() = (1, 2) 3"),
+        "expected both arms shown with their own Kind:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn show_on_a_tagged_union_nested_inside_a_tuple() {
+    let out = run_subcommand("show_tagged_union_nested_in_tuple.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = ((1, 2), 3)"),
+        "expected the nested union arms shown correctly inside the tuple:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn interp_directly_on_a_tagged_union_variable() {
+    let out = run_subcommand("interp_tagged_union.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = result: 7"),
+        "expected the interpolated union value:\n{}",
+        out.stdout
     );
 }
 

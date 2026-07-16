@@ -342,6 +342,84 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    /// The exact inverse of `insert_kind_leaves`: deserialise the i64 leaf
+    /// fields of a tagged-union struct (starting at `field_idx`, 1-based —
+    /// field 0 is the tag) back into an `arm_kind`-typed value. Used by
+    /// `codegen::show`'s general `TaggedUnion` dispatch to recover each
+    /// arm's own value before recursing `compile_show` on it. Must stay in
+    /// sync with `insert_kind_leaves` leaf-for-leaf.
+    ///
+    /// `arm_kind` is never the fallible-wire `Tuple([Fail|None, _])` shape
+    /// here: `kind::merge_if_branches`'s `is_fail_struct` check always wins
+    /// before any `TaggedUnion`-arm construction runs, so a genuine
+    /// multi-arm `TaggedUnion`'s arms can never themselves be that shape —
+    /// the `Kind::Tuple` case below asserts this invariant loudly instead
+    /// of silently building a mismatched struct if it's ever violated.
+    pub(crate) fn extract_kind_from_leaves(
+        &self,
+        agg: AggregateValueEnum<'ctx>,
+        arm_kind: &Kind,
+        field_idx: &mut u32,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+        match arm_kind {
+            Kind::Int | Kind::Int64 | Kind::Set(_) | Kind::Vector(_) => {
+                let leaf = self
+                    .builder
+                    .build_extract_value(agg, *field_idx, "tu_dl")
+                    .map_err(err)?;
+                *field_idx += 1;
+                Ok(leaf)
+            }
+            Kind::Bool | Kind::Fail | Kind::None => {
+                let leaf = self
+                    .builder
+                    .build_extract_value(agg, *field_idx, "tu_dl")
+                    .map_err(err)?;
+                *field_idx += 1;
+                let narrow = self
+                    .builder
+                    .build_int_truncate(leaf.into_int_value(), self.context.bool_type(), "tu_db")
+                    .map_err(err)?;
+                Ok(narrow.into())
+            }
+            Kind::Signed32 | Kind::Unsigned32 | Kind::Char => {
+                let leaf = self
+                    .builder
+                    .build_extract_value(agg, *field_idx, "tu_dl")
+                    .map_err(err)?;
+                *field_idx += 1;
+                let narrow = self
+                    .builder
+                    .build_int_truncate(leaf.into_int_value(), self.context.i32_type(), "tu_d32")
+                    .map_err(err)?;
+                Ok(narrow.into())
+            }
+            Kind::Tuple(elems) => {
+                if crate::kind::is_propagation_tuple(elems) {
+                    return Err(CompileError::ice(
+                        "extract_kind_from_leaves: a TaggedUnion arm cannot be the \
+                         fallible-wire Tuple shape (merge_if_branches always collapses \
+                         Fail/None into the whole value before a TaggedUnion arm is built)",
+                    ));
+                }
+                let struct_ty = self.kind_to_llvm_type(arm_kind).into_struct_type();
+                let mut out: AggregateValueEnum<'ctx> = struct_ty.get_undef().into();
+                for (i, ek) in elems.iter().enumerate() {
+                    let v = self.extract_kind_from_leaves(agg, ek, field_idx)?;
+                    out = self
+                        .builder
+                        .build_insert_value(out, v, i as u32, "tu_dt")
+                        .map_err(err)?;
+                }
+                Ok(out.into_struct_value().into())
+            }
+            Kind::TaggedUnion(_) => Err(CompileError::ice(
+                "extract_kind_from_leaves: nested TaggedUnion not yet supported",
+            )),
+        }
+    }
+
     /// Build a `{tag=0, i64=payload}` success-tagged struct.
     pub(crate) fn build_success_struct(
         &self,

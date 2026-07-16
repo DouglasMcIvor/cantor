@@ -1,0 +1,12 @@
+-- Builtin `show` on a genuine multi-arm TaggedUnion — real per-arm runtime
+-- tag dispatch (`compile_show_tagged_union`), not the specialized
+-- `T | Fail`/`T | None` 2-word wire shape (`compile_show_fail_struct`).
+f : Int -> (Int * Int) | Int
+f(x) = if x == 0 then (1, 2) else 3
+
+main : -> Char*
+main() {
+    a : (Int * Int) | Int = f(0)
+    b : (Int * Int) | Int = f(9)
+    show(a) ++ [char(32)] ++ show(b)
+}

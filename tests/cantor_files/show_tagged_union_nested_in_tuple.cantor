@@ -1,0 +1,9 @@
+-- Builtin `show` on a TaggedUnion value nested inside a Tuple field.
+f : Int -> (Int * Int) | Int
+f(x) = if x == 0 then (1, 2) else x
+
+main : -> Char*
+main() {
+    pair : ((Int * Int) | Int) * ((Int * Int) | Int) = (f(0), f(3))
+    show(pair)
+}
