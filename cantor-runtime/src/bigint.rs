@@ -11,8 +11,8 @@
 //!     narrower "small" range (the band near Int64's own extremes) boxes.
 //!   - low bit 1 → pointer to a heap-allocated `CantorBigInt`.
 //!
-//! `CantorBigInt` is `Box::into_raw` and never freed, exactly like every other
-//! heap object in this module (see `mod.rs`'s module doc comment) — no
+//! `CantorBigInt` is allocated through the `arena` module, exactly like every
+//! other heap object in this crate (see `lib.rs`'s module doc comment) — no
 //! refcounting/GC is introduced for this feature specifically.
 //!
 //! Every `cantor_bigint_*` entry point below takes/returns tagged words, never
@@ -43,10 +43,11 @@ fn encode_small(n: i64) -> Option<i64> {
     }
 }
 
-/// Heap-allocate `v` and tag the pointer. Never freed (see module doc comment).
+/// Arena-allocate `v` and tag the pointer (see `arena.rs` — allocation is
+/// registered for a deferred drop, not leaked, though nothing resets the
+/// arena yet).
 fn box_bigint(v: BigInt) -> i64 {
-    let ptr = Box::into_raw(Box::new(CantorBigInt(v))) as i64;
-    ptr | 1
+    crate::arena::alloc(CantorBigInt(v)) | 1
 }
 
 /// Encode `v`, choosing the small-int word when it fits, boxing otherwise.
@@ -327,7 +328,7 @@ impl CantorTaggedIntSet {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_tagged_set_new_i64() -> i64 {
-    Box::into_raw(Box::new(CantorTaggedIntSet::default())) as i64
+    crate::arena::alloc(CantorTaggedIntSet::default())
 }
 
 #[unsafe(no_mangle)]

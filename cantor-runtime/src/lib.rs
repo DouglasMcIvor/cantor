@@ -3,8 +3,13 @@
 //! All pointer arguments cross the ABI boundary as i64 (pointer-as-i64),
 //! matching the compiler's uniform i64 calling convention.
 //!
-//! Memory: sets and vectors are heap-allocated with Box::into_raw and never freed.
-//! TODO: replace with an arena scoped to the event-handler dispatch boundary.
+//! Memory: sets, vectors, and BigInts are heap-allocated through the `arena`
+//! module (see `arena.rs`), which registers each allocation for a deferred
+//! drop instead of leaking it via `Box::into_raw`. Nothing calls
+//! `arena::reset()` yet, so in practice allocations still live for the
+//! whole program's lifetime — TODO: wire `reset()` into the event-loop step
+//! boundary together with a root-preserving deep copy of `State` (see
+//! `event_loop.rs`).
 
 use std::sync::Arc;
 
@@ -46,7 +51,7 @@ impl CantorIntSet {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_set_new_i64() -> i64 {
-    Box::into_raw(Box::new(CantorIntSet::default())) as i64
+    crate::arena::alloc(CantorIntSet::default())
 }
 
 #[unsafe(no_mangle)]
@@ -105,7 +110,7 @@ impl CantorBoolSet {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_set_new_bool() -> i64 {
-    Box::into_raw(Box::new(CantorBoolSet::default())) as i64
+    crate::arena::alloc(CantorBoolSet::default())
 }
 
 #[unsafe(no_mangle)]
@@ -148,9 +153,9 @@ pub struct CantorVecI64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_vec_builder_new_i64() -> i64 {
-    Box::into_raw(Box::new(CantorVecBuilderI64 {
+    crate::arena::alloc(CantorVecBuilderI64 {
         builder: Int64Builder::new(),
-    })) as i64
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -160,13 +165,13 @@ pub extern "C" fn cantor_vec_builder_push_i64(builder: i64, val: i64) {
         .append_value(val);
 }
 
-/// Consume the builder and return a pointer to a frozen `CantorVecI64`.
-/// The builder is freed; the returned vec is heap-allocated (Box::into_raw).
+/// Freeze the builder into a `CantorVecI64`. The builder is left alive in
+/// the arena (not freed here) — arena semantics reclaim it later.
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_vec_builder_finish_i64(builder: i64) -> i64 {
-    let mut b = unsafe { Box::from_raw(builder as *mut CantorVecBuilderI64) };
+    let b = unsafe { &mut *(builder as *mut CantorVecBuilderI64) };
     let array = b.builder.finish();
-    Box::into_raw(Box::new(CantorVecI64 { array })) as i64
+    crate::arena::alloc(CantorVecI64 { array })
 }
 
 #[unsafe(no_mangle)]
@@ -191,9 +196,9 @@ pub extern "C" fn cantor_vec_push_i64(vec: i64, val: i64) -> i64 {
         builder.append_value(old.array.value(i));
     }
     builder.append_value(val);
-    Box::into_raw(Box::new(CantorVecI64 {
+    crate::arena::alloc(CantorVecI64 {
         array: builder.finish(),
-    })) as i64
+    })
 }
 
 // ── Bool vector (Kind::Vector(Kind::Bool)) ────────────────────────────────────
@@ -211,9 +216,9 @@ pub struct CantorVecBool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_vec_builder_new_bool() -> i64 {
-    Box::into_raw(Box::new(CantorVecBuilderBool {
+    crate::arena::alloc(CantorVecBuilderBool {
         builder: BooleanBuilder::new(),
-    })) as i64
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -225,9 +230,9 @@ pub extern "C" fn cantor_vec_builder_push_bool(builder: i64, val: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_vec_builder_finish_bool(builder: i64) -> i64 {
-    let mut b = unsafe { Box::from_raw(builder as *mut CantorVecBuilderBool) };
+    let b = unsafe { &mut *(builder as *mut CantorVecBuilderBool) };
     let array = b.builder.finish();
-    Box::into_raw(Box::new(CantorVecBool { array })) as i64
+    crate::arena::alloc(CantorVecBool { array })
 }
 
 #[unsafe(no_mangle)]
@@ -252,9 +257,9 @@ pub extern "C" fn cantor_vec_push_bool(vec: i64, val: i64) -> i64 {
         builder.append_value(old.array.value(i));
     }
     builder.append_value(val != 0);
-    Box::into_raw(Box::new(CantorVecBool {
+    crate::arena::alloc(CantorVecBool {
         array: builder.finish(),
-    })) as i64
+    })
 }
 
 // ── Vector concatenation ──────────────────────────────────────────────────────
@@ -271,9 +276,9 @@ pub extern "C" fn cantor_vec_concat_i64(a: i64, b: i64) -> i64 {
     for i in 0..vb.array.len() {
         builder.append_value(vb.array.value(i));
     }
-    Box::into_raw(Box::new(CantorVecI64 {
+    crate::arena::alloc(CantorVecI64 {
         array: builder.finish(),
-    })) as i64
+    })
 }
 
 /// Concatenate two Bool* vectors into a new one.
@@ -288,9 +293,9 @@ pub extern "C" fn cantor_vec_concat_bool(a: i64, b: i64) -> i64 {
     for i in 0..vb.array.len() {
         builder.append_value(vb.array.value(i));
     }
-    Box::into_raw(Box::new(CantorVecBool {
+    crate::arena::alloc(CantorVecBool {
         array: builder.finish(),
-    })) as i64
+    })
 }
 
 // ── Struct vectors ((A * B)*) ────────────────────────────────────────────────
@@ -327,10 +332,10 @@ fn make_struct_builder(n: usize) -> StructBuilder {
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_struct_vec_builder_new(n_fields: i64) -> i64 {
     let n = n_fields as usize;
-    Box::into_raw(Box::new(CantorStructVecBuilder {
+    crate::arena::alloc(CantorStructVecBuilder {
         n_fields: n,
         builder: make_struct_builder(n),
-    })) as i64
+    })
 }
 
 /// Append `value` to column `field_idx` of the current row.
@@ -351,9 +356,9 @@ pub extern "C" fn cantor_struct_vec_builder_push_field(builder: i64, field_idx: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_struct_vec_builder_finish(builder: i64) -> i64 {
-    let mut b = unsafe { Box::from_raw(builder as *mut CantorStructVecBuilder) };
+    let b = unsafe { &mut *(builder as *mut CantorStructVecBuilder) };
     let array = b.builder.finish();
-    Box::into_raw(Box::new(CantorStructVec { array })) as i64
+    crate::arena::alloc(CantorStructVec { array })
 }
 
 #[unsafe(no_mangle)]
@@ -403,7 +408,7 @@ pub extern "C" fn cantor_struct_vec_concat(a: i64, b: i64) -> i64 {
         }
     }
     let array = sb.finish();
-    Box::into_raw(Box::new(CantorStructVec { array })) as i64
+    crate::arena::alloc(CantorStructVec { array })
 }
 
 // ── Nested vectors (X** at any depth) ────────────────────────────────────────
@@ -444,9 +449,9 @@ pub struct CantorListVecBuilder {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_list_vec_builder_new() -> i64 {
-    Box::into_raw(Box::new(CantorListVecBuilder {
+    crate::arena::alloc(CantorListVecBuilder {
         builder: Int64Builder::new(),
-    })) as i64
+    })
 }
 
 /// Append one element (an i64 pointer to an inner vector, or any i64) to the builder.
@@ -459,9 +464,9 @@ pub extern "C" fn cantor_list_vec_builder_push(builder: i64, elem: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_list_vec_builder_finish(builder: i64) -> i64 {
-    let mut b = unsafe { Box::from_raw(builder as *mut CantorListVecBuilder) };
+    let b = unsafe { &mut *(builder as *mut CantorListVecBuilder) };
     let elems = b.builder.finish();
-    Box::into_raw(Box::new(CantorListVec { elems })) as i64
+    crate::arena::alloc(CantorListVec { elems })
 }
 
 /// Length of the outer list — valid for any depth.
@@ -491,9 +496,9 @@ pub extern "C" fn cantor_list_vec_concat(va: i64, vb: i64) -> i64 {
     for i in 0..b.elems.len() {
         builder.append_value(b.elems.value(i));
     }
-    Box::into_raw(Box::new(CantorListVec {
+    crate::arena::alloc(CantorListVec {
         elems: builder.finish(),
-    })) as i64
+    })
 }
 
 // ── Union vectors ((A | B)* with at least one Tuple arm) ─────────────────────
@@ -531,7 +536,7 @@ pub struct CantorUnionVec {
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_union_vec_builder_new(n_arms: i64) -> i64 {
     let n = n_arms as usize;
-    Box::into_raw(Box::new(CantorUnionVecBuilder {
+    crate::arena::alloc(CantorUnionVecBuilder {
         n_arms: n,
         arm_leaf_counts: vec![0; n],
         arm_col_builders: (0..n).map(|_| vec![]).collect(),
@@ -541,7 +546,7 @@ pub extern "C" fn cantor_union_vec_builder_new(n_arms: i64) -> i64 {
         in_row: false,
         current_arm: 0,
         leaves_pushed: 0,
-    })) as i64
+    })
 }
 
 /// Register arm `arm_idx` as having `n_leaves` leaf columns.
@@ -595,7 +600,7 @@ pub extern "C" fn cantor_union_vec_builder_push_leaf(
 /// Consume the builder, assemble a DenseUnionArray, and return a frozen CantorUnionVec.
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_union_vec_builder_finish(builder: i64) -> i64 {
-    let mut b = unsafe { Box::from_raw(builder as *mut CantorUnionVecBuilder) };
+    let b = unsafe { &mut *(builder as *mut CantorUnionVecBuilder) };
     let arm_leaf_counts = b.arm_leaf_counts.clone();
 
     let mut children: Vec<ArrayRef> = Vec::with_capacity(b.n_arms);
@@ -624,16 +629,16 @@ pub extern "C" fn cantor_union_vec_builder_finish(builder: i64) -> i64 {
     }
 
     let union_fields: UnionFields = union_field_list.into_iter().collect();
-    let type_ids_buf: ScalarBuffer<i8> = b.type_ids.into();
-    let offsets_buf: ScalarBuffer<i32> = b.offsets.into();
+    let type_ids_buf: ScalarBuffer<i8> = b.type_ids.clone().into();
+    let offsets_buf: ScalarBuffer<i32> = b.offsets.clone().into();
 
     let array = UnionArray::try_new(union_fields, type_ids_buf, Some(offsets_buf), children)
         .expect("cantor_union_vec_builder_finish: UnionArray::try_new failed");
 
-    Box::into_raw(Box::new(CantorUnionVec {
+    crate::arena::alloc(CantorUnionVec {
         array,
         arm_leaf_counts,
-    })) as i64
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -751,6 +756,7 @@ pub extern "C" fn cantor_dispatch_unreachable(msg_ptr: i64) {
     std::process::exit(1);
 }
 
+mod arena;
 mod bigint;
 pub mod event_loop;
 pub use bigint::*;
