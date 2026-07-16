@@ -2207,6 +2207,86 @@ construction above.
     larger feature; only the *set-expression-position* (domain/range/`in`)
     restriction is lifted here.
 
+#### String interpolation and builtin `show` (DONE)
+
+`"hello {name}"` interpolation syntax, plus a builtin `show` that converts
+a value of any currently-supported Kind into its `Char*` display form.
+
+- **Lexing.** `"..."` is scanned char-by-char as before, but a bare
+  unescaped `{` now opens an embedded-expression chunk: a brace/bracket/
+  paren-depth-aware raw scan (also tracking nested `'...'`/`"..."`
+  literals so they don't miscount) up to the matching unescaped `}`. `{{`/
+  `}}` are the escape for a literal `{`/`}`. A plain string with no `{` at
+  all still produces today's single-`Str` token — zero lexer behaviour
+  change for non-interpolated strings. An unterminated `{` is a
+  `CompileError::InvalidInterpolation` diagnostic, not a panic.
+- **Parsing/desugaring.** Each embedded-expression chunk is parsed by
+  running a *fresh* `Lexer`/`Parser` over that substring (reusing the whole
+  expression grammar for free), then its AST's spans are shifted
+  (`Expr::shift_spans`/`CompileError::shift_span`) so errors still point at
+  the right column in the original source. `"a{x}b"` desugars to a
+  left-associated `++` chain, `"a" ++ show(x) ++ "b"`, where each literal
+  chunk (`"a"`, `"b"`) is itself the same `Tuple`-of-`CharLit`s
+  `"hello"` already desugars to (`Expr::string_lit`). A leading/trailing
+  empty literal chunk is omitted rather than emitting an empty
+  `Tuple(vec![])` into the chain.
+- **`show` is a Rust-level compiler intrinsic** (recognized by name in
+  `codegen::expr_call::compile_call`, per-Kind `match` in
+  `codegen::show::compile_show`), the same recipe as `from`/`char`/the
+  auto-generated `distinct` constructors — not a bundled-Cantor-source
+  overload set, since its behaviour must recurse through arbitrary
+  compound Kinds at compile time. Elaboration
+  (`semantics::elaborate::builtin_call_kind`) always assigns it Kind
+  `Vector(Char)`; the solver (`solver::encode`) treats a `show(x)` result
+  as a fresh, wholly unconstrained `Seq Char` term (`x` itself is still
+  encoded, so any obligation it carries — e.g. `show(1/x)`'s `NonZeroInt`
+  check — is still generated) — nothing is ever provable about a `show`
+  result's *content*, matching the "never silently assume anything
+  unproved" rule.
+- **Display conventions:**
+  - A `Char*`/string always shows as its own bare literal text, at *any*
+    nesting depth — `show(["ab", "cd"])` prints `[ab, cd]`, not
+    `["ab", "cd"]`. This is also what makes `show` on an existing string a
+    no-op (codegen returns the argument pointer unchanged for
+    `Vector(Char)`).
+  - Containers print in a literal-like shape: `(a, b)` for `Tuple`,
+    `[a, b]` for `Vector`, `{a, b}` for `Set`.
+  - `true`/`false`, `fail`, `none` print as those literal words.
+  - A `distinct`/quotient/named-`Int`-subset value erases to bare
+    `Kind::Int` by codegen time (`kind::set_kind`'s `DefKind::Distinct`
+    arm) and so shows as its raw underlying integer — a known,
+    documented limitation (`show` cannot recover the distinct name at
+    runtime), not a bug.
+  - `Vector`/`Set` element display is a genuine runtime loop (the
+    established 3-basic-block idiom, `codegen::loops`'s
+    `compile_for_in_runtime_vector`), accumulating into a `Char*` alloca.
+- **Two distinct union wire shapes, both handled:**
+  - **`T | Fail` / `T | None`** share their runtime representation with a
+    literal `fail`/`fail n`/`none` expression — the same `{i8 tag, i64
+    payload}` struct (`Compiler::fail_struct_type`,
+    `kind::IfMerge::CoerceToFailStruct`). **Caught during testing:** an
+    earlier version of `show` assumed this shape always meant failure,
+    silently mis-displaying every ordinary *success* value of a `T | Fail`
+    variable as `"fail <bits>"`. Fixed with a real runtime tag read + a
+    genuine 3-way branch (`compile_show_fail_struct`): `TAG_SUCCESS`
+    shows the payload as `Int`, `TAG_FAIL` shows `"fail " ++ show(payload)`,
+    `TAG_NONE` shows `"none"`.
+  - **A general multi-arm `TaggedUnion`** (e.g. `(Int * Int) | Int`) is a
+    *different* wire shape (`{i32 tag, i64 leaf_0, …}`) and gets real
+    per-arm runtime dispatch (`compile_show_tagged_union`): a genuine
+    `switch` + one basic block per arm, **not** a `select`-chain — unlike
+    `compile_tagged_union_seq_index`'s sequence-unification case (every
+    arm shares one element Kind, so reinterpreting bits is always safe),
+    a general union's inactive arms have garbage leaf bits for any *other*
+    arm's Kind, so evaluating every arm unconditionally would be unsound.
+    Each arm's own value is recovered via `extract_kind_from_leaves`
+    (the decode counterpart of the existing `insert_kind_leaves`) before
+    recursing `compile_show` on it. These two shapes never overlap: a
+    `merge_if_branches` merge involving `Fail`/`None` always collapses to
+    the fallible-wire struct *before* any `TaggedUnion`-arm construction
+    runs, so a genuine multi-arm union's arms can never themselves be the
+    fallible-wire shape.
+
 ### Narrowing back to IntN
 
 Three mechanisms in order of increasing programmer responsibility:
