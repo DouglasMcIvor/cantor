@@ -1,0 +1,10 @@
+-- Builtin `show` on every scalar Kind: Int, Bool, Char, Signed32, Unsigned32.
+main : -> Char*
+main() {
+    n : Int = 42
+    b : Bool = true
+    c : Char = 'x'
+    s : Signed32 = signed32(0 - 7)
+    u : Unsigned32 = unsigned32(7)
+    show(n) ++ [char(32)] ++ show(b) ++ [char(32)] ++ show(c) ++ [char(32)] ++ show(s) ++ [char(32)] ++ show(u)
+}

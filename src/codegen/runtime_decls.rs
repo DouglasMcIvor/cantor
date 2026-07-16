@@ -237,5 +237,10 @@ impl<'ctx> Compiler<'ctx> {
             .add_function("cantor_bigint_cmp", i64t.fn_type(ii, false), None);
         self.module
             .add_function("cantor_bigint_to_string", i64t.fn_type(i, false), None);
+        // Builtin `show` (string interpolation, `codegen::show`): same
+        // decimal formatting as `cantor_bigint_to_string`, but returns a
+        // `Char*` (`Vector(Char)`) instead of a `CString`.
+        self.module
+            .add_function("cantor_show_bigint", i64t.fn_type(i, false), None);
     }
 }

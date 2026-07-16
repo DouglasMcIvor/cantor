@@ -1,0 +1,8 @@
+-- String interpolation: multiple `{expr}` chunks, each calling `show`
+-- implicitly, left-associated `++` chain.
+main : -> Char*
+main() {
+    n : Int = 42
+    b : Bool = true
+    "n={n} b={b} sum={n + 1}"
+}

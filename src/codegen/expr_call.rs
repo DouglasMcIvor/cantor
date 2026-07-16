@@ -177,6 +177,16 @@ impl<'ctx> Compiler<'ctx> {
             };
         }
 
+        // `show(x)` — builtin display conversion, any Kind to `Char*`.
+        // Backs string interpolation (`parser::expr`'s `desugar_interp_parts`
+        // desugars each `{expr}` chunk to `show(expr)`), also directly
+        // callable. Per-Kind logic lives in `codegen::show`.
+        if callee.0 == "show" && args.len() == 1 {
+            let (val, kind) = self.compile_expr(&args[0], env)?;
+            let result = self.compile_show(&kind, val, span)?;
+            return Ok((result, Kind::Vector(Box::new(Kind::Char))));
+        }
+
         // int-soundness-plan phase 2: overload dispatch. Absent from
         // `overload_dispatch` ⇒ today's plain path, unchanged (the
         // overwhelming common case). Present ⇒ resolve which candidate(s)

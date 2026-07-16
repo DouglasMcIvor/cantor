@@ -1,0 +1,6 @@
+-- Builtin `show` on a Tuple — parenthesized, comma-separated fields.
+main : -> Char*
+main() {
+    t : (Int * Bool * Char) = (1, true, 'z')
+    show(t)
+}

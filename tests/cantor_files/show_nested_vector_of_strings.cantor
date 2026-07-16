@@ -1,0 +1,8 @@
+-- Builtin `show` on Vector(Vector(Char)) — a string nested inside a
+-- container always shows bare, at any nesting depth, per the interpolation
+-- design plan: `["ab", "cd"]` prints as `[ab, cd]`, not `["ab", "cd"]`.
+main : -> Char*
+main() {
+    strs : Char** = ["ab", "cd"]
+    show(strs)
+}

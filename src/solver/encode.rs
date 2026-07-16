@@ -75,6 +75,31 @@ pub(crate) fn encode_expr<'tm>(
     // `size()`, `from()`, and `len()` are built-in call builtins that bypass the
     // final maybe_coerce (they return predicates / unwrapped scalars, not union values).
     if let SemExprKind::Call { callee, args } = &expr.kind {
+        // `show(x)` (string interpolation, `parser::expr`'s
+        // `desugar_interp_parts`) — encoded as a fresh, wholly unconstrained
+        // `Seq Char_sort` term: nothing is ever provable about a `show`
+        // result's *content*, so any `assert` that depended on it correctly
+        // comes back `Unknown` rather than a false proof (CLAUDE.md: never
+        // silently assume anything unproved) — mirrors `size()`'s "fresh
+        // uninterpreted constant, minimal known facts" treatment just below.
+        // `args[0]` is still encoded (and its errors still propagated) even
+        // though the resulting term is discarded — a `show(1 / x)` must
+        // still generate `1 / x`'s `NonZeroInt` obligation; only the value
+        // `show` computes from it is solver-opaque, not the argument
+        // expression's own obligations.
+        if callee.0 == "show" && args.len() == 1 {
+            enc!(&args[0])?;
+            let char_sort = ctx
+                .distinct_preds
+                .get(&Symbol::new("Char"))
+                .expect("Char must be registered as a builtin distinct sort")
+                .sort
+                .clone();
+            let seq_sort = ctx.tm.mk_sequence_sort(char_sort);
+            let fresh = format!("_show_{}", *ctx.call_counter);
+            *ctx.call_counter += 1;
+            return Ok(ctx.tm.mk_const(seq_sort, &fresh));
+        }
         // `len(xs)` — the number of elements in a vector (X* value).
         // Encoded as `seq.len(xs)` in the cvc5 sequence theory.
         if callee.0 == "len" && args.len() == 1 {

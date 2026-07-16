@@ -245,10 +245,20 @@ fn bucket_key(def: &SemFunctionDef) -> Vec<Kind> {
 }
 
 /// `codegen::compile_call`'s built-in identity/cardinality calls — never
-/// user-declared, so absent from `fn_sigs`. All four always return `Kind::Int`.
+/// user-declared, so absent from `fn_sigs`. `from`/`size`/`len` always
+/// return `Kind::Int`; `show` (string interpolation, `parser::expr`'s
+/// `desugar_interp_parts`) always returns `Kind::Vector(Char)` (`Char*`)
+/// instead — like the other three, its return Kind never depends on the
+/// argument's Kind, it's just a different constant one. `show`'s codegen
+/// (`codegen::show::compile_show`) recurses through the argument's actual
+/// Kind at compile time to decide *how* to build that `Char*`, but nothing
+/// here needs to know that.
 fn builtin_call_kind(callee: &Symbol, args_len: usize, name_defs: &NameDefs) -> Option<Kind> {
     if args_len != 1 {
         return None;
+    }
+    if callee.0 == "show" {
+        return Some(Kind::Vector(Box::new(Kind::Char)));
     }
     if callee.0 == "from" || callee.0 == "size" || callee.0 == "len" {
         return Some(Kind::Int);

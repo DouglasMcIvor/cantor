@@ -1,0 +1,13 @@
+-- Builtin `show` on a `T | Fail`-typed value that is actually a success.
+-- `T | Fail` shares its runtime wire shape with a literal `fail`/`fail n`
+-- expression (both are the same `{tag, i64}` struct,
+-- `kind::IfMerge::CoerceToFailStruct`) — `show` must read the runtime tag
+-- rather than assume this shape always means failure.
+f : Int -> Int | Fail
+f(x) = if x > 0 then x else fail
+
+main : -> Char*
+main() {
+    a : Int | Fail = f(5)
+    show(a)
+}

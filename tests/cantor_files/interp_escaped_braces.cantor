@@ -1,0 +1,7 @@
+-- String interpolation: `{{`/`}}` escape to a literal brace, alongside a
+-- real `{expr}` chunk in the same string.
+main : -> Char*
+main() {
+    n : Int = 3
+    "{{literal}} n={n}"
+}

@@ -271,6 +271,10 @@ impl<'ctx> Compiler<'ctx> {
                     "cantor_bigint_to_string",
                     runtime::cantor_bigint_to_string as *const () as usize,
                 ),
+                (
+                    "cantor_show_bigint",
+                    runtime::cantor_show_bigint as *const () as usize,
+                ),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))

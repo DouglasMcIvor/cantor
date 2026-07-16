@@ -1,0 +1,6 @@
+-- String interpolation: a single `{expr}` chunk surrounded by literal text.
+main : -> Char*
+main() {
+    name : Char* = "world"
+    "hello {name}!"
+}

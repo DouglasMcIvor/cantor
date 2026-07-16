@@ -1,0 +1,9 @@
+-- Builtin `show` on a `T | Fail | None`-typed value that is actually `none`.
+f : Int -> Int | Fail | None
+f(x) = if x > 0 then x else (if x < 0 then fail else none)
+
+main : -> Char*
+main() {
+    a : Int | Fail | None = f(0)
+    show(a)
+}

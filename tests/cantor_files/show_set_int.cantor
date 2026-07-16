@@ -1,0 +1,7 @@
+-- Builtin `show` on Set(Int) — curly-braced, comma-separated elements
+-- (distinct from Vector's square brackets).
+main : -> Char*
+main() {
+    s : Set(Int) = {2, 3, 5}
+    show(s)
+}

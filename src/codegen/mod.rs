@@ -31,6 +31,7 @@ mod membership;
 mod object;
 mod overload_dispatch;
 mod runtime_decls;
+mod show;
 mod trampoline;
 pub mod wire;
 

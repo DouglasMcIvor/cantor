@@ -255,6 +255,25 @@ pub extern "C" fn cantor_bigint_to_string(a: i64) -> i64 {
     c_string.into_raw() as i64
 }
 
+/// Renders `a` in base 10 as a `Char*` (`Vector(Char)`) value — the builtin
+/// `show`'s `Int`/`Int64`/`Signed32`/`Unsigned32` case (`codegen::show`,
+/// backing string interpolation, `parser::expr`'s `desugar_interp_parts`).
+/// Same decimal formatting as `cantor_bigint_to_string`, just packaged as
+/// the runtime's ordinary `Char*` Arrow-vector representation (via
+/// `event_loop::encode_char_star`, the same builder idiom every other
+/// `Char*`/string value in the compiler is built through) instead of a
+/// `CString`, so codegen can treat a `show(int)` result identically to any
+/// other `Char*` (e.g. feed it straight into `cantor_vec_concat_i64`).
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_show_bigint(a: i64) -> i64 {
+    let s = if a & 1 == 0 {
+        (a >> 1).to_string()
+    } else {
+        as_bigint(a).to_string()
+    };
+    crate::event_loop::encode_char_star(&s)
+}
+
 // ── Tagged Int set (`Set(Int)` with a possibly-boxed element) ──────────────
 //
 // `CantorIntSet` (mod.rs) dedups/orders by raw i64 value — correct only when

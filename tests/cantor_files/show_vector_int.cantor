@@ -1,0 +1,6 @@
+-- Builtin `show` on Vector(Int) — square-bracketed, comma-separated elements.
+main : -> Char*
+main() {
+    v : Int* = [1, 2, 3]
+    show(v)
+}

@@ -1,0 +1,9 @@
+-- Builtin `show` on a `T | Fail`-typed value that actually failed.
+f : Int -> Int | Fail
+f(x) = if x > 0 then x else fail
+
+main : -> Char*
+main() {
+    a : Int | Fail = f(0)
+    show(a)
+}

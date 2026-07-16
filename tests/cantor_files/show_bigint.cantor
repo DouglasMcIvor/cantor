@@ -1,0 +1,7 @@
+-- Builtin `show` on a value forced out of i64 range (boxed BigInt), same
+-- overflow trigger `bigint_compare.cantor` uses.
+main : -> Char*
+main() {
+    huge : Int = 9223372036854775807 + 1000000000000000000
+    show(huge)
+}

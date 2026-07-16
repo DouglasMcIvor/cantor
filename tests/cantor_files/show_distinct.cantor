@@ -1,0 +1,10 @@
+-- Builtin `show` on a `distinct` value — erases to its raw underlying Int
+-- by codegen time, so it shows as a bare integer (documented limitation,
+-- not a bug: `show` cannot recover the distinct name at runtime).
+D = distinct Int
+
+main : -> Char*
+main() {
+    d : D = D(5)
+    show(d)
+}
