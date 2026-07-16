@@ -66,6 +66,35 @@ fn run_compiled(bin: &std::path::Path) -> Output {
 }
 
 #[test]
+fn build_survives_many_arena_resets() {
+    // AOT equivalent of `event_loop.rs`'s JIT test — same arena swap/copy/drop
+    // cycle runs in the standalone compiled binary, driven by the `LeafShape`
+    // literal `codegen::aot::render_leaf_shape` bakes into `driver.rs`.
+    let (build_out, bin) = build_fixture("event_loop_echo.cantor", "many-resets");
+    assert_eq!(build_out.code, 0, "expected build to succeed");
+
+    let input: String = (0..100).map(|i| format!("{i}\n")).collect();
+    let out = run_compiled_with_stdin(&bin, &input);
+    std::fs::remove_file(&bin).ok();
+
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(lines.len(), 101, "expected 101 lines:\n{}", out.stdout);
+    for (i, line) in lines.iter().enumerate() {
+        let expected_suffix = format!(":{}", i % 10);
+        assert!(
+            line.ends_with(&expected_suffix),
+            "line {i} = {line:?}, expected suffix {expected_suffix:?}\nfull output:\n{}",
+            out.stdout
+        );
+    }
+}
+
+#[test]
 fn build_echoes_lines_with_persisted_state_matching_jit() {
     let (build_out, bin) = build_fixture("event_loop_echo.cantor", "echo-lines");
     assert_eq!(

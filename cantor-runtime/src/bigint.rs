@@ -324,6 +324,38 @@ impl CantorTaggedIntSet {
     pub fn get(&self, idx: i64) -> i64 {
         self.elements[idx as usize]
     }
+
+    /// Arena deep-copy (see `deep_copy.rs`): a plain `.clone()` of
+    /// `elements` would copy boxed elements' *pointer values* verbatim,
+    /// leaving them dangling once the arena that owns the pointees resets —
+    /// re-box each boxed element into whatever arena is current instead.
+    pub(crate) fn arena_deep_copy(&self) -> Self {
+        CantorTaggedIntSet {
+            elements: self
+                .elements
+                .iter()
+                .map(|&w| deep_copy_tagged_int(w))
+                .collect(),
+        }
+    }
+}
+
+/// Deep-copy a tagged `Int` word (see `bigint.rs`'s module doc for the
+/// tagging scheme) across an arena-reset boundary: a small (inline) word has
+/// no pointee and passes through unchanged; a boxed word's referenced
+/// `BigInt` is cloned and re-boxed into whatever arena is current.
+///
+/// Only ever call this on a genuinely tagged word — see `CantorTaggedIntSet`'s
+/// doc comment on why a raw, untagged `Int64` value's low bit can't be
+/// trusted as a tag.
+pub(crate) fn deep_copy_tagged_int(word: i64) -> i64 {
+    if word & 1 == 0 {
+        word
+    } else {
+        let ptr = (word & !1) as *const CantorBigInt;
+        let v = unsafe { (*ptr).0.clone() };
+        box_bigint(v)
+    }
 }
 
 #[unsafe(no_mangle)]

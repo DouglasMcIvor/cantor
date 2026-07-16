@@ -356,9 +356,12 @@ instead of JIT-executing in-process.
   to close later. Scalar/tuple `main` was only ever a JIT convenience for
   playing with the language and will not get AOT support. One practical
   consequence: an event-loop program's driver needs zero `Kind`-shape
-  branching to compile (`State` is opaque, just copied as an i64 buffer;
-  `Output` is always `Char*`), so `cantor build` never generates
-  per-program dispatch logic — see `src/codegen/aot.rs`'s module doc.
+  *branching* to compile — `State`'s arena deep-copy shape (see "Arena
+  memory reclamation" below) is fully resolved to a literal value at
+  `cantor build` time and baked into the generated driver source, not
+  dispatched on at runtime; `Output` is always `Char*` — so `cantor build`
+  never generates per-program dispatch logic — see `src/codegen/aot.rs`'s
+  module doc.
 - **`cantor-runtime` is its own workspace crate**, split out of what used
   to be `src/runtime/`. It only ever depended on
   arrow-array/arrow-buffer/arrow-schema/num-bigint, never cvc5/inkwell, so
@@ -383,6 +386,52 @@ instead of JIT-executing in-process.
   source) live under the OS temp dir and are deleted unless `--keep-temps`
   is passed; only the final linked executable — written straight to the
   caller-chosen `-o` path — needs to be on an executable filesystem.
+
+### Arena memory reclamation (DECIDED, IMPLEMENTED for scalar/Set/flat-Vector/nested-Vector `State`)
+
+Every `Set`/`Vector`/`BigInt` value is heap-allocated (`cantor-runtime`);
+originally none of it was ever freed. The event loop's per-step boundary is
+a natural reclamation point: reused by both `cantor run` and `cantor build`
+(`cantor_runtime::event_loop::drive_event_loop`).
+
+- **Not a plain bump allocator** — a bump allocator only reclaims the outer
+  `Cantor*` wrapper struct; Arrow-backed types (`Int64Array`, `BooleanArray`,
+  …) and `num_bigint::BigInt` own separate heap buffers internally that a
+  raw-bytes bump allocator wouldn't touch. The arena
+  (`cantor-runtime/src/arena.rs`) is instead a deferred-drop registry: each
+  allocation is still an ordinary `Box`, registered with the current arena;
+  resetting the arena drops every registered `Box` for real, running each
+  value's actual destructor (Arrow buffers included).
+- **A copying collector with `State` as the root set, not reset-in-place**
+  — after each step call, `State`'s new value isn't necessarily disjoint
+  from that step's garbage (e.g. it may hold a `Vector` built during the
+  step), so the old arena can't simply be dropped. Instead: swap in a fresh
+  arena, deep-copy every pointer-valued leaf of the new `State` into it
+  (`cantor-runtime/src/deep_copy.rs`), *then* drop the arena the step
+  actually ran in. Safe/cheap because Cantor's `Set`/`Vector` values are
+  immutable and acyclic — no cycles to detect, and a flat `Vector`'s deep
+  copy is a cheap Arc-bump of the underlying Arrow buffer (Arrow arrays are
+  internally reference-counted), not a real data copy.
+- **`State`'s deep-copy shape is compiler-computed, not runtime-inspected**
+  — `cantor-runtime` deliberately has no `Kind` dependency (keeps AOT
+  binaries free of compiler internals, per the `cantor build` section
+  above), so `codegen::wire::state_leaf_shape` converts `State`'s `Kind`
+  into a minimal `cantor_runtime::deep_copy::LeafShape` descriptor once,
+  at compile time — an in-process value for the JIT path, a literal Rust
+  expression baked into the generated driver source for AOT.
+- **Scope (not yet supported — hard compile error, never silently
+  mishandled)**: `Vector(Tuple(_))` (struct vectors) as part of `State` —
+  whether a tuple field is stored raw or BigInt-tagged is genuinely
+  ambiguous in the current struct-vector codegen path (unlike a direct
+  `Vector(Int)`, it doesn't call the raw-container conversion the direct
+  case does), and guessing wrong would mean dereferencing an arbitrary odd
+  integer as a pointer; and `TaggedUnion` anywhere in `State`, mirroring the
+  pre-existing gap in `codegen::trampoline`'s wire (de)serialization.
+- **Not yet done**: the JIT (`main.rs::run_event_loop`) and AOT
+  (`cantor-runtime::event_loop::drive_event_loop`) drivers each run their
+  own copy of this swap/deep-copy/drop sequence — still two copies that
+  could drift, a known follow-up (unifying the two drivers was already a
+  pre-existing TODO before this feature).
 
 ## 7. Compilation model
 
@@ -1669,11 +1718,15 @@ Other open items (lower priority, not blocking):
   A `return` inside a `while`/`for` body is still reported `Unknown` — never
   a false proof. Interaction with `?`/`Fail`: the returned value is used
   as-is; the caller applies its `?` checks to it normally.
-- **Memory model direction** — leading candidate: persistent data structures
-  → structural sharing → cheap diffing → easy reclamation; tracing GC
-  during the diff phase (runs concurrently with IO). Mutable arena for
-  within-event temporaries; arena is discarded at event boundary. (Not
-  finalised — needs more design work when IO loop is tackled.)
+- **Memory model direction** — the "mutable arena for within-event
+  temporaries, discarded at the event boundary" half of this is now
+  **implemented** for the MVP event loop — see §6's "Arena memory
+  reclamation" subsection. The broader "persistent data structures →
+  structural sharing → cheap diffing → tracing GC" vision below remains
+  undecided/future work: leading candidate is still persistent data
+  structures → structural sharing → cheap diffing → easy reclamation;
+  tracing GC during the diff phase (runs concurrently with IO). (Not
+  finalised — needs more design work.)
 - **Built-in containers** — pull in a library (`im`, `rpds`) or roll our
   own? Preference: start with flat arrays for temporaries; use `im`/`rpds`
   for persistent structures; roll our own later.

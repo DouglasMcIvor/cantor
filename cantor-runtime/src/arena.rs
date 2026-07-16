@@ -6,10 +6,12 @@
 //! including their own internal heap data (Arrow buffers, `BigInt` digit
 //! vecs, etc.), which a plain bump allocator over raw bytes would not do.
 //!
-//! Nothing calls `reset()` yet (see `lib.rs`'s module doc) — this module is
-//! the allocation-side half of the arena plan; the reset boundary (a
-//! root-preserving deep copy of `State` before dropping the old arena) is
-//! separate follow-up work that lives in `event_loop.rs`.
+//! `event_loop::drive_event_loop` wires this up at the per-step boundary via
+//! `swap`: swap in a fresh arena as "current" (so the deep copy in
+//! `deep_copy.rs` allocates into it), copy every reachable `State` leaf into
+//! that fresh arena, *then* drop the arena `swap` handed back — which still
+//! holds every allocation from the step that just ran, everything not
+//! copied included.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -55,12 +57,17 @@ pub fn alloc<T: 'static>(val: T) -> i64 {
 /// `State` leaf that must survive into the next event-loop step) must be
 /// deep-copied into a fresh arena *before* calling this — `reset` has no
 /// way to know which outstanding pointers are still reachable.
-// TODO: not called yet anywhere — wiring this into the event-loop step
-// boundary (with the root-preserving deep copy described above) is the
-// follow-up piece that actually stops the leak; see event_loop.rs.
-#[allow(dead_code)]
+#[allow(dead_code)] // exercised directly by tests; production code goes through `swap`
 pub fn reset() {
     CURRENT.with(|c| *c.borrow_mut() = Arena::new());
+}
+
+/// Install `fresh` as the current arena and return the arena it replaces.
+/// The caller keeps the returned `Arena` alive for as long as pointers into
+/// it are still being read (e.g. while deep-copying `State` out of it) —
+/// once it's dropped, every object it holds is dropped for real.
+pub fn swap(fresh: Arena) -> Arena {
+    CURRENT.with(|c| std::mem::replace(&mut *c.borrow_mut(), fresh))
 }
 
 #[cfg(test)]

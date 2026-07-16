@@ -9,8 +9,9 @@
 use std::io::BufRead;
 
 use crate::{
-    cantor_vec_builder_finish_i64, cantor_vec_builder_new_i64, cantor_vec_builder_push_i64,
+    arena, cantor_vec_builder_finish_i64, cantor_vec_builder_new_i64, cantor_vec_builder_push_i64,
     cantor_vec_get_i64, cantor_vec_len_i64,
+    deep_copy::{self, LeafShape},
 };
 
 /// Build a `Char*` (heap-allocated Arrow-backed vector) from a Rust `&str`,
@@ -65,18 +66,33 @@ pub fn format_char_vector(vec_ptr: i64) -> String {
 /// `seed`/`step` are the compiled program's `cantor_initial_state`/
 /// `cantor_step` trampolines (docs/design-decisions.md §6); `n_state_leaves`
 /// is `State`'s Kind-leaf count, a compile-time-known constant the caller
-/// already has (`count_kind_leaves(state_kind)`). `State` is never
-/// formatted here — it's opaque, just copied between calls as a flat i64
-/// buffer — only `Output` (always `Char*` for this MVP shape) gets printed.
+/// already has (`count_kind_leaves(state_kind)`). `state_shape` is the same
+/// `State` Kind's arena deep-copy shape (`codegen::wire::state_leaf_shape`,
+/// built once by the compiler — see `deep_copy.rs`'s module doc). `State` is
+/// never formatted here — it's opaque, just copied between calls as a flat
+/// i64 buffer — only `Output` (always `Char*` for this MVP shape) gets
+/// printed.
+///
+/// Arena lifecycle (the arena memory plan — see `arena.rs`'s module doc):
+/// each `step` call allocates into whatever arena is current. Once it
+/// returns, a fresh arena is swapped in and `State`'s new leaves are
+/// deep-copied into it (the only allocations that need to survive into the
+/// next iteration); the arena that just held the whole step's allocations —
+/// `State`'s previous value, `Event`, `Output`, every intermediate value —
+/// is then dropped, freeing everything not copied.
 ///
 /// # Safety
 /// `seed`/`step` must be the genuine trampolines for a `State` of exactly
 /// `n_state_leaves` i64 leaves — an `unsafe extern "C" fn` pointer carries
-/// no leaf-count information the compiler can check for you.
+/// no leaf-count information the compiler can check for you. `state_shape`
+/// must describe that same `State` Kind — a mismatch (e.g. the wrong leaf
+/// count or backing) means `deep_copy_leaves` reads or writes leaves
+/// incorrectly.
 pub unsafe fn drive_event_loop(
     seed: unsafe extern "C" fn(*mut i64),
     step: unsafe extern "C" fn(*mut i64, *mut i64),
     n_state_leaves: usize,
+    state_shape: LeafShape,
 ) {
     let mut state_buf = vec![0i64; n_state_leaves];
     unsafe {
@@ -106,7 +122,15 @@ pub unsafe fn drive_event_loop(
         }
 
         println!("{}", format_char_vector(out_buf[0]));
-        state_buf.copy_from_slice(&out_buf[1..]);
+
+        // Everything this step allocated (including the just-printed Output
+        // and the previous State) lives in `old` from here on — deep-copy
+        // the new State's leaves into the now-current fresh arena first,
+        // then drop `old` to actually reclaim the rest.
+        let old_arena = arena::swap(arena::Arena::new());
+        let new_state = deep_copy::deep_copy_leaves(&state_shape, &out_buf[1..]);
+        state_buf.copy_from_slice(&new_state);
+        drop(old_arena);
 
         if is_final {
             break;

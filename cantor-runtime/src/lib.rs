@@ -23,7 +23,10 @@ use arrow_schema::{DataType, Field, Fields, UnionFields};
 // ── Int set ───────────────────────────────────────────────────────────────────
 
 /// A finite set of i64 values, stored sorted for O(log n) membership testing.
-#[derive(Default)]
+///
+/// `Clone` is a plain `Vec` clone — safe for arena deep-copy (`deep_copy.rs`)
+/// because elements are always raw i64s, never pointers into the arena.
+#[derive(Default, Clone)]
 pub struct CantorIntSet {
     elements: Vec<i64>,
 }
@@ -80,7 +83,10 @@ pub extern "C" fn cantor_set_get_i64(set: i64, idx: i64) -> i64 {
 ///
 /// The ABI passes booleans as i64 (0 = false, non-zero = true) to match the
 /// compiler's uniform calling convention.
-#[derive(Default)]
+///
+/// `Clone` is a plain `Vec` clone — safe for arena deep-copy (`deep_copy.rs`)
+/// since elements are never pointers into the arena.
+#[derive(Default, Clone)]
 pub struct CantorBoolSet {
     elements: Vec<bool>,
 }
@@ -147,6 +153,11 @@ pub struct CantorVecBuilderI64 {
     builder: Int64Builder,
 }
 
+/// `Clone` is a cheap Arc-bump of the underlying Arrow buffer (Arrow arrays
+/// are internally reference-counted), not a data copy — arena deep-copy
+/// (`deep_copy.rs`) relies on this: cloning into a new arena's wrapper keeps
+/// the buffer alive independent of which arena gets dropped first.
+#[derive(Clone)]
 pub struct CantorVecI64 {
     array: Int64Array,
 }
@@ -210,6 +221,9 @@ pub struct CantorVecBuilderBool {
     builder: BooleanBuilder,
 }
 
+/// `Clone` is a cheap Arc-bump of the underlying Arrow buffer — see
+/// `CantorVecI64`'s doc comment; same reasoning applies here.
+#[derive(Clone)]
 pub struct CantorVecBool {
     array: BooleanArray,
 }
@@ -439,8 +453,14 @@ pub extern "C" fn cantor_struct_vec_concat(a: i64, b: i64) -> i64 {
 /// Outer vector for X** at any nesting depth.
 /// Elements are i64 values — scalars for X* (handled elsewhere), or opaque
 /// pointers to inner Cantor vector objects for X** and deeper.
+///
+/// `elems` is `pub(crate)` (not `Clone`-derived, unlike the flat vectors
+/// above): each element may itself be a pointer to an inner vector object
+/// that also lives in the arena, so a plain Arc-bump clone of this array
+/// alone would leave those inner objects unreachable from the copy —
+/// `deep_copy.rs` walks and re-copies each element explicitly instead.
 pub struct CantorListVec {
-    elems: Int64Array,
+    pub(crate) elems: Int64Array,
 }
 
 pub struct CantorListVecBuilder {
@@ -756,7 +776,8 @@ pub extern "C" fn cantor_dispatch_unreachable(msg_ptr: i64) {
     std::process::exit(1);
 }
 
-mod arena;
+pub mod arena;
 mod bigint;
+pub mod deep_copy;
 pub mod event_loop;
 pub use bigint::*;

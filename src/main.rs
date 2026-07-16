@@ -10,13 +10,16 @@ use std::collections::HashMap;
 
 use cantor::{
     ast::Item,
-    codegen::{build_executable, compile_constrained, compile_to_ir, find_event_loop_state_kind},
+    codegen::{
+        build_executable, compile_constrained, compile_to_ir, find_event_loop_state_kind, wire,
+    },
     error::CompileError,
     kind::Kind,
     pipeline::{FrontendError, parse_and_check_names, results_of},
-    runtime::event_loop,
+    runtime::{arena, deep_copy, event_loop},
     semantics::tree::SemItem,
     solver::{CheckOutcome, CheckResult, ConstrainedTree, check_file},
+    span::Span,
 };
 
 /// Single rendering path for every `CompileError` the CLI can hit, so ICEs
@@ -283,8 +286,8 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
     // below. Shape/identifier validity was already fully verified by
     // `solver::event_loop::validate_event_loop_main` before this
     // `ConstrainedTree` could exist, so this is a Kind-only re-scan.
-    if let Some(state_kind) = find_event_loop_state_kind(&tree) {
-        run_event_loop(tree, path, src, state_kind);
+    if let Some((state_kind, state_span)) = find_event_loop_state_kind(&tree) {
+        run_event_loop(tree, path, src, state_kind, state_span);
         return;
     }
 
@@ -427,7 +430,7 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
 /// behavior, mirroring `run_main`'s own "requires a zero-argument `main`"
 /// refusal for the opposite case.
 fn run_build(tree: ConstrainedTree, path: &str, src: &str, output: Option<&str>, keep_temps: bool) {
-    let Some(state_kind) = find_event_loop_state_kind(&tree) else {
+    let Some((state_kind, state_span)) = find_event_loop_state_kind(&tree) else {
         eprintln!(
             "error: `cantor build` only supports the IO event-loop `main` shape \
              (`Char* * S -> Char* * S`, docs/design-decisions.md §6) — scalar/tuple \
@@ -444,7 +447,15 @@ fn run_build(tree: ConstrainedTree, path: &str, src: &str, output: Option<&str>,
             .unwrap_or_else(|| PathBuf::from("a.out")),
     };
 
-    match build_executable(&tree, path, src, &state_kind, &output_path, keep_temps) {
+    match build_executable(
+        &tree,
+        path,
+        src,
+        &state_kind,
+        state_span,
+        &output_path,
+        keep_temps,
+    ) {
         Ok(()) => println!("wrote executable: {}", output_path.display()),
         Err(e) => {
             print_compile_error(path, &e, src);
@@ -459,10 +470,24 @@ fn run_build(tree: ConstrainedTree, path: &str, src: &str, output: Option<&str>,
 /// `Event` (a length-1 `Char*` containing codepoint 4, ASCII EOT) and
 /// terminates unconditionally, regardless of the `State` that final call
 /// returns.
-fn run_event_loop(tree: ConstrainedTree, path: &str, src: &str, state_kind: Kind) {
+fn run_event_loop(
+    tree: ConstrainedTree,
+    path: &str,
+    src: &str,
+    state_kind: Kind,
+    state_span: Span,
+) {
     let ctx = Context::create();
     let engine = match compile_constrained(&ctx, &tree, path, src) {
         Ok(e) => e,
+        Err(e) => {
+            print_compile_error(path, &e, src);
+            process::exit(1);
+        }
+    };
+
+    let state_shape = match wire::state_leaf_shape(&state_kind, state_span) {
+        Ok(shape) => shape,
         Err(e) => {
             print_compile_error(path, &e, src);
             process::exit(1);
@@ -513,7 +538,14 @@ fn run_event_loop(tree: ConstrainedTree, path: &str, src: &str, state_kind: Kind
         }
 
         println!("{}", event_loop::format_char_vector(out_buf[0]));
-        state_buf.copy_from_slice(&out_buf[1..]);
+
+        // See `cantor_runtime::event_loop::drive_event_loop`'s doc comment
+        // for the arena lifecycle this mirrors — this is the JIT path's own
+        // copy of the same loop (step 3 of the arena plan will unify them).
+        let old_arena = arena::swap(arena::Arena::new());
+        let new_state = deep_copy::deep_copy_leaves(&state_shape, &out_buf[1..]);
+        state_buf.copy_from_slice(&new_state);
+        drop(old_arena);
 
         if is_final {
             break;

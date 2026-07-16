@@ -17,7 +17,10 @@ use std::path::{Path, PathBuf};
 
 use inkwell::context::Context;
 
-use crate::{error::CompileError, kind::Kind, semantics::tree::SemItem, solver::ConstrainedTree};
+use crate::{
+    error::CompileError, kind::Kind, runtime::deep_copy::LeafShape, semantics::tree::SemItem,
+    solver::ConstrainedTree, span::Span,
+};
 
 use super::{object::compile_constrained_to_object, wire};
 
@@ -26,8 +29,11 @@ use super::{object::compile_constrained_to_object, wire};
 /// zero-arg `main`, or none at all). Shared by `main.rs` (JIT dispatch) and
 /// `cantor build`'s CLI gate (the caller decides what "not an event-loop
 /// program" means for its own subcommand — `run` falls back to scalar
-/// dispatch, `build` refuses outright).
-pub fn find_event_loop_state_kind(tree: &ConstrainedTree) -> Option<Kind> {
+/// dispatch, `build` refuses outright). The `Span` is `main`'s own
+/// definition span — used only to anchor `wire::state_leaf_shape`'s error
+/// case, since State itself is just a named set with no more specific
+/// sub-expression to blame.
+pub fn find_event_loop_state_kind(tree: &ConstrainedTree) -> Option<(Kind, Span)> {
     tree.sem_items.iter().find_map(|item| match item {
         SemItem::FunctionDef(def)
             if def.name.0 == "main"
@@ -36,7 +42,7 @@ pub fn find_event_loop_state_kind(tree: &ConstrainedTree) -> Option<Kind> {
             let Kind::Tuple(elems) = &def.return_kind else {
                 unreachable!("is_event_loop_step_shape already checked this is a Tuple");
             };
-            Some(elems[1].clone())
+            Some((elems[1].clone(), def.span))
         }
         _ => None,
     })
@@ -44,18 +50,21 @@ pub fn find_event_loop_state_kind(tree: &ConstrainedTree) -> Option<Kind> {
 
 /// Compile `tree` (already proved by `solver::check_file`, already
 /// confirmed by the caller to have an event-loop `main`) into a standalone
-/// executable at `output`. `state_kind` is `find_event_loop_state_kind`'s
-/// result. `path`/`src` are only used for overflow-abort diagnostics baked
-/// into the object file, same as `jit.rs::compile_constrained`.
+/// executable at `output`. `state_kind`/`state_span` are
+/// `find_event_loop_state_kind`'s result. `path`/`src` are only used for
+/// overflow-abort diagnostics baked into the object file, same as
+/// `jit.rs::compile_constrained`.
 pub fn build_executable(
     tree: &ConstrainedTree,
     path: &str,
     src: &str,
     state_kind: &Kind,
+    state_span: Span,
     output: &Path,
     keep_temps: bool,
 ) -> Result<(), CompileError> {
     let n_state_leaves = wire::leaf_count(state_kind);
+    let state_shape = wire::state_leaf_shape(state_kind, state_span)?;
 
     let tmp_dir = unique_temp_dir();
     std::fs::create_dir_all(&tmp_dir).map_err(|e| {
@@ -65,7 +74,15 @@ pub fn build_executable(
         ))
     })?;
 
-    let result = build_executable_in(&tmp_dir, tree, path, src, n_state_leaves, output);
+    let result = build_executable_in(
+        &tmp_dir,
+        tree,
+        path,
+        src,
+        n_state_leaves,
+        &state_shape,
+        output,
+    );
 
     if keep_temps {
         eprintln!(
@@ -85,6 +102,7 @@ fn build_executable_in(
     path: &str,
     src: &str,
     n_state_leaves: usize,
+    state_shape: &LeafShape,
     output: &Path,
 ) -> Result<(), CompileError> {
     let obj_path = tmp_dir.join("program.o");
@@ -92,7 +110,7 @@ fn build_executable_in(
     compile_constrained_to_object(&ctx, tree, path, src, &obj_path)?;
 
     let driver_path = tmp_dir.join("driver.rs");
-    std::fs::write(&driver_path, driver_source(n_state_leaves)).map_err(|e| {
+    std::fs::write(&driver_path, driver_source(n_state_leaves, state_shape)).map_err(|e| {
         CompileError::ice(format!("could not write {}: {e}", driver_path.display()))
     })?;
 
@@ -128,13 +146,16 @@ fn build_executable_in(
     Ok(())
 }
 
-/// The 10-or-so-line Rust "driver" compiled and linked in per `cantor
-/// build` invocation: just enough to name the program's statically-linked
-/// event-loop trampolines and hand them to the one shared, hand-written
-/// loop-driving function in `cantor-runtime`. No `Kind`-shape branching is
-/// needed here (see module doc) — every event-loop program's driver is
-/// this same template, parameterized only by `n_state_leaves`.
-fn driver_source(n_state_leaves: usize) -> String {
+/// The Rust "driver" compiled and linked in per `cantor build` invocation:
+/// just enough to name the program's statically-linked event-loop
+/// trampolines and hand them, plus the arena deep-copy shape of `State`
+/// (see the arena memory plan; `render_leaf_shape` below), to the one
+/// shared, hand-written loop-driving function in `cantor-runtime`. Every
+/// event-loop program's driver is this same template, parameterized only by
+/// `n_state_leaves` and a literal `LeafShape` expression — no `Kind`-shape
+/// *branching* is needed here (see module doc), since `render_leaf_shape`
+/// already resolved every branch at `cantor build` time.
+fn driver_source(n_state_leaves: usize, state_shape: &LeafShape) -> String {
     format!(
         "unsafe extern \"C\" {{\n\
         \x20   fn cantor_initial_state(out: *mut i64);\n\
@@ -147,10 +168,62 @@ fn driver_source(n_state_leaves: usize) -> String {
         \x20           cantor_initial_state,\n\
         \x20           cantor_step,\n\
         \x20           {n_state_leaves},\n\
+        \x20           {},\n\
         \x20       );\n\
         \x20   }}\n\
-        }}\n"
+        }}\n",
+        render_leaf_shape(state_shape)
     )
+}
+
+/// Render a `LeafShape` as a literal Rust expression referencing
+/// `cantor_runtime::deep_copy::*` by its fully-qualified path — the
+/// generated `driver.rs` is compiled as a standalone crate (via `rustc
+/// --extern cantor_runtime=...`), so it has no `use` of this compiler's own
+/// modules to shorten the path with.
+fn render_leaf_shape(shape: &LeafShape) -> String {
+    match shape {
+        LeafShape::Scalar => "cantor_runtime::deep_copy::LeafShape::Scalar".to_string(),
+        LeafShape::TaggedInt => "cantor_runtime::deep_copy::LeafShape::TaggedInt".to_string(),
+        LeafShape::Set(backing) => format!(
+            "cantor_runtime::deep_copy::LeafShape::Set({})",
+            render_set_backing(backing)
+        ),
+        LeafShape::Vector(elem) => format!(
+            "cantor_runtime::deep_copy::LeafShape::Vector({})",
+            render_vector_elem_shape(elem)
+        ),
+        LeafShape::Tuple(elems) => format!(
+            "cantor_runtime::deep_copy::LeafShape::Tuple(vec![{}])",
+            elems
+                .iter()
+                .map(render_leaf_shape)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn render_set_backing(backing: &crate::runtime::deep_copy::SetBacking) -> &'static str {
+    use crate::runtime::deep_copy::SetBacking;
+    match backing {
+        SetBacking::TaggedInt => "cantor_runtime::deep_copy::SetBacking::TaggedInt",
+        SetBacking::PlainInt => "cantor_runtime::deep_copy::SetBacking::PlainInt",
+        SetBacking::PlainBool => "cantor_runtime::deep_copy::SetBacking::PlainBool",
+    }
+}
+
+fn render_vector_elem_shape(shape: &crate::runtime::deep_copy::VectorElemShape) -> String {
+    use crate::runtime::deep_copy::VectorElemShape;
+    match shape {
+        VectorElemShape::FlatScalar { bool_backed } => format!(
+            "cantor_runtime::deep_copy::VectorElemShape::FlatScalar {{ bool_backed: {bool_backed} }}"
+        ),
+        VectorElemShape::Nested(inner) => format!(
+            "cantor_runtime::deep_copy::VectorElemShape::Nested(Box::new({}))",
+            render_vector_elem_shape(inner)
+        ),
+    }
 }
 
 fn unique_temp_dir() -> PathBuf {
