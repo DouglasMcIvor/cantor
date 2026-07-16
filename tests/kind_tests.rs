@@ -75,4 +75,4 @@ fn set_kind_of_set_tuple_is_unsupported_not_a_panic() {
 
 // ── Homogeneous tuple literals `[...]` — kind checking ────────────────────────
 // Enforcing that `[a, b, c]` elements all belong to the same set is deferred
-// until range inference is available — see tests/parser_tests.rs.
+// until range inference is available — see tests/parser/collections.rs.
