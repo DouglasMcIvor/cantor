@@ -427,11 +427,12 @@ a natural reclamation point: reused by both `cantor run` and `cantor build`
   case does), and guessing wrong would mean dereferencing an arbitrary odd
   integer as a pointer; and `TaggedUnion` anywhere in `State`, mirroring the
   pre-existing gap in `codegen::trampoline`'s wire (de)serialization.
-- **Not yet done**: the JIT (`main.rs::run_event_loop`) and AOT
-  (`cantor-runtime::event_loop::drive_event_loop`) drivers each run their
-  own copy of this swap/deep-copy/drop sequence — still two copies that
-  could drift, a known follow-up (unifying the two drivers was already a
-  pre-existing TODO before this feature).
+- **One driver, not two**: `main.rs::run_event_loop` (JIT) resolves
+  `cantor_initial_state`/`cantor_step` via `JitFunction::as_raw` and hands
+  the raw function pointers straight to the same
+  `cantor_runtime::event_loop::drive_event_loop` `cantor build`'s AOT path
+  calls — the swap/deep-copy/drop sequence above lives in exactly one
+  place, not two copies that could drift.
 
 ## 7. Compilation model
 

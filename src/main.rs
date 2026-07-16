@@ -1,6 +1,5 @@
 mod repl;
 
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -16,7 +15,7 @@ use cantor::{
     error::CompileError,
     kind::Kind,
     pipeline::{FrontendError, parse_and_check_names, results_of},
-    runtime::{arena, deep_copy, event_loop},
+    runtime::event_loop,
     semantics::tree::SemItem,
     solver::{CheckOutcome, CheckResult, ConstrainedTree, check_file},
     span::Span,
@@ -465,11 +464,13 @@ fn run_build(tree: ConstrainedTree, path: &str, src: &str, output: Option<&str>,
 }
 
 /// MVP IO event loop driver (docs/design-decisions.md §6): compiles the
-/// event-loop `main` and drives it against `stdin`, one line per `Event`,
-/// until `stdin` closes — at which point it feeds one final synthetic
-/// `Event` (a length-1 `Char*` containing codepoint 4, ASCII EOT) and
-/// terminates unconditionally, regardless of the `State` that final call
-/// returns.
+/// event-loop `main`, then hands its JIT'd `cantor_initial_state`/
+/// `cantor_step` symbols to `cantor_runtime::event_loop::drive_event_loop` —
+/// the same stdin-reading, arena-swapping loop `cantor build`'s AOT driver
+/// uses (see that function's doc comment for the full arena lifecycle),
+/// just with JIT-resolved function pointers instead of statically-linked
+/// ones. `JitFunction::as_raw` is safe here because `engine` (and the
+/// module it JIT-compiled) outlives the `drive_event_loop` call below.
 fn run_event_loop(
     tree: ConstrainedTree,
     path: &str,
@@ -495,17 +496,15 @@ fn run_event_loop(
     };
 
     let n_state_leaves = count_kind_leaves(&state_kind);
-    let mut state_buf = vec![0i64; n_state_leaves];
-    unsafe {
-        let seed = engine
+
+    let seed = unsafe {
+        engine
             .get_function::<unsafe extern "C" fn(*mut i64)>("cantor_initial_state")
             .unwrap_or_else(|e| {
                 eprintln!("internal error: could not find `cantor_initial_state`: {e}");
                 process::exit(1);
-            });
-        seed.call(state_buf.as_mut_ptr());
-    }
-
+            })
+    };
     let step = unsafe {
         engine
             .get_function::<unsafe extern "C" fn(*mut i64, *mut i64)>("cantor_step")
@@ -515,41 +514,8 @@ fn run_event_loop(
             })
     };
 
-    let stdin = std::io::stdin();
-    let mut lines = stdin.lock().lines();
-
-    loop {
-        let (event_ptr, is_final) = match lines.next() {
-            Some(Ok(line)) => (event_loop::encode_char_star(&line), false),
-            Some(Err(e)) => {
-                eprintln!("error reading stdin: {e}");
-                process::exit(1);
-            }
-            None => (event_loop::encode_eot_event(), true),
-        };
-
-        let mut in_buf = Vec::with_capacity(1 + n_state_leaves);
-        in_buf.push(event_ptr);
-        in_buf.extend_from_slice(&state_buf);
-
-        let mut out_buf = vec![0i64; 1 + n_state_leaves];
-        unsafe {
-            step.call(in_buf.as_mut_ptr(), out_buf.as_mut_ptr());
-        }
-
-        println!("{}", event_loop::format_char_vector(out_buf[0]));
-
-        // See `cantor_runtime::event_loop::drive_event_loop`'s doc comment
-        // for the arena lifecycle this mirrors — this is the JIT path's own
-        // copy of the same loop (step 3 of the arena plan will unify them).
-        let old_arena = arena::swap(arena::Arena::new());
-        let new_state = deep_copy::deep_copy_leaves(&state_shape, &out_buf[1..]);
-        state_buf.copy_from_slice(&new_state);
-        drop(old_arena);
-
-        if is_final {
-            break;
-        }
+    unsafe {
+        event_loop::drive_event_loop(seed.as_raw(), step.as_raw(), n_state_leaves, state_shape);
     }
 }
 
