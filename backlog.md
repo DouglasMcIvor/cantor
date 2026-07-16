@@ -68,7 +68,7 @@ You probably don't want to read this unless you're me.
   - a packed UTF-8 representation for `Char*` (currently a boxed-i64-per-character)
   - `Byte`, `Bits32`, `Bits(435)` generic etc
   - `Size`, `Word` (platform dependent)
-- string interpolation like `"hello {name}"` that calls `show(name)`, can use `distinct` to define `Hex` and then implement a `show : Hex -> Char*` overload.
+- use `distinct` to define `Hex` and then implement a `show : Hex -> Char*` overload.
   Formatting will need higher order functions to let us wrap/decorate the format call:
   ```
   Formatter = Char* -> Char*
@@ -383,17 +383,5 @@ Algorithm:
 
 # Open questions
 
-- Memory model - leaning toward (from ChatGPT):
-  ```
-  persistent structures
-    ->
-  sharing
-    ->
-  cheap diffing
-    ->
-  easy reclamation
-  ```
-  The persistent state can use tracing GC _during the diff_. This is also simultaneous with IO so can naturally run in parallel.
-  The only gap left is that the mutable arena could grow too large. Later on we could add pages to the arena to allow partial clean up like with tcmalloc and marking the pages available to the OS!
 - How to define exception handlers?
 
