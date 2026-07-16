@@ -147,10 +147,7 @@ pub(crate) fn encode_block<'tm>(
         last_expr = None; // only the last Expr stmt is the return value
         match stmt {
             SemStmt::Let {
-                name,
-                constraint,
-                value: _,
-                ..
+                name, constraint, ..
             } if matches!(constraint.kind_of, ValKind::Set(_)) => {
                 // Immutable runtime set: opaque integer (heap pointer), no value encoding.
                 let fresh_name = format!("{}_{}", name.0, ctx.ssa_counter);
@@ -220,10 +217,7 @@ pub(crate) fn encode_block<'tm>(
             }
 
             SemStmt::MutLet {
-                name,
-                constraint,
-                value: _,
-                ..
+                name, constraint, ..
             } if matches!(constraint.kind_of, ValKind::Set(_)) => {
                 // Runtime set values (Set(Int), Set(Bool)) can't be encoded in
                 // QF_NIA. Represent the binding as an opaque integer (the heap
