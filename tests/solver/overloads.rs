@@ -38,6 +38,44 @@ fn overlapping_domain_overloads_are_rejected_with_witness() {
 }
 
 #[test]
+fn guarded_overload_arms_are_proved_disjoint() {
+    // `x for x < 0` / `x for x > 0` narrow the *same* declared `Int` domain
+    // by a predicate — sugar over overloading (backlog.md's `sign` sketch),
+    // desugared at elaboration time into the same comprehension shape a
+    // hand-written `{x for x in Int if x < 0}` domain would already prove.
+    proved_all(
+        "sign : {0} -> Int\n\
+         sign(x) = 0\n\
+         sign : Int -> Int\n\
+         sign(x for x < 0) = -x\n\
+         sign : Int -> Int\n\
+         sign(x for x > 0) = x",
+    );
+}
+
+#[test]
+fn overlapping_guard_domains_are_rejected_with_witness() {
+    let results = check_all(
+        "over : Int -> Int\n\
+         over(x for x < 5) = x\n\
+         over : Int -> Int\n\
+         over(x for x > 0) = -x",
+    );
+    let disjointness = results
+        .iter()
+        .filter(|(name, _)| name == "over")
+        .flat_map(|(_, sig_results)| sig_results)
+        .find(|(label, _)| label.contains("disjointness"));
+    let Some((_, result)) = disjointness else {
+        panic!("expected a disjointness result entry, got {results:?}");
+    };
+    assert!(
+        matches!(result, CheckResult::Counterexample { .. }),
+        "expected overlapping guard domains to be rejected with a witness, got {result:?}"
+    );
+}
+
+#[test]
 fn different_arity_overloads_need_no_disjointness_check() {
     // `poly`'s two overloads have overlapping-looking domains (`Int` covers
     // everything a 2-arg call could also see) but different arity — arity

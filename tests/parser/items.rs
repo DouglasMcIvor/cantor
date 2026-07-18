@@ -68,3 +68,38 @@ fn set_def_alias_named_set() {
     assert_eq!(kind, DefKind::Alias);
     assert!(matches!(rhs, ExprKind::Var(s) if s.0 == "Nat"));
 }
+
+// ── Function parameter guards (`x for <expr>`) ─────────────────────────────────
+
+#[test]
+fn param_without_guard_has_none() {
+    let items = parse_file("f : Int -> Int\nf(x) = x").unwrap();
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
+    assert!(def.params[0].guard.is_none());
+}
+
+#[test]
+fn param_with_guard_parses_predicate() {
+    let items = parse_file("sign : Int -> Int\nsign(x for x < 0) = -x").unwrap();
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
+    assert_eq!(def.params[0].name.0, "x");
+    let guard = def.params[0]
+        .guard
+        .as_ref()
+        .unwrap_or_else(|| panic!("expected a guard on param `x`"));
+    assert!(matches!(guard.kind, ExprKind::BinOp { op: BinOp::Lt, .. }));
+}
+
+#[test]
+fn multi_param_guard_only_on_second_param() {
+    let items = parse_file("f : Int * Int -> Int\nf(x, y for y > 0) = x + y").unwrap();
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
+    assert!(def.params[0].guard.is_none());
+    assert!(def.params[1].guard.is_some());
+}

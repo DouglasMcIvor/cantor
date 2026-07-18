@@ -98,3 +98,41 @@ fn recursion_where_one_overload_calls_another_runs_correctly() {
         out.stdout
     );
 }
+
+/// Guards (`x for x < 0`) are sugar for narrowing one overload arm's
+/// already-declared domain by a predicate — see backlog.md's `sign` sketch.
+/// `sign(-5) + sign(0) + sign(7)` exercises all three arms: the `{0}`
+/// literal-domain arm, and two guarded `Int` arms whose predicates
+/// (`x < 0` / `x > 0`) must be proved pairwise disjoint from each other and
+/// from `{0}`.
+#[test]
+fn guarded_overload_arms_dispatch_correctly() {
+    let out = run_subcommand("guard_sign.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 12"),
+        "expected sign(-5) + sign(0) + sign(7) = 5 + 0 + 7 = 12:\n{}",
+        out.stdout
+    );
+}
+
+/// Overlapping guards must be rejected with a disjointness counterexample,
+/// same as any other overlapping overload domain.
+#[test]
+fn overlapping_guard_domains_refuse_to_run_with_witness() {
+    let out = run_subcommand("guard_overlap.cantor");
+    assert_ne!(
+        out.code, 0,
+        "overlapping guard domains must refuse to run:\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("not disjoint"),
+        "expected the witness/reason to explain the overlap:\n{}",
+        out.stdout
+    );
+}

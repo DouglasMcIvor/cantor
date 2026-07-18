@@ -1,0 +1,8 @@
+overlaps : Int -> Int
+overlaps(x for x < 5) = x
+
+overlaps : Int -> Int
+overlaps(x for x > 0) = -x
+
+main : -> Int
+main() = overlaps(3)

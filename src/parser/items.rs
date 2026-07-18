@@ -222,7 +222,18 @@ impl<'src> Parser<'src> {
     fn parse_one_param(&mut self) -> Result<Param, CompileError> {
         let span = self.peek_span();
         let name = self.expect_ident()?;
-        Ok(Param { name, span })
+        let guard = if self.peek() == &Token::For {
+            self.advance()?;
+            Some(self.parse_expr(0)?)
+        } else {
+            None
+        };
+        let end = guard.as_ref().map_or(span.end, |g| g.span.end);
+        Ok(Param {
+            name,
+            guard,
+            span: Span::new(span.start, end),
+        })
     }
 }
 

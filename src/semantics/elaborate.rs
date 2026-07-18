@@ -325,7 +325,7 @@ fn elaborate_function_def(def: &FunctionDef, ctx: &Ctx) -> Result<SemFunctionDef
     let sigs = def
         .sigs
         .iter()
-        .map(|sig| elaborate_sig(sig, def.params.len(), ctx))
+        .map(|sig| elaborate_sig(sig, &def.params, def.params.len(), ctx))
         .collect::<Result<Vec<_>, _>>()?;
 
     let (param_kinds, return_kind) = match sigs.first() {
@@ -364,12 +364,13 @@ fn elaborate_function_def(def: &FunctionDef, ctx: &Ctx) -> Result<SemFunctionDef
 
 fn elaborate_sig(
     sig: &ast::FunctionSig,
+    params: &[ast::Param],
     n_params: usize,
     ctx: &Ctx,
 ) -> Result<SemFunctionSig, CompileError> {
     let mut env = Env::new();
-    let domain = sig
-        .domain
+    let guarded_domain = desugar_param_guards(sig, params, n_params)?;
+    let domain = guarded_domain
         .as_ref()
         .map(|d| elaborate_expr(d, Position::Set, ctx, &mut env))
         .transpose()?;
@@ -383,6 +384,58 @@ fn elaborate_sig(
         return_kind,
         span: sig.span,
     })
+}
+
+/// Desugar per-parameter guards (`x for <pred>`) into the domain a user
+/// could already write by hand: `x for pred` on parameter `i` narrows that
+/// parameter's already-declared domain slice to `{x for x in <slice> if
+/// pred}`, reusing the existing comprehension machinery end to end (solver,
+/// codegen) with zero new `SemExprKind`. No-op (returns `sig.domain`
+/// unchanged, no clone) when no parameter carries a guard.
+fn desugar_param_guards(
+    sig: &ast::FunctionSig,
+    params: &[ast::Param],
+    n_params: usize,
+) -> Result<Option<ast::Expr>, CompileError> {
+    if !params.iter().any(|p| p.guard.is_some()) {
+        return Ok(sig.domain.clone());
+    }
+    let parts = ast::param_set_exprs(sig.domain.as_ref(), n_params).map_err(CompileError::ice)?;
+    let wrapped = parts.iter().zip(params.iter()).map(|(part, param)| {
+        let part = (*part).clone();
+        match &param.guard {
+            None => part,
+            Some(pred) => {
+                let span = part.span;
+                ast::Expr::new(
+                    ast::ExprKind::Comprehension {
+                        output: Box::new(ast::Expr::new(
+                            ast::ExprKind::Var(param.name.clone()),
+                            span,
+                        )),
+                        var: param.name.clone(),
+                        source: Box::new(part),
+                        filter: Some(Box::new(pred.clone())),
+                    },
+                    span,
+                )
+            }
+        }
+    });
+    let combined = wrapped
+        .reduce(|acc, next| {
+            let span = Span::new(acc.span.start, next.span.end);
+            ast::Expr::new(
+                ast::ExprKind::BinOp {
+                    op: ast::BinOp::Mul,
+                    lhs: Box::new(acc),
+                    rhs: Box::new(next),
+                },
+                span,
+            )
+        })
+        .expect("n_params > 0 whenever a param has a guard, so parts is non-empty");
+    Ok(Some(combined))
 }
 
 fn elaborate_name_def(def: &NameDef, ctx: &Ctx) -> Result<SemNameDef, CompileError> {

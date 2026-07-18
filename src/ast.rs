@@ -532,6 +532,11 @@ fn collect_loop_modified_rec(stmts: &[Stmt], names: &mut std::collections::HashS
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: Symbol,
+    /// `x for <expr>` — narrows this overload arm's already-declared domain
+    /// slice for this parameter to `{x for x in <slice> if <expr>}`. Sugar
+    /// over function overloading, not a new domain-declaration mechanism —
+    /// see `semantics::elaborate::desugar_param_guards`.
+    pub guard: Option<Expr>,
     pub span: Span,
 }
 
@@ -539,6 +544,7 @@ impl Param {
     pub fn new(name: &str) -> Self {
         Self {
             name: Symbol::new(name),
+            guard: None,
             span: Span::dummy(),
         }
     }
