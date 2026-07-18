@@ -381,7 +381,10 @@ pub(super) fn check_block_sig(
 
     let tm = TermManager::new();
     let mut solver = configured_solver(&tm, timeout_ms);
-    let distinct_preds = build_solver_preds(&tm, name_defs, fn_env);
+    let distinct_preds = match build_solver_preds(&tm, name_defs, fn_env) {
+        Ok(p) => p,
+        Err(e) => return CheckResult::Unknown(e),
+    };
 
     let (domain_parts, param_terms) = match build_param_terms(
         &tm,
@@ -539,7 +542,10 @@ pub(super) fn check_sig(
 
     let tm = TermManager::new();
     let mut solver = configured_solver(&tm, timeout_ms);
-    let distinct_preds = build_solver_preds(&tm, name_defs, fn_env);
+    let distinct_preds = match build_solver_preds(&tm, name_defs, fn_env) {
+        Ok(p) => p,
+        Err(e) => return CheckResult::Unknown(e),
+    };
 
     let (domain_parts, param_terms) = match build_param_terms(
         &tm,

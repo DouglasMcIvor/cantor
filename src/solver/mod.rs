@@ -328,7 +328,10 @@ fn check_name_def(
     let tm = TermManager::new();
     let mut solver = configured_solver(&tm, timeout_ms);
 
-    let distinct_preds = build_solver_preds(&tm, name_defs, fn_env);
+    let distinct_preds = match build_solver_preds(&tm, name_defs, fn_env) {
+        Ok(p) => p,
+        Err(e) => return CheckResult::Unknown(e),
+    };
     let env = Env::new();
     let mut call_counter = 0usize;
     let mut builtin_obligs: Vec<BuiltinObligation<'_>> = Vec::new();

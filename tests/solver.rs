@@ -8,6 +8,8 @@ mod char_tests;
 mod cross_kind_unions;
 #[path = "solver/destructuring.rs"]
 mod destructuring;
+#[path = "solver/distinct_basis.rs"]
+mod distinct_basis;
 #[path = "solver/encode.rs"]
 mod encode;
 #[path = "solver/event_loop.rs"]

@@ -142,3 +142,22 @@ f(x) {
 ",
     );
 }
+
+// Regression test: two union arms with the *identical* tuple shape are
+// same-Kind (`kind::union_if_distinct` dedups them to a bare `Kind::Tuple`,
+// no tag), so `.0`/`.1` projection must resolve directly, not treat the
+// domain as a genuine cross-kind datatype with no matching arm. Before
+// `solver::sort::set_sort`'s union arm checked `ls == rs` for tuple/DT
+// sorts (only the sequence/Bool cases checked this), this fell through the
+// "no matching tuple arm" fallback and came back a fabricated
+// counterexample for a provably-valid program. Found while generalizing
+// `distinct`'s basis beyond `Int` — see backlog.md.
+#[test]
+fn identical_shape_tuple_union_domain_projection_proved() {
+    proved(
+        "
+f : (Nat * Nat) | (Nat * Nat) -> Nat
+f(p) = p.0 + p.1
+",
+    );
+}

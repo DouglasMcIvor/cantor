@@ -29,8 +29,24 @@ use super::{CheckResult, FunctionEnv, NameDefs, configured_solver};
 /// For each `D = distinct B` in `name_defs`, create a CVC5 uninterpreted sort plus
 /// constructor/destructor uninterpreted functions:
 ///   - `sort  = mk_uninterpreted_sort("D")`
-///   - `mk_D  : Int → D_sort`  (wraps an integer as a D-value)
-///   - `from_D: D_sort → Int`  (extracts the underlying integer)
+///   - `mk_D  : basis_sort → D_sort`  (wraps a `B`-sorted value as a D-value)
+///   - `from_D: D_sort → basis_sort`  (extracts the underlying `B` value)
+///
+/// `basis_sort` is `B`'s own CVC5 sort (`sort::set_sort`) — whatever that is
+/// (`Int`, `Bool`, a tuple, a sequence, …), not hardcoded — `distinct` is a
+/// purely solver-side opacity layer, disjoint from `B` for proof purposes
+/// but otherwise exactly `B`-shaped (see docs/design-decisions.md's
+/// `alias`/`distinct` section). Built in two passes: every distinct name
+/// (user + builtin) first gets its opaque sort unconditionally, independent
+/// of any basis (this lets a basis expression reference *another* distinct
+/// name, including mutually); only then is each user-defined name's basis
+/// sort resolved via `set_sort`, using those already-built sorts. A basis
+/// whose Kind isn't representable this way (a named union with
+/// genuinely-different-Kind arms, or anything containing `Set(_)`) is
+/// rejected earlier, loudly, at elaboration time
+/// (`semantics::elaborate::elaborate_name_def`,
+/// `kind::is_distinct_basis_representable`) — by the time this runs, every
+/// `Distinct` def's basis is guaranteed representable.
 ///
 /// No global axioms are needed; basis constraints are emitted on-demand when
 /// `litre(n)` or `from(x)` is encoded.
@@ -38,7 +54,11 @@ use super::{CheckResult, FunctionEnv, NameDefs, configured_solver};
 /// `Fail`, `None`, and `Char` are registered here too, as builtin distinct
 /// sorts — none appears in `name_defs` (all three are resolved via
 /// `builtins::lookup`, not a user definition), so they're added
-/// unconditionally alongside the user-defined ones. This is the only
+/// unconditionally alongside the user-defined ones, and — unlike a real
+/// user `Distinct` def — always keep a fixed `Int` basis (there's no
+/// `NameDef` to derive one from; `Fail`/`None` are unconstrained single
+/// witnesses and `char(n)`'s basis obligation is checked against a
+/// hardcoded predicate, not a Cantor-expressible set). This is the only
 /// Fail/None-specific step in the whole cross-kind union pipeline: once each
 /// has its own uninterpreted CVC5 sort, every other piece (cross-kind
 /// detection in `set_sort`, datatype construction in
@@ -47,36 +67,99 @@ use super::{CheckResult, FunctionEnv, NameDefs, configured_solver};
 /// `Int | (Fail * Y)` need no Fail/None-specific code beyond this
 /// registration. See docs/design-decisions.md §4/§13.
 ///
-/// `Char` reuses the exact same recipe, but — unlike `Fail`/`None` — its
-/// constructor (`char(n)`, `solver::encode_call`) carries a genuine basis
-/// obligation (not every `Int` is a valid Unicode scalar), so it's *not*
-/// total the way `Fail`/`None`'s single witness value is.
+/// `wrapping` must be the caller's *own* already-built `WrappingPreds` (not
+/// rebuilt here) — a second, independent `build_wrapping_preds` call would
+/// create a second, distinct-but-same-named `Signed32`/`Unsigned32`
+/// uninterpreted sort, silently incompatible with the one actually used
+/// elsewhere in the same `SolverPreds` bundle.
+///
+/// Returns `Err` if some `Distinct` def's basis, though
+/// `kind::is_distinct_basis_representable` at elaboration time, still has no
+/// `set_sort` (e.g. a set-*literal* basis with tuple elements —
+/// `scalar_kind_sort`'s `SetLit` arm only supports scalar element Kinds
+/// today, a pre-existing gap unrelated to `distinct`; a `Point = distinct
+/// (Nat * Nat)` Cartesian-product basis is unaffected and works). Every
+/// caller treats this the same way any other "solver can't represent this
+/// construct" case is already treated elsewhere in this module —
+/// `CheckResult::Unknown`, never a silent pass and never a panic.
 pub(super) fn build_distinct_preds<'tm>(
     tm: &'tm TermManager,
     name_defs: &NameDefs,
-) -> DistinctPreds<'tm> {
-    let user_defined = name_defs
+    wrapping: &WrappingPreds<'tm>,
+) -> Result<DistinctPreds<'tm>, String> {
+    let user_defined: Vec<Symbol> = name_defs
         .iter()
         .filter(|(_, def)| def.kind == DefKind::Distinct)
-        .map(|(sym, _)| sym.clone());
-    let with_builtins = user_defined.chain([
-        Symbol::new("Fail"),
-        Symbol::new("None"),
-        Symbol::new("Char"),
-    ]);
+        .map(|(sym, _)| sym.clone())
+        .collect();
+    let all_names: Vec<Symbol> = user_defined
+        .iter()
+        .cloned()
+        .chain([
+            Symbol::new("Fail"),
+            Symbol::new("None"),
+            Symbol::new("Char"),
+        ])
+        .collect();
 
-    with_builtins
+    // Pass 1: opaque sort per name, independent of basis.
+    let opaque_sorts: HashMap<Symbol, cvc5::Sort<'tm>> = all_names
+        .iter()
+        .map(|sym| (sym.clone(), tm.mk_uninterpreted_sort(&sym.0)))
+        .collect();
+
+    // Probe registry so pass 2 can resolve a basis sort even when the basis
+    // references another distinct name — `set_sort`/`scalar_kind_sort` only
+    // ever read `.sort` off a `DistinctInfo`, never `.mk`/`.from`, so a
+    // placeholder term (never used past this function) is fine here.
+    let probe_distinct: DistinctPreds<'tm> = opaque_sorts
+        .iter()
+        .map(|(sym, sort)| {
+            let placeholder = tm.mk_const(sort.clone(), "__basis_probe");
+            (
+                sym.clone(),
+                DistinctInfo {
+                    sort: sort.clone(),
+                    mk: placeholder.clone(),
+                    from: placeholder,
+                },
+            )
+        })
+        .collect();
+    let probe_preds = SolverPreds {
+        distinct: probe_distinct,
+        wrapping: wrapping.clone(),
+        quotient: QuotientPreds::new(),
+    };
+
+    all_names
+        .into_iter()
         .map(|sym| {
-            let sort = tm.mk_uninterpreted_sort(&sym.0);
+            let sort = opaque_sorts[&sym].clone();
+            let basis_sort = match name_defs
+                .get(&sym)
+                .filter(|def| def.kind == DefKind::Distinct)
+            {
+                Some(def) => {
+                    set_sort(tm, &def.value, &probe_preds, name_defs).ok_or_else(|| {
+                        format!(
+                            "`{}`'s basis `{}` has no representable solver sort",
+                            sym.0, def.value
+                        )
+                    })?
+                }
+                // Fail/None/Char: no real NameDef basis, always Int (see doc comment above).
+                None => tm.integer_sort(),
+            };
             let mk = tm.mk_const(
-                tm.mk_fun_sort(&[tm.integer_sort()], sort.clone()),
+                tm.mk_fun_sort(std::slice::from_ref(&basis_sort), sort.clone()),
                 &format!("mk_{}", sym.0),
             );
             let from = tm.mk_const(
-                tm.mk_fun_sort(std::slice::from_ref(&sort), tm.integer_sort()),
+                tm.mk_fun_sort(std::slice::from_ref(&sort), basis_sort),
                 &format!("from_{}", sym.0),
             );
-            (sym, DistinctInfo { sort, mk, from })
+            Ok((sym, DistinctInfo { sort, mk, from }))
         })
         .collect()
 }
@@ -131,17 +214,18 @@ pub(super) fn build_solver_preds<'tm>(
     tm: &'tm TermManager,
     name_defs: &NameDefs,
     fn_env: &FunctionEnv<'_>,
-) -> SolverPreds<'tm> {
+) -> Result<SolverPreds<'tm>, String> {
+    let wrapping = build_wrapping_preds(tm);
     let sort_lookup = SolverPreds {
-        distinct: build_distinct_preds(tm, name_defs),
-        wrapping: build_wrapping_preds(tm),
+        distinct: build_distinct_preds(tm, name_defs, &wrapping)?,
+        wrapping,
         quotient: QuotientPreds::new(),
     };
     let quotient = build_quotient_preds(tm, name_defs, fn_env, &sort_lookup);
-    SolverPreds {
+    Ok(SolverPreds {
         quotient,
         ..sort_lookup
-    }
+    })
 }
 
 /// Resolve a quotient set's canonicalizer `Symbol` against `fn_env`: it must
@@ -315,12 +399,17 @@ fn check_quotient_def(
     }
 
     let tm = TermManager::new();
+    let wrapping = build_wrapping_preds(&tm);
+    let distinct = match build_distinct_preds(&tm, name_defs, &wrapping) {
+        Ok(d) => d,
+        Err(e) => return CheckResult::Unknown(e),
+    };
     let distinct_preds = SolverPreds {
         // No `fn_env`-derived quotient axioms here: a canonicalizer body
         // referencing another quotient set's membership is out of scope
         // for this slice (see `build_quotient_preds`'s doc comment).
-        distinct: build_distinct_preds(&tm, name_defs),
-        wrapping: build_wrapping_preds(&tm),
+        distinct,
+        wrapping,
         quotient: QuotientPreds::new(),
     };
     let Some(sort) = set_sort(&tm, lhs, &distinct_preds, name_defs) else {
@@ -533,9 +622,14 @@ fn check_equiv_decl(
     };
 
     let tm = TermManager::new();
+    let wrapping = build_wrapping_preds(&tm);
+    let distinct = match build_distinct_preds(&tm, name_defs, &wrapping) {
+        Ok(d) => d,
+        Err(e) => return CheckResult::Unknown(e),
+    };
     let distinct_preds = SolverPreds {
-        distinct: build_distinct_preds(&tm, name_defs),
-        wrapping: build_wrapping_preds(&tm),
+        distinct,
+        wrapping,
         quotient: QuotientPreds::new(),
     };
 

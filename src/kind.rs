@@ -115,9 +115,11 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileEr
                 builtin.kind
             } else if let Some(def) = name_defs.get(sym) {
                 match def.kind {
-                    DefKind::Alias => set_kind(&def.value, name_defs)?,
-                    // Distinct sets are always integer-backed at the LLVM level.
-                    DefKind::Distinct => Kind::Int,
+                    // `distinct` is a purely solver-side opacity layer — at
+                    // the LLVM level a `D = distinct B` value has exactly
+                    // `B`'s own Kind, same as `alias` (see docs/design-
+                    // decisions.md's `alias`/`distinct` section).
+                    DefKind::Alias | DefKind::Distinct => set_kind(&def.value, name_defs)?,
                 }
             } else {
                 return Err(CompileError::UndefinedVariable {
@@ -203,6 +205,31 @@ pub fn is_scalar_word_kind(kind: &Kind) -> bool {
         kind,
         Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail | Kind::None
     )
+}
+
+/// Whether `kind` has a CVC5 sort `solver::sort::set_sort`/`scalar_kind_sort`
+/// can already produce — the "single homogeneous basis" case `distinct`
+/// needs (`solver::preds::build_distinct_preds` builds `mk_D`/`from_D`
+/// against exactly this sort). Excludes `TaggedUnion` (a named union whose
+/// arms have genuinely *different* Kinds — making its per-label
+/// constructors build/tear down that tagged representation before/after
+/// opacifying via `mk_D`/`from_D` is separate, not-yet-implemented work, see
+/// backlog.md) and `Set(_)` (no structural equality/ordering yet, same
+/// reason `is_scalar_word_kind` excludes it).
+pub fn is_distinct_basis_representable(kind: &Kind) -> bool {
+    match kind {
+        Kind::Int
+        | Kind::Int64
+        | Kind::Bool
+        | Kind::Char
+        | Kind::Fail
+        | Kind::None
+        | Kind::Signed32
+        | Kind::Unsigned32 => true,
+        Kind::Tuple(parts) => parts.iter().all(is_distinct_basis_representable),
+        Kind::Vector(elem) => is_distinct_basis_representable(elem),
+        Kind::TaggedUnion(_) | Kind::Set(_) => false,
+    }
 }
 
 /// True when `elems` is the shape of a fallible-wire `Tuple` — its first

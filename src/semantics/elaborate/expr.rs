@@ -74,8 +74,11 @@ pub(super) fn elaborate_expr(
                             ))
                         })?;
                         match def.kind {
-                            ast::DefKind::Alias => set_kind(&def.value, ctx.name_defs)?,
-                            ast::DefKind::Distinct => Kind::Int,
+                            // `distinct` is Kind-transparent — see
+                            // `kind::set_kind`'s `DefKind::Distinct` arm.
+                            ast::DefKind::Alias | ast::DefKind::Distinct => {
+                                set_kind(&def.value, ctx.name_defs)?
+                            }
                         }
                     }
                 },
@@ -177,8 +180,7 @@ pub(super) fn elaborate_expr(
             // recognized directly by name in codegen::compile_call — they're
             // never user-declared functions, so they'd never appear in
             // `fn_sigs`. Mirrors that special-casing exactly.
-            let kind_of = if let Some(k) = builtin_call_kind(callee, sem_args.len(), ctx.name_defs)
-            {
+            let kind_of = if let Some(k) = builtin_call_kind(callee, &sem_args, ctx.name_defs) {
                 k
             } else {
                 let sigs =

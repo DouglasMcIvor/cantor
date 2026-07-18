@@ -140,6 +140,45 @@ Algorithm:
   along the way and are already shipped: `solver::sort::set_sort`'s `Comprehension` arm
   hardcoded `integer_sort()` regardless of source (now delegates to the source's own sort),
   and `solver::membership::encode_comp_expr` had no `from(x)` support in a filter at all.
+
+  **Update (2026-07-18, later session)**: `distinct`'s Int-only basis assumption — the thing
+  flagged above as blocking a tuple/cross-kind arm — is now lifted for the *single
+  homogeneous Kind* case (`kind::is_distinct_basis_representable`,
+  `solver::preds::build_distinct_preds`'s two-pass `mk_D`/`from_D` sort resolution): `distinct`
+  can now wrap `Bool`, `Char`, a tuple, a vector, or a `distinct`-over-`distinct` chain, and a
+  named union's arms can share any one of those Kinds (not just `Int`), see
+  `tests/solver/distinct_basis.rs`. Still NOT lifted: a named union whose arms have
+  *genuinely different* Kinds from each other (`Circle: Nat | Rect: Nat * Nat`) — `Shape`
+  would need to become a real tagged-union-shaped `distinct` (wrap/unwrap via the arm's own
+  `ck_*` constructor before/after `mk_Shape`/`from_Shape`, mirroring
+  `solver::sort::build_union_datatype_sort`), which is genuinely new solver *and* codegen
+  work, not a hardcode removal — so this is still the right next step for resuming step 4,
+  now with one fewer prerequisite in the way. Two more bugs found (and fixed) while lifting
+  the basis restriction, both worth rereading before similar work: `solver::sort::set_sort`'s
+  `Var` arm checked `kind_of == Bool` *before* checking whether the var was a registered
+  `distinct` name, so a `distinct Bool` set was silently treated as the builtin `Bool` sort
+  itself; and `encode_call.rs`'s constructor blocks passed an array literal straight to
+  `mk_D` without coercing it to a `Seq` first (array literals always encode as a plain CVC5
+  tuple unless something downstream asks for a sequence — ordinary function calls get this
+  bridging for free from `membership_constraint`, but `ApplyUf` doesn't bridge).
+
+  A third bug was found the same way and turned out to be more than a curiosity — it's
+  **FIXED**, same session: `solver::sort::set_sort`'s `Union` arm treated **any** union with a
+  tuple arm as cross-kind (needs the tagged-datatype wrapper), even when both arms have the
+  *identical* tuple shape (`(Nat*Nat) | (Nat*Nat)`) — `kind::union_if_distinct` correctly
+  dedups this to a bare `Kind::Tuple` at the Kind level, so codegen already treated it as
+  untagged, but `set_sort` didn't check `ls == rs` the way it already did for the sequence
+  case right below it in the same match. Two live consequences, not just a plain-code
+  curiosity: on ordinary (non-`distinct`) code, `.0`/`.1` projection on such a value came back
+  a fabricated counterexample for a provably-valid program
+  (`tests/solver/cross_kind_unions.rs::identical_shape_tuple_union_domain_projection_proved`);
+  on a `distinct` named union with two same-shape tuple-arm labels (squarely inside this
+  session's own newly-lifted scope), it crashed `cvc5` outright — a raw C++-level abort, not
+  even a catchable Rust panic — because `mk_Shape`'s declared domain sort (the wrongly-cross-
+  kind DT) didn't match the plain-tuple argument term
+  (`tests/solver/distinct_basis.rs::named_union_tuple_arms_same_shape_proved`). Fixed by
+  gating both the tuple and (for parity) the general-DT cross-kind conditions on `ls != rs`,
+  same shape as the sequence/Bool checks already next to them.
 - more IO backends: CLI, TUI, web, SDL, OpenGL, vulkan, etc
 - write-only side effects via `emit`
 - compiled binaries
@@ -160,9 +199,10 @@ Algorithm:
 - literal suffix support for e.g. 3m for 3 meters
 - structs/"named product sets". product sets are either fully not named or fully named.
   (named union sets — `Measurement = distinct (length: Meter | volume: Liter)` with
-  `Measurement.length(3m)` construction — are DONE for Int-Kind-compatible arms, see
-  README; a tuple/cross-kind arm like a hypothetical named-product arm still needs
-  `distinct`'s Int-only basis assumption lifted, tracked separately)
+  `Measurement.length(3m)` construction — are DONE for arms that share one Kind (not just
+  `Int` any more, see the "constructors in binders" entry above); a tuple/cross-kind arm
+  like a hypothetical named-product arm still needs `distinct`'s per-arm cross-kind
+  wrapping, tracked separately in that same entry)
   Tentative syntax for products:
   ```
   Pair = distinct Meter * Meter

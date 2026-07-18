@@ -146,6 +146,16 @@ fn distinct_set_is_int_backed_but_disjoint() {
     assert_eq!(def.sigs[0].param_kinds, vec![Kind::Int]);
 }
 
+#[test]
+fn distinct_set_over_a_non_int_basis_takes_the_basis_kind() {
+    // `distinct` is a purely solver-side opacity layer — a `Bool`-basis
+    // distinct set must have `Kind::Bool`, not the old hardcoded
+    // `Kind::Int` (see `kind::set_kind`'s `DefKind::Distinct` arm).
+    let def = elaborate_function("Flag = distinct Bool\nf : Flag -> Flag\nf(x) = x", "f");
+    assert_eq!(def.sigs[0].param_kinds, vec![Kind::Bool]);
+    assert_eq!(def.sigs[0].return_kind, Kind::Bool);
+}
+
 // ── Block bodies: `let` constraints are set position, values are value position ─
 
 #[test]

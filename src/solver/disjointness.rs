@@ -47,9 +47,14 @@ pub(super) fn validate_disjoint_unions(
             // disjoint-union/overload-domain well-formedness, not general
             // membership), so quotient-set membership here safely degrades
             // to `Unsupported`/`Unknown` rather than being threaded through.
+            let wrapping = build_wrapping_preds(&tm);
+            let distinct = match build_distinct_preds(&tm, name_defs, &wrapping) {
+                Ok(d) => d,
+                Err(e) => return Some(CheckResult::Unknown(e)),
+            };
             let distinct_preds = SolverPreds {
-                distinct: build_distinct_preds(&tm, name_defs),
-                wrapping: build_wrapping_preds(&tm),
+                distinct,
+                wrapping,
                 quotient: QuotientPreds::new(),
             };
             let t = tm.mk_const(tm.integer_sort(), "__disjoint_check");
@@ -216,9 +221,14 @@ fn check_pair_disjoint(
     // No `fn_env` available here (an overload-domain-disjointness check, not
     // general membership) — quotient-set membership degrades to
     // `Unsupported`/`Unknown` rather than being threaded through.
+    let wrapping = build_wrapping_preds(&tm);
+    let distinct = match build_distinct_preds(&tm, name_defs, &wrapping) {
+        Ok(d) => d,
+        Err(e) => return CheckResult::Unknown(e),
+    };
     let distinct_preds = SolverPreds {
-        distinct: build_distinct_preds(&tm, name_defs),
-        wrapping: build_wrapping_preds(&tm),
+        distinct,
+        wrapping,
         quotient: QuotientPreds::new(),
     };
 

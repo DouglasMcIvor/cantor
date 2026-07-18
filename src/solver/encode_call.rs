@@ -6,7 +6,7 @@
 //! obligation, and callee-contract assertion), while `encode.rs` keeps the
 //! expression router and its non-call arms.
 
-use cvc5::{Kind, Solver, Term, TermManager};
+use cvc5::{Kind, Solver, Sort, Term, TermManager};
 
 use crate::{
     ast::DefKind,
@@ -23,7 +23,7 @@ use super::sort::{
     extract_success_value, is_product_range, maybe_coerce, set_sort, success_arm_of_range,
 };
 
-use super::encode::{EncodeCtx, Env, encode_expr, mk_decomposed_tuple};
+use super::encode::{EncodeCtx, Env, coerce_to_sequence, encode_expr, mk_decomposed_tuple};
 use super::obligations::{BuiltinObligation, OverloadCallObligation};
 
 // ── Call encoder ──────────────────────────────────────────────────────────────
@@ -37,6 +37,32 @@ pub(crate) struct CallSite<'e> {
     pub(crate) callee: &'e Symbol,
     pub(crate) args: &'e [SemExpr],
     pub(crate) span: Span,
+}
+
+/// Coerce a `distinct` constructor's already-encoded argument term to
+/// `basis_sort` when the two don't already match a bare `ApplyUf` — needed
+/// because an array literal (`[1, 2]`) always encodes as a plain CVC5 tuple
+/// (`SemExprKind::Tuple`'s only encoding, see `encode_expr`), never a `Seq`,
+/// unless something downstream asks for one. An ordinary function call gets
+/// this for free from `membership_constraint`'s sequence-unification
+/// bridging (which tolerates either sort on the *domain-obligation* side),
+/// but `mk_D`'s `ApplyUf` is a hard CVC5 sort match with no bridging of its
+/// own, so a sequence-basis literal must genuinely become a `Seq` term
+/// before it's passed in. No-op for every other basis sort (a `Tuple`
+/// argument already matches `mk_D`'s declared domain directly, since both
+/// come from the same `set_sort` machinery).
+fn coerce_arg_to_basis<'tm>(
+    tm: &'tm TermManager,
+    arg_term: Term<'tm>,
+    basis_sort: &Sort<'tm>,
+) -> Result<Term<'tm>, String> {
+    if arg_term.sort() == *basis_sort {
+        return Ok(arg_term);
+    }
+    if basis_sort.is_sequence() {
+        return coerce_to_sequence(tm, arg_term, Some(basis_sort.clone()));
+    }
+    Ok(arg_term)
 }
 
 pub(crate) fn encode_call<'tm>(
@@ -63,16 +89,25 @@ pub(crate) fn encode_call<'tm>(
     // Auto-generated constructor: `Shape.Circle(r)` for a named union arm
     // (`Shape = distinct (Circle: Nat | Rect: NatPos)`). Reuses the *same*
     // `mk_Shape`/`from_Shape` uninterpreted functions `build_distinct_preds`
-    // already builds for any `Distinct` name — v0 named unions are Int-only
-    // (`elaborate_name_def` rejects non-Int arms), so `Shape` itself is a
-    // perfectly ordinary distinct set as far as the solver is concerned;
-    // the only thing genuinely new here is picking *which arm's* basis
-    // obligation applies, by label instead of checking the whole union.
+    // already builds for any `Distinct` name — every arm must currently
+    // share one Kind (`elaborate_name_def`'s `is_distinct_basis_representable`
+    // check), so `Shape` itself is a perfectly ordinary distinct set as far
+    // as the solver is concerned; the only thing genuinely new here is
+    // picking *which arm's* basis obligation applies, by label instead of
+    // checking the whole union.
     if args.len() == 1
         && let Some((union_def, arm_expr)) = named_union_arm_for_constructor(callee, ctx.name_defs)
         && let Some(info) = ctx.distinct_preds.get(&union_def.name)
     {
         let arg_term = enc!(&args[0])?;
+        let basis_sort = set_sort(ctx.tm, &union_def.value, ctx.distinct_preds, ctx.name_defs)
+            .ok_or_else(|| {
+                format!(
+                    "`{}`'s basis has no representable solver sort",
+                    union_def.name.0
+                )
+            })?;
+        let arg_term = coerce_arg_to_basis(ctx.tm, arg_term, &basis_sort)?;
         match membership_constraint(
             ctx.tm,
             arg_term.clone(),
@@ -106,6 +141,19 @@ pub(crate) fn encode_call<'tm>(
         && let Some(info) = ctx.distinct_preds.get(&distinct_def.name)
     {
         let arg_term = enc!(&args[0])?;
+        let basis_sort = set_sort(
+            ctx.tm,
+            &distinct_def.value,
+            ctx.distinct_preds,
+            ctx.name_defs,
+        )
+        .ok_or_else(|| {
+            format!(
+                "`{}`'s basis has no representable solver sort",
+                distinct_def.name.0
+            )
+        })?;
+        let arg_term = coerce_arg_to_basis(ctx.tm, arg_term, &basis_sort)?;
         match membership_constraint(
             ctx.tm,
             arg_term.clone(),

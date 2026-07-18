@@ -148,9 +148,13 @@ fn domain_within_int64(part: &SemExpr, name_defs: &NameDefs, timeout_ms: u64) ->
     // optimization (whole-function Int64 promotion), not general membership
     // — so quotient-set membership safely degrades to `Unsupported` (i.e.
     // declines the optimization) rather than being threaded through.
+    let wrapping = build_wrapping_preds(&tm);
+    let Ok(distinct) = build_distinct_preds(&tm, name_defs, &wrapping) else {
+        return false;
+    };
     let distinct_preds = SolverPreds {
-        distinct: build_distinct_preds(&tm, name_defs),
-        wrapping: build_wrapping_preds(&tm),
+        distinct,
+        wrapping,
         quotient: QuotientPreds::new(),
     };
     let t = tm.mk_const(tm.integer_sort(), "__int64_promote_check");

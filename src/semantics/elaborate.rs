@@ -26,7 +26,7 @@ use std::collections::HashMap;
 
 use crate::ast::{self, DefKind, FunctionBody, FunctionDef, Item, NameDef, NameDefs};
 use crate::error::CompileError;
-use crate::kind::{Kind, set_kind};
+use crate::kind::{Kind, is_distinct_basis_representable, set_kind};
 use crate::semantics::tree::*;
 use crate::span::{Span, Symbol};
 
@@ -245,39 +245,53 @@ fn bucket_key(def: &SemFunctionDef) -> Vec<Kind> {
 }
 
 /// `codegen::compile_call`'s built-in identity/cardinality calls — never
-/// user-declared, so absent from `fn_sigs`. `from`/`size`/`len` always
-/// return `Kind::Int`; `show` (string interpolation, `parser::expr`'s
+/// user-declared, so absent from `fn_sigs`. `size`/`len` always return
+/// `Kind::Int`; `show` (string interpolation, `parser::expr`'s
 /// `desugar_interp_parts`) always returns `Kind::Vector(Char)` (`Char*`)
-/// instead — like the other three, its return Kind never depends on the
+/// instead — like `size`/`len`, its return Kind never depends on the
 /// argument's Kind, it's just a different constant one. `show`'s codegen
 /// (`codegen::show::compile_show`) recurses through the argument's actual
 /// Kind at compile time to decide *how* to build that `Char*`, but nothing
-/// here needs to know that.
-fn builtin_call_kind(callee: &Symbol, args_len: usize, name_defs: &NameDefs) -> Option<Kind> {
-    if args_len != 1 {
-        return None;
-    }
+/// here needs to know that. `from(x)` is the one exception: since `distinct`
+/// is Kind-transparent (see `set_kind`'s `DefKind::Distinct` arm), `x`'s own
+/// already-elaborated Kind already *is* its distinct set's basis Kind, so
+/// `from(x)`'s return Kind is just `x`'s Kind, unchanged — hence this takes
+/// the elaborated `args`, not merely a count. `Char`/`Signed32`/`Unsigned32`
+/// are the exception: those genuinely get their own runtime Kind different
+/// from their `Int` basis (see `builtins::lookup`), so `from(x)` on one of
+/// those is real conversion work, not identity — `codegen::expr_call`'s
+/// `from(x)` arm already sign-/zero-extends and tags back up to `Kind::Int`
+/// for exactly these three; this must agree with that, not with the
+/// Kind-transparent case above.
+fn builtin_call_kind(callee: &Symbol, args: &[SemExpr], name_defs: &NameDefs) -> Option<Kind> {
+    let [arg] = args else { return None };
     if callee.0 == "show" {
         return Some(Kind::Vector(Box::new(Kind::Char)));
     }
-    if callee.0 == "from" || callee.0 == "size" || callee.0 == "len" {
+    if callee.0 == "from" {
+        return Some(match arg.kind_of {
+            Kind::Char | Kind::Signed32 | Kind::Unsigned32 => Kind::Int,
+            ref k => k.clone(),
+        });
+    }
+    if callee.0 == "size" || callee.0 == "len" {
         return Some(Kind::Int);
     }
     // Auto-generated constructor `Name.Label(x)` for a named union arm
-    // (`Name = distinct (Label: Expr | ...)`) — same `Kind::Int` result as
-    // any other `distinct` constructor below (v0 named unions are Int-only,
-    // see `elaborate_name_def`'s labeled-arm validation), just keyed by the
-    // dotted callee name instead of a single capitalized identifier.
+    // (`Name = distinct (Label: Expr | ...)`) — same basis-Kind result as
+    // any other `distinct` constructor below, just keyed by the dotted
+    // callee name instead of a single capitalized identifier.
     if let Some((name_part, label_part)) = callee.0.split_once('.') {
-        let found = name_defs.get(&Symbol::new(name_part)).is_some_and(|def| {
-            def.kind == DefKind::Distinct
+        let found = name_defs.get(&Symbol::new(name_part)).and_then(|def| {
+            (def.kind == DefKind::Distinct
                 && def
                     .labels
                     .as_ref()
-                    .is_some_and(|labels| labels.iter().any(|l| l.0 == label_part))
+                    .is_some_and(|labels| labels.iter().any(|l| l.0 == label_part)))
+            .then_some(def)
         });
-        if found {
-            return Some(Kind::Int);
+        if let Some(def) = found {
+            return set_kind(&def.value, name_defs).ok();
         }
     }
     let mut chars = callee.0.chars();
@@ -287,26 +301,20 @@ fn builtin_call_kind(callee: &Symbol, args_len: usize, name_defs: &NameDefs) -> 
     // (`signed32(n)`/`unsigned32(n)`, docs/wrapping-and-quotient-sets-
     // plan.md): unlike `distinct`, a wrapping sort genuinely gets its own
     // runtime Kind (different LLVM width/ABI extension), so this must be
-    // checked *before* falling through to the `distinct`-only default below.
+    // checked *before* falling through to the `distinct` default below.
     match crate::semantics::builtins::lookup(&capitalized) {
         Some(b) if b.kind == Kind::Signed32 || b.kind == Kind::Unsigned32 => Some(b.kind),
         // `char(n)` (this module's docs/design-decisions.md §13 "Char"):
         // like Signed32/Unsigned32, Char genuinely gets its own runtime Kind
         // (i32, disjoint from Int), so must be checked here too rather than
-        // falling through to the `distinct`-only `Kind::Int` default below.
+        // falling through to the `distinct` default below.
         Some(b) if b.kind == Kind::Char => Some(b.kind),
         _ => {
-            // Auto-generated constructor `d(x)` for `D = distinct B`.
-            //
-            // TODO: hardcoding `Kind::Int` here is a holdover from when
-            // `distinct` could only wrap an Int-sorted basis set (a rapid-
-            // prototyping-era assumption, not a deliberate design choice).
-            // `distinct` should eventually generalise to wrap *any* basis
-            // set/Kind — at that point this needs to return the
-            // constructor's actual result Kind (derived from the basis, not
-            // unconditionally `Int`).
+            // Auto-generated constructor `d(x)` for `D = distinct B` — the
+            // constructor's result Kind is `B`'s own Kind (`distinct` is
+            // Kind-transparent, see `set_kind`'s `DefKind::Distinct` arm).
             match name_defs.get(&Symbol(capitalized)) {
-                Some(def) if def.kind == DefKind::Distinct => Some(Kind::Int),
+                Some(def) if def.kind == DefKind::Distinct => set_kind(&def.value, name_defs).ok(),
                 _ => None,
             }
         }
@@ -471,29 +479,30 @@ fn elaborate_name_def(def: &NameDef, ctx: &Ctx) -> Result<SemNameDef, CompileErr
         Position::Set
     };
     let value = elaborate_expr(&def.value, value_pos, ctx, &mut env)?;
-    if def.labels.is_some() {
-        // Named union arms (`distinct (Label: Expr | Label: Expr | ...)`) —
-        // v0 scope: every arm must be `Kind::Int`. `distinct`'s existing
-        // machinery (`solver::preds::build_distinct_preds`) hardcodes an
-        // `Int`-only basis (`mk_D : Int -> D`) for every distinct set, and
-        // `kind.rs` hardcodes `DefKind::Distinct => Kind::Int` — a tuple or
-        // other cross-kind arm would silently reach the solver with a
-        // sort cvc5 can't match against `mk_D`'s domain, not a graceful
-        // error. Rejected here instead, loudly, until that's generalized.
-        for arm in flatten_any_union(&value) {
-            if arm.kind_of != Kind::Int {
-                return Err(not_yet_implemented(
-                    &format!(
-                        "named union arm of kind {:?} (only Int-compatible arms — Nat, NatPos, \
-                         Int8/16/32/64, etc. — are supported today; a tuple or other \
-                         cross-kind arm needs `distinct`'s Int-only basis assumption lifted \
-                         first)",
-                        arm.kind_of
-                    ),
-                    arm.span,
-                ));
-            }
-        }
+    // `distinct`'s basis must be a single, solver-representable Kind — see
+    // `kind::is_distinct_basis_representable`'s doc comment for exactly
+    // which Kinds qualify (any single Kind `solver::sort::set_sort` can
+    // already produce a CVC5 sort for) and which don't yet. Checked for
+    // *every* `Distinct` def, not just labeled named unions — an unlabeled
+    // `Litre = distinct Bool` needs the same validation, it just never had
+    // it before this generalized from the old Int-only check.
+    if def.kind == DefKind::Distinct && !is_distinct_basis_representable(&value.kind_of) {
+        let msg = if let Kind::TaggedUnion(arm_kinds) = &value.kind_of {
+            format!(
+                "named union arm kinds differ ({arm_kinds:?}) — every arm must share one Kind \
+                 today (e.g. `Circle: Nat | Radius: NatPos`, or two same-shape tuple arms); a \
+                 named union whose arms have genuinely different Kinds (e.g. `Circle: Nat | \
+                 Rect: Nat * Nat`) needs `distinct`'s per-arm cross-kind wrapping, not yet \
+                 implemented"
+            )
+        } else {
+            format!(
+                "distinct basis of kind {:?} (`Set(_)` elements have no structural equality/\
+                 ordering yet, see `kind::is_scalar_word_kind`)",
+                value.kind_of
+            )
+        };
+        return Err(not_yet_implemented(&msg, value.span));
     }
     Ok(SemNameDef {
         name: def.name.clone(),

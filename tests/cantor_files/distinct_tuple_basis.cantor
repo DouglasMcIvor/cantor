@@ -1,0 +1,6 @@
+Point = distinct (Nat * Nat)
+sum_of : Point -> Nat
+sum_of(p) = from(p).0 + from(p).1
+
+main : -> Nat
+main() = sum_of(point((3, 4)))

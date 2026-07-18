@@ -264,8 +264,6 @@ pub(crate) fn set_sort<'tm>(
     name_defs: &NameDefs,
 ) -> Option<Sort<'tm>> {
     Some(match &set_expr.kind {
-        // Bool has its own CVC5 boolean sort.
-        SemExprKind::Var(_) if set_expr.kind_of == ValKind::Bool => tm.boolean_sort(),
         // Signed32/Unsigned32 (docs/wrapping-and-quotient-sets-plan.md) each
         // have their own CVC5 uninterpreted sort, exactly like a distinct
         // set — but registered in `wrapping`, not `distinct` (they're
@@ -280,15 +278,21 @@ pub(crate) fn set_sort<'tm>(
                 .d_sort
                 .clone()
         }
-        // Distinct sets each have their own CVC5 uninterpreted sort.
-        SemExprKind::Var(sym) => {
-            if let Some(info) = distinct_preds.get(sym) {
-                info.sort.clone()
-            } else {
-                // All other named sets (Nat, NatPos, Int, Int8…Int64, …) → integer.
-                tm.integer_sort()
-            }
-        }
+        // Distinct sets each have their own CVC5 uninterpreted sort — checked
+        // before the `Bool`/`Int` fallbacks below, and *before* looking at
+        // `kind_of` at all, since a distinct set's basis Kind can now be
+        // anything (`Bool` included, now that `distinct` is no longer
+        // Int-only) and must never be confused with the builtin `Bool`/`Int`
+        // sort itself just because it happens to share that Kind.
+        SemExprKind::Var(sym) if distinct_preds.get(sym).is_some() => distinct_preds
+            .get(sym)
+            .expect("checked by the match guard above")
+            .sort
+            .clone(),
+        // Bool has its own CVC5 boolean sort.
+        SemExprKind::Var(_) if set_expr.kind_of == ValKind::Bool => tm.boolean_sort(),
+        // All other named sets (Nat, NatPos, Int, Int8…Int64, …) → integer.
+        SemExprKind::Var(_) => tm.integer_sort(),
         // Set literals {0}, {1, 2, 3}, {'a', 'b'} — the sort follows the
         // elaborated element Kind (`kind::set_kind`'s `SetLit` arm), not a
         // hardcoded integer, so e.g. a homogeneous Char literal set gets
@@ -382,8 +386,20 @@ pub(crate) fn set_sort<'tm>(
         // Union (`|`) and disjoint union (`+`).
         // Cross-kind (tuple arm ∪ scalar, sequence arm ∪ non-same-sequence,
         // distinct-sort ∪ anything different, or Bool ∪ Int-family) → CVC5
-        // algebraic datatype. Same-kind scalar unions (Int | NatPos, Nat* |
-        // Int*) → no DT.
+        // algebraic datatype. Same-kind unions (Int | NatPos, Nat* | Int*,
+        // and — as of the `distinct`-basis generalization — two arms with
+        // the *identical* tuple/DT sort, e.g. `(Nat*Nat) | (Nat*Nat)`) → no
+        // DT: `kind::union_if_distinct` already dedups an identical-Kind
+        // pair to a bare Kind with no tag, so `set_sort` must agree, the
+        // same way it already agrees for the sequence/Bool cases just below
+        // (both explicitly check `ls != rs`/arm-family mismatch rather than
+        // "either side has this shape at all"). Before this was fixed, ANY
+        // tuple-vs-tuple union forced a DT unconditionally, even identical
+        // ones — silently wrong: a plain `(Nat*Nat)|(Nat*Nat)` projection
+        // came back a fabricated counterexample, and a `distinct` set with
+        // two same-shape tuple-arm labels crashed `cvc5` outright (`ApplyUf`
+        // handed a bare tuple where the union DT sort was expected — a raw
+        // C++-level abort, not even a catchable panic).
         SemExprKind::BinOp {
             op: BinOp::Union,
             lhs,
@@ -408,10 +424,12 @@ pub(crate) fn set_sort<'tm>(
             // conversion) — one boolean arm and one non-boolean arm always needs a
             // real tagged wrapper, the same as a tuple/scalar mix.
             let bool_is_cross_kind = ls.is_boolean() != rs.is_boolean();
-            if ls.is_tuple()
-                || rs.is_tuple()
-                || ls.is_dt()
-                || rs.is_dt()
+            // Tuple/DT arms are "same-kind" only when *identical* — mirrors
+            // `seq_is_cross_kind` exactly (see the doc comment above this arm).
+            let tuple_is_cross_kind = (ls.is_tuple() || rs.is_tuple()) && ls != rs;
+            let dt_is_cross_kind = (ls.is_dt() || rs.is_dt()) && ls != rs;
+            if tuple_is_cross_kind
+                || dt_is_cross_kind
                 || is_distinct_sort(&ls)
                 || is_distinct_sort(&rs)
                 || seq_is_cross_kind

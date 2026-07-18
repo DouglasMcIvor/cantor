@@ -10,6 +10,8 @@ mod check_basics;
 mod cli_flags;
 #[path = "cli/constants_and_bool.rs"]
 mod constants_and_bool;
+#[path = "cli/distinct_basis.rs"]
+mod distinct_basis;
 #[path = "cli/equiv.rs"]
 mod equiv;
 #[path = "cli/error_handling.rs"]

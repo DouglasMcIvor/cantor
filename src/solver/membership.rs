@@ -23,11 +23,14 @@ use super::membership_seq::{
 pub(crate) struct DistinctInfo<'tm> {
     /// Opaque CVC5 sort — every D-value has this sort.
     pub(crate) sort: Sort<'tm>,
-    /// Constructor UF: `mk_D : Int → D_sort`.
-    /// Applying `mk_D(n)` wraps the integer `n` as a D-value.
+    /// Constructor UF: `mk_D : basis_sort → D_sort`, where `basis_sort` is
+    /// `B`'s own CVC5 sort (`solver::preds::build_distinct_preds`) — `Int`
+    /// for `Litre = distinct Nat`, but not always (see that function's doc
+    /// comment). Applying `mk_D(b)` wraps a `B`-sorted value as a D-value.
     pub(crate) mk: Term<'tm>,
-    /// Destructor UF: `from_D : D_sort → Int`.
-    /// Applying `from_D(x)` extracts the underlying integer from a D-value.
+    /// Destructor UF: `from_D : D_sort → basis_sort`.
+    /// Applying `from_D(x)` extracts the underlying `B`-sorted value from a
+    /// D-value.
     pub(crate) from: Term<'tm>,
 }
 

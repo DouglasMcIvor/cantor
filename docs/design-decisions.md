@@ -1573,15 +1573,22 @@ Litre = distinct Nat
 `alias` is the right keyword (over `typedef`) as a deliberate signal to
 reach for it less. `distinct` sets are fully proof-capable (IMPLEMENTED):
 each `D = distinct B` gets its own uninterpreted CVC5 sort plus
-uninterpreted constructor/destructor functions `mk_D : Int -> D` and
-`from_D : D -> Int`; basis-set constraints are emitted on demand at each
-constructor / `from` site (no global axioms; logic `ALL`). Each constructor
-call site also asserts the ground round-trip fact `from_D(mk_D(arg)) ==
-arg`, so a literal round-trip like `from(litre(5)) == 5` is provable —
-`mk_D`/`from_D` have no relationship otherwise, being independent free
-uninterpreted functions. The auto-provided constructor (`litre : Nat ->
-Litre`) and the built-in destructor `from` are identity operations at
-runtime.
+uninterpreted constructor/destructor functions `mk_D : basis_sort -> D` and
+`from_D : D -> basis_sort`, where `basis_sort` is `B`'s own CVC5 sort —
+`Int` for `Litre = distinct Nat`, but any single solver-representable Kind
+works (`Bool`, `Char`, a tuple, a vector, a `distinct`-over-`distinct`
+chain, …; see `kind::is_distinct_basis_representable` for exactly which —
+a named union whose arms have genuinely *different* Kinds from each other
+is the one case still not supported, tracked in backlog.md); basis-set
+constraints are emitted on demand at each constructor / `from` site (no
+global axioms; logic `ALL`). Each constructor call site also asserts the
+ground round-trip fact `from_D(mk_D(arg)) == arg`, so a literal round-trip
+like `from(litre(5)) == 5` is provable — `mk_D`/`from_D` have no
+relationship otherwise, being independent free uninterpreted functions. The
+auto-provided constructor (`litre : Nat -> Litre`) and the built-in
+destructor `from` are identity operations at runtime — `distinct` never
+creates a new runtime Kind, only a new solver-opaque sort (see §13 "Value
+layers").
 
 ### Quotient sets (`L / canon`) (DECIDED for this slice,
     docs/wrapping-and-quotient-sets-plan.md)
@@ -2115,12 +2122,15 @@ either:
   to write one). `from(c)` is total and needs no obligation, exactly like
   `from()` on any other `distinct` value.
 - **Codegen representation: like `Signed32`/`Unsigned32`, not like user
-  `distinct`.** User `distinct` sets stay `Kind::Int`-shaped (tagged i64) at
-  the LLVM level; `Char` instead gets its own `Kind::Char`, a plain
-  unboxed `i32` register carrying the raw codepoint — needed so `Char*` is
-  distinguishable from `Int*` at the `Kind` level (for pretty-printing
-  strings as text, and eventually IO), which a `Kind::Int` reuse would have
-  made impossible. `char(n)`'s codegen is a plain untag + `i32` truncate,
+  `distinct`.** A user `distinct` set stays exactly its basis's own Kind at
+  the LLVM level (`Kind::Int`-shaped, tagged i64, for the common `distinct
+  Nat`/`distinct Int8` case — but whatever the basis's Kind actually is in
+  general, see the `alias`/`distinct` section above); `Char` instead gets
+  its own `Kind::Char`, a plain unboxed `i32` register carrying the raw
+  codepoint — needed so `Char*` is distinguishable from `Int*` at the
+  `Kind` level (for pretty-printing strings as text, and eventually IO),
+  which reusing the basis's `Kind::Int` would have made impossible.
+  `char(n)`'s codegen is a plain untag + `i32` truncate,
   **no runtime range check** — a `BuiltinObligation` that can't be proved
   makes the *whole file* fail to compile (`check_file` reports it as a
   counterexample/unknown and codegen never runs), the same guarantee
