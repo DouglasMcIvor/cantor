@@ -120,7 +120,6 @@ Algorithm:
   * map → hash table of key/value chunks
   * string → rope of UTF-8 chunks
 - could also add: tuple-level constraint `x, y : Int * Nat = ...`; nested patterns; `_` wildcard; per-binding mutability
-- allow overloading with literals, like `factorial(0) = 1` as sugar for the domain being `{0}`
 - along with recursive set definitions we get should allow constructors in binders
   ```
   Tree = leaf: Int | leaf2: (X * Y) | node: (Tree * Tree)

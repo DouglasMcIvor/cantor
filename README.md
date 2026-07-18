@@ -726,6 +726,7 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
   sign : Int -> Int
   sign(x for x > 0) = x
   ```
+- **Literal-arm overloading** — `factorial(0) = 1` narrows this arm's declared domain to `{0}`, sugar for a guard whose predicate is `== 0` on a compiler-synthesized binder (`factorial : Nat -> Nat` / `factorial(0) = 1` / `factorial(n) = n * factorial(n - 1)` proves `{0}` and `NatPos` disjoint exactly like a hand-written guard would). Currently non-negative integer literals only.
 - **Unified named definitions** — constants (`pi : Nat = 314`) and compile-time set definitions (`Colour = {1, 2, 3}`) share the same one-line syntax and the same AST node; both are auto-inlined at compile time; constants are checked against their range annotation
 - **Block bodies with `while` and `for x in S` loops** — imperative-style bodies with `while cond { stmts }` and `for x in {e1, e2, …} { stmts }` (also over runtime `Set(X)` and `Vector(X)` values), `mut name: Set = expr` locals (set annotation is the declared loop invariant), sequenced statements, and `if-then-else`
 - **Runtime sets** — `Set(Int)` and `Set(Bool)` as first-class heap-allocated values; `mut s : Set(Int) = {…}` creates a sorted-unique set; `for x in s` iterates; `x in s` / `x not in s` test membership; `size(s)` returns cardinality; duplicates are collapsed silently
