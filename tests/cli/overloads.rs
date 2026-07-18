@@ -120,6 +120,29 @@ fn guarded_overload_arms_dispatch_correctly() {
     );
 }
 
+/// `guarded_overload_arms_dispatch_correctly` above only ever calls `sign`
+/// with literal arguments, which the solver can resolve statically — so it
+/// never actually exercised codegen's *runtime* dispatch chain for a
+/// guarded domain. Routing the call through `helper`'s unconstrained `Int`
+/// parameter forces genuine runtime dispatch, which found (and this
+/// regression-guards) a real gap: `compile_membership` had no codegen
+/// support for a comprehension-shaped domain at all, only the solver side
+/// did — see `Compiler::compile_domain_part_match` in overload_dispatch.rs.
+#[test]
+fn guarded_overload_arms_dispatch_correctly_at_runtime() {
+    let out = run_subcommand("guard_runtime_dispatch.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 12"),
+        "expected helper(-5) + helper(0) + helper(7) = 5 + 0 + 7 = 12:\n{}",
+        out.stdout
+    );
+}
+
 /// Overlapping guards must be rejected with a disjointness counterexample,
 /// same as any other overlapping overload domain.
 #[test]
@@ -128,6 +151,42 @@ fn overlapping_guard_domains_refuse_to_run_with_witness() {
     assert_ne!(
         out.code, 0,
         "overlapping guard domains must refuse to run:\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("not disjoint"),
+        "expected the witness/reason to explain the overlap:\n{}",
+        out.stdout
+    );
+}
+
+/// Literal-arm overloading (`factorial(0) = 1`) — sugar for narrowing this
+/// arm's declared domain to `{0}`, via the same synthesized-guard
+/// desugaring path guards use. `factorial`'s own arm keeps a broader
+/// declared domain (`Nat`) than its actual proved domain (`{0}`), so this
+/// also exercises the narrowing, not just a domain that already happened
+/// to be a singleton.
+#[test]
+fn literal_arm_overload_dispatches_correctly() {
+    let out = run_subcommand("literal_arm_factorial.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0:\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 120"),
+        "expected factorial(5) = 120:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn overlapping_literal_arm_domains_refuse_to_run_with_witness() {
+    let out = run_subcommand("literal_arm_overlap.cantor");
+    assert_ne!(
+        out.code, 0,
+        "overlapping literal-arm domains must refuse to run:\nstdout: {}\nstderr: {}",
         out.stdout, out.stderr
     );
     assert!(

@@ -10,7 +10,7 @@ use crate::{
         Param,
     },
     error::CompileError,
-    span::Span,
+    span::{Span, Symbol},
 };
 
 impl<'src> Parser<'src> {
@@ -211,16 +211,43 @@ impl<'src> Parser<'src> {
         if self.peek() == &Token::RParen {
             return Ok(params);
         }
-        params.push(self.parse_one_param()?);
+        params.push(self.parse_one_param(0)?);
+        let mut index = 1;
         while self.peek() == &Token::Comma {
             self.advance()?;
-            params.push(self.parse_one_param()?);
+            params.push(self.parse_one_param(index)?);
+            index += 1;
         }
         Ok(params)
     }
 
-    fn parse_one_param(&mut self) -> Result<Param, CompileError> {
+    /// `index` is this parameter's position within its parameter list —
+    /// used only to name the synthesized binder for a literal-arm param
+    /// (`f(0) = ...`), so two literal params in one list don't collide.
+    fn parse_one_param(&mut self, index: usize) -> Result<Param, CompileError> {
         let span = self.peek_span();
+        if let Token::Int(n) = self.peek().clone() {
+            // Literal-arm overloading sugar: `f(0) = ...` narrows this arm's
+            // declared domain slice to `{0}`. Desugars to the same
+            // synthesized-equality-guard shape as `x for x == 0` on a fresh
+            // internal binder — reuses the guard machinery above rather
+            // than a separate domain-restriction mechanism.
+            self.advance()?;
+            let name = Symbol::new(format!("__lit{index}"));
+            let guard = Expr::new(
+                ExprKind::BinOp {
+                    op: BinOp::Eq,
+                    lhs: Box::new(Expr::new(ExprKind::Var(name.clone()), span)),
+                    rhs: Box::new(Expr::new(ExprKind::IntLit(n), span)),
+                },
+                span,
+            );
+            return Ok(Param {
+                name,
+                guard: Some(guard),
+                span,
+            });
+        }
         let name = self.expect_ident()?;
         let guard = if self.peek() == &Token::For {
             self.advance()?;

@@ -103,3 +103,28 @@ fn multi_param_guard_only_on_second_param() {
     assert!(def.params[0].guard.is_none());
     assert!(def.params[1].guard.is_some());
 }
+
+// ── Literal-arm overloading (`f(0) = ...`) ──────────────────────────────────────
+
+#[test]
+fn literal_param_synthesizes_equality_guard() {
+    let items = parse_file("factorial : Nat -> Nat\nfactorial(0) = 1").unwrap();
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
+    assert_eq!(def.params.len(), 1);
+    let guard = def.params[0]
+        .guard
+        .as_ref()
+        .unwrap_or_else(|| panic!("expected a synthesized guard on the literal param"));
+    assert!(matches!(guard.kind, ExprKind::BinOp { op: BinOp::Eq, .. }));
+}
+
+#[test]
+fn two_literal_params_get_distinct_synthesized_names() {
+    let items = parse_file("f : Int * Int -> Int\nf(0, 1) = 0").unwrap();
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
+    assert_ne!(def.params[0].name.0, def.params[1].name.0);
+}

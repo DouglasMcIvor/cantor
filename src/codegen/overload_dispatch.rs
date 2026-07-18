@@ -10,11 +10,11 @@ use inkwell::values::{BasicValue, BasicValueEnum, IntValue};
 use crate::{
     error::CompileError,
     kind::Kind,
-    semantics::tree::SemExpr,
+    semantics::tree::{SemExpr, SemExprKind},
     span::{Span, Symbol},
 };
 
-use super::{Compiler, OverloadEntry};
+use super::{Compiler, Env, OverloadEntry};
 
 /// Which LLVM function(s) a call to an (possibly-)overloaded name compiles
 /// to — see `Compiler::resolve_overload_call_target`.
@@ -292,7 +292,7 @@ impl<'ctx> Compiler<'ctx> {
         let mut acc: Option<IntValue<'ctx>> = None;
         for (i, (val, part)) in arg_values.iter().zip(&entry.domain_parts).enumerate() {
             let tagged = canonical_param_kinds.get(i) == Some(&Kind::Int);
-            let m = self.compile_membership(val.into_int_value(), part, tagged)?;
+            let m = self.compile_domain_part_match(val.into_int_value(), part, tagged)?;
             acc = Some(match acc {
                 None => m,
                 Some(a) => self
@@ -302,6 +302,49 @@ impl<'ctx> Compiler<'ctx> {
             });
         }
         Ok(acc.unwrap_or_else(|| self.context.bool_type().const_int(1, false)))
+    }
+
+    /// Like `compile_membership`, but also recognizes the identity-output
+    /// comprehension shape guards and literal-arm overloads desugar to
+    /// (`{x for x in source if pred}` — see
+    /// `semantics::elaborate::desugar_param_guards`): evaluate `pred` with
+    /// `var` bound to `val` in a throwaway single-entry env, AND it with
+    /// membership of `val` in `source`.
+    ///
+    /// `compile_membership` itself has no general runtime support for
+    /// comprehension domains — a non-identity output would need genuine
+    /// existential search, not a single predicate check — so this only
+    /// recognizes the narrow identity-output shape this compiler itself
+    /// generates, one level deep (guards/literal-arms are always the
+    /// outermost node of their domain part, never nested under a further
+    /// union/difference, by construction of the desugaring). Anything else
+    /// falls through to the ordinary `compile_membership` path unchanged.
+    fn compile_domain_part_match(
+        &self,
+        val: IntValue<'ctx>,
+        part: &SemExpr,
+        tagged: bool,
+    ) -> Result<IntValue<'ctx>, CompileError> {
+        if let SemExprKind::Comprehension {
+            output,
+            var,
+            source,
+            filter: Some(filter),
+        } = &part.kind
+            && matches!(&output.kind, SemExprKind::Var(v) if v == var)
+        {
+            let in_source = self.compile_membership(val, source, tagged)?;
+            let elem_kind = if tagged { Kind::Int } else { Kind::Int64 };
+            let mut env: Env<'ctx> = Env::new();
+            env.insert(var.clone(), (val.into(), elem_kind));
+            let (filter_val, _) = self.compile_expr(filter, &env)?;
+            let filter_bool = filter_val.into_int_value();
+            return self
+                .builder
+                .build_and(in_source, filter_bool, "ov_guard_and")
+                .map_err(|e| CompileError::ice(e.to_string()));
+        }
+        self.compile_membership(val, part, tagged)
     }
 
     /// Format an overload-dispatch trap message, `path:line:col`-prefixed

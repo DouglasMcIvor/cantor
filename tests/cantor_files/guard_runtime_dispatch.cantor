@@ -1,0 +1,14 @@
+sign : {0} -> Int
+sign(x) = 0
+
+sign : Int -> Int
+sign(x for x < 0) = -x
+
+sign : Int -> Int
+sign(x for x > 0) = x
+
+helper : Int -> Int
+helper(x) = sign(x)
+
+main : -> Int
+main() = helper(-5) + helper(0) + helper(7)

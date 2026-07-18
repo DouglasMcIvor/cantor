@@ -76,6 +76,40 @@ fn overlapping_guard_domains_are_rejected_with_witness() {
 }
 
 #[test]
+fn literal_arm_overloads_are_proved_disjoint() {
+    // `factorial(0) = 1` narrows its arm's declared `Nat` domain to `{0}`
+    // via a synthesized equality guard — see `parser::items::parse_one_param`.
+    proved_all(
+        "factorial : Nat -> Nat\n\
+         factorial(0) = 1\n\
+         factorial : NatPos -> Nat\n\
+         factorial(n) = n * factorial(n - 1)",
+    );
+}
+
+#[test]
+fn overlapping_literal_arm_domains_are_rejected_with_witness() {
+    let results = check_all(
+        "dup : Int -> Int\n\
+         dup(0) = 1\n\
+         dup : Int -> Int\n\
+         dup(0) = 2",
+    );
+    let disjointness = results
+        .iter()
+        .filter(|(name, _)| name == "dup")
+        .flat_map(|(_, sig_results)| sig_results)
+        .find(|(label, _)| label.contains("disjointness"));
+    let Some((_, result)) = disjointness else {
+        panic!("expected a disjointness result entry, got {results:?}");
+    };
+    assert!(
+        matches!(result, CheckResult::Counterexample { .. }),
+        "expected overlapping literal-arm domains to be rejected with a witness, got {result:?}"
+    );
+}
+
+#[test]
 fn different_arity_overloads_need_no_disjointness_check() {
     // `poly`'s two overloads have overlapping-looking domains (`Int` covers
     // everything a 2-arg call could also see) but different arity — arity

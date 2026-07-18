@@ -1,0 +1,8 @@
+dup : Int -> Int
+dup(0) = 1
+
+dup : Int -> Int
+dup(0) = 2
+
+main : -> Int
+main() = dup(0)
