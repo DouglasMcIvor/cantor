@@ -11,6 +11,7 @@ use crate::semantics::tree::{SemExpr, SemExprKind, flatten_cartesian_product};
 use crate::span::Symbol;
 
 use super::NameDefs;
+use super::encode_call::{mk_domain_sort, named_union_arm_for_constructor};
 use super::membership_seq::{
     is_atomic_set, lift_sequence_into_atomic, membership_constraint_for_dt,
 };
@@ -873,16 +874,14 @@ pub(crate) fn encode_comp_expr<'tm>(
             };
             Some(tm.mk_term(kind, &[l, r]))
         }
-        // `from(x)` — the one `Call` shape a comprehension filter supports,
-        // needed by constructor-pattern params (`Name.Label(x)` desugars to
-        // `{x for x in Name if from(x) in <Label's arm>}` — see
-        // `semantics::elaborate::constructor_pattern_filter`). No general
-        // `Call` support: `from` is the only builtin whose solver encoding
-        // is a single `ApplyUf` with no extra obligations of its own, so
-        // it's safe to inline here. `x`'s distinct set isn't known
-        // syntactically at this point — found by matching `arg_term`'s own
-        // sort against the registered `DistinctInfo`s (each distinct set's
-        // sort is unique, so this is never ambiguous).
+        // `from(x)` — one of two `Call` shapes a comprehension filter
+        // supports. No general `Call` support: `from` is the only ordinary
+        // builtin whose solver encoding is a single `ApplyUf` with no extra
+        // obligations of its own, so it's safe to inline here. `x`'s
+        // distinct set isn't known syntactically at this point — found by
+        // matching `arg_term`'s own sort against the registered
+        // `DistinctInfo`s (each distinct set's sort is unique, so this is
+        // never ambiguous).
         SemExprKind::Call { callee, args } if callee.0 == "from" && args.len() == 1 => {
             let arg_term = encode_comp_expr(&args[0], var, var_term, ctx)?;
             let info = ctx
@@ -891,7 +890,48 @@ pub(crate) fn encode_comp_expr<'tm>(
                 .find(|info| info.sort == arg_term.sort())?;
             Some(tm.mk_term(Kind::ApplyUf, &[info.from.clone(), arg_term]))
         }
-        _ => None, // Call (other than `from`), If, Try, SetLit, Comprehension — unsupported
+        // `{Union}.{Label}?(x)` / `{Union}.{Label}!(x)` — the other supported
+        // `Call` shapes: a constructor pattern's synthesized domain-
+        // narrowing tester and payload extractor (pattern-matching plan
+        // step 4/4, `semantics::elaborate::desugar_param_patterns`/
+        // `ctor_pattern_tester_callee`/`ctor_pattern_extractor_callee`).
+        // Same reasoning as `from(x)` above (`ApplyUf` + `ApplyTester`/
+        // `ApplySelector`, no extra obligations of their own), and this is
+        // the *only* place a constructor-pattern's domain filter is ever
+        // solver-encoded — both the per-call membership check and
+        // `disjointness.rs`'s overload-disjointness proof go through
+        // `comprehension_membership`'s identity-output path, which calls
+        // this function for the filter. The extractor needs to appear here
+        // (not just in value position, where `encode_call.rs`'s own copy of
+        // this logic handles it) because `desugar_param_patterns` folds an
+        // `extractor(x) in <arm's own basis>` conjunct into the filter
+        // itself — a fresh symbolic domain parameter otherwise carries no
+        // fact at all about its extracted payload (the basis obligation is
+        // normally only ever asserted at a labeled constructor's own call
+        // site, never as a blanket axiom over the whole union sort), which
+        // made every non-trivial constructor-pattern body a false
+        // counterexample (e.g. `area(Shape.Circle(r)) = r * r` — nothing
+        // told the solver `r`'s arbitrary extracted value was even
+        // non-negative).
+        SemExprKind::Call { callee, args } if args.len() == 1 => {
+            let (bare_callee, is_tester) = match callee.0.strip_suffix('?') {
+                Some(b) => (b, true),
+                None => (callee.0.strip_suffix('!')?, false),
+            };
+            let (union_def, arm_idx, _arm_expr) =
+                named_union_arm_for_constructor(&Symbol::new(bare_callee), ctx.name_defs)?;
+            let info = ctx.distinct_preds.get(&union_def.name)?;
+            let arg_term = encode_comp_expr(&args[0], var, var_term, ctx)?;
+            let unwrapped = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), arg_term]);
+            let dt = mk_domain_sort(info).datatype();
+            let ctor = dt.constructor(arm_idx);
+            Some(if is_tester {
+                tm.mk_term(Kind::ApplyTester, &[ctor.tester_term(), unwrapped])
+            } else {
+                tm.mk_term(Kind::ApplySelector, &[ctor.selector(0).term(), unwrapped])
+            })
+        }
+        _ => None, // Call (other than `from`/a ctor-pattern tester/extractor), If, Try, SetLit, Comprehension — unsupported
     }
 }
 

@@ -150,17 +150,19 @@ fn labeled_distinct_union_records_labels_in_order() {
 }
 
 #[test]
-fn labeled_distinct_union_value_is_ordinary_union_binop() {
+fn labeled_distinct_union_value_is_disjoint_union_binop() {
+    // Labeled arms fold via `+` (disjoint union), not `|`, regardless of the
+    // `|` separator token in source — `+` is what forces a real runtime tag
+    // even when arms share a Kind (`Circle`/`Radius` are both `Kind::Int`
+    // here), which labels need to mean anything at all. See
+    // `parser::items::parse_distinct_value`.
     let items = parse_file("Shape = distinct (Circle: Nat | Radius: NatPos)").unwrap();
     let Item::NameDef(ref def) = items[0] else {
         panic!("expected NameDef")
     };
     assert!(matches!(
         def.value.kind,
-        ExprKind::BinOp {
-            op: BinOp::Union,
-            ..
-        }
+        ExprKind::BinOp { op: BinOp::Add, .. }
     ));
 }
 
@@ -205,4 +207,57 @@ fn named_union_constructor_call_parses_as_dotted_call() {
         }
         other => panic!("expected Call, got {other:?}"),
     }
+}
+
+// ── Constructor patterns (pattern-matching plan, step 4/4) ─────────────────────
+
+#[test]
+fn scalar_ctor_pattern_param_records_union_label_and_binder() {
+    let items = parse_file("area : Shape -> Nat\narea(Shape.Circle(r)) = r * r").unwrap();
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
+    assert_eq!(def.params.len(), 1);
+    let param = &def.params[0];
+    assert_eq!(param.name.0, "__pat0");
+    assert!(param.guard.is_none());
+    let cp = param
+        .ctor_pattern
+        .as_ref()
+        .unwrap_or_else(|| panic!("expected a ctor_pattern"));
+    assert_eq!(cp.union_name.0, "Shape");
+    assert_eq!(cp.label.0, "Circle");
+    assert_eq!(
+        cp.binders.iter().map(|s| s.0.as_str()).collect::<Vec<_>>(),
+        vec!["r"]
+    );
+}
+
+#[test]
+fn tuple_ctor_pattern_param_records_multiple_binders() {
+    let items = parse_file("area : Shape -> Nat\narea(Shape.Rect(x, y)) = x * y").unwrap();
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
+    let cp = def.params[0]
+        .ctor_pattern
+        .as_ref()
+        .unwrap_or_else(|| panic!("expected a ctor_pattern"));
+    assert_eq!(cp.union_name.0, "Shape");
+    assert_eq!(cp.label.0, "Rect");
+    assert_eq!(
+        cp.binders.iter().map(|s| s.0.as_str()).collect::<Vec<_>>(),
+        vec!["x", "y"]
+    );
+}
+
+#[test]
+fn ctor_pattern_param_index_avoids_collision_with_second_param() {
+    let items = parse_file("f : Shape * Shape -> Nat\nf(Shape.Circle(r), Shape.Radius(s)) = r + s")
+        .unwrap();
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
+    assert_eq!(def.params[0].name.0, "__pat0");
+    assert_eq!(def.params[1].name.0, "__pat1");
 }

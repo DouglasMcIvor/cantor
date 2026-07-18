@@ -293,6 +293,25 @@ fn builtin_call_kind(callee: &Symbol, args: &[SemExpr], name_defs: &NameDefs) ->
         if let Some(def) = found {
             return set_kind(&def.value, name_defs).ok();
         }
+        // Constructor-pattern internals (pattern-matching plan step 4/4):
+        // `{Union}.{Label}?` (domain-narrowing tester, synthesized by
+        // `desugar_param_patterns`, always `Kind::Bool`) and
+        // `{Union}.{Label}!` (payload extractor, synthesized by
+        // `build_ctor_pattern_prelude`, the arm's own Kind) — never written
+        // by a user, only ever constructed by those two functions, so
+        // `label_part` here always has the `?`/`!` suffix still attached.
+        if let Some(bare_label) = label_part.strip_suffix('?')
+            && ast_named_union_arm(&Symbol::new(name_part), &Symbol::new(bare_label), name_defs)
+                .is_some()
+        {
+            return Some(Kind::Bool);
+        }
+        if let Some(bare_label) = label_part.strip_suffix('!')
+            && let Some((_, arm_expr)) =
+                ast_named_union_arm(&Symbol::new(name_part), &Symbol::new(bare_label), name_defs)
+        {
+            return set_kind(arm_expr, name_defs).ok();
+        }
     }
     let mut chars = callee.0.chars();
     let first = chars.next()?;
@@ -365,13 +384,27 @@ fn elaborate_function_def(def: &FunctionDef, ctx: &Ctx) -> Result<SemFunctionDef
         .zip(param_kinds.iter().cloned())
         .collect();
 
-    let body = match &def.body {
-        FunctionBody::Expr(e) => {
-            SemFunctionBody::Expr(elaborate_expr(e, Position::Value, ctx, &mut env)?)
+    // Constructor-pattern params (`f(Tree.leaf2(x, y)) = ...`) need a
+    // body-prelude binding their own payload binders (`x`, `y`) before the
+    // rest of the body runs — see `build_ctor_pattern_prelude`. No-op (no
+    // allocation) when no param carries a `ctor_pattern`.
+    let prelude = build_ctor_pattern_prelude(&def.params, ctx.name_defs)?;
+    let body = if prelude.is_empty() {
+        match &def.body {
+            FunctionBody::Expr(e) => {
+                SemFunctionBody::Expr(elaborate_expr(e, Position::Value, ctx, &mut env)?)
+            }
+            FunctionBody::Block(stmts) => {
+                SemFunctionBody::Block(elaborate_stmts(stmts, ctx, &mut env)?)
+            }
         }
-        FunctionBody::Block(stmts) => {
-            SemFunctionBody::Block(elaborate_stmts(stmts, ctx, &mut env)?)
+    } else {
+        let mut stmts = prelude;
+        match &def.body {
+            FunctionBody::Expr(e) => stmts.push(ast::Stmt::Expr(e.clone())),
+            FunctionBody::Block(rest) => stmts.extend(rest.iter().cloned()),
         }
+        SemFunctionBody::Block(elaborate_stmts(&stmts, ctx, &mut env)?)
     };
 
     Ok(SemFunctionDef {
@@ -394,7 +427,7 @@ fn elaborate_sig(
     ctx: &Ctx,
 ) -> Result<SemFunctionSig, CompileError> {
     let mut env = Env::new();
-    let guarded_domain = desugar_param_guards(sig, params, n_params)?;
+    let guarded_domain = desugar_param_patterns(sig, params, n_params, ctx.name_defs)?;
     let domain = guarded_domain
         .as_ref()
         .map(|d| elaborate_expr(d, Position::Set, ctx, &mut env))
@@ -411,43 +444,149 @@ fn elaborate_sig(
     })
 }
 
-/// Desugar per-parameter guards (`x for <pred>`) into the domain a user
-/// could already write by hand: `x for pred` on parameter `i` narrows that
-/// parameter's already-declared domain slice to `{x for x in <slice> if
-/// pred}`, reusing the existing comprehension machinery end to end (solver,
-/// codegen) with zero new `SemExprKind`. No-op (returns `sig.domain`
-/// unchanged, no clone) when no parameter carries a guard.
-fn desugar_param_guards(
+/// The callee name for a constructor pattern's synthesized domain tester
+/// (`{Union}.{Label}?`) — see `desugar_param_patterns`'s `ctor_pattern` case.
+/// Never lexed (the `?` is just a character inside a `Symbol` string, built
+/// directly here), so it can never collide with the real `?` postfix
+/// operator or any user-writable identifier.
+fn ctor_pattern_tester_callee(cp: &ast::CtorPattern) -> Symbol {
+    Symbol::new(format!("{}.{}?", cp.union_name.0, cp.label.0))
+}
+
+/// The callee name for a constructor pattern's synthesized payload
+/// extractor (`{Union}.{Label}!`) — see `build_ctor_pattern_prelude`.
+fn ctor_pattern_extractor_callee(cp: &ast::CtorPattern) -> Symbol {
+    Symbol::new(format!("{}.{}!", cp.union_name.0, cp.label.0))
+}
+
+/// If `union_name` names a labeled `Distinct` def and `label` is one of its
+/// arms, return that def alongside the arm's own declared basis expression
+/// (`flatten_any_union(&def.value)`'s entry at the label's position) — the
+/// AST-level (pre-elaboration) counterpart of
+/// `solver::encode_call::named_union_arm_for_constructor`, needed here
+/// because constructor-pattern desugaring runs before elaboration.
+fn ast_named_union_arm<'a>(
+    union_name: &Symbol,
+    label: &Symbol,
+    name_defs: &'a NameDefs,
+) -> Option<(&'a NameDef, &'a ast::Expr)> {
+    let def = name_defs.get(union_name)?;
+    if def.kind != DefKind::Distinct {
+        return None;
+    }
+    let labels = def.labels.as_ref()?;
+    let idx = labels.iter().position(|l| l == label)?;
+    let arm = *ast::flatten_any_union(&def.value).get(idx)?;
+    Some((def, arm))
+}
+
+/// Desugar per-parameter guards (`x for <pred>`) and constructor patterns
+/// (`Name.Label(x, ...)`, pattern-matching plan step 4/4) into the domain a
+/// user could already write by hand: `x for pred` on parameter `i` narrows
+/// that parameter's already-declared domain slice to `{x for x in <slice>
+/// if pred}`, reusing the existing comprehension machinery end to end
+/// (solver, codegen) with zero new `SemExprKind`. A constructor pattern
+/// does the same thing, using a synthesized tester call
+/// (`ctor_pattern_tester_callee`) as the filter predicate — see
+/// `build_ctor_pattern_prelude` for the other half (extracting the arm's
+/// payload into the pattern's own binder names). No-op (returns
+/// `sig.domain` unchanged, no clone) when no parameter carries either.
+fn desugar_param_patterns(
     sig: &ast::FunctionSig,
     params: &[ast::Param],
     n_params: usize,
+    name_defs: &NameDefs,
 ) -> Result<Option<ast::Expr>, CompileError> {
-    if !params.iter().any(|p| p.guard.is_some()) {
+    if !params
+        .iter()
+        .any(|p| p.guard.is_some() || p.ctor_pattern.is_some())
+    {
         return Ok(sig.domain.clone());
     }
     let parts = ast::param_set_exprs(sig.domain.as_ref(), n_params).map_err(CompileError::ice)?;
-    let wrapped = parts.iter().zip(params.iter()).map(|(part, param)| {
-        let part = (*part).clone();
-        match &param.guard {
-            None => part,
-            Some(pred) => {
-                let span = part.span;
-                ast::Expr::new(
-                    ast::ExprKind::Comprehension {
-                        output: Box::new(ast::Expr::new(
-                            ast::ExprKind::Var(param.name.clone()),
-                            span,
-                        )),
-                        var: param.name.clone(),
-                        source: Box::new(part),
-                        filter: Some(Box::new(pred.clone())),
-                    },
-                    span,
-                )
-            }
-        }
-    });
+    let wrapped = parts
+        .iter()
+        .zip(params.iter())
+        .map(|(part, param)| -> Result<ast::Expr, CompileError> {
+            let part = (*part).clone();
+            let span = part.span;
+            let filter = match (&param.guard, &param.ctor_pattern) {
+                (None, None) => return Ok(part),
+                (Some(pred), None) => pred.clone(),
+                (None, Some(cp)) => {
+                    let subject = ast::Expr::new(ast::ExprKind::Var(param.name.clone()), span);
+                    let tester = ast::Expr::new(
+                        ast::ExprKind::Call {
+                            callee: ctor_pattern_tester_callee(cp),
+                            args: vec![subject.clone()],
+                        },
+                        span,
+                    );
+                    // A fresh symbolic parameter otherwise carries no fact
+                    // about its extracted payload — the arm's own basis
+                    // obligation (`r ∈ Nat` for `Circle: Nat`) is normally
+                    // only ever asserted at a labeled constructor's own call
+                    // site (`encode_call.rs`'s labeled-constructor block),
+                    // never as a blanket axiom over the whole union sort.
+                    // Folding `extractor(x) in <arm's own basis>` into the
+                    // filter itself (rather than a separate global axiom)
+                    // keeps this scoped to exactly this parameter's domain
+                    // assumption — sound because every *reachable* value of
+                    // this arm was necessarily built through the labeled
+                    // constructor, which already enforces the same
+                    // obligation on every construction path. Without this,
+                    // any constructor-pattern body doing real arithmetic on
+                    // the extracted payload (`area(Shape.Circle(r)) = r *
+                    // r`) hit a false counterexample: nothing told the
+                    // solver `r` couldn't be negative.
+                    let (_def, arm_expr) =
+                        ast_named_union_arm(&cp.union_name, &cp.label, name_defs).ok_or_else(
+                            || CompileError::UndefinedFunction {
+                                name: format!("{}.{}", cp.union_name.0, cp.label.0),
+                                span,
+                            },
+                        )?;
+                    let extractor = ast::Expr::new(
+                        ast::ExprKind::Call {
+                            callee: ctor_pattern_extractor_callee(cp),
+                            args: vec![subject],
+                        },
+                        span,
+                    );
+                    let basis_check = ast::Expr::new(
+                        ast::ExprKind::BinOp {
+                            op: ast::BinOp::In,
+                            lhs: Box::new(extractor),
+                            rhs: Box::new(arm_expr.clone()),
+                        },
+                        span,
+                    );
+                    ast::Expr::new(
+                        ast::ExprKind::BinOp {
+                            op: ast::BinOp::And,
+                            lhs: Box::new(tester),
+                            rhs: Box::new(basis_check),
+                        },
+                        span,
+                    )
+                }
+                (Some(_), Some(_)) => unreachable!(
+                    "the parser never produces both a guard and a ctor_pattern for one param"
+                ),
+            };
+            Ok(ast::Expr::new(
+                ast::ExprKind::Comprehension {
+                    output: Box::new(ast::Expr::new(ast::ExprKind::Var(param.name.clone()), span)),
+                    var: param.name.clone(),
+                    source: Box::new(part),
+                    filter: Some(Box::new(filter)),
+                },
+                span,
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let combined = wrapped
+        .into_iter()
         .reduce(|acc, next| {
             let span = Span::new(acc.span.start, next.span.end);
             ast::Expr::new(
@@ -459,8 +598,88 @@ fn desugar_param_guards(
                 span,
             )
         })
-        .expect("n_params > 0 whenever a param has a guard, so parts is non-empty");
+        .expect("n_params > 0 whenever a param has a guard/ctor_pattern, so parts is non-empty");
     Ok(Some(combined))
+}
+
+/// Build the body-prelude statements a constructor-pattern param needs:
+/// one `Stmt::Let` (scalar/non-tuple arm) or `Stmt::DestructLet` (tuple
+/// arm, one binding per element) per pattern param, in parameter order,
+/// each extracting that arm's payload via a synthesized call to
+/// `ctor_pattern_extractor_callee` and binding it to the pattern's own
+/// binder name(s) — the other half of `desugar_param_patterns`. Prepended
+/// to the function body in `elaborate_function_def`. Empty (no allocation
+/// beyond the `Vec` itself) when no parameter carries a `ctor_pattern`.
+fn build_ctor_pattern_prelude(
+    params: &[ast::Param],
+    name_defs: &NameDefs,
+) -> Result<Vec<ast::Stmt>, CompileError> {
+    let mut preludes = Vec::new();
+    for param in params {
+        let Some(cp) = &param.ctor_pattern else {
+            continue;
+        };
+        let (_def, arm_expr) = ast_named_union_arm(&cp.union_name, &cp.label, name_defs)
+            .ok_or_else(|| CompileError::UndefinedFunction {
+                name: format!("{}.{}", cp.union_name.0, cp.label.0),
+                span: param.span,
+            })?;
+        let arm_parts = ast::flatten_domain(arm_expr);
+        if cp.binders.len() != arm_parts.len() {
+            return Err(not_yet_implemented(
+                &format!(
+                    "constructor pattern `{}.{}({})` — this arm's basis has {} element(s), \
+                     not {}",
+                    cp.union_name.0,
+                    cp.label.0,
+                    cp.binders
+                        .iter()
+                        .map(|s| s.0.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    arm_parts.len(),
+                    cp.binders.len()
+                ),
+                param.span,
+            ));
+        }
+        let value = ast::Expr::new(
+            ast::ExprKind::Call {
+                callee: ctor_pattern_extractor_callee(cp),
+                args: vec![ast::Expr::new(
+                    ast::ExprKind::Var(param.name.clone()),
+                    param.span,
+                )],
+            },
+            param.span,
+        );
+        let stmt = if let [binder] = cp.binders.as_slice() {
+            ast::Stmt::Let {
+                name: binder.clone(),
+                constraint: arm_expr.clone(),
+                value,
+                span: param.span,
+            }
+        } else {
+            let bindings = cp
+                .binders
+                .iter()
+                .zip(&arm_parts)
+                .map(|(name, part)| ast::DestructBinding {
+                    name: name.clone(),
+                    constraint: Some((*part).clone()),
+                })
+                .collect();
+            ast::Stmt::DestructLet {
+                bindings,
+                tuple_constraint: None,
+                value,
+                span: param.span,
+            }
+        };
+        preludes.push(stmt);
+    }
+    Ok(preludes)
 }
 
 fn elaborate_name_def(def: &NameDef, ctx: &Ctx) -> Result<SemNameDef, CompileError> {
@@ -519,9 +738,9 @@ fn elaborate_name_def(def: &NameDef, ctx: &Ctx) -> Result<SemNameDef, CompileErr
 /// derives a name purely from Kind, so same-Kind arms always collided on
 /// the same declared name), and `codegen::compile::compile_elaborated`'s
 /// `named_union_arms` table is built from each *syntactic* arm's own Kind
-/// (`ast::flatten_union`) instead of the whole union's Kind-deduped arm
-/// list (which silently dropped arms sharing a Kind, previously masked by
-/// this very restriction never letting that code run).
+/// (`kind::named_union_value_kind`) instead of the whole union's Kind-deduped
+/// arm list (which silently dropped arms sharing a Kind, previously masked
+/// by this very restriction never letting that code run).
 fn validate_distinct_basis(def: &NameDef, value: &SemExpr) -> Result<(), CompileError> {
     let Kind::TaggedUnion(_) = &value.kind_of else {
         if !is_distinct_basis_representable(&value.kind_of) {

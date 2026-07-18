@@ -13,7 +13,6 @@
 
 use crate::ast::{
     BinOp, DefKind, Expr, ExprKind, NameDefs, UnOp, flatten_disjoint_union, flatten_domain,
-    flatten_union,
 };
 use crate::error::CompileError;
 use crate::semantics::builtins;
@@ -207,45 +206,33 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileEr
 /// Ordinarily `distinct` is Kind-transparent (`set_kind(&def.value, ...)`
 /// alone, matching `alias`) — but a *labeled* union (`Shape = distinct
 /// (Circle: Nat | Square: NatPos | Rect: Nat * Nat)`) is a real exception:
-/// `def.value`'s own Kind (`ExprKind::BinOp { op: Union, .. }`'s arm in
-/// `set_kind` above) goes through `merge_into_union`/`union_if_distinct`,
-/// which *dedups by Kind* — correct when asking "what representation does a
-/// bare, label-less value of this shape need" (same-Kind arms really are
-/// interchangeable there), but wrong for a labeled union: two labeled arms
-/// are allowed to share a Kind, and each label still needs its own
-/// permanently-distinguishable runtime tag (`Shape.Circle(5)` and
-/// `Shape.Square(5)` must stay distinct values), so the reported Kind needs
-/// one arm per *syntactic* label (`ast::flatten_union`, matching `labels`'
-/// own count and order — the same list `semantics::elaborate::
-/// validate_distinct_basis` validates against), not the deduped count.
+/// Historically this needed to override `set_kind`'s own dedup-by-Kind
+/// handling of `def.value` for a labeled union, since two labeled arms are
+/// allowed to share a Kind but each label still needs its own permanently-
+/// distinguishable runtime tag (`Shape.Circle(5)` and `Shape.Square(5)` must
+/// stay distinct values) — `set_kind`'s ordinary `BinOp::Union` arm
+/// (`merge_into_union`/`union_if_distinct`) dedups by Kind, which is right
+/// for a bare, label-less value of that shape but wrong here.
 ///
-/// Confirmed as a real bug while lifting `validate_distinct_basis`'s former
-/// pairwise-Kind restriction: without this, `codegen::expr_call`'s
-/// `Shape.Circle(r)` constructor (driven by `Compiler::named_union_arms`,
-/// which already lists one Kind per syntactic arm) built a value tagged
-/// against a 3-arm `TaggedUnion`, but every *other* codegen site asking
-/// "what Kind is a `Shape` value" (via this same `set_kind`, e.g. a
-/// function's declared `-> Shape` range) still got the whole-union's
-/// deduped 2-arm `TaggedUnion` — an internal Kind mismatch, ICE'd in
-/// `coerce_to_kind`.
+/// Now a thin wrapper: `parser::items::parse_distinct_value` folds every
+/// labeled union's arms with `+` (`BinOp::Add`), not `|`, specifically so
+/// labels always get a real tag — and `set_kind`'s `BinOp::Add` arm already
+/// reports one Kind per syntactic arm with no dedup (mirrors what this
+/// function used to recompute by hand via `ast::flatten_any_union`). So
+/// `set_kind(&def.value, name_defs)` alone now gives the right answer for
+/// every case: a labeled union (always `+`-folded, one Kind per label,
+/// matching `labels`' own count and order — the same list
+/// `semantics::elaborate::validate_distinct_basis` validates against), a
+/// same-Kind-arm union, or an unlabeled `distinct`.
 ///
-/// No-op (delegates straight to `set_kind`) for a same-Kind-arm named union
-/// (`Circle: Nat | Radius: NatPos` alone — `def.value`'s own Kind is already
-/// a bare, non-`TaggedUnion` `Kind::Int`) or an unlabeled `distinct`.
+/// Kept as a named function (not inlined at the one call site in
+/// `codegen::compile`) so the "why `set_kind` alone is correct here" isn't
+/// left to be rediscovered.
 pub fn named_union_value_kind(
     def: &crate::ast::NameDef,
     name_defs: &NameDefs,
 ) -> Result<Kind, CompileError> {
-    let whole = set_kind(&def.value, name_defs)?;
-    let (Kind::TaggedUnion(_), Some(_labels)) = (&whole, &def.labels) else {
-        return Ok(whole);
-    };
-    Ok(Kind::TaggedUnion(
-        flatten_union(&def.value)
-            .into_iter()
-            .map(|arm| set_kind(arm, name_defs))
-            .collect::<Result<Vec<_>, _>>()?,
-    ))
+    set_kind(&def.value, name_defs)
 }
 
 /// Whether `kind` is representable as a single raw i64 word — the only

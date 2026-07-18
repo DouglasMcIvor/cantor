@@ -75,34 +75,41 @@ fn distinct_over_distinct_chain_proved() {
 
 #[test]
 fn named_union_bool_arms_proved() {
-    // Both arms share `Kind::Bool` — `kind::union_if_distinct` dedups them to
-    // a bare `Kind::Bool` (no cross-kind tag), so `Flag`'s basis resolves to
-    // the plain CVC5 boolean sort. Exercises `sort::set_sort`'s distinct-vs-
-    // Bool ordering fix (a distinct set whose basis Kind is `Bool` must not
-    // be confused with the builtin `Bool` sort itself).
-    proved_all(
+    // Both arms share `Kind::Bool`, but labeled arms are always tag-forced
+    // (folded via `+`, see `parser::items::parse_distinct_value`) — `Flag`'s
+    // basis is a real cross-kind DT, not a bare CVC5 boolean sort. Exercises
+    // `sort::set_sort`'s distinct-vs-Bool ordering fix (a distinct set whose
+    // basis Kind is `Bool` must not be confused with the builtin `Bool` sort
+    // itself) via each arm's own recursive `set_sort` call inside
+    // `build_union_datatype_sort`, plus distinctness across same-Kind
+    // labels (`from()` no longer collapses a tag-forced union straight back
+    // down to a bare `Bool` — extracting a specific arm's payload needs
+    // constructor-pattern matching, not yet implemented).
+    proved(
         "Flag = distinct (A: Bool | B: Bool)\n\
-         describe : Flag -> Bool\n\
-         describe(f) = from(f)\n\
-         main : -> Bool\n\
-         main() = describe(Flag.A(true))",
+         main : -> Int\n\
+         main() {\n\
+             assert Flag.A(true) != Flag.B(true)\n\
+             0\n\
+         }",
     );
 }
 
 #[test]
 fn named_union_vector_arms_same_shape_proved() {
-    // Two arms sharing the *same* `Vector(Int)` Kind — `kind::union_if_distinct`
-    // dedups them to a bare `Kind::Vector(Int)` (no cross-kind tag), and
-    // `sort::set_sort`'s sequence-union arm correctly checks `ls == rs`
-    // before deciding cross-kind, so this basis resolves to a plain `Seq
-    // Int` sort — exercises `encode_call`'s array-literal-to-sequence
-    // coercion for a named-union constructor argument.
-    proved_all(
+    // Two arms sharing the *same* `Vector(Int)` Kind — labeled arms are
+    // always tag-forced now, so this basis is a real cross-kind DT wrapping
+    // a `Seq Int` selector per arm (not deduped to a bare `Seq Int`) —
+    // exercises `encode_call`'s array-literal-to-sequence coercion for a
+    // named-union constructor argument, and distinctness across same-Kind
+    // labels.
+    proved(
         "Path = distinct (Short: Nat* | Long: Nat*)\n\
-         first_len : Path -> Nat\n\
-         first_len(p) = len(from(p))\n\
-         main : -> Nat\n\
-         main() = first_len(Path.Short([1, 2])) + first_len(Path.Long([3, 4, 5]))",
+         main : -> Int\n\
+         main() {\n\
+             assert Path.Short([1, 2]) != Path.Long([1, 2])\n\
+             0\n\
+         }",
     );
 }
 
@@ -111,18 +118,22 @@ fn named_union_tuple_arms_same_shape_proved() {
     // Two arms sharing the *identical* `Tuple([Int, Int])` Kind — regression
     // test for the `sort::set_sort` union-arm fix (see
     // `tests/solver/cross_kind_unions.rs::identical_shape_tuple_union_domain_projection_proved`
-    // for the plain non-`distinct` version of the same bug). Before the fix,
-    // this crashed `cvc5` outright at the constructor call site: `mk_Shape`
-    // was wrongly given the identity (plain tuple) sort while `set_sort`
-    // reported the basis as a cross-kind datatype sort, so `ApplyUf` handed
-    // it a value of the wrong sort — a raw C++-level abort, not even a
-    // catchable Rust panic.
-    proved_all(
+    // for the plain non-`distinct` version of the same bug). Before that
+    // fix, this crashed `cvc5` outright at the constructor call site:
+    // `mk_Shape` was wrongly given the identity (plain tuple) sort while
+    // `set_sort` reported the basis as a cross-kind datatype sort, so
+    // `ApplyUf` handed it a value of the wrong sort — a raw C++-level
+    // abort, not even a catchable Rust panic. Construction alone (this
+    // test) already exercises that path fully; extracting a specific arm's
+    // tuple payload for `.0`/`.1` projection needs constructor-pattern
+    // matching, not yet implemented.
+    proved(
         "Shape = distinct (Small: (Nat * Nat) | Big: (Nat * Nat))\n\
-         sum_of : Shape -> Nat\n\
-         sum_of(s) = from(s).0 + from(s).1\n\
-         main : -> Nat\n\
-         main() = sum_of(Shape.Small((3, 4))) + sum_of(Shape.Big((10, 20)))",
+         main : -> Int\n\
+         main() {\n\
+             assert Shape.Small((3, 4)) != Shape.Big((3, 4))\n\
+             0\n\
+         }",
     );
 }
 

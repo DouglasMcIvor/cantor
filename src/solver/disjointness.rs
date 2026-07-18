@@ -129,18 +129,35 @@ pub(super) fn validate_disjoint_unions(
 /// (enforced by `elaborate::check_overload_kind_agreement`), so it's safe to
 /// derive these once from any one member.
 ///
-/// TODO: only scalar (`Int`/`Bool`) parameter positions are supported — a
-/// `Tuple`/`TaggedUnion`/`Vector` position returns `Err` (reported as
-/// `Unknown`), matching `validate_disjoint_unions`'s existing scalar-only
-/// scope. Lift together if ever needed.
+/// `domain_parts` is that one representative member's own declared domain,
+/// split per position (`sem_param_set_exprs`) — needed (not just
+/// `param_kinds`) to build a `TaggedUnion` position's fresh term at its
+/// *actual* CVC5 sort (a distinct-set-specific algebraic datatype, not
+/// something derivable from `Kind` alone, since two unrelated named unions
+/// could share the same abstract `Kind::TaggedUnion(...)` shape). This is
+/// sound *within* an overload group precisely because
+/// `check_overload_kind_agreement` already guarantees every member's
+/// declared param Kind matches exactly — constructor-pattern overloads of
+/// one function always share the same declared union in practice (pattern-
+/// matching plan step 4/4, `f(Shape.Circle(r)) = ...` / `f(Shape.Rect(p)) =
+/// ...` both declare `f : Shape -> ...`).
+///
+/// TODO: `Tuple`/`Vector`/`Set` positions still return `Err` (reported as
+/// `Unknown`), matching `validate_disjoint_unions`'s existing narrower
+/// scope — only `Bool`/`Int`/`Int64`/`TaggedUnion` are lifted so far. Lift
+/// the rest together if ever needed.
 fn fresh_overload_param_terms<'tm>(
     param_kinds: &[ValKind],
+    domain_parts: &[&SemExpr],
     tm: &'tm TermManager,
+    name_defs: &NameDefs,
+    distinct_preds: &SolverPreds<'tm>,
 ) -> Result<Vec<Term<'tm>>, String> {
     param_kinds
         .iter()
+        .zip(domain_parts)
         .enumerate()
-        .map(|(i, kind)| match kind {
+        .map(|(i, (kind, part))| match kind {
             ValKind::Bool => Ok(tm.mk_const(tm.boolean_sort(), &format!("__ov_disjoint_{i}"))),
             // Int64 reasons identically to Int here (int-soundness-plan
             // phase 3): the solver reasons over unbounded ℤ regardless of
@@ -149,6 +166,16 @@ fn fresh_overload_param_terms<'tm>(
             // to work exactly like any other compiler-generated overload.
             ValKind::Int | ValKind::Int64 => {
                 Ok(tm.mk_const(tm.integer_sort(), &format!("__ov_disjoint_{i}")))
+            }
+            ValKind::TaggedUnion(_) => {
+                let sort = super::sort::set_sort(tm, part, distinct_preds, name_defs).ok_or_else(
+                    || {
+                        "cannot verify overload disjointness: this parameter's domain has no \
+                         representable solver sort"
+                            .to_string()
+                    },
+                )?;
+                Ok(tm.mk_const(sort, &format!("__ov_disjoint_{i}")))
             }
             _ => Err(
                 "cannot verify overload disjointness: non-scalar parameter positions \
@@ -232,7 +259,20 @@ fn check_pair_disjoint(
         quotient: QuotientPreds::new(),
     };
 
-    let param_terms = match fresh_overload_param_terms(&def_a.param_kinds, &tm) {
+    let domain_parts = match sem_param_set_exprs(
+        def_a.sigs.first().and_then(|s| s.domain.as_ref()),
+        def_a.params.len(),
+    ) {
+        Ok(v) => v,
+        Err(e) => return CheckResult::Unknown(e),
+    };
+    let param_terms = match fresh_overload_param_terms(
+        &def_a.param_kinds,
+        &domain_parts,
+        &tm,
+        name_defs,
+        &distinct_preds,
+    ) {
         Ok(v) => v,
         Err(e) => return CheckResult::Unknown(e),
     };

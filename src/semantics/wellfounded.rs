@@ -15,7 +15,7 @@
 //!    full stop, before layer 2 even runs.
 //! 2. **Tier-1 shape classification** (`classify`) — only for names layer 1
 //!    flagged. Splits each definition into `|`-arms and, within each arm,
-//!    `*`-factors (`ast::flatten_union`/`ast::flatten_domain`), then runs
+//!    `*`-factors (`ast::flatten_any_union`/`ast::flatten_domain`), then runs
 //!    the "generating sets" fixpoint sketched in backlog.md: a name becomes
 //!    generating once at least one of its arms is built entirely from
 //!    already-generating names and/or non-recursive bases. A cyclic name
@@ -35,7 +35,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{DefKind, Expr, ExprKind, Item, NameDefs, flatten_domain, flatten_union};
+use crate::ast::{DefKind, Expr, ExprKind, Item, NameDefs, flatten_any_union, flatten_domain};
 use crate::error::CompileError;
 use crate::span::Symbol;
 
@@ -255,7 +255,7 @@ fn classify(
             // `build_raw_dep_graph`, so every `cyclic_names` member has a
             // real value expression here.
             let def = &name_defs[name];
-            let arms = flatten_union(&def.value);
+            let arms = flatten_any_union(&def.value);
 
             let mut arm_is_unrecognized = false;
             let mut any_arm_generating = false;

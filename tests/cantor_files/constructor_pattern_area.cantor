@@ -1,0 +1,10 @@
+Shape = distinct (Circle: Nat | Rect: Nat * Nat)
+
+area : Shape -> Nat
+area(Shape.Circle(r)) = r * r
+
+area : Shape -> Nat
+area(Shape.Rect(x, y)) = x * y
+
+main : -> Nat
+main() = area(Shape.Circle(3)) + area(Shape.Rect((4, 5)))

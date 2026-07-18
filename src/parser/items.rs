@@ -6,8 +6,8 @@ use super::lexer::Token;
 
 use crate::{
     ast::{
-        BinOp, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item, NameDef,
-        Param,
+        BinOp, CtorPattern, DefKind, Expr, ExprKind, FunctionBody, FunctionDef, FunctionSig, Item,
+        NameDef, Param,
     },
     error::CompileError,
     span::{Span, Symbol},
@@ -184,19 +184,18 @@ impl<'src> Parser<'src> {
     /// `distinct (Label1: Expr1 | Label2: Expr2 | ...)`, each arm becoming an
     /// auto-generated constructor (`Name.Label1`, `Name.Label2`, …) —
     /// see `solver::encode_call`'s named-union-arm constructor block and
-    /// `codegen::expr_call`'s matching identity-passthrough. The labeled
-    /// arms fold into an ordinary `|`-joined value (same as if the user had
-    /// written `distinct (Expr1 | Expr2)` directly) — elaboration and the
-    /// solver need no changes to understand the *value*, only the label
-    /// list (returned alongside) needs threading through for constructor
-    /// name resolution.
-    ///
-    /// v0 scope: every arm must elaborate to `Kind::Int` (checked in
-    /// `semantics::elaborate::elaborate_name_def`) — a tuple/cross-kind arm
-    /// like `Rect: Nat * Nat` is rejected with a clear "not yet supported"
-    /// error rather than silently miscompiling, since today's `distinct`
-    /// machinery (`solver::preds::build_distinct_preds`) hardcodes an
-    /// `Int`-only basis. Lifting that restriction is tracked separately.
+    /// `codegen::expr_call`'s matching tagged-struct constructor. The
+    /// labeled arms fold into a `+`-joined (disjoint union) value, *not* a
+    /// `|`-joined one, regardless of which separator token appears between
+    /// labels in source — `+` is what forces a real runtime tag even when
+    /// two arms share a Kind (`kind.rs`'s `BinOp::Add` arm never dedups,
+    /// unlike `|`'s `union_if_distinct`), which is required for labels to
+    /// mean anything: `Shape.Circle(3)` and `Shape.Radius(3)` must be
+    /// provably distinct values even when both arms are plain `Nat`/`NatPos`
+    /// (both `Kind::Int`). See `solver::sort::set_sort`'s
+    /// `Union | DisjointUnion` arm, which forces the cross-kind DT path for
+    /// any `DisjointUnion` regardless of whether the arm sorts happen to
+    /// match.
     fn parse_distinct_value(&mut self) -> Result<(Expr, Option<Vec<Symbol>>), CompileError> {
         if self.peek() != &Token::LParen {
             return Ok((self.parse_set_expr()?, None));
@@ -234,11 +233,19 @@ impl<'src> Parser<'src> {
         let first_arm = arm_iter
             .next()
             .expect("at least one `label: expr` pair — guarded by the Ident+Colon lookahead above");
+        // Fold via `+` (disjoint union), not `|`: `+` is the operator that
+        // already means "always force a runtime tag, even when arms share a
+        // Kind" (`kind.rs`'s `BinOp::Add` arm never dedups). Labels are only
+        // meaningful if every arm is genuinely distinguishable at runtime —
+        // folding via `|` would silently let same-Kind labeled arms collapse
+        // to one untagged value (`Shape.Circle(3)` and `Shape.Radius(3)`
+        // becoming literally identical), which defeats the entire point of
+        // giving arms separate labels/constructors in the first place.
         let value = arm_iter.fold(first_arm, |acc, next| {
             let span = Span::new(acc.span.start, next.span.end);
             Expr::new(
                 ExprKind::BinOp {
-                    op: BinOp::Union,
+                    op: BinOp::Add,
                     lhs: Box::new(acc),
                     rhs: Box::new(next),
                 },
@@ -301,7 +308,9 @@ impl<'src> Parser<'src> {
 
     /// `index` is this parameter's position within its parameter list —
     /// used only to name the synthesized binder for a literal-arm param
-    /// (`f(0) = ...`), so two literal params in one list don't collide.
+    /// (`f(0) = ...`) or a constructor-pattern param
+    /// (`f(Tree.leaf2(x, y)) = ...`), so two such params in one list don't
+    /// collide.
     fn parse_one_param(&mut self, index: usize) -> Result<Param, CompileError> {
         let span = self.peek_span();
         if let Token::Int(n) = self.peek().clone() {
@@ -323,10 +332,37 @@ impl<'src> Parser<'src> {
             return Ok(Param {
                 name,
                 guard: Some(guard),
+                ctor_pattern: None,
                 span,
             });
         }
         let name = self.expect_ident()?;
+        // Constructor pattern: `Name.Label(x, ...)` (pattern-matching plan
+        // step 4/4). A bare param is just an identifier with nothing after
+        // it, so `.` right after one is unambiguous — same reasoning
+        // `parser::expr`'s `Name.Label(...)` call-syntax comment relies on.
+        if self.peek() == &Token::Dot {
+            self.advance()?; // consume `.`
+            let label = self.expect_ident()?;
+            self.expect(&Token::LParen)?;
+            let mut binders = vec![self.expect_ident()?];
+            while self.peek() == &Token::Comma {
+                self.advance()?;
+                binders.push(self.expect_ident()?);
+            }
+            let end = self.peek_span();
+            self.expect(&Token::RParen)?;
+            return Ok(Param {
+                name: Symbol::new(format!("__pat{index}")),
+                guard: None,
+                ctor_pattern: Some(CtorPattern {
+                    union_name: name,
+                    label,
+                    binders,
+                }),
+                span: Span::new(span.start, end.end),
+            });
+        }
         let guard = if self.peek() == &Token::For {
             self.advance()?;
             Some(self.parse_expr(0)?)
@@ -337,6 +373,7 @@ impl<'src> Parser<'src> {
         Ok(Param {
             name,
             guard,
+            ctor_pattern: None,
             span: Span::new(span.start, end),
         })
     }

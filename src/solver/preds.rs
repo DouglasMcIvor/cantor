@@ -13,7 +13,9 @@ use cvc5::{Kind, TermManager};
 
 use crate::{
     ast::DefKind,
-    semantics::tree::{SemExpr, SemExprKind, SemFunctionBody, SemFunctionDef, SemItem},
+    semantics::tree::{
+        SemExpr, SemExprKind, SemFunctionBody, SemFunctionDef, SemItem, flatten_any_union,
+    },
     span::Symbol,
 };
 
@@ -21,7 +23,7 @@ use super::membership::{
     CompCtx, DistinctInfo, DistinctPreds, Membership, QuotientInfo, QuotientPreds, SolverPreds,
     WrappingInfo, WrappingPreds, encode_comp_expr, membership_constraint,
 };
-use super::sort::set_sort;
+use super::sort::{build_union_datatype_sort, set_sort};
 use super::{CheckResult, FunctionEnv, NameDefs, configured_solver};
 
 // ── Distinct predicate builder ────────────────────────────────────────────────
@@ -140,6 +142,24 @@ pub(super) fn build_distinct_preds<'tm>(
                 .get(&sym)
                 .filter(|def| def.kind == DefKind::Distinct)
             {
+                // A labeled union's basis always gets a real cross-kind DT,
+                // even when every arm shares a sort (`Circle: Nat | Radius:
+                // NatPos`) — a label is meaningless without a runtime tag to
+                // tell it apart from every other label's. Built directly via
+                // `build_union_datatype_sort` rather than routing through
+                // `set_sort`'s general Union/DisjointUnion arm: that arm
+                // deliberately does *not* force a DT for a same-sort `+`
+                // (see its own doc comment) because doing so unconditionally
+                // broke a wide swath of ordinary, non-`distinct` `+`
+                // domain/range proofs (`{0} + NatPos -> Nat`) elsewhere —
+                // this needs to be scoped to exactly the labeled-`distinct`-
+                // basis case, not `+` in general.
+                Some(def) if def.labels.is_some() => build_union_datatype_sort(
+                    tm,
+                    &flatten_any_union(&def.value),
+                    &probe_preds,
+                    name_defs,
+                ),
                 Some(def) => {
                     set_sort(tm, &def.value, &probe_preds, name_defs).ok_or_else(|| {
                         format!(

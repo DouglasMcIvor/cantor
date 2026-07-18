@@ -74,23 +74,77 @@ impl<'ctx> Compiler<'ctx> {
             return Ok((truncated.into(), Kind::Char));
         }
 
+        // Constructor-pattern internals (pattern-matching plan step 4/4):
+        // `Name.Label?(x)` (domain-narrowing tester) / `Name.Label!(x)`
+        // (payload extractor) — synthesized by `semantics::elaborate::
+        // desugar_param_patterns`/`build_ctor_pattern_prelude`, never
+        // written by a user. Checked *before* the ordinary `Name.Label(x)`
+        // constructor block below: both match the same `split_once('.')` +
+        // `distinct_names.contains` guard, and the constructor block's own
+        // label lookup has no graceful "not this shape" fallthrough (it
+        // hard-errors via `ok_or_else` on an unrecognized label) — so a
+        // `?`/`!`-suffixed label must be intercepted here first. Both read
+        // `x`'s tag field directly; the extractor then decodes the rest of
+        // the arm's own Kind from the leaf fields via
+        // `extract_kind_from_leaves` (already used by `show`'s per-arm
+        // runtime dispatch for exactly this purpose).
+        if args.len() == 1
+            && let Some((name_part, label_part)) = callee.0.split_once('.')
+            && self.distinct_names.contains(name_part)
+            && let Some(arm_list) = self.named_union_arms.get(name_part)
+            && (label_part.ends_with('?') || label_part.ends_with('!'))
+        {
+            let is_tester = label_part.ends_with('?');
+            let bare_label = &label_part[..label_part.len() - 1];
+            let arm_idx = arm_list
+                .iter()
+                .position(|(label, _)| label == bare_label)
+                .ok_or_else(|| {
+                    CompileError::ice(format!(
+                        "named union `{name_part}` has no arm labeled `{bare_label}` \
+                         (should have been rejected at elaboration time)"
+                    ))
+                })?;
+            let (val, _kind) = self.compile_expr(&args[0], env)?;
+            let struct_val = val.into_struct_value();
+            if is_tester {
+                let tag = self
+                    .builder
+                    .build_extract_value(struct_val, 0, "ctor_pat_tag")
+                    .map_err(|e| CompileError::ice(e.to_string()))?
+                    .into_int_value();
+                let tag64 = self
+                    .builder
+                    .build_int_z_extend(tag, self.context.i64_type(), "ctor_pat_tag64")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                let expected = self.context.i64_type().const_int(arm_idx as u64, false);
+                let is_arm = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::EQ, tag64, expected, "ctor_pat_test")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                return Ok((is_arm.into(), Kind::Bool));
+            }
+            let arm_kind = arm_list[arm_idx].1.clone();
+            let agg: inkwell::values::AggregateValueEnum = struct_val.into();
+            let mut field_idx = 1u32;
+            let payload = self.extract_kind_from_leaves(agg, &arm_kind, &mut field_idx)?;
+            return Ok((payload, arm_kind));
+        }
+
         // Auto-generated constructor `Name.Label(x)` for a named union arm
-        // (`Name = distinct (Label: Expr | ...)`). Two cases:
-        // - Same-Kind arms (`Circle: Nat | Radius: NatPos`, both `Kind::Int`
-        //   — `Name` itself has that bare Kind, not a `TaggedUnion`,
-        //   `self.named_union_arms` has no entry): identity at runtime, same
-        //   as the plain single-basis `d(x)` case just below — there's no
-        //   tag/struct to build, just the same pass-through `distinct`
-        //   already does. The label carries no runtime information here.
-        // - Heterogeneous-Kind arms (`Circle: Nat | Rect: Nat * Nat` —
-        //   `Name`'s own Kind is a genuine `Kind::TaggedUnion`,
-        //   `self.named_union_arms` has an entry): `Name` is represented by
-        //   the full `{ i32 tag, i64 leaves }` struct at the LLVM level
-        //   (`kind_to_llvm_type(&Kind::TaggedUnion(all_arms))`), so the
-        //   constructor must build that struct — reuses the exact same
-        //   `build_tagged_union_value` ordinary `A | B` coercion (if/else
-        //   branches, `+`-typed returns) already uses, just driven by the
-        //   label's declared arm index instead of a runtime/if-branch tag.
+        // (`Name = distinct (Label: Expr | ...)`). Labeled arms are always
+        // tag-forced now (backlog.md — folded via `+`, not `|`, at parse
+        // time specifically so a label always means something at runtime),
+        // so `self.named_union_arms` always has an entry for a labeled
+        // `Name` and the `{ i32 tag, i64 leaves }` struct-building branch
+        // below is always taken — reuses the exact same
+        // `build_tagged_union_value` ordinary `A | B` coercion (if/else
+        // branches, `+`-typed returns) already uses, just driven by the
+        // label's declared arm index instead of a runtime/if-branch tag.
+        // The plain-passthrough fallback below is unreachable in practice
+        // (every labeled `Name` has an entry) but left in place rather than
+        // removed — harmless, and a defensive fallback if that invariant
+        // ever changes.
         if args.len() == 1
             && let Some((name_part, label_part)) = callee.0.split_once('.')
             && self.distinct_names.contains(name_part)

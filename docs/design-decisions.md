@@ -1578,10 +1578,16 @@ uninterpreted constructor/destructor functions `mk_D : basis_sort -> D` and
 `Int` for `Litre = distinct Nat`, but any solver-representable Kind works
 (`Bool`, `Char`, a tuple, a vector, a `distinct`-over-`distinct` chain, …;
 see `kind::is_distinct_basis_representable`), including a genuine
-`Kind::TaggedUnion` basis for a labeled named union whose arms have
-different Kinds from each other (`Circle: Nat | Rect: Nat * Nat`) — in that
-case `basis_sort` is the cross-kind CVC5 datatype `sort::set_sort` already
-builds for any `A | B` union, and each labeled constructor wraps its
+`Kind::TaggedUnion` basis for a labeled named union — labeled arms are
+always folded via `+` (disjoint union) rather than `|` at parse time
+(`parser::items::parse_distinct_value`), so this applies even when every
+arm shares one Kind (`Circle: Nat | Radius: NatPos`): a label is
+meaningless without a real runtime tag distinguishing it from every other
+label's, so `Shape.Circle(3)` and `Shape.Radius(3)` must be provably
+distinct values regardless of whether the arms' Kinds happen to differ
+(`Circle: Nat | Rect: Nat * Nat`) or coincide. Either way `basis_sort` is
+the cross-kind CVC5 datatype `sort::set_sort` already builds for any
+`A | B`/`A + B` union, and each labeled constructor wraps its
 argument into that datatype's matching arm constructor (by the arm's own
 declared position, not by searching for a same-sorted constructor — needed
 since two labeled arms are allowed to share a Kind, e.g.
@@ -1802,14 +1808,8 @@ Other open items (lower priority, not blocking):
   `(x = 3m; y = 4m)`). Projection via dot: `p.x` (natural as a named
   projection function). Requires namespace support first. (Anonymous tuples
   with positional projection are DONE — see §10 "Product set values (tuples)".
-- **Named union sets** — `Measurement = distinct (Length: Meter | Volume: Liter)`;
-  constructor via injection: `Measurement.Length(3m)`. Parallel to named
-  products; requires namespaces. Aligns with products/coproducts: products
-  have projections, coproducts have injections.
 - **Literal suffixes** — `3m` for `3 meters` etc.; sugar for a constructor
   call. Design depends on named product sets landing first.
-- **Pattern matching** — `match x { a => …, b => … }` or overloaded-signature
-  form; exact syntax undecided. Natural complement to named unions.
 - **Destructuring** — implemented in v0 (see §10 "Destructuring assignment").
   Multi-binder `for a, b in xs` is always *element* destructuring — never an
   implicit enumerate, which would be ambiguous for tuple-element iterables

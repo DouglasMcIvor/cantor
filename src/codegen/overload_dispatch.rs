@@ -8,6 +8,7 @@
 use inkwell::values::{BasicValue, BasicValueEnum, IntValue};
 
 use crate::{
+    ast::BinOp,
     error::CompileError,
     kind::Kind,
     semantics::tree::{SemExpr, SemExprKind},
@@ -278,8 +279,12 @@ impl<'ctx> Compiler<'ctx> {
     /// AND across parameter positions of `compile_membership(arg_i, domain_i)`
     /// for one overload candidate — an empty `domain_parts` (candidate whose
     /// domain didn't decompose at declare time) is trivially always-true.
-    /// `canonical_param_kinds` tells each position whether `arg_values` holds
-    /// a tagged `Kind::Int` word there (see `compile_overload_dispatch`).
+    /// `canonical_param_kinds` tells each position `arg_values`' real Kind —
+    /// besides distinguishing tagged `Kind::Int` from raw `Kind::Int64`
+    /// (both scalar), this also drives the `TaggedUnion` case (constructor
+    /// patterns, pattern-matching plan step 4/4): a `TaggedUnion`-Kind
+    /// argument is a struct, not an `IntValue`, so it must never reach
+    /// `.into_int_value()`.
     fn compile_overload_domain_match(
         &self,
         entry: &OverloadEntry,
@@ -291,8 +296,9 @@ impl<'ctx> Compiler<'ctx> {
         }
         let mut acc: Option<IntValue<'ctx>> = None;
         for (i, (val, part)) in arg_values.iter().zip(&entry.domain_parts).enumerate() {
-            let tagged = canonical_param_kinds.get(i) == Some(&Kind::Int);
-            let m = self.compile_domain_part_match(val.into_int_value(), part, tagged)?;
+            let kind = canonical_param_kinds.get(i).unwrap_or(&Kind::Int);
+            let tagged = *kind == Kind::Int;
+            let m = self.compile_domain_part_match(*val, kind, part, tagged)?;
             acc = Some(match acc {
                 None => m,
                 Some(a) => self
@@ -305,23 +311,30 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Like `compile_membership`, but also recognizes the identity-output
-    /// comprehension shape guards and literal-arm overloads desugar to
-    /// (`{x for x in source if pred}` — see
-    /// `semantics::elaborate::desugar_param_guards`): evaluate `pred` with
-    /// `var` bound to `val` in a throwaway single-entry env, AND it with
-    /// membership of `val` in `source`.
+    /// comprehension shape guards, literal-arm overloads, and constructor
+    /// patterns all desugar to (`{x for x in source if pred}` — see
+    /// `semantics::elaborate::desugar_param_patterns`): evaluate `pred` with
+    /// `var` bound to `val` (at its real `val_kind`) in a throwaway single-
+    /// entry env, AND it with membership of `val` in `source`.
     ///
     /// `compile_membership` itself has no general runtime support for
     /// comprehension domains — a non-identity output would need genuine
     /// existential search, not a single predicate check — so this only
     /// recognizes the narrow identity-output shape this compiler itself
-    /// generates, one level deep (guards/literal-arms are always the
-    /// outermost node of their domain part, never nested under a further
-    /// union/difference, by construction of the desugaring). Anything else
-    /// falls through to the ordinary `compile_membership` path unchanged.
+    /// generates, one level deep (guards/literal-arms/constructor patterns
+    /// are always the outermost node of their domain part, never nested
+    /// under a further union/difference, by construction of the
+    /// desugaring). Anything else falls through to the ordinary
+    /// `compile_membership` path unchanged (`compile_membership` is
+    /// `IntValue`-only, so this is never reached for a `TaggedUnion` — every
+    /// constructor-pattern domain part is the comprehension shape above by
+    /// construction, so a non-comprehension `TaggedUnion` part would mean a
+    /// new domain-narrowing shape codegen doesn't know about yet, reported
+    /// as a clear ICE rather than an inkwell panic on `.into_int_value()`).
     fn compile_domain_part_match(
         &self,
-        val: IntValue<'ctx>,
+        val: BasicValueEnum<'ctx>,
+        val_kind: &Kind,
         part: &SemExpr,
         tagged: bool,
     ) -> Result<IntValue<'ctx>, CompileError> {
@@ -333,18 +346,64 @@ impl<'ctx> Compiler<'ctx> {
         } = &part.kind
             && matches!(&output.kind, SemExprKind::Var(v) if v == var)
         {
-            let in_source = self.compile_membership(val, source, tagged)?;
-            let elem_kind = if tagged { Kind::Int } else { Kind::Int64 };
+            // A `TaggedUnion`-Kind source (constructor patterns' `Shape`,
+            // say) needs no runtime membership check — every value of that
+            // Kind shares the same LLVM struct representation regardless of
+            // which arm it's tagged with, so it's unconditionally "in
+            // Shape" already, the same way a `Bool` value is unconditionally
+            // "in Bool" (see `disjointness.rs::overload_domain_term`'s
+            // identical `Kind::Bool` skip).
+            let in_source = if matches!(val_kind, Kind::TaggedUnion(_)) {
+                self.context.bool_type().const_int(1, false)
+            } else {
+                self.compile_membership(val.into_int_value(), source, tagged)?
+            };
             let mut env: Env<'ctx> = Env::new();
-            env.insert(var.clone(), (val.into(), elem_kind));
-            let (filter_val, _) = self.compile_expr(filter, &env)?;
-            let filter_bool = filter_val.into_int_value();
+            env.insert(var.clone(), (val, val_kind.clone()));
+            // A constructor pattern's filter (`semantics::elaborate::
+            // desugar_param_patterns`) is `tester(x) and extractor(x) in
+            // <arm's own basis>` — the second conjunct exists purely to
+            // strengthen the *solver's* proof of the pattern-matched
+            // function's own parameter (a fresh symbolic parameter
+            // otherwise carries no fact about its extracted payload). It's
+            // not something that needs re-evaluating at runtime: any value
+            // that reaches this dispatch check already satisfies its arm's
+            // basis by construction (the only way to produce one is through
+            // the labeled constructor, which independently enforces the
+            // same obligation at its own call site). Compiling it anyway
+            // would need general runtime membership-checking for arbitrary
+            // (e.g. tuple-payload) Kinds, which `compile_membership`
+            // doesn't have — so only the tester conjunct is compiled here
+            // for a `TaggedUnion`-Kind value. (A universally-quantified
+            // *solver*-side version of this same fact — needed to prove
+            // calls where the argument's arm isn't visible at the call
+            // site, e.g. `area(pick(b))` for a free `b` — was attempted and
+            // reverted: quantifying over the union's datatype sort with an
+            // arithmetic body made cvc5 treat the whole assertion set as
+            // inconsistent. See backlog.md.)
+            let filter_bool = if matches!(val_kind, Kind::TaggedUnion(_))
+                && let SemExprKind::BinOp {
+                    op: BinOp::And,
+                    lhs: tester_only,
+                    ..
+                } = &filter.kind
+            {
+                self.compile_expr(tester_only, &env)?.0.into_int_value()
+            } else {
+                self.compile_expr(filter, &env)?.0.into_int_value()
+            };
             return self
                 .builder
                 .build_and(in_source, filter_bool, "ov_guard_and")
                 .map_err(|e| CompileError::ice(e.to_string()));
         }
-        self.compile_membership(val, part, tagged)
+        if matches!(val_kind, Kind::TaggedUnion(_)) {
+            return Err(CompileError::ice(format!(
+                "overload dispatch: TaggedUnion-Kind domain part `{part}` isn't the \
+                 identity-output comprehension shape constructor patterns always desugar to"
+            )));
+        }
+        self.compile_membership(val.into_int_value(), part, tagged)
     }
 
     /// Format an overload-dispatch trap message, `path:line:col`-prefixed

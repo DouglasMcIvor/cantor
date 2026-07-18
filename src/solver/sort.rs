@@ -140,7 +140,7 @@ pub(crate) fn arm_ctor_name_for_arm<'tm>(
 /// - All other arms: selector sort is `set_sort(arm_expr)`.
 ///
 /// Arms are listed in the order determined by `flatten_any_union`.
-fn build_union_datatype_sort<'tm>(
+pub(super) fn build_union_datatype_sort<'tm>(
     tm: &'tm TermManager,
     arms: &[&SemExpr],
     distinct_preds: &SolverPreds<'tm>,
@@ -428,6 +428,25 @@ pub(crate) fn set_sort<'tm>(
             // `seq_is_cross_kind` exactly (see the doc comment above this arm).
             let tuple_is_cross_kind = (ls.is_tuple() || rs.is_tuple()) && ls != rs;
             let dt_is_cross_kind = (ls.is_dt() || rs.is_dt()) && ls != rs;
+            // Deliberately *not* forcing a DT here for every `DisjointUnion`
+            // regardless of `ls == rs`, even though `kind.rs`'s `BinOp::Add`
+            // arm always reports `Kind::TaggedUnion` — tried that first and
+            // it broke a wide swath of already-shipped, already-tested
+            // same-sort `+` domain/range proofs unrelated to `distinct`
+            // entirely (`{0} + NatPos -> Nat`-style signatures in
+            // `tests/solver/membership.rs`/`set_ops.rs`): once a same-sort
+            // `+`-value's *sort* is a DT, proving a DT-sorted parameter
+            // satisfies a plain scalar return Kind (`x ∈ Nat`) hits the same
+            // "narrow a cross-kind value into one arm" gap the backlog
+            // already tracks as open (`from()` not narrowing into a specific
+            // arm) — so this would have silently traded working code for a
+            // different, bigger, deliberately-deferred gap. Labeled
+            // `distinct` unions *do* need the forced tag (a label is
+            // meaningless without one) — that's done narrowly at
+            // `solver::preds::build_distinct_preds`'s basis-sort computation
+            // instead, which only affects a `Distinct` def's own `mk_D`/
+            // `from_D` sort, not this general-purpose `set_sort` used for
+            // ordinary domain/range set expressions everywhere else.
             if tuple_is_cross_kind
                 || dt_is_cross_kind
                 || is_distinct_sort(&ls)

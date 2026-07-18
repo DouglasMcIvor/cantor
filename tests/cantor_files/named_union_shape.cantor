@@ -1,7 +1,14 @@
 Shape = distinct (Circle: Nat | Radius: NatPos)
 
-describe : Shape -> Nat
-describe(s) = from(s)
-
-main : -> Nat
-main() = describe(Shape.Circle(3)) + describe(Shape.Radius(4))
+-- `Circle`/`Radius` both share Kind::Int, but labeled arms are always
+-- tag-forced (see parser::items::parse_distinct_value) — constructing
+-- through different labels must produce provably distinct values (see
+-- tests/solver/named_unions.rs::named_union_same_kind_labels_stay_distinct_proved
+-- for that proof). `show()`'s output doesn't expose the label — it only
+-- prints the decoded payload, identical for both arms here — so this test
+-- just proves both labeled constructors compile and run without crashing;
+-- runtime distinctness (`!=`) currently can't be demonstrated end-to-end
+-- for a TaggedUnion value at all, a separate pre-existing codegen gap
+-- (backlog.md).
+main : -> Char*
+main() = show(Shape.Circle(3)) ++ show(Shape.Radius(4))

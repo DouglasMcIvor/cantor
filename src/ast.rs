@@ -427,24 +427,31 @@ pub fn flatten_disjoint_union(expr: &Expr) -> Vec<&Expr> {
     }
 }
 
-/// Flatten a left-associated `|` union `((A | B) | C)` into `[A, B, C]`.
+/// Flatten a left-associated union — `|` (`BinOp::Union`) *or* `+`
+/// (`BinOp::Add`'s disjoint union) — `((A | B) | C)`/`((A + B) + C)` into
+/// `[A, B, C]`.
 ///
-/// Sibling of `flatten_domain`/`flatten_disjoint_union` for the third
-/// set-forming binary operator (`BinOp::Union`, the `|` token — distinct
-/// from `BinOp::Add`'s *disjoint* union, which requires the arms be
-/// provably non-overlapping). Used by `semantics::wellfounded` to find a
-/// named set definition's top-level union arms without needing elaboration
-/// to have run first (recursive definitions can't be elaborated yet — that's
-/// exactly the case this flattening exists to detect ahead of time).
-pub fn flatten_union(expr: &Expr) -> Vec<&Expr> {
+/// AST-level (pre-elaboration) sibling of `semantics::tree::flatten_any_union`,
+/// needed for the same reason: a named `distinct` union's arms are always
+/// `+`-folded now (see `parser::items::parse_distinct_value` — labels only
+/// mean anything if every arm gets a real runtime tag, which `+` forces and
+/// `|` doesn't when arms share a Kind), but callers here run *before*
+/// elaboration (`kind::named_union_value_kind`, and
+/// `semantics::wellfounded` finding a named set definition's top-level
+/// union arms without needing elaboration to have run first — recursive
+/// definitions can't be elaborated yet, that's exactly the case this
+/// flattening exists to detect ahead of time), so they can't use the
+/// `SemExpr`-level version. `flatten_domain`/`flatten_disjoint_union`
+/// remain the operator-specific siblings for callers that care which one.
+pub fn flatten_any_union(expr: &Expr) -> Vec<&Expr> {
     match &expr.kind {
         ExprKind::BinOp {
-            op: BinOp::Union,
+            op: BinOp::Union | BinOp::Add,
             lhs,
             rhs,
         } => {
-            let mut arms = flatten_union(lhs);
-            arms.extend(flatten_union(rhs));
+            let mut arms = flatten_any_union(lhs);
+            arms.extend(flatten_any_union(rhs));
             arms
         }
         _ => vec![expr],
@@ -528,6 +535,28 @@ fn collect_loop_modified_rec(stmts: &[Stmt], names: &mut std::collections::HashS
 
 // ── Function definitions ──────────────────────────────────────────────────────
 
+/// `Name.Label(x)` or `Name.Label(x, y, ...)` in parameter position
+/// (pattern-matching plan step 4/4, `size(Tree.leaf2(x, y)) = ...`) — matches
+/// this parameter against one labeled arm of a named `distinct` union,
+/// binding the arm's own payload (scalar or destructured tuple) to fresh
+/// names for the function body. Sugar over function overloading, same as
+/// `guard`: the actual parameter is a synthesized internal name (`Param.name`,
+/// `__pat{index}` convention), narrowed to just this label's values via a
+/// comprehension domain filter, with a `let`/destructuring prelude
+/// synthesized onto the body — see
+/// `semantics::elaborate::desugar_param_patterns`.
+#[derive(Debug, Clone)]
+pub struct CtorPattern {
+    /// The named union, e.g. `Tree` in `Tree.leaf2(x, y)`.
+    pub union_name: Symbol,
+    /// The arm label, e.g. `leaf2` in `Tree.leaf2(x, y)`.
+    pub label: Symbol,
+    /// The payload binder(s): one name for a scalar/non-tuple arm, one per
+    /// element for a tuple arm — arity is validated against the arm's own
+    /// declared basis at elaboration time.
+    pub binders: Vec<Symbol>,
+}
+
 /// A named function parameter. Domain annotation added in phase 4 (cvc5).
 #[derive(Debug, Clone)]
 pub struct Param {
@@ -535,8 +564,12 @@ pub struct Param {
     /// `x for <expr>` — narrows this overload arm's already-declared domain
     /// slice for this parameter to `{x for x in <slice> if <expr>}`. Sugar
     /// over function overloading, not a new domain-declaration mechanism —
-    /// see `semantics::elaborate::desugar_param_guards`.
+    /// see `semantics::elaborate::desugar_param_patterns`.
     pub guard: Option<Expr>,
+    /// `Name.Label(x, ...)` — see `CtorPattern`'s doc comment. Mutually
+    /// exclusive with `guard` (the parser never produces both for one
+    /// parameter).
+    pub ctor_pattern: Option<CtorPattern>,
     pub span: Span,
 }
 
@@ -545,6 +578,7 @@ impl Param {
         Self {
             name: Symbol::new(name),
             guard: None,
+            ctor_pattern: None,
             span: Span::dummy(),
         }
     }
@@ -614,9 +648,11 @@ pub struct NameDef {
     pub ty: Option<Expr>,
     pub value: Expr,
     /// Arm labels for `Name = distinct (Label1: Expr1 | Label2: Expr2 | ...)`,
-    /// in source order, parallel to `flatten_union(&value)` (`value` is an
-    /// ordinary `|`-joined expression — labels are pure sugar recording
-    /// which name each arm should get a constructor under, see
+    /// in source order, parallel to `flatten_any_union(&value)` (`value` is
+    /// actually a `+`-joined disjoint-union expression, regardless of the
+    /// `|` separator in source — labels are sugar recording which name each
+    /// arm should get a constructor under, plus the `+`-fold forces every
+    /// labeled arm to get a real runtime tag, see
     /// `parser::items::parse_distinct_value`). `None` for every other form.
     pub labels: Option<Vec<Symbol>>,
     pub span: Span,

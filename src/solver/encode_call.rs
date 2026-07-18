@@ -127,7 +127,7 @@ fn coerce_arg_to_labeled_arm<'tm>(
 /// declared domain — confirmed by reproducing exactly this "argument type
 /// is not the type of the function's argument type" cvc5 error while
 /// implementing heterogeneous named-union arms.
-fn mk_domain_sort<'tm>(info: &DistinctInfo<'tm>) -> Sort<'tm> {
+pub(super) fn mk_domain_sort<'tm>(info: &DistinctInfo<'tm>) -> Sort<'tm> {
     info.mk
         .sort()
         .fun_domain()
@@ -217,6 +217,53 @@ pub(crate) fn encode_call<'tm>(
             .mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term.clone()]);
         assert_distinct_round_trip(ctx.tm, ctx.solver, info, &result, &arg_term);
         return maybe_coerce(ctx.tm, result, &coerce_to);
+    }
+
+    // Constructor-pattern internals (pattern-matching plan step 4/4):
+    // `Shape.Circle?(s)` (domain-narrowing tester) / `Shape.Circle!(s)`
+    // (payload extractor) — synthesized by `semantics::elaborate::
+    // desugar_param_patterns`/`build_ctor_pattern_prelude`, never written by
+    // a user. Both start the same way as the ordinary labeled-constructor
+    // block above: unwrap `s`'s outer `distinct` sort via `info.from` to get
+    // to the union DT term, then dispatch on `arm_idx` — the tag-forcing fix
+    // (backlog.md) guarantees `mk_domain_sort` is a genuine DT for *any*
+    // labeled union now, not just heterogeneous-Kind ones, so this never
+    // needs the plain-basis fallback the ordinary constructor block has.
+    if args.len() == 1
+        && let Some(bare_callee) = callee.0.strip_suffix('?').map(Symbol::new)
+        && let Some((union_def, arm_idx, _arm_expr)) =
+            named_union_arm_for_constructor(&bare_callee, ctx.name_defs)
+        && let Some(info) = ctx.distinct_preds.get(&union_def.name)
+    {
+        let arg_term = enc!(&args[0])?;
+        let basis_sort = mk_domain_sort(info);
+        let unwrapped = ctx
+            .tm
+            .mk_term(Kind::ApplyUf, &[info.from.clone(), arg_term]);
+        let dt = basis_sort.datatype();
+        let tester = ctx.tm.mk_term(
+            Kind::ApplyTester,
+            &[dt.constructor(arm_idx).tester_term(), unwrapped],
+        );
+        return maybe_coerce(ctx.tm, tester, &coerce_to);
+    }
+    if args.len() == 1
+        && let Some(bare_callee) = callee.0.strip_suffix('!').map(Symbol::new)
+        && let Some((union_def, arm_idx, _arm_expr)) =
+            named_union_arm_for_constructor(&bare_callee, ctx.name_defs)
+        && let Some(info) = ctx.distinct_preds.get(&union_def.name)
+    {
+        let arg_term = enc!(&args[0])?;
+        let basis_sort = mk_domain_sort(info);
+        let unwrapped = ctx
+            .tm
+            .mk_term(Kind::ApplyUf, &[info.from.clone(), arg_term]);
+        let dt = basis_sort.datatype();
+        let ctor = dt.constructor(arm_idx);
+        let payload = ctx
+            .tm
+            .mk_term(Kind::ApplySelector, &[ctor.selector(0).term(), unwrapped]);
+        return maybe_coerce(ctx.tm, payload, &coerce_to);
     }
 
     // Auto-generated constructor: `litre(n)` for `Litre = distinct Nat`.
@@ -728,7 +775,7 @@ fn assert_domain_implies_membership<'tm>(
 /// a valid position into that DT's constructor list, letting the call site
 /// pick the arm's constructor directly instead of searching by CVC5 sort
 /// (see the call site's doc comment for why sort-based search is wrong here).
-fn named_union_arm_for_constructor<'a>(
+pub(super) fn named_union_arm_for_constructor<'a>(
     callee: &Symbol,
     name_defs: &'a NameDefs,
 ) -> Option<(&'a crate::semantics::tree::SemNameDef, usize, &'a SemExpr)> {
