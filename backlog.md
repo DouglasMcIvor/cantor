@@ -179,6 +179,49 @@ Algorithm:
   (`tests/solver/distinct_basis.rs::named_union_tuple_arms_same_shape_proved`). Fixed by
   gating both the tuple and (for parity) the general-DT cross-kind conditions on `ls != rs`,
   same shape as the sequence/Bool checks already next to them.
+
+  **Update (2026-07-18, same day, third session)**: heterogeneous-Kind named-union arms
+  (`Circle: Nat | Rect: Nat * Nat`) are now **DONE** —
+  `tests/solver/heterogeneous_named_unions.rs`,
+  `tests/cli/heterogeneous_named_unions.rs`. Turned out smaller than expected: `kind::set_kind`,
+  `solver::preds::build_distinct_preds`, `from(x)`'s solver *and* codegen encoding, and
+  `sort::build_union_datatype_sort` were all *already* fully generic once the elaboration gate
+  (`semantics::elaborate::validate_distinct_basis`, née the `is_distinct_basis_representable`
+  check) allowed a `Kind::TaggedUnion` basis through for a labeled def. The two genuinely new
+  pieces were the constructor on each side: solver (`encode_call.rs`'s `coerce_arg_to_basis`)
+  now wraps the argument into the union DT's matching arm constructor via
+  `sort::maybe_coerce`/`coerce_to_union_dt` before `ApplyUf(mk_Shape, …)`; codegen
+  (`expr_call.rs`'s `Name.Label(x)` block) now builds the real `{ i32 tag, i64 leaves }` struct
+  via the *already-existing* `coerce::build_tagged_union_value` (previously only reachable from
+  ordinary `A | B` coercion) instead of the same-Kind case's pure passthrough, driven by a new
+  `Compiler::named_union_arms` table (`compile.rs`, populated the same `kind::set_kind`-over-a-
+  local-`ast::NameDefs` way `elaborate.rs` computes Kind, no solver dependency).
+
+  **v0 scope cut, deliberate**: every arm's Kind must be pairwise distinct from every other
+  arm's Kind — `Circle: Nat | Square: NatPos | Rect: Nat * Nat` (two `Int`-Kind arms mixed with
+  a `Tuple`-Kind one) is rejected loudly at elaboration, not silently miscompiled. This
+  sidesteps a **suspected** (structurally identified, not fully proven with a failing-proof
+  repro) pre-existing bug: `sort::build_union_datatype_sort` names each arm's CVC5 constructor
+  purely from its Kind (`sort::arm_ctor_name`), with no positional disambiguation when two arms
+  share a Kind — two arms would get the *same* constructor name in the same datatype
+  declaration, and every downstream name-based lookup (`arm_ctor_name_for_arm`,
+  `coerce_to_union_dt`, `membership_constraint_for_dt`) would only ever find the first such arm.
+  Confirmed harmless-looking on a trivial smoke test (`f : Nat | NatPos | (Nat*Nat) -> Int;
+  f(x) = 0` doesn't crash), but every name-based lookup site would silently resolve to the
+  wrong arm's tester/selector for the second occurrence — not fixed here (it's a different,
+  deeper fix: constructor names need a positional suffix, e.g. `ck_Int_0`/`ck_Int_1`, touching
+  every call site that currently assumes name-only lookup is unambiguous). Worth a dedicated
+  investigation before lifting the pairwise-distinctness requirement.
+
+  **Also found, out of scope, not fixed**: projecting into a specific arm after `from()` (e.g.
+  `from(Shape.Rect((3,4))).0`) is *not* provable today — confirmed this is a general,
+  pre-existing limitation of cross-kind-union narrowing, not `distinct`-specific: the plain
+  non-`distinct` equivalent (`g : -> (Nat*Nat) | Nat; g() = (3, 4); main() = g().0`) hits the
+  identical "not in Nat" false counterexample. This is the same narrowing gap already flagged
+  by the reverted step-4 constructor-pattern prototype above (`let r = from(param)` rewrite, or
+  a different design) — round-trip correctness for heterogeneous arms is instead verified via
+  `show()` (real per-arm runtime tag dispatch, commit `6210702`), which *does* work end to end
+  and confirms both the tag and the packed leaf values are correct without needing narrowing.
 - more IO backends: CLI, TUI, web, SDL, OpenGL, vulkan, etc
 - write-only side effects via `emit`
 - compiled binaries
@@ -199,10 +242,12 @@ Algorithm:
 - literal suffix support for e.g. 3m for 3 meters
 - structs/"named product sets". product sets are either fully not named or fully named.
   (named union sets — `Measurement = distinct (length: Meter | volume: Liter)` with
-  `Measurement.length(3m)` construction — are DONE for arms that share one Kind (not just
-  `Int` any more, see the "constructors in binders" entry above); a tuple/cross-kind arm
-  like a hypothetical named-product arm still needs `distinct`'s per-arm cross-kind
-  wrapping, tracked separately in that same entry)
+  `Measurement.length(3m)` construction — are DONE, including arms of genuinely different
+  Kinds from each other, e.g. a hypothetical `length: Meter | corners: (Nat*Nat)`, see the
+  "constructors in binders" entry above; the one remaining restriction is that every arm's
+  Kind must be pairwise distinct from every other arm's, a separate pre-existing
+  constructor-naming-collision concern also tracked in that same entry, unrelated to named
+  products specifically)
   Tentative syntax for products:
   ```
   Pair = distinct Meter * Meter

@@ -40,17 +40,28 @@ pub(crate) struct CallSite<'e> {
 }
 
 /// Coerce a `distinct` constructor's already-encoded argument term to
-/// `basis_sort` when the two don't already match a bare `ApplyUf` — needed
-/// because an array literal (`[1, 2]`) always encodes as a plain CVC5 tuple
-/// (`SemExprKind::Tuple`'s only encoding, see `encode_expr`), never a `Seq`,
-/// unless something downstream asks for one. An ordinary function call gets
-/// this for free from `membership_constraint`'s sequence-unification
-/// bridging (which tolerates either sort on the *domain-obligation* side),
-/// but `mk_D`'s `ApplyUf` is a hard CVC5 sort match with no bridging of its
-/// own, so a sequence-basis literal must genuinely become a `Seq` term
-/// before it's passed in. No-op for every other basis sort (a `Tuple`
-/// argument already matches `mk_D`'s declared domain directly, since both
-/// come from the same `set_sort` machinery).
+/// `basis_sort` when the two don't already match a bare `ApplyUf`. Two
+/// cases need real coercion:
+/// - **Sequence basis** (`Litre* = distinct Nat*`-style): an array literal
+///   (`[1, 2]`) always encodes as a plain CVC5 tuple (`SemExprKind::Tuple`'s
+///   only encoding, see `encode_expr`), never a `Seq`, unless something
+///   downstream asks for one. An ordinary function call gets this for free
+///   from `membership_constraint`'s sequence-unification bridging (which
+///   tolerates either sort on the *domain-obligation* side), but `mk_D`'s
+///   `ApplyUf` is a hard CVC5 sort match with no bridging of its own.
+/// - **Cross-kind DT basis** (a heterogeneous-Kind named union, e.g.
+///   `Shape = distinct (Circle: Nat | Rect: Nat * Nat)`): `mk_Shape`'s
+///   declared domain is the union's own tagged datatype sort
+///   (`sort::build_union_datatype_sort`), not the individual arm's natural
+///   sort — the argument must be wrapped into the matching arm constructor
+///   first (`ApplyConstructor(ck_Int, [arg])`) before being handed to
+///   `mk_Shape`. `sort::maybe_coerce`/`coerce_to_union_dt` already do
+///   exactly this (matching by selector sort — the same mechanism ordinary
+///   `A | B` union coercion already uses), so this just delegates.
+///
+/// No-op for every other basis sort (a `Tuple` argument already matches
+/// `mk_D`'s declared domain directly, since both come from the same
+/// `set_sort` machinery).
 fn coerce_arg_to_basis<'tm>(
     tm: &'tm TermManager,
     arg_term: Term<'tm>,
@@ -62,7 +73,34 @@ fn coerce_arg_to_basis<'tm>(
     if basis_sort.is_sequence() {
         return coerce_to_sequence(tm, arg_term, Some(basis_sort.clone()));
     }
+    if basis_sort.is_dt() && !basis_sort.is_tuple() {
+        return maybe_coerce(tm, arg_term, &Some(basis_sort.clone()));
+    }
     Ok(arg_term)
+}
+
+/// The basis sort `mk_D` was actually declared against — read directly off
+/// `info.mk`'s own function sort rather than recomputing via `set_sort`.
+///
+/// Recomputing would be actively wrong for a cross-kind (tagged-union)
+/// basis: `set_sort`'s `Union` arm builds a *fresh*, non-interned CVC5
+/// datatype declaration on every call (`sort::build_union_datatype_sort`
+/// calls `mk_dt_decl`/`mk_dt_sort` unconditionally — unlike e.g. tuple or
+/// sequence sorts, which cvc5 *does* intern by structure, so calling
+/// `set_sort` twice for those safely returns the same `Sort` both times).
+/// Two structurally-identical but independently-declared datatypes are
+/// *different* CVC5 sorts, so a second `set_sort` call here would silently
+/// hand `mk_D` an argument sort that merely looks like, but isn't, its
+/// declared domain — confirmed by reproducing exactly this "argument type
+/// is not the type of the function's argument type" cvc5 error while
+/// implementing heterogeneous named-union arms.
+fn mk_domain_sort<'tm>(info: &DistinctInfo<'tm>) -> Sort<'tm> {
+    info.mk
+        .sort()
+        .fun_domain()
+        .into_iter()
+        .next()
+        .expect("mk_D is always declared as a unary function")
 }
 
 pub(crate) fn encode_call<'tm>(
@@ -100,14 +138,7 @@ pub(crate) fn encode_call<'tm>(
         && let Some(info) = ctx.distinct_preds.get(&union_def.name)
     {
         let arg_term = enc!(&args[0])?;
-        let basis_sort = set_sort(ctx.tm, &union_def.value, ctx.distinct_preds, ctx.name_defs)
-            .ok_or_else(|| {
-                format!(
-                    "`{}`'s basis has no representable solver sort",
-                    union_def.name.0
-                )
-            })?;
-        let arg_term = coerce_arg_to_basis(ctx.tm, arg_term, &basis_sort)?;
+        let arg_term = coerce_arg_to_basis(ctx.tm, arg_term, &mk_domain_sort(info))?;
         match membership_constraint(
             ctx.tm,
             arg_term.clone(),
@@ -141,19 +172,7 @@ pub(crate) fn encode_call<'tm>(
         && let Some(info) = ctx.distinct_preds.get(&distinct_def.name)
     {
         let arg_term = enc!(&args[0])?;
-        let basis_sort = set_sort(
-            ctx.tm,
-            &distinct_def.value,
-            ctx.distinct_preds,
-            ctx.name_defs,
-        )
-        .ok_or_else(|| {
-            format!(
-                "`{}`'s basis has no representable solver sort",
-                distinct_def.name.0
-            )
-        })?;
-        let arg_term = coerce_arg_to_basis(ctx.tm, arg_term, &basis_sort)?;
+        let arg_term = coerce_arg_to_basis(ctx.tm, arg_term, &mk_domain_sort(info))?;
         match membership_constraint(
             ctx.tm,
             arg_term.clone(),

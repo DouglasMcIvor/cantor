@@ -1575,11 +1575,18 @@ reach for it less. `distinct` sets are fully proof-capable (IMPLEMENTED):
 each `D = distinct B` gets its own uninterpreted CVC5 sort plus
 uninterpreted constructor/destructor functions `mk_D : basis_sort -> D` and
 `from_D : D -> basis_sort`, where `basis_sort` is `B`'s own CVC5 sort —
-`Int` for `Litre = distinct Nat`, but any single solver-representable Kind
-works (`Bool`, `Char`, a tuple, a vector, a `distinct`-over-`distinct`
-chain, …; see `kind::is_distinct_basis_representable` for exactly which —
-a named union whose arms have genuinely *different* Kinds from each other
-is the one case still not supported, tracked in backlog.md); basis-set
+`Int` for `Litre = distinct Nat`, but any solver-representable Kind works
+(`Bool`, `Char`, a tuple, a vector, a `distinct`-over-`distinct` chain, …;
+see `kind::is_distinct_basis_representable`), including a genuine
+`Kind::TaggedUnion` basis for a labeled named union whose arms have
+different Kinds from each other (`Circle: Nat | Rect: Nat * Nat`) — in that
+case `basis_sort` is the cross-kind CVC5 datatype `sort::set_sort` already
+builds for any `A | B` union, and each labeled constructor wraps its
+argument into that datatype's matching arm constructor before `mk_D`,
+mirroring codegen's `{ i32 tag, i64 leaves }` struct construction (see
+`semantics::elaborate::validate_distinct_basis`, `backlog.md`'s
+constructor-patterns entry for the one remaining v0 scope cut: every arm's
+Kind must be pairwise distinct from every other arm's). Basis-set
 constraints are emitted on demand at each constructor / `from` site (no
 global axioms; logic `ALL`). Each constructor call site also asserts the
 ground round-trip fact `from_D(mk_D(arg)) == arg`, so a literal round-trip

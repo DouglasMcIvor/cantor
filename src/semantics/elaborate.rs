@@ -479,30 +479,8 @@ fn elaborate_name_def(def: &NameDef, ctx: &Ctx) -> Result<SemNameDef, CompileErr
         Position::Set
     };
     let value = elaborate_expr(&def.value, value_pos, ctx, &mut env)?;
-    // `distinct`'s basis must be a single, solver-representable Kind — see
-    // `kind::is_distinct_basis_representable`'s doc comment for exactly
-    // which Kinds qualify (any single Kind `solver::sort::set_sort` can
-    // already produce a CVC5 sort for) and which don't yet. Checked for
-    // *every* `Distinct` def, not just labeled named unions — an unlabeled
-    // `Litre = distinct Bool` needs the same validation, it just never had
-    // it before this generalized from the old Int-only check.
-    if def.kind == DefKind::Distinct && !is_distinct_basis_representable(&value.kind_of) {
-        let msg = if let Kind::TaggedUnion(arm_kinds) = &value.kind_of {
-            format!(
-                "named union arm kinds differ ({arm_kinds:?}) — every arm must share one Kind \
-                 today (e.g. `Circle: Nat | Radius: NatPos`, or two same-shape tuple arms); a \
-                 named union whose arms have genuinely different Kinds (e.g. `Circle: Nat | \
-                 Rect: Nat * Nat`) needs `distinct`'s per-arm cross-kind wrapping, not yet \
-                 implemented"
-            )
-        } else {
-            format!(
-                "distinct basis of kind {:?} (`Set(_)` elements have no structural equality/\
-                 ordering yet, see `kind::is_scalar_word_kind`)",
-                value.kind_of
-            )
-        };
-        return Err(not_yet_implemented(&msg, value.span));
+    if def.kind == DefKind::Distinct {
+        validate_distinct_basis(def, &value)?;
     }
     Ok(SemNameDef {
         name: def.name.clone(),
@@ -512,4 +490,91 @@ fn elaborate_name_def(def: &NameDef, ctx: &Ctx) -> Result<SemNameDef, CompileErr
         labels: def.labels.clone(),
         span: def.span,
     })
+}
+
+/// Validate a `Distinct` def's basis — every `D = distinct B` def, not just
+/// labeled named unions (an unlabeled `Litre = distinct Bool` needs the same
+/// validation as a labeled one).
+///
+/// Two shapes are accepted:
+/// - A single, solver-representable Kind (`kind::is_distinct_basis_representable`)
+///   — covers plain `distinct` and today's same-Kind-arm named unions
+///   (`Circle: Nat | Radius: NatPos`, both `Kind::Int`).
+/// - A `Kind::TaggedUnion` (arms with genuinely different Kinds from each
+///   other) *only* when labeled — an unlabeled `distinct` over a
+///   heterogeneous union has no way to pick "which arm" a constructor
+///   argument belongs to — and only when every arm is itself representable
+///   and pairwise distinct from every other arm's Kind.
+///
+/// The pairwise-distinctness requirement is a deliberate v0 scope cut, not
+/// a fundamental limit: `solver::sort::build_union_datatype_sort` names
+/// each arm's CVC5 constructor purely from its Kind
+/// (`solver::sort::arm_ctor_name`), with no disambiguation when two arms
+/// share a Kind — two arms would collide on the same constructor name in
+/// the same datatype declaration, and every downstream name-based lookup
+/// (`arm_ctor_name_for_arm`, `coerce_to_union_dt`,
+/// `membership_constraint_for_dt`) would only ever find the first such arm.
+/// That's a pre-existing gap in the general cross-kind union machinery
+/// (not specific to `distinct`), tracked separately in backlog.md — this
+/// check just makes sure a heterogeneous named union never reaches it,
+/// rather than silently inheriting a suspected miscompile.
+fn validate_distinct_basis(def: &NameDef, value: &SemExpr) -> Result<(), CompileError> {
+    let Kind::TaggedUnion(_) = &value.kind_of else {
+        if !is_distinct_basis_representable(&value.kind_of) {
+            return Err(not_yet_implemented(
+                &format!(
+                    "distinct basis of kind {:?} (`Set(_)` elements have no structural \
+                     equality/ordering yet, see `kind::is_scalar_word_kind`)",
+                    value.kind_of
+                ),
+                value.span,
+            ));
+        }
+        return Ok(());
+    };
+    if def.labels.is_none() {
+        return Err(not_yet_implemented(
+            "an unlabeled `distinct` over arms of different Kinds — there's no way to pick \
+             which arm a constructor argument belongs to without labels; write e.g. `distinct \
+             (Circle: Nat | Rect: Nat * Nat)` instead",
+            value.span,
+        ));
+    }
+    // `value.kind_of`'s own `TaggedUnion` arm list is already deduped by Kind
+    // (`kind::union_if_distinct`), so it can never itself contain a
+    // duplicate — the pairwise-distinctness check below must walk the
+    // *syntactic* arm list instead (`flatten_any_union`, one entry per `|`,
+    // never deduped) to see how many arms actually share a Kind.
+    let arms = flatten_any_union(value);
+    if let Some(bad) = arms
+        .iter()
+        .find(|arm| !is_distinct_basis_representable(&arm.kind_of))
+    {
+        return Err(not_yet_implemented(
+            &format!(
+                "named union arm of kind {:?} has no representable solver sort",
+                bad.kind_of
+            ),
+            bad.span,
+        ));
+    }
+    if let Some(dup) = arms.iter().enumerate().find_map(|(i, arm)| {
+        arms[i + 1..]
+            .iter()
+            .any(|other| other.kind_of == arm.kind_of)
+            .then_some(&arm.kind_of)
+    }) {
+        return Err(not_yet_implemented(
+            &format!(
+                "named union has two arms sharing kind {dup:?} — every arm of a \
+                 heterogeneous-Kind named union must have a Kind distinct from every other arm \
+                 today (a pre-existing constructor-naming collision in the general cross-kind \
+                 union machinery, tracked separately in backlog.md); same-Kind arms are still \
+                 fine on their own, e.g. `Circle: Nat | Radius: NatPos`, just not mixed with a \
+                 third, differently-Kinded arm"
+            ),
+            value.span,
+        ));
+    }
+    Ok(())
 }

@@ -74,6 +74,16 @@ pub struct Compiler<'ctx> {
     /// Names of all `distinct` sets in the file (e.g. `"Litre"`, `"Kelvin"`).
     /// Used to detect auto-generated constructors like `litre(x)` → identity.
     distinct_names: HashSet<String>,
+    /// Maps a heterogeneous-Kind named union's own name (e.g. `"Shape"`) to
+    /// its `(label, arm Kind)` pairs, in declared order — present *only*
+    /// for a labeled `distinct` union whose arms have genuinely different
+    /// Kinds from each other (`kind::set_kind` returns a bare
+    /// `Kind::TaggedUnion`, never for a same-Kind named union, which stays
+    /// pure passthrough). Used by `compile_call`'s `Name.Label(x)`
+    /// constructor to build the `{tag, leaves}` struct via
+    /// `Compiler::build_tagged_union_value`, instead of the identity
+    /// passthrough every other `distinct` constructor uses.
+    named_union_arms: HashMap<String, Vec<(String, Kind)>>,
     /// Maps each declared function name to the runtime Kind of each parameter.
     /// Populated in pass 1 alongside `fn_return_kinds`; used at call sites to
     /// box scalar/tuple arguments when the callee expects a `Kind::Vector`.
@@ -141,6 +151,7 @@ impl<'ctx> Compiler<'ctx> {
             fn_ranges: HashMap::new(),
             user_set_vals: HashMap::new(),
             distinct_names: HashSet::new(),
+            named_union_arms: HashMap::new(),
             fn_param_set_exprs: HashMap::new(),
             fn_param_kinds: HashMap::new(),
             overflow_checks: HashMap::new(),

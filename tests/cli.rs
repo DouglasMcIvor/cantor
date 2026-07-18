@@ -20,6 +20,8 @@ mod error_handling;
 mod event_loop;
 #[path = "cli/helpers.rs"]
 mod helpers;
+#[path = "cli/heterogeneous_named_unions.rs"]
+mod heterogeneous_named_unions;
 #[path = "cli/interpolation.rs"]
 mod interpolation;
 #[path = "cli/named_unions.rs"]

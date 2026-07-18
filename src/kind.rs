@@ -210,12 +210,13 @@ pub fn is_scalar_word_kind(kind: &Kind) -> bool {
 /// Whether `kind` has a CVC5 sort `solver::sort::set_sort`/`scalar_kind_sort`
 /// can already produce — the "single homogeneous basis" case `distinct`
 /// needs (`solver::preds::build_distinct_preds` builds `mk_D`/`from_D`
-/// against exactly this sort). Excludes `TaggedUnion` (a named union whose
-/// arms have genuinely *different* Kinds — making its per-label
-/// constructors build/tear down that tagged representation before/after
-/// opacifying via `mk_D`/`from_D` is separate, not-yet-implemented work, see
-/// backlog.md) and `Set(_)` (no structural equality/ordering yet, same
-/// reason `is_scalar_word_kind` excludes it).
+/// against exactly this sort). Excludes `TaggedUnion` — a named union whose
+/// arms have genuinely *different* Kinds from each other is validated
+/// separately, per-arm, by `semantics::elaborate::validate_distinct_basis`
+/// (which calls back into this function once per arm, plus a
+/// pairwise-arm-Kind-distinctness check this function alone can't express)
+/// — and `Set(_)` (no structural equality/ordering yet, same reason
+/// `is_scalar_word_kind` excludes it).
 pub fn is_distinct_basis_representable(kind: &Kind) -> bool {
     match kind {
         Kind::Int

@@ -168,6 +168,62 @@ pub(super) fn compile_elaborated<'ctx>(
         })
         .collect();
 
+    // Heterogeneous-Kind named unions (e.g. `Shape = distinct (Circle: Nat |
+    // Rect: Nat * Nat)`) need real codegen at each labeled constructor call
+    // (`Shape.Circle(r)` must build the `{tag, leaves}` struct, unlike the
+    // same-Kind case which stays pure passthrough) — `compile_call` needs
+    // `Shape`'s labels paired with their arm Kinds, in declared order, to do
+    // that. Computed the same way `semantics::elaborate::elaborate` computes
+    // Kind (`kind::set_kind` is a pure `ast`-level function, no solver
+    // dependency, safe to call again here rather than threading elaborated
+    // `SemNameDef`s through). Absent for a same-Kind named union (`set_kind`
+    // returns a bare `Kind`, not a `TaggedUnion`) — `compile_call`'s
+    // existing passthrough is already correct for that case and needs no
+    // entry here. `ast::flatten_union`'s per-arm order matches
+    // `kind::set_kind`'s own `TaggedUnion` arm order (both left-to-right,
+    // confirmed while implementing this — see backlog.md), and — since
+    // `semantics::elaborate::validate_distinct_basis` already rejected any
+    // heterogeneous union with two arms sharing a Kind before this can
+    // run — `set_kind`'s dedup is a no-op here, so the lengths always
+    // agree; `.expect` on a mismatch is a genuine internal-error signal,
+    // not a real fallback path.
+    let ast_name_defs: crate::ast::NameDefs = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::NameDef(def) => Some((def.name.clone(), def.clone())),
+            _ => None,
+        })
+        .collect();
+    compiler.named_union_arms = items
+        .iter()
+        .filter_map(|item| {
+            let Item::NameDef(def) = item else {
+                return None;
+            };
+            if def.kind != DefKind::Distinct {
+                return None;
+            }
+            let labels = def.labels.as_ref()?;
+            let Ok(Kind::TaggedUnion(arms)) = crate::kind::set_kind(&def.value, &ast_name_defs)
+            else {
+                return None;
+            };
+            assert_eq!(
+                labels.len(),
+                arms.len(),
+                "named union `{}`: label count must match arm count once \
+                 validate_distinct_basis has accepted it",
+                def.name.0
+            );
+            let pairs = labels
+                .iter()
+                .map(|l| l.0.clone())
+                .zip(arms)
+                .collect::<Vec<_>>();
+            Some((def.name.0.clone(), pairs))
+        })
+        .collect();
+
     // int-soundness-plan phase 3 step 4b: a named scalar constant is always
     // genuinely `Kind::Int` (tagged) — it's inlined unchanged into every
     // function's env regardless of that function's own representation, so

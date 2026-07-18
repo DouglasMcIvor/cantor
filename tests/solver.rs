@@ -16,6 +16,8 @@ mod encode;
 mod event_loop;
 #[path = "solver/helpers.rs"]
 mod helpers;
+#[path = "solver/heterogeneous_named_unions.rs"]
+mod heterogeneous_named_unions;
 #[path = "solver/if_else.rs"]
 mod if_else;
 #[path = "solver/int64_split.rs"]

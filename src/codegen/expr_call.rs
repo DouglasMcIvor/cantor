@@ -75,18 +75,41 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         // Auto-generated constructor `Name.Label(x)` for a named union arm
-        // (`Name = distinct (Label: Expr | ...)`); identity at runtime, same
-        // as the plain single-basis `d(x)` case just below — v0 named
-        // unions are Int-only (`semantics::elaborate::elaborate_name_def`
-        // rejects non-Int arms), so there's no tag/struct to build, just
-        // the same pass-through `distinct` already does. The label itself
-        // carries no runtime information; only `Name` needs to be a known
-        // distinct set.
+        // (`Name = distinct (Label: Expr | ...)`). Two cases:
+        // - Same-Kind arms (`Circle: Nat | Radius: NatPos`, both `Kind::Int`
+        //   — `Name` itself has that bare Kind, not a `TaggedUnion`,
+        //   `self.named_union_arms` has no entry): identity at runtime, same
+        //   as the plain single-basis `d(x)` case just below — there's no
+        //   tag/struct to build, just the same pass-through `distinct`
+        //   already does. The label carries no runtime information here.
+        // - Heterogeneous-Kind arms (`Circle: Nat | Rect: Nat * Nat` —
+        //   `Name`'s own Kind is a genuine `Kind::TaggedUnion`,
+        //   `self.named_union_arms` has an entry): `Name` is represented by
+        //   the full `{ i32 tag, i64 leaves }` struct at the LLVM level
+        //   (`kind_to_llvm_type(&Kind::TaggedUnion(all_arms))`), so the
+        //   constructor must build that struct — reuses the exact same
+        //   `build_tagged_union_value` ordinary `A | B` coercion (if/else
+        //   branches, `+`-typed returns) already uses, just driven by the
+        //   label's declared arm index instead of a runtime/if-branch tag.
         if args.len() == 1
-            && let Some((name_part, _label_part)) = callee.0.split_once('.')
+            && let Some((name_part, label_part)) = callee.0.split_once('.')
             && self.distinct_names.contains(name_part)
         {
             let (val, kind) = self.compile_expr(&args[0], env)?;
+            if let Some(arm_list) = self.named_union_arms.get(name_part) {
+                let arm_idx = arm_list
+                    .iter()
+                    .position(|(label, _)| label == label_part)
+                    .ok_or_else(|| {
+                        CompileError::ice(format!(
+                            "named union `{name_part}` has no arm labeled `{label_part}` \
+                             (should have been rejected at elaboration time)"
+                        ))
+                    })?;
+                let all_arms: Vec<Kind> = arm_list.iter().map(|(_, k)| k.clone()).collect();
+                let wrapped = self.build_tagged_union_value(arm_idx, val, &kind, &all_arms)?;
+                return Ok((wrapped, Kind::TaggedUnion(all_arms)));
+            }
             return Ok((val, kind));
         }
 
