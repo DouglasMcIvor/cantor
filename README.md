@@ -715,6 +715,17 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 - **SMT-backed proof** — every function signature is proved, disproved (with a counterexample), or flagged unknown using cvc5
 - **Interprocedural checking** — callee contracts are used modularly; recursion works via the function's own signature as an induction hypothesis; every call site carries a proof obligation that the arguments lie in the callee's declared domain (for overloads: in at least one of them), so an out-of-domain call — including a recursive one — is a counterexample, never a silent assumption; `?` narrows the result to the success arm per-signature, guarded by that signature's domain
 - **Function overloading with multiple bodies** — multiple `FunctionDef`s may share one name (alongside today's existing multiple-signatures-one-body form), each with its own implementation. Overload domains must be **provably disjoint**; overlap is a compile error with a witness value, checked pairwise via the same domain/range machinery as everywhere else. Overloads may differ in arity as well as domain — arity alone is a free, always-static dispatch key, so it needs no proof. Call-site resolution is itself a proof obligation: static-proof-first (a direct call, zero runtime cost) with a runtime membership-test dispatch chain as the always-safe fallback when a call can't be resolved at compile time; the chain's final else-arm is unreachable by proof (union coverage), but still traps loudly at runtime rather than assuming it
+- **Guards** — `sign(x for x < 0) = -x` narrows one overload arm's already-declared domain to `{x for x in <domain> if x < 0}`, sugar over the overloading feature above rather than a new domain-declaration mechanism. Guarded arms are proved pairwise-disjoint exactly like any other overload domain:
+  ```haskell
+  sign : {0} -> Int
+  sign(x) = 0
+
+  sign : Int -> Int
+  sign(x for x < 0) = -x
+
+  sign : Int -> Int
+  sign(x for x > 0) = x
+  ```
 - **Unified named definitions** — constants (`pi : Nat = 314`) and compile-time set definitions (`Colour = {1, 2, 3}`) share the same one-line syntax and the same AST node; both are auto-inlined at compile time; constants are checked against their range annotation
 - **Block bodies with `while` and `for x in S` loops** — imperative-style bodies with `while cond { stmts }` and `for x in {e1, e2, …} { stmts }` (also over runtime `Set(X)` and `Vector(X)` values), `mut name: Set = expr` locals (set annotation is the declared loop invariant), sequenced statements, and `if-then-else`
 - **Runtime sets** — `Set(Int)` and `Set(Bool)` as first-class heap-allocated values; `mut s : Set(Int) = {…}` creates a sorted-unique set; `for x in s` iterates; `x in s` / `x not in s` test membership; `size(s)` returns cardinality; duplicates are collapsed silently

@@ -121,22 +121,6 @@ Algorithm:
   * string → rope of UTF-8 chunks
 - could also add: tuple-level constraint `x, y : Int * Nat = ...`; nested patterns; `_` wildcard; per-binding mutability
 - allow overloading with literals, like `factorial(0) = 1` as sugar for the domain being `{0}`
-- nice syntax for guards, e.g.
-  ```
-  sign(x) | x < 0 = -1
-  sign(0)         = 0
-  sign(x)         = 1
-  ```
-  clearly needs just one domain and range declaration then the equivalent might be
-  ```
-  sign(x : {x for x < 0}) = -x
-  ```
-  so the sugar is
-  ```
-  sign(x for x < 0) -x
-  ```
-  which is lovely
-  impl again as overloading on distinct domains
 - along with recursive set definitions we get should allow constructors in binders
   ```
   Tree = leaf: Int | leaf2: (X * Y) | node: (Tree * Tree)
