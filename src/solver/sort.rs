@@ -297,8 +297,18 @@ pub(crate) fn set_sort<'tm>(
         SemExprKind::SetLit(_) => {
             return scalar_kind_sort(tm, &set_expr.kind_of, distinct_preds);
         }
-        // Comprehensions {x for x in S} — elements are integers.
-        SemExprKind::Comprehension { .. } => tm.integer_sort(),
+        // Comprehensions {x for x in S if P(x)} — for the identity-output
+        // shape every real comprehension in domain position uses (the only
+        // shape `comprehension_membership`'s own membership check supports
+        // — see membership.rs), an element's sort is exactly `S`'s own
+        // element sort (previously hardcoded to `integer_sort()`, silently
+        // wrong for e.g. a guard/constructor-pattern comprehension whose
+        // source is a `distinct`-sorted set like `Shape`; every prior
+        // Int-sourced comprehension keeps the exact same sort here, since
+        // `set_sort(Nat) == integer_sort()` already).
+        SemExprKind::Comprehension { source, .. } => {
+            return set_sort(tm, source, distinct_preds, name_defs);
+        }
         // Built-in set constructors Set(Int), Set(Bool) — variable holds an i64 pointer.
         SemExprKind::Call { .. } => tm.integer_sort(),
         // `A * B * C` — Cartesian product → CVC5 tuple sort.

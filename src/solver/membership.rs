@@ -870,7 +870,25 @@ pub(crate) fn encode_comp_expr<'tm>(
             };
             Some(tm.mk_term(kind, &[l, r]))
         }
-        _ => None, // Call, If, Try, SetLit, Comprehension — unsupported
+        // `from(x)` — the one `Call` shape a comprehension filter supports,
+        // needed by constructor-pattern params (`Name.Label(x)` desugars to
+        // `{x for x in Name if from(x) in <Label's arm>}` — see
+        // `semantics::elaborate::constructor_pattern_filter`). No general
+        // `Call` support: `from` is the only builtin whose solver encoding
+        // is a single `ApplyUf` with no extra obligations of its own, so
+        // it's safe to inline here. `x`'s distinct set isn't known
+        // syntactically at this point — found by matching `arg_term`'s own
+        // sort against the registered `DistinctInfo`s (each distinct set's
+        // sort is unique, so this is never ambiguous).
+        SemExprKind::Call { callee, args } if callee.0 == "from" && args.len() == 1 => {
+            let arg_term = encode_comp_expr(&args[0], var, var_term, ctx)?;
+            let info = ctx
+                .distinct_preds
+                .values()
+                .find(|info| info.sort == arg_term.sort())?;
+            Some(tm.mk_term(Kind::ApplyUf, &[info.from.clone(), arg_term]))
+        }
+        _ => None, // Call (other than `from`), If, Try, SetLit, Comprehension — unsupported
     }
 }
 

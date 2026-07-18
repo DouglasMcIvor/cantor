@@ -56,6 +56,34 @@ fn named_union_tuple_arm_is_rejected_not_yet_implemented() {
     );
 }
 
+/// Found while prototyping constructor-pattern dispatch (deferred — see
+/// backlog.md): a comprehension domain whose *source* is a `distinct`-sorted
+/// set (rather than the Int-sorted sources every prior comprehension used)
+/// was silently wrong in two independent places:
+///
+/// - `solver::sort::set_sort`'s `Comprehension` arm hardcoded
+///   `tm.integer_sort()` for every comprehension's element sort, regardless
+///   of its actual source — correct by coincidence for every Int-sourced
+///   comprehension (guards, literal arms) but wrong for a `Shape`-sourced
+///   one, where it silently produced a sort mismatch reported as "unsupported
+///   domain set expression" rather than the real cause.
+/// - `solver::membership::encode_comp_expr` (a comprehension filter's own
+///   expression encoder) had no `Call` support at all, so `from(x)` — the
+///   *only* way to get an Int-sorted term back out of a distinct-sorted one
+///   — couldn't appear in a filter either.
+///
+/// Both are fixed as general solver-level corrections (not tied to any
+/// particular named-union feature): `set_sort` now delegates to the
+/// source's own sort, and `encode_comp_expr` special-cases `from(x)`.
+#[test]
+fn comprehension_over_distinct_sorted_source_with_from_filter_proved() {
+    proved_all(
+        "Shape = distinct (Circle: Nat | Radius: NatPos)\n\
+         f : {s for s in Shape if from(s) == 0} -> Nat\n\
+         f(s) = 0",
+    );
+}
+
 #[test]
 fn named_union_unknown_label_is_undefined_function() {
     let items = parse_file(
