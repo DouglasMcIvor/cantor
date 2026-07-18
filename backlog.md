@@ -145,7 +145,11 @@ Algorithm:
   Foo = distinct {one = 1, two = 2, three = 3} -- named constants Foo.one etc for set literals
   ```
 - literal suffix support for e.g. 3m for 3 meters
-- structs/"named product sets" and same for unions. product sets are either fully not named or fully named.
+- structs/"named product sets". product sets are either fully not named or fully named.
+  (named union sets — `Measurement = distinct (length: Meter | volume: Liter)` with
+  `Measurement.length(3m)` construction — are DONE for Int-Kind-compatible arms, see
+  README; a tuple/cross-kind arm like a hypothetical named-product arm still needs
+  `distinct`'s Int-only basis assumption lifted, tracked separately)
   Tentative syntax for products:
   ```
   Pair = distinct Meter * Meter
@@ -156,19 +160,6 @@ Algorithm:
     * y: Meter
   )
   mut p : Point = (x = 3m, y = 4m)
-  ```
-  Tentative syntax for unions:
-  ```
-  Measurement = distinct Meter | Liter
-  mut m1 : Measurement = 3m
-  mut m2 : Measurement = 4l
-
-  Measurement = distinct (
-      length: Meter
-    | volume: Liter
-  )
-  mut m1 : Measurement = Measurement.length(3m) -- requires namespaces to exist first
-  mut m2 = Measurement.volume(4l) -- requires mutable range inference to exist first
   ```
 - automatic range inference
 - pattern matching with `match x { a => ... , b => ...}`?
