@@ -237,6 +237,8 @@ pub struct SemNameDef {
     pub kind: crate::ast::DefKind,
     pub ty: Option<SemExpr>,
     pub value: SemExpr,
+    /// Mirrors `ast::NameDef::labels` — see that field's doc comment.
+    pub labels: Option<Vec<Symbol>>,
     pub span: Span,
 }
 

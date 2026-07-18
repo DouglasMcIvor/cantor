@@ -20,6 +20,8 @@ mod event_loop;
 mod helpers;
 #[path = "cli/interpolation.rs"]
 mod interpolation;
+#[path = "cli/named_unions.rs"]
+mod named_unions;
 #[path = "cli/none_propagation.rs"]
 mod none_propagation;
 #[path = "cli/overflow.rs"]

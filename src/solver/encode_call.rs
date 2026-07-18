@@ -11,7 +11,9 @@ use cvc5::{Kind, Solver, Term, TermManager};
 use crate::{
     ast::DefKind,
     kind::Kind as ValKind,
-    semantics::tree::{SemExpr, SemFunctionDef, SemFunctionSig, sem_param_set_exprs},
+    semantics::tree::{
+        SemExpr, SemFunctionDef, SemFunctionSig, flatten_any_union, sem_param_set_exprs,
+    },
     span::{Span, Symbol},
 };
 
@@ -56,6 +58,43 @@ pub(crate) fn encode_call<'tm>(
         ($e:expr) => {
             encode_expr($e, env, ctx, path_cond.clone(), None)
         };
+    }
+
+    // Auto-generated constructor: `Shape.Circle(r)` for a named union arm
+    // (`Shape = distinct (Circle: Nat | Rect: NatPos)`). Reuses the *same*
+    // `mk_Shape`/`from_Shape` uninterpreted functions `build_distinct_preds`
+    // already builds for any `Distinct` name — v0 named unions are Int-only
+    // (`elaborate_name_def` rejects non-Int arms), so `Shape` itself is a
+    // perfectly ordinary distinct set as far as the solver is concerned;
+    // the only thing genuinely new here is picking *which arm's* basis
+    // obligation applies, by label instead of checking the whole union.
+    if args.len() == 1
+        && let Some((union_def, arm_expr)) = named_union_arm_for_constructor(callee, ctx.name_defs)
+        && let Some(info) = ctx.distinct_preds.get(&union_def.name)
+    {
+        let arg_term = enc!(&args[0])?;
+        match membership_constraint(
+            ctx.tm,
+            arg_term.clone(),
+            arm_expr,
+            ctx.name_defs,
+            ctx.distinct_preds,
+        ) {
+            Membership::Constrained(c) => ctx.builtin_obligs.push(BuiltinObligation {
+                path_cond: path_cond.clone(),
+                obligation: c,
+                violated_reason: format!(
+                    "argument to {}() must satisfy this arm's basis constraint",
+                    callee.0
+                ),
+            }),
+            Membership::Unconstrained | Membership::Unsupported => {}
+        }
+        let result = ctx
+            .tm
+            .mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term.clone()]);
+        assert_distinct_round_trip(ctx.tm, ctx.solver, info, &result, &arg_term);
+        return maybe_coerce(ctx.tm, result, &coerce_to);
     }
 
     // Auto-generated constructor: `litre(n)` for `Litre = distinct Nat`.
@@ -553,6 +592,25 @@ fn assert_domain_implies_membership<'tm>(
 }
 
 // ── Distinct-set helpers ──────────────────────────────────────────────────────
+
+/// If `callee` is `Name.Label` for some `Name = distinct (Label: Expr | ...)`
+/// (`Name` a `Distinct` NameDef with `labels` containing `Label`), return
+/// that NameDef alongside `Label`'s own arm expression (for the
+/// per-arm basis obligation — see the call site).
+fn named_union_arm_for_constructor<'a>(
+    callee: &Symbol,
+    name_defs: &'a NameDefs,
+) -> Option<(&'a crate::semantics::tree::SemNameDef, &'a SemExpr)> {
+    let (name_part, label_part) = callee.0.split_once('.')?;
+    let def = name_defs.get(&Symbol::new(name_part))?;
+    if def.kind != DefKind::Distinct {
+        return None;
+    }
+    let labels = def.labels.as_ref()?;
+    let idx = labels.iter().position(|l| l.0 == label_part)?;
+    let arm = *flatten_any_union(&def.value).get(idx)?;
+    Some((def, arm))
+}
 
 /// If `callee` is the auto-generated constructor for a `distinct` set
 /// (i.e. its name with the first letter uppercased is a `Distinct` NameDef),

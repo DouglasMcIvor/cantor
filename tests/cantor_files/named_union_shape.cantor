@@ -1,0 +1,7 @@
+Shape = distinct (Circle: Nat | Radius: NatPos)
+
+describe : Shape -> Nat
+describe(s) = from(s)
+
+main : -> Nat
+main() = describe(Shape.Circle(3)) + describe(Shape.Radius(4))

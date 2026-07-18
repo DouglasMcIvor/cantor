@@ -613,6 +613,12 @@ pub struct NameDef {
     /// When present, the solver verifies `value ∈ ty`.
     pub ty: Option<Expr>,
     pub value: Expr,
+    /// Arm labels for `Name = distinct (Label1: Expr1 | Label2: Expr2 | ...)`,
+    /// in source order, parallel to `flatten_union(&value)` (`value` is an
+    /// ordinary `|`-joined expression — labels are pure sugar recording
+    /// which name each arm should get a constructor under, see
+    /// `parser::items::parse_distinct_value`). `None` for every other form.
+    pub labels: Option<Vec<Symbol>>,
     pub span: Span,
 }
 

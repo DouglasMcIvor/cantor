@@ -74,6 +74,22 @@ impl<'ctx> Compiler<'ctx> {
             return Ok((truncated.into(), Kind::Char));
         }
 
+        // Auto-generated constructor `Name.Label(x)` for a named union arm
+        // (`Name = distinct (Label: Expr | ...)`); identity at runtime, same
+        // as the plain single-basis `d(x)` case just below — v0 named
+        // unions are Int-only (`semantics::elaborate::elaborate_name_def`
+        // rejects non-Int arms), so there's no tag/struct to build, just
+        // the same pass-through `distinct` already does. The label itself
+        // carries no runtime information; only `Name` needs to be a known
+        // distinct set.
+        if args.len() == 1
+            && let Some((name_part, _label_part)) = callee.0.split_once('.')
+            && self.distinct_names.contains(name_part)
+        {
+            let (val, kind) = self.compile_expr(&args[0], env)?;
+            return Ok((val, kind));
+        }
+
         // Auto-generated constructor `d(x)` for `D = distinct B`; identity at
         // runtime — same reasoning as `from(x)` above.
         if args.len() == 1 {

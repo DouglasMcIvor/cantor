@@ -302,6 +302,24 @@ impl<'src> Parser<'src> {
             }
             Token::Ident(name) => {
                 self.advance()?;
+                // `Name.Label(...)` — named-union-arm constructor call
+                // (`Shape.Circle(3)`). `.` followed by an identifier is
+                // otherwise unused syntax today (`.N` tuple projection,
+                // handled by the postfix loop in `parse_expr`, requires an
+                // integer), so this can't shadow any existing valid program.
+                // Combined into one synthesized `Symbol` (e.g. "Shape.Circle")
+                // and resolved structurally at elaboration/solver/codegen
+                // time — no new `ExprKind`, reuses the ordinary `Call` path.
+                if self.peek() == &Token::Dot && matches!(self.peek2(), Token::Ident(_)) {
+                    self.advance()?; // consume `.`
+                    let label = self.expect_ident()?;
+                    let combined = Symbol::new(format!("{name}.{}", label.0));
+                    return if self.peek() == &Token::LParen {
+                        self.parse_call(combined, span)
+                    } else {
+                        Ok(Expr::new(ExprKind::Var(combined), span))
+                    };
+                }
                 if self.peek() == &Token::LParen {
                     self.parse_call(Symbol::new(name), span)
                 } else {

@@ -26,6 +26,8 @@ mod loops;
 mod membership;
 #[path = "solver/named_errors.rs"]
 mod named_errors;
+#[path = "solver/named_unions.rs"]
+mod named_unions;
 #[path = "solver/none_propagation.rs"]
 mod none_propagation;
 #[path = "solver/overflow.rs"]

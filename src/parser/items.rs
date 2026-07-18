@@ -59,6 +59,7 @@ impl<'src> Parser<'src> {
                     kind: DefKind::Alias,
                     ty: Some(first_expr),
                     value,
+                    labels: None,
                     span: Span::new(start_span.start, end),
                 }));
             }
@@ -160,15 +161,92 @@ impl<'src> Parser<'src> {
             }
             _ => DefKind::Alias,
         };
-        let value = self.parse_set_expr()?;
+        let (value, labels) = if kind == DefKind::Distinct {
+            self.parse_distinct_value()?
+        } else {
+            (self.parse_set_expr()?, None)
+        };
         let end = value.span.end;
         Ok(Item::NameDef(NameDef {
             name,
             kind,
             ty: None,
             value,
+            labels,
             span: Span::new(start.start, end),
         }))
+    }
+
+    /// Parse the value of a `Name = distinct <value>` definition.
+    ///
+    /// Recognizes one extra form beyond the ordinary set expression
+    /// `parse_set_expr` already handles: labeled union arms,
+    /// `distinct (Label1: Expr1 | Label2: Expr2 | ...)`, each arm becoming an
+    /// auto-generated constructor (`Name.Label1`, `Name.Label2`, …) —
+    /// see `solver::encode_call`'s named-union-arm constructor block and
+    /// `codegen::expr_call`'s matching identity-passthrough. The labeled
+    /// arms fold into an ordinary `|`-joined value (same as if the user had
+    /// written `distinct (Expr1 | Expr2)` directly) — elaboration and the
+    /// solver need no changes to understand the *value*, only the label
+    /// list (returned alongside) needs threading through for constructor
+    /// name resolution.
+    ///
+    /// v0 scope: every arm must elaborate to `Kind::Int` (checked in
+    /// `semantics::elaborate::elaborate_name_def`) — a tuple/cross-kind arm
+    /// like `Rect: Nat * Nat` is rejected with a clear "not yet supported"
+    /// error rather than silently miscompiling, since today's `distinct`
+    /// machinery (`solver::preds::build_distinct_preds`) hardcodes an
+    /// `Int`-only basis. Lifting that restriction is tracked separately.
+    fn parse_distinct_value(&mut self) -> Result<(Expr, Option<Vec<Symbol>>), CompileError> {
+        if self.peek() != &Token::LParen {
+            return Ok((self.parse_set_expr()?, None));
+        }
+        let start = self.peek_span();
+        self.advance()?; // consume `(`
+        if !(matches!(self.peek(), Token::Ident(_)) && self.peek2() == &Token::Colon) {
+            // Ordinary parenthesized set expression, e.g. `distinct (Meter * Meter)`.
+            let inner = self.parse_expr(0)?;
+            self.expect(&Token::RParen)?;
+            return Ok((inner, None));
+        }
+        let mut labels = Vec::new();
+        let mut arms = Vec::new();
+        loop {
+            let label = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            // min_bp 8 stops the arm expression right before a following `|`
+            // arm separator (lbp 7, see `peek_infix_op`) instead of
+            // swallowing it as an ordinary union operator — still binds
+            // tighter operators like `*`/`+`/`&` (all higher lbp) normally,
+            // so `Rect: Nat * Nat` still parses `Nat * Nat` as one arm.
+            let arm = self.parse_expr(8)?;
+            labels.push(label);
+            arms.push(arm);
+            if self.peek() == &Token::Pipe {
+                self.advance()?;
+                continue;
+            }
+            break;
+        }
+        let end = self.peek_span();
+        self.expect(&Token::RParen)?;
+        let mut arm_iter = arms.into_iter();
+        let first_arm = arm_iter
+            .next()
+            .expect("at least one `label: expr` pair — guarded by the Ident+Colon lookahead above");
+        let value = arm_iter.fold(first_arm, |acc, next| {
+            let span = Span::new(acc.span.start, next.span.end);
+            Expr::new(
+                ExprKind::BinOp {
+                    op: BinOp::Union,
+                    lhs: Box::new(acc),
+                    rhs: Box::new(next),
+                },
+                span,
+            )
+        });
+        let value = Expr::new(value.kind, Span::new(start.start, end.end));
+        Ok((value, Some(labels)))
     }
 
     /// Parse everything after the name on a signature line: `: [domain] -> range`

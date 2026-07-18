@@ -263,6 +263,23 @@ fn builtin_call_kind(callee: &Symbol, args_len: usize, name_defs: &NameDefs) -> 
     if callee.0 == "from" || callee.0 == "size" || callee.0 == "len" {
         return Some(Kind::Int);
     }
+    // Auto-generated constructor `Name.Label(x)` for a named union arm
+    // (`Name = distinct (Label: Expr | ...)`) — same `Kind::Int` result as
+    // any other `distinct` constructor below (v0 named unions are Int-only,
+    // see `elaborate_name_def`'s labeled-arm validation), just keyed by the
+    // dotted callee name instead of a single capitalized identifier.
+    if let Some((name_part, label_part)) = callee.0.split_once('.') {
+        let found = name_defs.get(&Symbol::new(name_part)).is_some_and(|def| {
+            def.kind == DefKind::Distinct
+                && def
+                    .labels
+                    .as_ref()
+                    .is_some_and(|labels| labels.iter().any(|l| l.0 == label_part))
+        });
+        if found {
+            return Some(Kind::Int);
+        }
+    }
     let mut chars = callee.0.chars();
     let first = chars.next()?;
     let capitalized = first.to_uppercase().collect::<String>() + chars.as_str();
@@ -454,11 +471,36 @@ fn elaborate_name_def(def: &NameDef, ctx: &Ctx) -> Result<SemNameDef, CompileErr
         Position::Set
     };
     let value = elaborate_expr(&def.value, value_pos, ctx, &mut env)?;
+    if def.labels.is_some() {
+        // Named union arms (`distinct (Label: Expr | Label: Expr | ...)`) —
+        // v0 scope: every arm must be `Kind::Int`. `distinct`'s existing
+        // machinery (`solver::preds::build_distinct_preds`) hardcodes an
+        // `Int`-only basis (`mk_D : Int -> D`) for every distinct set, and
+        // `kind.rs` hardcodes `DefKind::Distinct => Kind::Int` — a tuple or
+        // other cross-kind arm would silently reach the solver with a
+        // sort cvc5 can't match against `mk_D`'s domain, not a graceful
+        // error. Rejected here instead, loudly, until that's generalized.
+        for arm in flatten_any_union(&value) {
+            if arm.kind_of != Kind::Int {
+                return Err(not_yet_implemented(
+                    &format!(
+                        "named union arm of kind {:?} (only Int-compatible arms — Nat, NatPos, \
+                         Int8/16/32/64, etc. — are supported today; a tuple or other \
+                         cross-kind arm needs `distinct`'s Int-only basis assumption lifted \
+                         first)",
+                        arm.kind_of
+                    ),
+                    arm.span,
+                ));
+            }
+        }
+    }
     Ok(SemNameDef {
         name: def.name.clone(),
         kind: def.kind,
         ty,
         value,
+        labels: def.labels.clone(),
         span: def.span,
     })
 }
