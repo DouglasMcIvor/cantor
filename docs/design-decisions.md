@@ -1582,11 +1582,13 @@ see `kind::is_distinct_basis_representable`), including a genuine
 different Kinds from each other (`Circle: Nat | Rect: Nat * Nat`) — in that
 case `basis_sort` is the cross-kind CVC5 datatype `sort::set_sort` already
 builds for any `A | B` union, and each labeled constructor wraps its
-argument into that datatype's matching arm constructor before `mk_D`,
-mirroring codegen's `{ i32 tag, i64 leaves }` struct construction (see
+argument into that datatype's matching arm constructor (by the arm's own
+declared position, not by searching for a same-sorted constructor — needed
+since two labeled arms are allowed to share a Kind, e.g.
+`Circle: Nat | Square: NatPos | Rect: Nat * Nat`) before `mk_D`, mirroring
+codegen's `{ i32 tag, i64 leaves }` struct construction (see
 `semantics::elaborate::validate_distinct_basis`, `backlog.md`'s
-constructor-patterns entry for the one remaining v0 scope cut: every arm's
-Kind must be pairwise distinct from every other arm's). Basis-set
+constructor-patterns entry). Basis-set
 constraints are emitted on demand at each constructor / `from` site (no
 global axioms; logic `ALL`). Each constructor call site also asserts the
 ground round-trip fact `from_D(mk_D(arg)) == arg`, so a literal round-trip

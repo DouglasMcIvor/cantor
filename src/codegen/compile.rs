@@ -176,17 +176,7 @@ pub(super) fn compile_elaborated<'ctx>(
     // that. Computed the same way `semantics::elaborate::elaborate` computes
     // Kind (`kind::set_kind` is a pure `ast`-level function, no solver
     // dependency, safe to call again here rather than threading elaborated
-    // `SemNameDef`s through). Absent for a same-Kind named union (`set_kind`
-    // returns a bare `Kind`, not a `TaggedUnion`) — `compile_call`'s
-    // existing passthrough is already correct for that case and needs no
-    // entry here. `ast::flatten_union`'s per-arm order matches
-    // `kind::set_kind`'s own `TaggedUnion` arm order (both left-to-right,
-    // confirmed while implementing this — see backlog.md), and — since
-    // `semantics::elaborate::validate_distinct_basis` already rejected any
-    // heterogeneous union with two arms sharing a Kind before this can
-    // run — `set_kind`'s dedup is a no-op here, so the lengths always
-    // agree; `.expect` on a mismatch is a genuine internal-error signal,
-    // not a real fallback path.
+    // `SemNameDef`s through).
     let ast_name_defs: crate::ast::NameDefs = items
         .iter()
         .filter_map(|item| match item {
@@ -204,21 +194,36 @@ pub(super) fn compile_elaborated<'ctx>(
                 return None;
             }
             let labels = def.labels.as_ref()?;
-            let Ok(Kind::TaggedUnion(arms)) = crate::kind::set_kind(&def.value, &ast_name_defs)
+            // `kind::named_union_value_kind` reports one arm Kind per
+            // *syntactic* label — not the whole union's own Kind-deduped
+            // arm list (`kind::set_kind`'s plain `Union` handling), which
+            // would collapse two labeled arms sharing a Kind (`Circle: Nat |
+            // Square: NatPos` mixed with a third, differently-Kinded
+            // `Rect: Nat * Nat`) into one shared entry — correct when asking
+            // "what bare-value LLVM representation does this union need",
+            // wrong here, where the answer needs exactly one Kind per label
+            // (see its doc comment for the full reasoning and the bug this
+            // fixed). A same-Kind-only named union (`Circle: Nat | Radius:
+            // NatPos` alone) reports a bare, non-`TaggedUnion` Kind here —
+            // stays pure passthrough at the LLVM level, like any other
+            // same-Kind `distinct`; `compile_call`'s existing passthrough
+            // already handles that case and needs no entry here.
+            let Ok(Kind::TaggedUnion(arm_kinds)) =
+                crate::kind::named_union_value_kind(def, &ast_name_defs)
             else {
                 return None;
             };
             assert_eq!(
                 labels.len(),
-                arms.len(),
-                "named union `{}`: label count must match arm count once \
+                arm_kinds.len(),
+                "named union `{}`: label count must match syntactic arm count once \
                  validate_distinct_basis has accepted it",
                 def.name.0
             );
             let pairs = labels
                 .iter()
                 .map(|l| l.0.clone())
-                .zip(arms)
+                .zip(arm_kinds)
                 .collect::<Vec<_>>();
             Some((def.name.0.clone(), pairs))
         })

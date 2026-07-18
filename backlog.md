@@ -197,21 +197,64 @@ Algorithm:
   `Compiler::named_union_arms` table (`compile.rs`, populated the same `kind::set_kind`-over-a-
   local-`ast::NameDefs` way `elaborate.rs` computes Kind, no solver dependency).
 
-  **v0 scope cut, deliberate**: every arm's Kind must be pairwise distinct from every other
-  arm's Kind — `Circle: Nat | Square: NatPos | Rect: Nat * Nat` (two `Int`-Kind arms mixed with
-  a `Tuple`-Kind one) is rejected loudly at elaboration, not silently miscompiled. This
-  sidesteps a **suspected** (structurally identified, not fully proven with a failing-proof
-  repro) pre-existing bug: `sort::build_union_datatype_sort` names each arm's CVC5 constructor
-  purely from its Kind (`sort::arm_ctor_name`), with no positional disambiguation when two arms
-  share a Kind — two arms would get the *same* constructor name in the same datatype
-  declaration, and every downstream name-based lookup (`arm_ctor_name_for_arm`,
-  `coerce_to_union_dt`, `membership_constraint_for_dt`) would only ever find the first such arm.
-  Confirmed harmless-looking on a trivial smoke test (`f : Nat | NatPos | (Nat*Nat) -> Int;
-  f(x) = 0` doesn't crash), but every name-based lookup site would silently resolve to the
-  wrong arm's tester/selector for the second occurrence — not fixed here (it's a different,
-  deeper fix: constructor names need a positional suffix, e.g. `ck_Int_0`/`ck_Int_1`, touching
-  every call site that currently assumes name-only lookup is unambiguous). Worth a dedicated
-  investigation before lifting the pairwise-distinctness requirement.
+  **Update (2026-07-18, fourth session): the pairwise-distinctness v0 scope cut is now
+  LIFTED** — `Circle: Nat | Square: NatPos | Rect: Nat * Nat` (two `Int`-Kind arms mixed with a
+  `Tuple`-Kind one) is accepted and proved. The suspected constructor-naming-collision bug
+  turned out to be real, but not where first suspected: the domain-membership check itself
+  (`membership_constraint_for_dt`'s name-based lookup, `t ∈ whole_union`) is actually sound even
+  with colliding constructor names — `(P∧Q1)∨(P∧Q2) = P∧(Q1∨Q2)` holds regardless of whether the
+  two disjuncts happen to share a tester, so the `f : Nat | NatPos | (Nat*Nat) -> Int` smoke test
+  never could have shown a wrong proof. The real bug was in the *labeled constructor* call site:
+  `encode_call.rs`'s `coerce_arg_to_basis` wrapped a constructor's argument into the union DT by
+  matching CVC5 *sort* (`sort::coerce_to_union_dt`), not by label — so `Shape.Circle(5)` and
+  `Shape.Square(5)` (both `Int`-sorted) always resolved to the *same* physical constructor
+  regardless of which label was called, making them the literally identical CVC5 term.
+  Confirmed with the pairwise check temporarily disabled: `assert Shape.Circle(5) !=
+  Shape.Square(5)` was wrongly reported "always fails" — a genuine solver-level soundness bug,
+  not just a cosmetic naming collision. `codegen::compile::compile_elaborated` had an
+  independent, unrelated bug on the same feature: `Compiler::named_union_arms` zipped `labels`
+  (one per syntactic arm) against `kind::set_kind`'s *Kind-deduped* whole-union arm list, so any
+  named union with a real duplicate-Kind pair tripped an `assert_eq!` panic on every run — dead
+  code until this session, since the elaboration check above always rejected the input that
+  would reach it.
+
+  Fixed with three changes, in order: (1) `solver::encode_call::coerce_arg_to_labeled_arm` —
+  given the labeled constructor's already-known arm index (`named_union_arm_for_constructor` now
+  returns it), builds `ApplyConstructor` directly against that position instead of searching by
+  sort; the basis-obligation check also had to move to *before* this wrapping (checking the raw
+  argument against the arm's own natural sort), since checking it after wrapping hit
+  `membership_constraint`'s DT fast path with a mismatched single-arm-list assumption and wrongly
+  rejected `Shape.Square(1)` (a genuine regression caught by the CLI/solver tests below, not
+  shipped). (2) `solver::membership_seq::membership_constraint_for_dt` now matches a union DT's
+  constructors by *position* (`dt.constructor(i)` against `flatten_any_union(set_expr)[i]`,
+  provably the same list/order `build_union_datatype_sort` used) instead of by name — makes it
+  robust to the naming collision directly, no longer relying on the "sound anyway" argument
+  above. (3) `kind::named_union_value_kind` (new, called from `set_kind`'s own `Var` arm so
+  nested `alias` references pick it up for free) reports one Kind per *syntactic* label for a
+  labeled `distinct` union, instead of `set_kind`'s ordinary Kind-deduping `Union` handling —
+  fixes both `codegen::compile`'s `named_union_arms` table (now just calls this) and every other
+  site that asks "what Kind is a `Shape` value" (e.g. a function's declared `-> Shape` range),
+  which is what the `assert_eq!` panic and a later ICE (`coerce_to_kind: value kind
+  TaggedUnion([Int, Int, Tuple(...)]) does not match any arm of [Int, Tuple(...)]`) both actually
+  were. Tests: `tests/solver/heterogeneous_named_unions.rs` (soundness regression guard +
+  second-same-Kind-arm basis-obligation guard), `tests/cli/heterogeneous_named_unions.rs`
+  (`heterogeneous_named_union_duplicate_kind.cantor`, full pipeline).
+
+  **Also found and fixed along the way, unrelated to `distinct`/labels at all**:
+  `kind::merge_if_branches`'s `AppendThenArm`/`AppendElseArm` cases (an ordinary `if`/`else if`/
+  `else` chain merging a new branch into an existing `TaggedUnion`) pushed the new arm's Kind
+  *unconditionally*, unlike the sibling `MergeTaggedUnions` case a few lines above it, which
+  already deduped — so a plain 3-way `if` chain revisiting a Kind (`if a then 5 else if b then 6
+  else (3, 4)`, no `distinct`/labels anywhere) produced a `TaggedUnion` with a duplicate-Kind arm
+  and ICE'd in codegen's `coerce_to_kind`. This is arguably the same underlying "duplicate-Kind
+  arm in a TaggedUnion" hazard the entry above worried about, but reachable in totally ordinary
+  code and via the value-Kind-merge path rather than the named-union-basis path. Fixed by adding
+  the same dedup `IfMerge::AppendThenArm`/`AppendElseArm` now carry a `then_tag`/`else_tag` field
+  (the existing arm's index on a Kind match, or the freshly-appended index otherwise) instead of
+  codegen always assuming "append at the end". Tests:
+  `tests/semantics/elaborate_tests.rs::if_extends_tagged_union_with_arm_matching_an_existing_kind`,
+  `tests/solver/if_else.rs` (two tests, including one confirming the reused arm's own range
+  obligation is still checked, not silently dropped), `tests/cli/if_kind_merge.rs`.
 
   **Also found, out of scope, not fixed**: projecting into a specific arm after `from()` (e.g.
   `from(Shape.Rect((3,4))).0`) is *not* provable today — confirmed this is a general,
@@ -243,11 +286,8 @@ Algorithm:
 - structs/"named product sets". product sets are either fully not named or fully named.
   (named union sets — `Measurement = distinct (length: Meter | volume: Liter)` with
   `Measurement.length(3m)` construction — are DONE, including arms of genuinely different
-  Kinds from each other, e.g. a hypothetical `length: Meter | corners: (Nat*Nat)`, see the
-  "constructors in binders" entry above; the one remaining restriction is that every arm's
-  Kind must be pairwise distinct from every other arm's, a separate pre-existing
-  constructor-naming-collision concern also tracked in that same entry, unrelated to named
-  products specifically)
+  Kinds from each other, e.g. a hypothetical `length: Meter | corners: (Nat*Nat)`, and arms
+  that share a Kind with each other, see the "constructors in binders" entry above)
   Tentative syntax for products:
   ```
   Pair = distinct Meter * Meter

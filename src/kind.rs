@@ -13,6 +13,7 @@
 
 use crate::ast::{
     BinOp, DefKind, Expr, ExprKind, NameDefs, UnOp, flatten_disjoint_union, flatten_domain,
+    flatten_union,
 };
 use crate::error::CompileError;
 use crate::semantics::builtins;
@@ -118,8 +119,12 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileEr
                     // `distinct` is a purely solver-side opacity layer — at
                     // the LLVM level a `D = distinct B` value has exactly
                     // `B`'s own Kind, same as `alias` (see docs/design-
-                    // decisions.md's `alias`/`distinct` section).
-                    DefKind::Alias | DefKind::Distinct => set_kind(&def.value, name_defs)?,
+                    // decisions.md's `alias`/`distinct` section). A
+                    // *labeled* `distinct` union is the one exception:
+                    // `named_union_value_kind` below, not a plain recursive
+                    // `set_kind(&def.value, ...)` call — see its doc comment.
+                    DefKind::Alias => set_kind(&def.value, name_defs)?,
+                    DefKind::Distinct => named_union_value_kind(def, name_defs)?,
                 }
             } else {
                 return Err(CompileError::UndefinedVariable {
@@ -193,6 +198,54 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileEr
         ExprKind::Index { base, .. } => set_kind(base, name_defs)?,
         ExprKind::KleeneStar(inner) => Kind::Vector(Box::new(set_kind(inner, name_defs)?)),
     })
+}
+
+/// The runtime Kind of a `distinct` name's *values*, used by `set_kind`'s own
+/// `Var` arm (so nested `alias`/`distinct` references pick this up for free)
+/// wherever `def.kind == DefKind::Distinct`.
+///
+/// Ordinarily `distinct` is Kind-transparent (`set_kind(&def.value, ...)`
+/// alone, matching `alias`) — but a *labeled* union (`Shape = distinct
+/// (Circle: Nat | Square: NatPos | Rect: Nat * Nat)`) is a real exception:
+/// `def.value`'s own Kind (`ExprKind::BinOp { op: Union, .. }`'s arm in
+/// `set_kind` above) goes through `merge_into_union`/`union_if_distinct`,
+/// which *dedups by Kind* — correct when asking "what representation does a
+/// bare, label-less value of this shape need" (same-Kind arms really are
+/// interchangeable there), but wrong for a labeled union: two labeled arms
+/// are allowed to share a Kind, and each label still needs its own
+/// permanently-distinguishable runtime tag (`Shape.Circle(5)` and
+/// `Shape.Square(5)` must stay distinct values), so the reported Kind needs
+/// one arm per *syntactic* label (`ast::flatten_union`, matching `labels`'
+/// own count and order — the same list `semantics::elaborate::
+/// validate_distinct_basis` validates against), not the deduped count.
+///
+/// Confirmed as a real bug while lifting `validate_distinct_basis`'s former
+/// pairwise-Kind restriction: without this, `codegen::expr_call`'s
+/// `Shape.Circle(r)` constructor (driven by `Compiler::named_union_arms`,
+/// which already lists one Kind per syntactic arm) built a value tagged
+/// against a 3-arm `TaggedUnion`, but every *other* codegen site asking
+/// "what Kind is a `Shape` value" (via this same `set_kind`, e.g. a
+/// function's declared `-> Shape` range) still got the whole-union's
+/// deduped 2-arm `TaggedUnion` — an internal Kind mismatch, ICE'd in
+/// `coerce_to_kind`.
+///
+/// No-op (delegates straight to `set_kind`) for a same-Kind-arm named union
+/// (`Circle: Nat | Radius: NatPos` alone — `def.value`'s own Kind is already
+/// a bare, non-`TaggedUnion` `Kind::Int`) or an unlabeled `distinct`.
+pub fn named_union_value_kind(
+    def: &crate::ast::NameDef,
+    name_defs: &NameDefs,
+) -> Result<Kind, CompileError> {
+    let whole = set_kind(&def.value, name_defs)?;
+    let (Kind::TaggedUnion(_), Some(_labels)) = (&whole, &def.labels) else {
+        return Ok(whole);
+    };
+    Ok(Kind::TaggedUnion(
+        flatten_union(&def.value)
+            .into_iter()
+            .map(|arm| set_kind(arm, name_defs))
+            .collect::<Result<Vec<_>, _>>()?,
+    ))
 }
 
 /// Whether `kind` is representable as a single raw i64 word — the only
@@ -503,12 +556,22 @@ pub enum IfMerge {
         merged_arms: Vec<Kind>,
         else_remap: Vec<usize>,
     },
-    /// `then` is already a TaggedUnion; `else` is a single plain Kind
-    /// appended as the final new arm.
-    AppendElseArm { merged_arms: Vec<Kind> },
-    /// `else` is already a TaggedUnion; `then` is a single plain Kind
-    /// appended as the final new arm.
-    AppendThenArm { merged_arms: Vec<Kind> },
+    /// `then` is already a TaggedUnion; `else` is a single plain Kind either
+    /// matching an existing arm's Kind (`else_tag` reuses that arm's index —
+    /// no new arm, avoids a duplicate-Kind entry in `merged_arms`) or novel
+    /// (`else_tag` is the freshly appended final index).
+    AppendElseArm {
+        merged_arms: Vec<Kind>,
+        else_tag: usize,
+    },
+    /// `else` is already a TaggedUnion; `then` is a single plain Kind either
+    /// matching an existing arm's Kind (`then_tag` reuses that arm's index)
+    /// or novel (`then_tag` is the freshly appended final index) — mirrors
+    /// `AppendElseArm`.
+    AppendThenArm {
+        merged_arms: Vec<Kind>,
+        then_tag: usize,
+    },
     /// int-soundness-plan phase 3 step 4b: one branch is tagged `Int`, the
     /// other raw `Int64` (e.g. one arm calls a Step-A-promoted function,
     /// the other doesn't) — the raw side needs tagging before the merge;
@@ -527,8 +590,8 @@ impl IfMerge {
             IfMerge::CoerceToFailStruct => Kind::Tuple(vec![Kind::Fail, Kind::Int]),
             IfMerge::NewTaggedUnion { arms } => Kind::TaggedUnion(arms.clone()),
             IfMerge::MergeTaggedUnions { merged_arms, .. }
-            | IfMerge::AppendElseArm { merged_arms }
-            | IfMerge::AppendThenArm { merged_arms } => Kind::TaggedUnion(merged_arms.clone()),
+            | IfMerge::AppendElseArm { merged_arms, .. }
+            | IfMerge::AppendThenArm { merged_arms, .. } => Kind::TaggedUnion(merged_arms.clone()),
             IfMerge::CoerceInt64ToInt => Kind::Int,
         }
     }
@@ -587,16 +650,30 @@ pub fn merge_if_branches(then_ty: &Kind, else_ty: &Kind) -> Result<IfMerge, Stri
         }
         (Kind::TaggedUnion(inner), _) => {
             let mut merged = inner.clone();
-            merged.push(else_ty.clone());
+            let else_tag = match inner.iter().position(|k| k == else_ty) {
+                Some(idx) => idx,
+                None => {
+                    merged.push(else_ty.clone());
+                    merged.len() - 1
+                }
+            };
             Ok(IfMerge::AppendElseArm {
                 merged_arms: merged,
+                else_tag,
             })
         }
         (_, Kind::TaggedUnion(inner)) => {
             let mut merged = inner.clone();
-            merged.push(then_ty.clone());
+            let then_tag = match inner.iter().position(|k| k == then_ty) {
+                Some(idx) => idx,
+                None => {
+                    merged.push(then_ty.clone());
+                    merged.len() - 1
+                }
+            };
             Ok(IfMerge::AppendThenArm {
                 merged_arms: merged,
+                then_tag,
             })
         }
         _ => unreachable!("then_is_tu || else_is_tu guarantees at least one TaggedUnion branch"),

@@ -1,0 +1,13 @@
+Shape = distinct (Circle: Nat | Square: NatPos | Rect: Nat * Nat)
+
+make_circle : Nat -> Shape
+make_circle(n) = Shape.Circle(n)
+
+make_square : NatPos -> Shape
+make_square(n) = Shape.Square(n)
+
+make_rect : Nat * Nat -> Shape
+make_rect(p) = Shape.Rect(p)
+
+main : -> Char*
+main() = show(make_circle(3)) ++ "," ++ show(make_square(4)) ++ "," ++ show(make_rect((5, 6)))

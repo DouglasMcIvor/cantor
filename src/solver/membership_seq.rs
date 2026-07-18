@@ -14,7 +14,6 @@ use crate::semantics::tree::{SemExpr, SemExprKind, flatten_any_union, flatten_ca
 
 use super::NameDefs;
 use super::membership::{Membership, SolverPreds, eval_const_int, membership_constraint};
-use super::sort::arm_ctor_name_for_arm;
 
 /// Membership predicate for a term whose CVC5 sort is an algebraic datatype.
 ///
@@ -47,16 +46,23 @@ pub(super) fn membership_constraint_for_dt<'tm>(
     };
 
     let mut disjuncts: Vec<Term<'_>> = Vec::new();
-    for arm_expr in arm_exprs {
-        let ctor_name = arm_ctor_name_for_arm(arm_expr, distinct_preds);
-
-        // Find the constructor by name — if not present, this arm can't match.
-        let ctor = (0..dt.num_constructors())
-            .map(|i| dt.constructor(i))
-            .find(|c| c.name() == ctor_name);
-        let Some(ctor) = ctor else {
+    // Match by *position*, not by constructor name: `dt` was built by
+    // `build_union_datatype_sort` iterating this exact `arm_exprs` list (see
+    // `set_sort`'s cross-kind Union arm, which flattens the same `set_expr`
+    // via the same `flatten_any_union`/`[lhs, rhs]` split before calling it)
+    // in the same order, so `dt.constructor(i)` always corresponds to
+    // `arm_exprs[i]` — no name lookup needed. This also sidesteps a latent
+    // name-collision hazard the old `find(|c| c.name() == ctor_name)` had:
+    // `arm_ctor_name`/`arm_ctor_name_for_arm` derive a constructor's name
+    // purely from its Kind, so two arms sharing a Kind (allowed for named-
+    // union labeled arms, e.g. `Circle: Nat | Square: NatPos`) get the same
+    // declared name, and `find` would silently resolve both to whichever
+    // constructor happens to come first.
+    for (i, arm_expr) in arm_exprs.into_iter().enumerate() {
+        if i >= dt.num_constructors() {
             continue;
-        };
+        }
+        let ctor = dt.constructor(i);
 
         let tester = tm.mk_term(Kind::ApplyTester, &[ctor.tester_term(), t.clone()]);
         let mut conjuncts: Vec<Term<'_>> = vec![tester];

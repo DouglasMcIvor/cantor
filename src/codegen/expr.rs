@@ -256,24 +256,30 @@ impl<'ctx> Compiler<'ctx> {
 
                 (tv, ev, merge.result_kind())
             }
-            crate::kind::IfMerge::AppendElseArm { merged_arms } => {
+            crate::kind::IfMerge::AppendElseArm {
+                merged_arms,
+                else_tag,
+            } => {
                 let Kind::TaggedUnion(inner_arms) = &then_ty else {
                     unreachable!("AppendElseArm guarantees a TaggedUnion then-branch")
                 };
-                let n = inner_arms.len();
                 self.builder.position_at_end(then_bb_cur);
                 let tv = self.rewrap_tagged_union_value(then_val_raw, inner_arms, merged_arms)?;
                 self.builder.position_at_end(else_bb_cur);
-                let ev = self.build_tagged_union_value(n, else_val_raw, &else_ty, merged_arms)?;
+                let ev =
+                    self.build_tagged_union_value(*else_tag, else_val_raw, &else_ty, merged_arms)?;
                 (tv, ev, merge.result_kind())
             }
-            crate::kind::IfMerge::AppendThenArm { merged_arms } => {
+            crate::kind::IfMerge::AppendThenArm {
+                merged_arms,
+                then_tag,
+            } => {
                 let Kind::TaggedUnion(inner_arms) = &else_ty else {
                     unreachable!("AppendThenArm guarantees a TaggedUnion else-branch")
                 };
-                let n = inner_arms.len();
                 self.builder.position_at_end(then_bb_cur);
-                let tv = self.build_tagged_union_value(n, then_val_raw, &then_ty, merged_arms)?;
+                let tv =
+                    self.build_tagged_union_value(*then_tag, then_val_raw, &then_ty, merged_arms)?;
                 self.builder.position_at_end(else_bb_cur);
                 let ev = self.rewrap_tagged_union_value(else_val_raw, inner_arms, merged_arms)?;
                 (tv, ev, merge.result_kind())

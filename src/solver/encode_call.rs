@@ -39,29 +39,27 @@ pub(crate) struct CallSite<'e> {
     pub(crate) span: Span,
 }
 
-/// Coerce a `distinct` constructor's already-encoded argument term to
-/// `basis_sort` when the two don't already match a bare `ApplyUf`. Two
-/// cases need real coercion:
-/// - **Sequence basis** (`Litre* = distinct Nat*`-style): an array literal
-///   (`[1, 2]`) always encodes as a plain CVC5 tuple (`SemExprKind::Tuple`'s
-///   only encoding, see `encode_expr`), never a `Seq`, unless something
-///   downstream asks for one. An ordinary function call gets this for free
-///   from `membership_constraint`'s sequence-unification bridging (which
-///   tolerates either sort on the *domain-obligation* side), but `mk_D`'s
-///   `ApplyUf` is a hard CVC5 sort match with no bridging of its own.
-/// - **Cross-kind DT basis** (a heterogeneous-Kind named union, e.g.
-///   `Shape = distinct (Circle: Nat | Rect: Nat * Nat)`): `mk_Shape`'s
-///   declared domain is the union's own tagged datatype sort
-///   (`sort::build_union_datatype_sort`), not the individual arm's natural
-///   sort — the argument must be wrapped into the matching arm constructor
-///   first (`ApplyConstructor(ck_Int, [arg])`) before being handed to
-///   `mk_Shape`. `sort::maybe_coerce`/`coerce_to_union_dt` already do
-///   exactly this (matching by selector sort — the same mechanism ordinary
-///   `A | B` union coercion already uses), so this just delegates.
+/// Coerce a plain (unlabeled) `distinct` constructor's already-encoded
+/// argument term to `basis_sort` when the two don't already match a bare
+/// `ApplyUf`.
+///
+/// **Sequence basis** (`Litre* = distinct Nat*`-style) is the one case that
+/// needs real coercion: an array literal (`[1, 2]`) always encodes as a
+/// plain CVC5 tuple (`SemExprKind::Tuple`'s only encoding, see
+/// `encode_expr`), never a `Seq`, unless something downstream asks for one.
+/// An ordinary function call gets this for free from `membership_constraint`'s
+/// sequence-unification bridging (which tolerates either sort on the
+/// *domain-obligation* side), but `mk_D`'s `ApplyUf` is a hard CVC5 sort
+/// match with no bridging of its own.
 ///
 /// No-op for every other basis sort (a `Tuple` argument already matches
 /// `mk_D`'s declared domain directly, since both come from the same
-/// `set_sort` machinery).
+/// `set_sort` machinery). In particular, `basis_sort` is never a cross-kind
+/// DT here: `semantics::elaborate::validate_distinct_basis` requires labels
+/// on any `distinct` whose basis is a `Kind::TaggedUnion`, so an unlabeled
+/// `distinct` (this function's only caller) can never have one — labeled
+/// named-union constructors (`Shape.Circle(r)`) go through
+/// `coerce_arg_to_labeled_arm` instead, not this function.
 fn coerce_arg_to_basis<'tm>(
     tm: &'tm TermManager,
     arg_term: Term<'tm>,
@@ -73,10 +71,45 @@ fn coerce_arg_to_basis<'tm>(
     if basis_sort.is_sequence() {
         return coerce_to_sequence(tm, arg_term, Some(basis_sort.clone()));
     }
-    if basis_sort.is_dt() && !basis_sort.is_tuple() {
-        return maybe_coerce(tm, arg_term, &Some(basis_sort.clone()));
-    }
     Ok(arg_term)
+}
+
+/// Wrap a labeled named-union constructor's (`Shape.Circle(r)`) argument
+/// into `basis_sort`'s (the union's cross-kind DT) constructor at the
+/// already-known `arm_idx` — `Circle`'s position in the same syntactic arm
+/// list `build_union_datatype_sort` used to build `basis_sort`'s
+/// constructor list (see `named_union_arm_for_constructor`'s doc comment).
+///
+/// Deliberately does *not* go through `sort::maybe_coerce`/`coerce_to_union_dt`
+/// (which pick a constructor by matching the argument's CVC5 *sort* against
+/// each constructor's selector sort in turn): that search is sound only when
+/// at most one arm has that sort, but named-union arms are allowed to share
+/// a Kind (`Circle: Nat | Square: NatPos`, both plain `Integer`) — sort
+/// search would then always resolve to the *same* first match regardless of
+/// which label was actually called, so `Shape.Circle(5)` and
+/// `Shape.Square(5)` would encode to the literally identical CVC5 term.
+/// Confirmed as a real solver-level unsoundness (`assert Shape.Circle(5) !=
+/// Shape.Square(5)` was wrongly proved "always fails") while investigating
+/// backlog.md's constructor-naming-collision entry — using the caller's
+/// already-known `arm_idx` instead sidesteps the ambiguity entirely, no sort
+/// search or name lookup involved.
+fn coerce_arg_to_labeled_arm<'tm>(
+    tm: &'tm TermManager,
+    arg_term: Term<'tm>,
+    arm_idx: usize,
+    basis_sort: &Sort<'tm>,
+) -> Result<Term<'tm>, String> {
+    let dt = basis_sort.datatype();
+    let ctor = dt.constructor(arm_idx);
+    let sel_sort = ctor.selector(0).codomain_sort();
+    let arg_term = if arg_term.sort() == sel_sort {
+        arg_term
+    } else if sel_sort.is_sequence() {
+        coerce_to_sequence(tm, arg_term, Some(sel_sort))?
+    } else {
+        arg_term
+    };
+    Ok(tm.mk_term(Kind::ApplyConstructor, &[ctor.term(), arg_term]))
 }
 
 /// The basis sort `mk_D` was actually declared against — read directly off
@@ -134,11 +167,28 @@ pub(crate) fn encode_call<'tm>(
     // picking *which arm's* basis obligation applies, by label instead of
     // checking the whole union.
     if args.len() == 1
-        && let Some((union_def, arm_expr)) = named_union_arm_for_constructor(callee, ctx.name_defs)
+        && let Some((union_def, arm_idx, arm_expr)) =
+            named_union_arm_for_constructor(callee, ctx.name_defs)
         && let Some(info) = ctx.distinct_preds.get(&union_def.name)
     {
         let arg_term = enc!(&args[0])?;
-        let arg_term = coerce_arg_to_basis(ctx.tm, arg_term, &mk_domain_sort(info))?;
+        // Check the basis obligation against the *raw*, not-yet-wrapped
+        // argument, before any union-DT coercion below. `membership_constraint`
+        // has a fast path for any DT-sorted term (`t.sort().is_dt() &&
+        // !t.sort().is_tuple()` in `membership.rs`) that treats it as a
+        // cross-kind union value and dispatches on `flatten_any_union(set_expr)`
+        // — but `arm_expr` here is a single arm, not a union, so that list is
+        // always the 1-element `[arm_expr]` sitting at position 0, while the
+        // argument (once wrapped below) is tagged at its own declared
+        // `arm_idx`, which is only 0 for the *first* arm. Checking on the
+        // pre-wrap `arg_term` (whose sort is `arm_expr`'s own natural sort,
+        // e.g. plain `Integer` for `NatPos`) instead avoids that DT fast path
+        // entirely — this is a genuine "does the raw value satisfy the arm's
+        // own domain" check, not a "which arm does this belong to" query, so
+        // it never needed the DT machinery in the first place. Confirmed as a
+        // real bug while lifting the pairwise-Kind restriction: with the
+        // *post*-wrap term, `Shape.Square(1)` (1 ∈ NatPos) was wrongly
+        // rejected, because the fast path tested the wrong arm's tester.
         match membership_constraint(
             ctx.tm,
             arg_term.clone(),
@@ -156,6 +206,12 @@ pub(crate) fn encode_call<'tm>(
             }),
             Membership::Unconstrained | Membership::Unsupported => {}
         }
+        let basis_sort = mk_domain_sort(info);
+        let arg_term = if basis_sort.is_dt() && !basis_sort.is_tuple() {
+            coerce_arg_to_labeled_arm(ctx.tm, arg_term, arm_idx, &basis_sort)?
+        } else {
+            coerce_arg_to_basis(ctx.tm, arg_term, &basis_sort)?
+        };
         let result = ctx
             .tm
             .mk_term(Kind::ApplyUf, &[info.mk.clone(), arg_term.clone()]);
@@ -662,12 +718,20 @@ fn assert_domain_implies_membership<'tm>(
 
 /// If `callee` is `Name.Label` for some `Name = distinct (Label: Expr | ...)`
 /// (`Name` a `Distinct` NameDef with `labels` containing `Label`), return
-/// that NameDef alongside `Label`'s own arm expression (for the
-/// per-arm basis obligation — see the call site).
+/// that NameDef alongside `Label`'s own arm index and arm expression.
+///
+/// The index is `Label`'s position in `flatten_any_union(&def.value)` — the
+/// same syntactic (non-Kind-deduped) arm list `set_sort`'s cross-kind Union
+/// arm flattens `def.value` into when building `info.mk`'s domain DT
+/// (`build_distinct_preds` → `set_sort(tm, &def.value, ...)`, the exact same
+/// `SemExpr` this function reads via `name_defs`) — so this index is always
+/// a valid position into that DT's constructor list, letting the call site
+/// pick the arm's constructor directly instead of searching by CVC5 sort
+/// (see the call site's doc comment for why sort-based search is wrong here).
 fn named_union_arm_for_constructor<'a>(
     callee: &Symbol,
     name_defs: &'a NameDefs,
-) -> Option<(&'a crate::semantics::tree::SemNameDef, &'a SemExpr)> {
+) -> Option<(&'a crate::semantics::tree::SemNameDef, usize, &'a SemExpr)> {
     let (name_part, label_part) = callee.0.split_once('.')?;
     let def = name_defs.get(&Symbol::new(name_part))?;
     if def.kind != DefKind::Distinct {
@@ -676,7 +740,7 @@ fn named_union_arm_for_constructor<'a>(
     let labels = def.labels.as_ref()?;
     let idx = labels.iter().position(|l| l.0 == label_part)?;
     let arm = *flatten_any_union(&def.value).get(idx)?;
-    Some((def, arm))
+    Some((def, idx, arm))
 }
 
 /// If `callee` is the auto-generated constructor for a `distinct` set

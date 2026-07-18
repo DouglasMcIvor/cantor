@@ -241,6 +241,30 @@ fn if_extends_existing_tagged_union_with_new_arm() {
 }
 
 #[test]
+fn if_extends_tagged_union_with_arm_matching_an_existing_kind() {
+    // `then` is already a 2-arm TaggedUnion `[Int, Tuple]` (from the inner
+    // `if`); `else` is a *second* Int arm — same Kind as an arm already in
+    // the union. Before the `AppendElseArm`/`AppendThenArm` dedup fix, this
+    // pushed a duplicate `Int` onto `merged_arms` unconditionally (unlike
+    // the sibling `MergeTaggedUnions` case a few lines above, which already
+    // deduped), producing `TaggedUnion([Int, Tuple, Int])` — codegen then
+    // ICE'd trying to coerce that 3-arm value against the declared 2-arm
+    // range `Int | (Nat*Nat)` (`coerce_to_kind: value kind ... does not
+    // match any arm`). Reproduces with zero `distinct`/labels involved.
+    let def = only_function(
+        "f : Nat -> Int | (Nat * Nat)\n\
+         f(x) = if x > 3 then (if x > 5 then (x, x) else x) else 7",
+    );
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert_eq!(
+        body.kind_of,
+        Kind::TaggedUnion(vec![Kind::Tuple(vec![Kind::Int, Kind::Int]), Kind::Int])
+    );
+}
+
+#[test]
 fn if_merges_two_different_tagged_unions() {
     // Both branches are already (different) TaggedUnions — arms dedup, then's
     // arms first (mirrors `IfMerge::MergeTaggedUnions`).

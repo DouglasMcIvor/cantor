@@ -503,21 +503,25 @@ fn elaborate_name_def(def: &NameDef, ctx: &Ctx) -> Result<SemNameDef, CompileErr
 /// - A `Kind::TaggedUnion` (arms with genuinely different Kinds from each
 ///   other) *only* when labeled — an unlabeled `distinct` over a
 ///   heterogeneous union has no way to pick "which arm" a constructor
-///   argument belongs to — and only when every arm is itself representable
-///   and pairwise distinct from every other arm's Kind.
+///   argument belongs to.
 ///
-/// The pairwise-distinctness requirement is a deliberate v0 scope cut, not
-/// a fundamental limit: `solver::sort::build_union_datatype_sort` names
-/// each arm's CVC5 constructor purely from its Kind
-/// (`solver::sort::arm_ctor_name`), with no disambiguation when two arms
-/// share a Kind — two arms would collide on the same constructor name in
-/// the same datatype declaration, and every downstream name-based lookup
-/// (`arm_ctor_name_for_arm`, `coerce_to_union_dt`,
-/// `membership_constraint_for_dt`) would only ever find the first such arm.
-/// That's a pre-existing gap in the general cross-kind union machinery
-/// (not specific to `distinct`), tracked separately in backlog.md — this
-/// check just makes sure a heterogeneous named union never reaches it,
-/// rather than silently inheriting a suspected miscompile.
+/// Arms are no longer required to have pairwise-distinct Kinds
+/// (`Circle: Nat | Square: NatPos | Rect: Nat * Nat` — two `Int`-Kind arms
+/// mixed with a `Tuple`-Kind one — is accepted): the solver- and codegen-
+/// side gaps that motivated the earlier restriction are fixed —
+/// `solver::encode_call::coerce_arg_to_labeled_arm` now selects a labeled
+/// constructor's arm by its known position instead of searching by CVC5
+/// sort (the old `coerce_to_union_dt` search silently collapsed same-Kind
+/// labeled arms onto the same constructor — confirmed as real solver-level
+/// unsoundness, `Shape.Circle(5)` and `Shape.Square(5)` provably "equal"),
+/// `solver::membership_seq::membership_constraint_for_dt` matches a union
+/// DT's constructors by position instead of by name (`arm_ctor_name`
+/// derives a name purely from Kind, so same-Kind arms always collided on
+/// the same declared name), and `codegen::compile::compile_elaborated`'s
+/// `named_union_arms` table is built from each *syntactic* arm's own Kind
+/// (`ast::flatten_union`) instead of the whole union's Kind-deduped arm
+/// list (which silently dropped arms sharing a Kind, previously masked by
+/// this very restriction never letting that code run).
 fn validate_distinct_basis(def: &NameDef, value: &SemExpr) -> Result<(), CompileError> {
     let Kind::TaggedUnion(_) = &value.kind_of else {
         if !is_distinct_basis_representable(&value.kind_of) {
@@ -541,10 +545,9 @@ fn validate_distinct_basis(def: &NameDef, value: &SemExpr) -> Result<(), Compile
         ));
     }
     // `value.kind_of`'s own `TaggedUnion` arm list is already deduped by Kind
-    // (`kind::union_if_distinct`), so it can never itself contain a
-    // duplicate — the pairwise-distinctness check below must walk the
-    // *syntactic* arm list instead (`flatten_any_union`, one entry per `|`,
-    // never deduped) to see how many arms actually share a Kind.
+    // (`kind::union_if_distinct`), so it can't be used to validate each
+    // *syntactic* arm (`flatten_any_union`, one entry per `|`, never
+    // deduped) — walk that list instead.
     let arms = flatten_any_union(value);
     if let Some(bad) = arms
         .iter()
@@ -556,24 +559,6 @@ fn validate_distinct_basis(def: &NameDef, value: &SemExpr) -> Result<(), Compile
                 bad.kind_of
             ),
             bad.span,
-        ));
-    }
-    if let Some(dup) = arms.iter().enumerate().find_map(|(i, arm)| {
-        arms[i + 1..]
-            .iter()
-            .any(|other| other.kind_of == arm.kind_of)
-            .then_some(&arm.kind_of)
-    }) {
-        return Err(not_yet_implemented(
-            &format!(
-                "named union has two arms sharing kind {dup:?} — every arm of a \
-                 heterogeneous-Kind named union must have a Kind distinct from every other arm \
-                 today (a pre-existing constructor-naming collision in the general cross-kind \
-                 union machinery, tracked separately in backlog.md); same-Kind arms are still \
-                 fine on their own, e.g. `Circle: Nat | Radius: NatPos`, just not mixed with a \
-                 third, differently-Kinded arm"
-            ),
-            value.span,
         ));
     }
     Ok(())

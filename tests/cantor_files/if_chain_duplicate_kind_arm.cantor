@@ -1,0 +1,5 @@
+f : Bool * Bool -> Int | (Nat * Nat)
+f(a, b) = if a then 5 else if b then 6 else (3, 4)
+
+main : -> Char*
+main() = show(f(true, false)) ++ "|" ++ show(f(false, true)) ++ "|" ++ show(f(false, false))

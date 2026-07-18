@@ -207,3 +207,35 @@ f(b) = (if b then (0, 2) else (3, 4)).0
 ",
     );
 }
+
+// ── Chained if/else revisiting a Kind already in the union ────────────────────
+// `kind::merge_if_branches`'s `AppendThenArm`/`AppendElseArm` cases used to
+// push the newly-merged branch's Kind unconditionally, even when it already
+// matched an existing arm — producing a `TaggedUnion` with a duplicate-Kind
+// arm and an ICE downstream in codegen's `coerce_to_kind`. Reproduces with
+// no `distinct`/named-union machinery involved at all: a plain 3-way `if`
+// chain where the outermost `else` revisits the innermost `then`'s Kind.
+
+#[test]
+fn if_chain_revisiting_kind_proved() {
+    proved(
+        "
+f : Bool * Bool -> Int | (Nat * Nat)
+f(a, b) = if a then 5 else if b then 6 else (3, 4)
+",
+    );
+}
+
+#[test]
+fn if_chain_revisiting_kind_still_checks_reused_arm_range() {
+    // Not just "doesn't ICE" — the else-if branch (0) reuses the same tag as
+    // the inner `then`'s `NatPos` arm (5), and 0 violates NatPos. Confirms
+    // the dedup fix reuses the *existing* arm's tag without silently
+    // dropping that arm's own range obligation for the revisiting branch.
+    counterexample(
+        "
+f : Bool * Bool -> NatPos | (Nat * Nat)
+f(a, b) = if a then 5 else if b then 0 else (3, 4)
+",
+    );
+}

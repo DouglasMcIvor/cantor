@@ -22,6 +22,8 @@ mod event_loop;
 mod helpers;
 #[path = "cli/heterogeneous_named_unions.rs"]
 mod heterogeneous_named_unions;
+#[path = "cli/if_kind_merge.rs"]
+mod if_kind_merge;
 #[path = "cli/interpolation.rs"]
 mod interpolation;
 #[path = "cli/named_unions.rs"]
