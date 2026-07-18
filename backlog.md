@@ -127,6 +127,19 @@ Algorithm:
   size(x, y : X, Y) = ...
   size(Tree.leaf2(x, y)) = ..
   ```
+  Started prototyping this (2026-07-18, session_014Qh7K9iYP6WY8zKzc8VcjK) as step 4 of the
+  pattern-matching plan, using only Int-Kind-compatible named-union arms (see "named union
+  sets" above) — `size(Shape.Circle(r)) = ...` desugaring to a guard-style comprehension
+  domain (`{r for r in Shape if from(r) in Circle'sBasis}`), reusing guards' machinery.
+  Reverted before landing: `r` inside the body has *solver* sort `Shape` (uninterpreted),
+  not `Nat`, even though `from` is a runtime no-op — so `r * r`-style arithmetic on the
+  raw pattern binder is a genuine sort mismatch, not just a missing SMT encoding. Fixing
+  it needs either a real `let r = from(param)` rewrite prepended to the body (hygiene-aware
+  — must not capture an inner rebinding of `r`, e.g. a nested comprehension) or a different
+  design entirely. Two genuine, general, independently-useful bugs *were* found and fixed
+  along the way and are already shipped: `solver::sort::set_sort`'s `Comprehension` arm
+  hardcoded `integer_sort()` regardless of source (now delegates to the source's own sort),
+  and `solver::membership::encode_comp_expr` had no `from(x)` support in a filter at all.
 - more IO backends: CLI, TUI, web, SDL, OpenGL, vulkan, etc
 - write-only side effects via `emit`
 - compiled binaries
