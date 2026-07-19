@@ -131,12 +131,21 @@ impl<'ctx> Compiler<'ctx> {
     /// an overloaded call the solver couldn't statically resolve.
     ///
     /// `candidates` (arity-matching, file order) each get a domain
-    /// membership test in turn — order is irrelevant since domains are
-    /// solver-proved disjoint. The final else-arm is unreachable *by proof*,
-    /// not by construction: it still emits a loud runtime trap
-    /// (`cantor_dispatch_unreachable`) rather than silently falling through,
-    /// per CLAUDE.md's fail-loudly principle — a defense against a
-    /// solver/codegen disagreement, not an expected runtime path.
+    /// membership test in turn. For an ordinary hand-written overload set,
+    /// order is irrelevant since domains are solver-proved disjoint — at
+    /// most one test can ever match. For an ordered guard group
+    /// (`FunctionDef::ordered_group`), domains may deliberately overlap and
+    /// order is exactly what makes this chain correct: the *first* matching
+    /// test must win, mirroring both `decide_overload_resolutions`'s
+    /// static-resolution rule and `solver::disjointness::
+    /// check_ordered_group_coverage`'s proof, neither of which needs any
+    /// codegen-side change to get this — this loop already tries candidates
+    /// in file order regardless of which kind of group it's compiling. The
+    /// final else-arm is unreachable *by proof*, not by construction: it
+    /// still emits a loud runtime trap (`cantor_dispatch_unreachable`)
+    /// rather than silently falling through, per CLAUDE.md's fail-loudly
+    /// principle — a defense against a solver/codegen disagreement, not an
+    /// expected runtime path.
     pub(super) fn compile_overload_dispatch(
         &self,
         callee_name: &str,
