@@ -1,0 +1,10 @@
+classify : Int -> Int
+classify(x for x >= 0) = 1
+classify(x for x > 5) = 2
+classify(_) = 3
+
+helper : Int -> Int
+helper(x) = classify(x)
+
+main : -> Int
+main() = helper(10) + helper(-3) + helper(3)

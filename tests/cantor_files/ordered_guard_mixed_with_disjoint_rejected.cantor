@@ -1,0 +1,9 @@
+sign : Int -> Int
+sign(x for x < 0) = -x
+sign(_) = 0
+
+sign : Int -> Int
+sign(x) = 99
+
+main : -> Int
+main() = sign(3)

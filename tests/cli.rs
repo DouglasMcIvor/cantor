@@ -32,6 +32,8 @@ mod interpolation;
 mod named_unions;
 #[path = "cli/none_propagation.rs"]
 mod none_propagation;
+#[path = "cli/ordered_guard_groups.rs"]
+mod ordered_guard_groups;
 #[path = "cli/overflow.rs"]
 mod overflow;
 #[path = "cli/overloads.rs"]
