@@ -68,11 +68,24 @@ fn wildcard_must_cover_every_param_to_trivially_skip() {
 }
 
 #[test]
-fn overload_resolution_prefers_first_matching_arm_in_ordered_group() {
-    // Deliberately overlapping domains (`x >= 0` is a superset of `x > 5`) —
-    // legal in an ordered group precisely because order resolves the
-    // ambiguity. `n = 10` satisfies both arms; the first-declared one must
-    // win.
+fn ordered_group_calls_never_get_a_static_overload_resolution_entry() {
+    // `decide_overload_resolutions`'s static-resolution shortcut ("is
+    // `path_cond → candidate_i`'s domain provable, tried in order") is
+    // sound for a hand-written disjoint overload set: if every value
+    // reaching a call site is provably in candidate i's domain, no other
+    // candidate could ever also match, so "first provable" and "first
+    // match" agree. That equivalence breaks for an ordered guard group,
+    // where domains may deliberately overlap — a later/wildcard arm's
+    // domain being unconditionally provable does *not* mean it's the
+    // first-declared match for every value (an earlier arm this loop
+    // already skipped, for not being provable *unconditionally*, could
+    // still be the correct match for *some* reaching values). So
+    // `encode_call.rs` deliberately never records a resolution for an
+    // ordered-group call — it always falls back to the runtime dispatch
+    // chain instead, which correctly respects declaration order (see
+    // `tests/cli/ordered_guard_groups.rs::
+    // ordered_guard_group_runtime_dispatch_respects_declaration_order` for
+    // the end-to-end proof this actually produces the right value).
     let tree = check_tree(
         "classify : Int -> Int\n\
          classify(x for x >= 0) = 1\n\
@@ -81,16 +94,11 @@ fn overload_resolution_prefers_first_matching_arm_in_ordered_group() {
          caller : -> Int\n\
          caller() = classify(10)",
     );
-    assert_eq!(
-        tree.overload_resolution.len(),
-        1,
-        "expected exactly one resolved call site, got {:?}",
+    assert!(
+        tree.overload_resolution.is_empty(),
+        "expected no static overload_resolution entry for an ordered-group call \
+         (deferred optimization — see TODO in encode_call.rs), got {:?}",
         tree.overload_resolution
-    );
-    let resolved_idx = *tree.overload_resolution.values().next().unwrap();
-    assert_eq!(
-        resolved_idx, 0,
-        "a value matching more than one arm must resolve to the first-declared one"
     );
 }
 

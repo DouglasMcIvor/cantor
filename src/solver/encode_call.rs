@@ -404,7 +404,26 @@ pub(crate) fn encode_call<'tm>(
 
     push_call_domain_obligation(callee, &candidates, args, &arg_terms, ctx, &path_cond)?;
 
-    if candidates.len() > 1 {
+    // Static resolution ("is `path_cond → candidate_i`'s domain provable,
+    // tried in order") is sound for a hand-written disjoint overload set:
+    // if it's provable that *every* value reaching this call site lies in
+    // candidate i's domain, no other candidate could ever also match (the
+    // domains are proved pairwise disjoint), so which one is "first" is
+    // moot. That equivalence breaks for an ordered guard group
+    // (`FunctionDef::ordered_group`) — domains may deliberately overlap, so
+    // a later/wildcard arm's domain being unconditionally provable (e.g.
+    // `_`, always `true`) does *not* mean it's the first-declared match for
+    // every value; some reaching values could satisfy an *earlier* arm
+    // that this loop already skipped for not being provable *unconditionally*.
+    // TODO: a real static-resolution optimization for ordered groups would
+    // need to additionally prove no earlier candidate can match — deferred;
+    // for now every ordered-group call always falls back to the (already
+    // correct, order-respecting) runtime dispatch chain in
+    // `codegen::overload_dispatch::compile_overload_dispatch`.
+    let is_ordered_group = candidates
+        .first()
+        .is_some_and(|(_, def)| def.ordered_group.is_some());
+    if candidates.len() > 1 && !is_ordered_group {
         push_overload_call_obligation(
             callee,
             &candidates,
