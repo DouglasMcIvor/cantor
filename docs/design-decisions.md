@@ -458,6 +458,47 @@ a natural reclamation point: reused by both `cantor run` and `cantor build`
     required, checked at compile time, overlap is a compile error with a
     witness value.** (Not resolved by most-specific-wins or similar —
     avoids developer confusion over resolution rules.)
+  - **Ordered guard groups (DECIDED, IMPLEMENTED)**: one narrow, opt-in
+    carve-out to the disjointness rule above. A signature followed directly
+    by 2+ bodies with *no* repeated signature line between them
+    (`FunctionDef::ordered_group`, distinguished from the ordinary form
+    purely by whether the signature line repeats — the two forms are
+    syntactically disjoint, so there is no ambiguity to resolve) forms an
+    ordered guard group: its arms are tried in declaration order, first
+    matching guard wins, and their domains may deliberately overlap. In
+    exchange the compiler proves *coverage* instead of disjointness — the
+    union of every arm's guard-narrowed domain must equal the group's
+    declared (un-narrowed) domain
+    (`solver::disjointness::check_ordered_group_coverage`), reusing the same
+    fresh-solver + membership-constraint + check-sat shape the pairwise
+    disjointness check already uses, just for the complement instead of the
+    intersection. A gap is a compile error with a witness, exactly like an
+    overlap is for the ordinary form; an unprovable coverage claim is a
+    compile-time `Unknown`, never a silent pass, per this document's
+    overriding "never silently assume" rule. A new `_` wildcard parameter
+    (matches unconditionally, introduces no binder) is *required* for a
+    catch-all arm — a bare unguarded identifier is rejected everywhere in
+    the group (not only the last arm), since it would otherwise be
+    indistinguishable from `_` while silently swallowing every arm declared
+    after it; this is enforced at parse time, since the group's shape is
+    already fully known there. A trailing all-wildcard arm also makes the
+    coverage proof free (no solver call at all — that arm's own domain term
+    is definitionally identical to the declared-domain term). **v0 scope,
+    both deliberately simple invariants**: a `(name, arity, Kind-bucket)`
+    bucket may contain at most one ordered group, and never mixes one with
+    a hand-written disjoint overload — either violation is a compile error
+    (`elaborate::check_ordered_group_placement`), keeping "which proof
+    obligation applies to this bucket" always a single, unambiguous answer.
+    **Known gap**: unlike the ordinary disjoint form, an ordered-group call
+    is never statically resolved to a direct call — `solver::encode_call`
+    unconditionally skips the resolution optimization for such calls, since
+    the existing "first unconditionally-provable candidate wins" shortcut
+    is unsound once domains may overlap (a trailing wildcard is always
+    "provable", which doesn't mean it's the first-declared match for every
+    reaching value); found via CLI testing, tracked in backlog.md as a
+    deferred optimization, not a soundness gap (every such call still
+    always goes through the — independently correct — runtime dispatch
+    chain).
   - **Arity is a free dispatch key (DECIDED during phase 2 implementation)**:
     overloads of one name may have different arity as well as different
     domains at the same arity. A call's argument count is always known at

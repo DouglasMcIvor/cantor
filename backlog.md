@@ -2,7 +2,21 @@ This is my personal backlog/random things I've learned or want to remember.
 You probably don't want to read this unless you're me.
 
 # To do
- 
+
+- ordered guard groups: static call-site resolution to a direct call
+  (`solver::encode_call::push_overload_call_obligation`) is unconditionally
+  disabled for a call whose candidates belong to an ordered group — every
+  such call always goes through the runtime dispatch chain, even when the
+  argument is a literal the solver could place in exactly one arm. The
+  existing "is candidate i's domain provable for every value reaching this
+  call site, tried in order" shortcut isn't sound once domains may overlap
+  (a trailing wildcard is unconditionally provable, which doesn't mean it's
+  the first-declared match for every value) — a real fix needs an extra
+  proof that no *earlier* candidate could also match for the same reaching
+  values, which is more solver machinery than the first cut of this feature
+  warranted. Found via CLI end-to-end testing (a call routed through an
+  unconstrained parameter silently resolved to the wrong arm) — see the
+  `fix: ordered guard group calls must never statically resolve` commit.
 - more testing
   - some property based tests! we have a lot of unit tests but could go further, `proptest` crate recommended
   - fuzzing too, `cargo-fuzz` crate recommended
