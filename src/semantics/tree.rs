@@ -229,6 +229,22 @@ pub struct SemFunctionDef {
     /// see design-decisions.md §7 and int-soundness-plan.md's "Phase 3"
     /// section for why this stays scoped to the compiler's own split.
     pub compiler_generated_split: bool,
+    /// `Some(id)` for every arm of an ordered guard group (copied from
+    /// `ast::FunctionDef::ordered_group`), shared by every arm of one
+    /// group. `None` for an ordinary (possibly still overloaded, but
+    /// pairwise-disjoint) def.
+    pub ordered_group: Option<u32>,
+    /// Only populated when `ordered_group.is_some()` (empty otherwise, no
+    /// allocation for the common case). The group's *un-narrowed* declared
+    /// signature(s) — i.e. what `sigs` would be if every param's `guard`/
+    /// `ctor_pattern`/`is_wildcard` were stripped before elaboration.
+    /// Needed for the coverage proof
+    /// (`solver::disjointness::check_ordered_group_coverage`): `sigs`
+    /// itself is always already guard-narrowed (see `desugar_param_patterns`),
+    /// so it can't answer "what's the domain every arm must jointly cover".
+    /// Identical across every arm of one group — any one arm's copy is
+    /// representative.
+    pub declared_domain_sigs: Vec<SemFunctionSig>,
 }
 
 #[derive(Debug, Clone)]

@@ -251,6 +251,8 @@ fn try_promote_to_int64<'a>(
         return_kind: Kind::Int64,
         span: def.span,
         compiler_generated_split: false,
+        ordered_group: None,
+        declared_domain_sigs: Vec::new(),
     };
 
     let mut trial_env = fn_env.clone();
@@ -280,6 +282,8 @@ fn try_promote_to_int64<'a>(
         return_kind: Kind::Int64,
         span: def.span,
         compiler_generated_split: false,
+        ordered_group: None,
+        declared_domain_sigs: Vec::new(),
     })
 }
 
@@ -331,6 +335,8 @@ fn synth_def(
         return_kind,
         span: def.span,
         compiler_generated_split: true,
+        ordered_group: None,
+        declared_domain_sigs: Vec::new(),
     }
 }
 

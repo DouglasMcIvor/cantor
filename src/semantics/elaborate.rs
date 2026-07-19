@@ -113,6 +113,7 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
         .map(|item| elaborate_item(item, &ctx))
         .collect::<Result<_, _>>()?;
     check_overload_kind_agreement(&sem_items)?;
+    check_ordered_group_placement(&sem_items)?;
     Ok(sem_items)
 }
 
@@ -148,6 +149,53 @@ pub fn elaborate(items: &[Item]) -> Result<Vec<SemItem>, CompileError> {
 /// them), while an unrelated `Bool` overload of the same name/arity lands in
 /// a genuinely separate bucket.
 pub fn check_overload_kind_agreement(sem_items: &[SemItem]) -> Result<(), CompileError> {
+    for bucket in overload_kind_buckets(sem_items) {
+        let Some((first, rest)) = bucket.split_first() else {
+            continue;
+        };
+        for other in rest {
+            let mismatched =
+                other.return_kind != first.return_kind || other.param_kinds != first.param_kinds;
+            if !mismatched {
+                continue;
+            }
+            if first.compiler_generated_split
+                && other.compiler_generated_split
+                && kinds_agree_for_split(&first.return_kind, &other.return_kind)
+                && first.param_kinds.len() == other.param_kinds.len()
+                && first
+                    .param_kinds
+                    .iter()
+                    .zip(&other.param_kinds)
+                    .all(|(a, b)| kinds_agree_for_split(a, b))
+            {
+                continue;
+            }
+            return Err(CompileError::OverloadKindMismatch {
+                name: other.name.0.clone(),
+                detail: format!(
+                    "an earlier overload has param kinds {:?} and return kind {:?}, \
+                     but this one has {:?} and {:?}",
+                    first.param_kinds, first.return_kind, other.param_kinds, other.return_kind
+                ),
+                span: other.span,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Groups every `SemFunctionDef` in `sem_items` by `(name, arity)`, then
+/// partitions each group into Kind buckets (`bucket_key`) — one bucket per
+/// distinct parameter-Kind tuple, exactly `check_overload_kind_agreement`'s
+/// own bucketing (see its doc comment), extracted so
+/// `check_ordered_group_placement` can run its own per-bucket check over
+/// the identical partition without a second, potentially-drifting
+/// implementation. Bucket order (and the order of buckets across different
+/// `(name, arity)` groups) is unspecified — callers must only rely on
+/// *within-bucket* order, which is file order (bucket membership is a
+/// linear scan over `defs`, itself already in file order).
+fn overload_kind_buckets(sem_items: &[SemItem]) -> Vec<Vec<&SemFunctionDef>> {
     let mut groups: HashMap<(Symbol, usize), Vec<&SemFunctionDef>> = HashMap::new();
     for item in sem_items {
         if let SemItem::FunctionDef(def) = item {
@@ -157,6 +205,7 @@ pub fn check_overload_kind_agreement(sem_items: &[SemItem]) -> Result<(), Compil
                 .push(def);
         }
     }
+    let mut all_buckets: Vec<Vec<&SemFunctionDef>> = Vec::new();
     for defs in groups.values() {
         // Partition `defs` into Kind buckets — linear scan (not a HashMap)
         // since `Kind` has no `Hash` impl and overload sets are always small.
@@ -170,37 +219,35 @@ pub fn check_overload_kind_agreement(sem_items: &[SemItem]) -> Result<(), Compil
                 None => buckets.push(vec![def]),
             }
         }
-        for bucket in &buckets {
-            let Some((first, rest)) = bucket.split_first() else {
-                continue;
-            };
-            for other in rest {
-                let mismatched = other.return_kind != first.return_kind
-                    || other.param_kinds != first.param_kinds;
-                if !mismatched {
-                    continue;
+        all_buckets.extend(buckets);
+    }
+    all_buckets
+}
+
+/// Rejects a bucket (see `overload_kind_buckets`) that isn't uniformly
+/// entirely `ordered_group == None` or entirely one single `Some(id)` — i.e.
+/// an ordered guard group mixed with a hand-written pairwise-disjoint
+/// overload of the same `(name, arity, Kind-bucket)`, or two independent
+/// ordered groups sharing one. v0 scope: both are rejected outright rather
+/// than given any resolution rule, keeping "which proof obligation applies
+/// to this bucket" a single, unambiguous answer.
+pub fn check_ordered_group_placement(sem_items: &[SemItem]) -> Result<(), CompileError> {
+    for bucket in overload_kind_buckets(sem_items) {
+        let mut seen: Option<Option<u32>> = None;
+        for def in &bucket {
+            match seen {
+                None => seen = Some(def.ordered_group),
+                Some(prev) if prev == def.ordered_group => {}
+                Some(_) => {
+                    return Err(CompileError::OrderedGroupConflict {
+                        name: def.name.0.clone(),
+                        detail: "an ordered guard group can't share its (name, arity, kind) \
+                                 with another ordered guard group or a hand-written, \
+                                 pairwise-disjoint overload"
+                            .to_string(),
+                        span: def.span,
+                    });
                 }
-                if first.compiler_generated_split
-                    && other.compiler_generated_split
-                    && kinds_agree_for_split(&first.return_kind, &other.return_kind)
-                    && first.param_kinds.len() == other.param_kinds.len()
-                    && first
-                        .param_kinds
-                        .iter()
-                        .zip(&other.param_kinds)
-                        .all(|(a, b)| kinds_agree_for_split(a, b))
-                {
-                    continue;
-                }
-                return Err(CompileError::OverloadKindMismatch {
-                    name: other.name.0.clone(),
-                    detail: format!(
-                        "an earlier overload has param kinds {:?} and return kind {:?}, \
-                         but this one has {:?} and {:?}",
-                        first.param_kinds, first.return_kind, other.param_kinds, other.return_kind
-                    ),
-                    span: other.span,
-                });
             }
         }
     }
@@ -372,6 +419,34 @@ fn elaborate_function_def(def: &FunctionDef, ctx: &Ctx) -> Result<SemFunctionDef
         .map(|sig| elaborate_sig(sig, &def.params, def.params.len(), ctx))
         .collect::<Result<Vec<_>, _>>()?;
 
+    // Ordered guard group coverage (`solver::disjointness::
+    // check_ordered_group_coverage`) needs the group's *un-narrowed*
+    // declared domain — `sigs` above is always already guard-narrowed
+    // (`desugar_param_patterns`), so it can't answer "what must every arm
+    // jointly cover". Re-elaborate the same raw `sigs` with every param's
+    // guard/ctor_pattern/is_wildcard stripped, which reuses
+    // `desugar_param_patterns`'s existing no-op early-out (no filter on any
+    // param ⇒ returns `sig.domain` unchanged) to recover it. `None`-arm defs
+    // never need this, so it's skipped (no allocation) for the common case.
+    let declared_domain_sigs = if def.ordered_group.is_some() {
+        let bare_params: Vec<ast::Param> = def
+            .params
+            .iter()
+            .map(|p| ast::Param {
+                guard: None,
+                ctor_pattern: None,
+                is_wildcard: false,
+                ..p.clone()
+            })
+            .collect();
+        def.sigs
+            .iter()
+            .map(|sig| elaborate_sig(sig, &bare_params, def.params.len(), ctx))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+
     let (param_kinds, return_kind) = match sigs.first() {
         Some(s) => (s.param_kinds.clone(), s.return_kind.clone()),
         None => (vec![Kind::Int; def.params.len()], Kind::Int),
@@ -417,6 +492,8 @@ fn elaborate_function_def(def: &FunctionDef, ctx: &Ctx) -> Result<SemFunctionDef
         span: def.span,
         // Only the (not-yet-implemented) phase 3 split generator sets this.
         compiler_generated_split: false,
+        ordered_group: def.ordered_group,
+        declared_domain_sigs,
     })
 }
 

@@ -7,7 +7,9 @@
 use cantor::ast::{Item, Param};
 use cantor::kind::Kind;
 use cantor::parser::parse_file;
-use cantor::semantics::elaborate::{check_overload_kind_agreement, elaborate};
+use cantor::semantics::elaborate::{
+    check_ordered_group_placement, check_overload_kind_agreement, elaborate,
+};
 use cantor::semantics::tree::{
     SemExpr, SemExprKind, SemFunctionBody, SemFunctionDef, SemFunctionSig, SemItem, SemStmt,
 };
@@ -638,6 +640,8 @@ fn dummy_def(
         return_kind,
         span: Span::dummy(),
         compiler_generated_split,
+        ordered_group: None,
+        declared_domain_sigs: Vec::new(),
     })
 }
 
@@ -709,4 +713,125 @@ fn no_source_syntax_sets_compiler_generated_split() {
         panic!("expected a FunctionDef item");
     };
     assert!(!def.compiler_generated_split);
+}
+
+// ── Ordered guard groups ────────────────────────────────────────────────────
+
+fn all_functions_named<'a>(items: &'a [SemItem], name: &str) -> Vec<&'a SemFunctionDef> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            SemItem::FunctionDef(def) if def.name.0 == name => Some(def),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn ordered_group_members_get_matching_ordered_group_id() {
+    let items = elaborate_src("sign : Int -> Int\nsign(x for x < 0) = -x\nsign(_) = 0");
+    let defs = all_functions_named(&items, "sign");
+    assert_eq!(defs.len(), 2);
+    assert!(defs[0].ordered_group.is_some());
+    assert_eq!(defs[0].ordered_group, defs[1].ordered_group);
+}
+
+#[test]
+fn non_grouped_defs_have_no_ordered_group_id() {
+    let def = only_function("f : Int -> Int\nf(x) = x");
+    assert!(def.ordered_group.is_none());
+    assert!(def.declared_domain_sigs.is_empty());
+}
+
+#[test]
+fn declared_domain_sigs_ignores_guard_narrowing() {
+    let items = elaborate_src("sign : Int -> Int\nsign(x for x < 0) = -x\nsign(_) = 0");
+    let defs = all_functions_named(&items, "sign");
+    let guarded_arm = defs[0];
+
+    // The arm's own `sigs[0].domain` is guard-narrowed (a comprehension
+    // filtering `Int` down to `x < 0`), but `declared_domain_sigs[0].domain`
+    // must be the group's full, un-narrowed declared domain (`Int` itself).
+    let narrowed = guarded_arm.sigs[0]
+        .domain
+        .as_ref()
+        .expect("guarded arm has a domain");
+    assert!(
+        matches!(narrowed.kind, SemExprKind::Comprehension { .. }),
+        "expected the guarded arm's own domain to be a comprehension, got {:?}",
+        narrowed.kind
+    );
+
+    let declared = guarded_arm.declared_domain_sigs[0]
+        .domain
+        .as_ref()
+        .expect("declared domain sig has a domain");
+    assert!(
+        matches!(&declared.kind, SemExprKind::Var(s) if s.0 == "Int"),
+        "expected the group's declared domain to be the bare, un-narrowed `Int`, got {:?}",
+        declared.kind
+    );
+}
+
+#[test]
+fn ordered_group_mixed_with_hand_disjoint_overload_is_rejected() {
+    let items = parse_file(
+        "sign : Int -> Int\n\
+         sign(x for x < 0) = -x\n\
+         sign(_) = 0\n\
+         sign : Int -> Int\n\
+         sign(x) = 99",
+    )
+    .unwrap_or_else(|e| panic!("parse error: {e}"));
+    assert!(
+        elaborate(&items).is_err(),
+        "an ordered guard group must not share its (name, arity, kind) bucket with a \
+         hand-written, pairwise-disjoint overload"
+    );
+}
+
+#[test]
+fn two_separate_ordered_groups_same_bucket_are_rejected() {
+    let items = parse_file(
+        "sign : Int -> Int\n\
+         sign(x for x < 0) = -x\n\
+         sign(_) = 0\n\
+         sign : Int -> Int\n\
+         sign(x for x >= 0) = x\n\
+         sign(_) = -1",
+    )
+    .unwrap_or_else(|e| panic!("parse error: {e}"));
+    assert!(
+        elaborate(&items).is_err(),
+        "v0 scope: at most one ordered guard group per (name, arity, kind) bucket"
+    );
+}
+
+#[test]
+fn ordered_groups_of_different_arity_or_kind_bucket_coexist_freely() {
+    // Same name, but arity 1 vs arity 2 — two independent buckets, so each
+    // gets its own ordered group with no interaction between them.
+    let items = parse_file(
+        "sign : Int -> Int\n\
+         sign(x for x < 0) = -x\n\
+         sign(_) = 0\n\
+         sign : Int * Int -> Int\n\
+         sign(x for x < 0, y for y < 0) = x + y\n\
+         sign(_, _) = 0",
+    )
+    .unwrap_or_else(|e| panic!("parse error: {e}"));
+    assert!(
+        elaborate(&items).is_ok(),
+        "ordered groups of differing arity/Kind-bucket must not be treated as one bucket"
+    );
+}
+
+#[test]
+fn check_ordered_group_placement_is_ok_for_ordinary_disjoint_overloads() {
+    // Regression guard: today's ordinary (non-grouped) overload form must
+    // pass the new check unconditionally — it's exercised via
+    // `check_overload_kind_agreement`'s own existing test fixtures
+    // elsewhere in this file, but this asserts the new check directly too.
+    let items = elaborate_src("f : {0} -> Int\nf(x) = 0\nf : NatPos -> Int\nf(x) = x");
+    assert!(check_ordered_group_placement(&items).is_ok());
 }

@@ -111,6 +111,15 @@ pub enum CompileError {
         name: String,
         span: Span,
     },
+    /// An ordered guard group shares its `(name, arity, Kind-bucket)` with
+    /// something else — a hand-written pairwise-disjoint overload, or a
+    /// second independent ordered group. `span` points at the def that
+    /// broke the bucket's uniformity.
+    OrderedGroupConflict {
+        name: String,
+        detail: String,
+        span: Span,
+    },
     /// A call to an overloaded name (backlog.md "function overloads —
     /// support different kinds") whose argument Kinds don't match any
     /// declared overload's parameter-Kind bucket — e.g. calling `f(true)`
@@ -211,6 +220,9 @@ impl std::fmt::Display for CompileError {
                      parameters"
                 )
             }
+            Self::OrderedGroupConflict { name, detail, .. } => {
+                write!(f, "`{name}`'s ordered guard group conflicts: {detail}")
+            }
             Self::NoMatchingOverload { name, detail, .. } => {
                 write!(f, "no overload of `{name}` matches: {detail}")
             }
@@ -289,6 +301,7 @@ impl CompileError {
             Self::OverloadKindMismatch { span, .. } => span,
             Self::OrderedGroupBareParam { span, .. } => span,
             Self::OrderedGroupArityMismatch { span, .. } => span,
+            Self::OrderedGroupConflict { span, .. } => span,
             Self::NoMatchingOverload { span, .. } => span,
             Self::Unsupported { span, .. } => span,
             Self::InvalidSetExpression { span, .. } => span,
@@ -316,6 +329,7 @@ impl CompileError {
             Self::OverloadKindMismatch { span, .. } => Some(*span),
             Self::OrderedGroupBareParam { span, .. } => Some(*span),
             Self::OrderedGroupArityMismatch { span, .. } => Some(*span),
+            Self::OrderedGroupConflict { span, .. } => Some(*span),
             Self::NoMatchingOverload { span, .. } => Some(*span),
             Self::Unsupported { span, .. } => Some(*span),
             Self::InvalidSetExpression { span, .. } => Some(*span),
