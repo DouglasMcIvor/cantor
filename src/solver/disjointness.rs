@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use cvc5::{Kind, Term, TermManager};
 
 use crate::kind::Kind as ValKind;
-use crate::semantics::tree::{SemExpr, SemFunctionDef, sem_param_set_exprs};
+use crate::semantics::tree::{SemExpr, SemFunctionDef, SemFunctionSig, sem_param_set_exprs};
 
 use super::membership::{Membership, QuotientPreds, SolverPreds, membership_constraint};
 use super::{
@@ -186,28 +186,37 @@ fn fresh_overload_param_terms<'tm>(
         .collect()
 }
 
-/// The term "`param_terms` lie in `def`'s declared domain" — an OR across
-/// `def`'s own signatures (one overload may itself declare more than one
-/// signature over one shared body, exactly like today's non-overloaded
-/// functions) of an AND across parameter positions.
+/// The term "`param_terms` lie in the domain declared by `sigs`" — an OR
+/// across `sigs` (one overload may itself declare more than one signature
+/// over one shared body, exactly like today's non-overloaded functions) of
+/// an AND across parameter positions. `name`/`param_kinds` are only used to
+/// label an `Unsupported`-syntax error and to skip `Bool` positions
+/// (membership is definitional there, no constraint needed).
+///
+/// Takes `sigs`/`param_kinds` rather than a whole `&SemFunctionDef` so
+/// `check_ordered_group_coverage` can reuse it for both an arm's own
+/// (guard-narrowed) `sigs` *and* a group's un-narrowed
+/// `declared_domain_sigs`, without a second, duplicated OR-across-sigs
+/// implementation.
 fn overload_domain_term<'tm>(
-    def: &SemFunctionDef,
+    name: &str,
+    sigs: &[SemFunctionSig],
+    param_kinds: &[ValKind],
     param_terms: &[Term<'tm>],
     tm: &'tm TermManager,
     name_defs: &NameDefs,
     distinct_preds: &SolverPreds<'tm>,
 ) -> Result<Term<'tm>, String> {
     let mut arms: Vec<Term<'_>> = Vec::new();
-    for sig in &def.sigs {
+    for sig in sigs {
         let parts = sem_param_set_exprs(sig.domain.as_ref(), param_terms.len()).map_err(|_| {
             format!(
-                "cannot verify overload disjointness for `{}`: signature arity mismatch \
-                 (internal error)",
-                def.name.0
+                "cannot verify overload disjointness for `{name}`: signature arity mismatch \
+                 (internal error)"
             )
         })?;
         let mut conjuncts: Vec<Term<'_>> = Vec::new();
-        for ((term, part), kind) in param_terms.iter().zip(&parts).zip(&def.param_kinds) {
+        for ((term, part), kind) in param_terms.iter().zip(&parts).zip(param_kinds) {
             if *kind == ValKind::Bool {
                 continue; // membership is definitional, no constraint needed
             }
@@ -216,9 +225,8 @@ fn overload_domain_term<'tm>(
                 Membership::Constrained(c) => conjuncts.push(c),
                 Membership::Unsupported => {
                     return Err(format!(
-                        "cannot verify overload disjointness for `{}`: domain `{}` uses syntax \
-                         not yet supported in the SMT encoding",
-                        def.name.0, part
+                        "cannot verify overload disjointness for `{name}`: domain `{part}` uses \
+                         syntax not yet supported in the SMT encoding"
                     ));
                 }
             }
@@ -276,11 +284,27 @@ fn check_pair_disjoint(
         Ok(v) => v,
         Err(e) => return CheckResult::Unknown(e),
     };
-    let term_a = match overload_domain_term(def_a, &param_terms, &tm, name_defs, &distinct_preds) {
+    let term_a = match overload_domain_term(
+        &def_a.name.0,
+        &def_a.sigs,
+        &def_a.param_kinds,
+        &param_terms,
+        &tm,
+        name_defs,
+        &distinct_preds,
+    ) {
         Ok(t) => t,
         Err(e) => return CheckResult::Unknown(e),
     };
-    let term_b = match overload_domain_term(def_b, &param_terms, &tm, name_defs, &distinct_preds) {
+    let term_b = match overload_domain_term(
+        &def_b.name.0,
+        &def_b.sigs,
+        &def_b.param_kinds,
+        &param_terms,
+        &tm,
+        name_defs,
+        &distinct_preds,
+    ) {
         Ok(t) => t,
         Err(e) => return CheckResult::Unknown(e),
     };
@@ -314,6 +338,139 @@ fn check_pair_disjoint(
         CheckResult::Unknown(format!(
             "cannot prove overloads of `{}` are disjoint",
             def_a.name.0
+        ))
+    }
+}
+
+/// Prove `group`'s arms jointly cover the group's declared domain — the
+/// obligation an ordered guard group (`FunctionDef::ordered_group`) takes on
+/// in exchange for skipping pairwise disjointness (see
+/// `check_overload_disjointness`). A counterexample is a witness argument
+/// tuple in the declared domain that matches none of the arms' own
+/// (guard-narrowed) domains; per CLAUDE.md's "never silently assume", an
+/// unprovable coverage claim reports `Unknown`, not a silent pass.
+///
+/// `group` must be one whole ordered-group bucket, in file order — callers
+/// (`check_overload_disjointness`) already guarantee this via
+/// `elaborate::check_ordered_group_placement`, which rejects any bucket
+/// that isn't uniformly one single group before this ever runs.
+fn check_ordered_group_coverage(
+    group: &[&SemFunctionDef],
+    name_defs: &NameDefs,
+    timeout_ms: u64,
+) -> CheckResult {
+    let Some(first) = group.first() else {
+        return CheckResult::Proved; // unreachable: callers never pass an empty group
+    };
+
+    // Trivial-skip: a trailing arm whose params are *all* wildcards has a
+    // domain term definitionally identical to the declared-domain term (no
+    // parameter position is filtered), so the union of arms already covers
+    // the full declared domain regardless of the other arms — no live SMT
+    // question to ask, and no solver instantiated.
+    if let Some(last) = group.last()
+        && !last.params.is_empty()
+        && last.params.iter().all(|p| p.is_wildcard)
+    {
+        return CheckResult::Proved;
+    }
+
+    let tm = TermManager::new();
+    let mut solver = configured_solver(&tm, timeout_ms);
+    let wrapping = build_wrapping_preds(&tm);
+    let distinct = match build_distinct_preds(&tm, name_defs, &wrapping) {
+        Ok(d) => d,
+        Err(e) => return CheckResult::Unknown(e),
+    };
+    let distinct_preds = SolverPreds {
+        distinct,
+        wrapping,
+        quotient: QuotientPreds::new(),
+    };
+
+    let domain_parts = match sem_param_set_exprs(
+        first
+            .declared_domain_sigs
+            .first()
+            .and_then(|s| s.domain.as_ref()),
+        first.params.len(),
+    ) {
+        Ok(v) => v,
+        Err(e) => return CheckResult::Unknown(e),
+    };
+    let param_terms = match fresh_overload_param_terms(
+        &first.param_kinds,
+        &domain_parts,
+        &tm,
+        name_defs,
+        &distinct_preds,
+    ) {
+        Ok(v) => v,
+        Err(e) => return CheckResult::Unknown(e),
+    };
+    let declared_term = match overload_domain_term(
+        &first.name.0,
+        &first.declared_domain_sigs,
+        &first.param_kinds,
+        &param_terms,
+        &tm,
+        name_defs,
+        &distinct_preds,
+    ) {
+        Ok(t) => t,
+        Err(e) => return CheckResult::Unknown(e),
+    };
+    let mut arm_terms = Vec::with_capacity(group.len());
+    for def in group {
+        match overload_domain_term(
+            &def.name.0,
+            &def.sigs,
+            &def.param_kinds,
+            &param_terms,
+            &tm,
+            name_defs,
+            &distinct_preds,
+        ) {
+            Ok(t) => arm_terms.push(t),
+            Err(e) => return CheckResult::Unknown(e),
+        }
+    }
+    let covered = match arm_terms.len() {
+        1 => arm_terms.into_iter().next().unwrap(),
+        _ => tm.mk_term(Kind::Or, &arm_terms),
+    };
+    let not_covered = tm.mk_term(Kind::Not, &[covered]);
+    solver.assert_formula(declared_term);
+    solver.assert_formula(not_covered);
+
+    let sat = solver.check_sat();
+    if sat.is_unsat() {
+        CheckResult::Proved
+    } else if sat.is_sat() {
+        let mut params = HashMap::new();
+        for (i, term) in param_terms.iter().enumerate() {
+            let val = solver.get_value(term.clone());
+            let n = if term.sort().is_boolean() {
+                boolean_value(&val) as i64
+            } else {
+                integer_value(&val)
+            };
+            params.insert(format!("arg{i}"), n);
+        }
+        CheckResult::Counterexample {
+            params,
+            output: 0,
+            reason: format!(
+                "arms of `{}`'s ordered guard group do not cover its declared domain — a value \
+                 exists that matches no arm; every ordered guard group's arms must jointly cover \
+                 the group's declared domain (design-decisions.md §7)",
+                first.name.0
+            ),
+        }
+    } else {
+        CheckResult::Unknown(format!(
+            "cannot prove `{}`'s ordered guard group covers its declared domain",
+            first.name.0
         ))
     }
 }
@@ -359,6 +516,16 @@ pub(super) fn check_overload_disjointness(
         }
         for group in &groups {
             if group.len() < 2 {
+                continue;
+            }
+            // `elaborate::check_ordered_group_placement` already guarantees
+            // every member of one bucket agrees on `ordered_group` (all
+            // `None`, or all the same `Some(id)`) before this ever runs, so
+            // `group[0]` is representative for the whole bucket.
+            if group[0].ordered_group.is_some() {
+                let label = format!("{} (ordered guard group, coverage)", name.0);
+                let result = check_ordered_group_coverage(group, name_defs, timeout_ms);
+                out.push((name.0.clone(), vec![(label, result)]));
                 continue;
             }
             let mut sig_results = Vec::new();

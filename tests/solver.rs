@@ -36,6 +36,8 @@ mod named_errors;
 mod named_unions;
 #[path = "solver/none_propagation.rs"]
 mod none_propagation;
+#[path = "solver/ordered_guard_groups.rs"]
+mod ordered_guard_groups;
 #[path = "solver/overflow.rs"]
 mod overflow;
 #[path = "solver/overloads.rs"]
