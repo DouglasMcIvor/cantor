@@ -14,17 +14,21 @@ use crate::{
 };
 
 impl<'src> Parser<'src> {
-    pub(super) fn parse_item(&mut self) -> Result<Item, CompileError> {
+    /// Parse one top-level item — almost always exactly one `Item`, except
+    /// an ordered guard group (see `FunctionDef::ordered_group`), which
+    /// produces one `Item::FunctionDef` per arm from a single leading
+    /// signature.
+    pub(super) fn parse_item(&mut self) -> Result<Vec<Item>, CompileError> {
         // `equiv f, g` — top-level function-equivalence proof obligation.
         if self.peek() == &Token::Equiv {
-            return self.parse_equiv_decl();
+            return Ok(vec![self.parse_equiv_decl()?]);
         }
 
         // Unannotated name def: `Name = [alias|distinct] expr`
         // Disambiguated from annotated defs and functions (which have `:` after the name)
         // by checking the second lookahead token.
         if matches!(self.peek(), Token::Ident(_)) && self.peek2() == &Token::Eq {
-            return self.parse_unannotated_name_def();
+            return Ok(vec![self.parse_unannotated_name_def()?]);
         }
 
         let start_span = self.peek_span();
@@ -54,14 +58,14 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::Eq)?;
                 let value = self.parse_expr(0)?;
                 let end = value.span.end;
-                return Ok(Item::NameDef(NameDef {
+                return Ok(vec![Item::NameDef(NameDef {
                     name,
                     kind: DefKind::Alias,
                     ty: Some(first_expr),
                     value,
                     labels: None,
                     span: Span::new(start_span.start, end),
-                }));
+                })]);
             }
         };
 
@@ -92,7 +96,72 @@ impl<'src> Parser<'src> {
                 span: start_span,
             });
         }
+        let (params, body, body_end) = self.parse_function_impl()?;
+        let mut arms = vec![FunctionDef {
+            name: name.clone(),
+            sigs: sigs.clone(),
+            params,
+            body,
+            ordered_group: None,
+            span: Span::new(start_span.start, body_end),
+        }];
 
+        // Ordered guard group: a signature followed directly by 2+ bodies
+        // with *no* repeated signature line between them (as opposed to the
+        // sig-collection loop above, which already consumed any repeated
+        // `name : ...` lines before we ever got here). Each continuation
+        // arm is `name(` with no `:` — that's what tells it apart from a
+        // fresh, ordinarily-disjoint overload, which always restates its
+        // own signature first.
+        loop {
+            self.skip_newlines()?;
+            if !(self.peek() == &Token::Ident(name.0.clone()) && self.peek2() == &Token::LParen) {
+                break;
+            }
+            let arm_start = self.peek_span();
+            self.advance()?; // consume repeated name
+            let (params, body, body_end) = self.parse_function_impl()?;
+            arms.push(FunctionDef {
+                name: name.clone(),
+                sigs: sigs.clone(),
+                params,
+                body,
+                ordered_group: None,
+                span: Span::new(arm_start.start, body_end),
+            });
+        }
+
+        if arms.len() > 1 {
+            let arity = arms[0].params.len();
+            for arm in &arms {
+                if arm.params.len() != arity {
+                    return Err(CompileError::OrderedGroupArityMismatch {
+                        name: name.0.clone(),
+                        span: arm.span,
+                    });
+                }
+                for p in &arm.params {
+                    if p.guard.is_none() && p.ctor_pattern.is_none() && !p.is_wildcard {
+                        return Err(CompileError::OrderedGroupBareParam {
+                            name: name.0.clone(),
+                            span: p.span,
+                        });
+                    }
+                }
+            }
+            let group_id = self.fresh_ordered_group_id();
+            for arm in &mut arms {
+                arm.ordered_group = Some(group_id);
+            }
+        }
+
+        Ok(arms.into_iter().map(Item::FunctionDef).collect())
+    }
+
+    /// Parse `(params) = expr` / `(params) { stmts }` — the implementation
+    /// tail shared by an ordered guard group's first arm and every
+    /// continuation arm (`parse_item`).
+    fn parse_function_impl(&mut self) -> Result<(Vec<Param>, FunctionBody, u32), CompileError> {
         self.expect(&Token::LParen)?;
         let params = self.parse_params()?;
         self.expect(&Token::RParen)?;
@@ -117,13 +186,7 @@ impl<'src> Parser<'src> {
             FunctionBody::Block(_) => self.peek_span().start,
         };
 
-        Ok(Item::FunctionDef(FunctionDef {
-            name,
-            sigs,
-            params,
-            body,
-            span: Span::new(start_span.start, end),
-        }))
+        Ok((params, body, end))
     }
 
     /// Parse `equiv f, g` — a top-level function-equivalence proof obligation.
@@ -313,6 +376,23 @@ impl<'src> Parser<'src> {
     /// collide.
     fn parse_one_param(&mut self, index: usize) -> Result<Param, CompileError> {
         let span = self.peek_span();
+        if self.peek() == &Token::Underscore {
+            // Wildcard pattern (ordered guard groups only, enforced at
+            // group-validation time in `parse_item`, not here — a bare `_`
+            // is syntactically fine standalone, same as any other param
+            // form, and rejecting it outside a group needs the group
+            // context this function doesn't have). Matches unconditionally,
+            // introduces no binder — the synthesized name is never
+            // referenced.
+            self.advance()?;
+            return Ok(Param {
+                name: Symbol::new(format!("__wild{index}")),
+                guard: None,
+                ctor_pattern: None,
+                is_wildcard: true,
+                span,
+            });
+        }
         if let Token::Int(n) = self.peek().clone() {
             // Literal-arm overloading sugar: `f(0) = ...` narrows this arm's
             // declared domain slice to `{0}`. Desugars to the same
@@ -333,6 +413,7 @@ impl<'src> Parser<'src> {
                 name,
                 guard: Some(guard),
                 ctor_pattern: None,
+                is_wildcard: false,
                 span,
             });
         }
@@ -360,6 +441,7 @@ impl<'src> Parser<'src> {
                     label,
                     binders,
                 }),
+                is_wildcard: false,
                 span: Span::new(span.start, end.end),
             });
         }
@@ -374,6 +456,7 @@ impl<'src> Parser<'src> {
             name,
             guard,
             ctor_pattern: None,
+            is_wildcard: false,
             span: Span::new(span.start, end),
         })
     }

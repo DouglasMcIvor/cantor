@@ -570,6 +570,11 @@ pub struct Param {
     /// exclusive with `guard` (the parser never produces both for one
     /// parameter).
     pub ctor_pattern: Option<CtorPattern>,
+    /// `_` — matches unconditionally, introduces no binder. Mutually
+    /// exclusive with `guard`/`ctor_pattern`. Only legal inside an ordered
+    /// guard group (`FunctionDef::ordered_group`), where it's the required
+    /// spelling for a catch-all arm — see that field's doc comment.
+    pub is_wildcard: bool,
     pub span: Span,
 }
 
@@ -579,6 +584,7 @@ impl Param {
             name: Symbol::new(name),
             guard: None,
             ctor_pattern: None,
+            is_wildcard: false,
             span: Span::dummy(),
         }
     }
@@ -611,6 +617,17 @@ pub struct FunctionDef {
     pub sigs: Vec<FunctionSig>,
     pub params: Vec<Param>,
     pub body: FunctionBody,
+    /// `Some(id)` when this def is one arm of an *ordered guard group* — a
+    /// signature followed directly by 2+ bodies with no repeated signature
+    /// line between them (`parser::items::parse_item`). Every arm of one
+    /// group shares the same freshly-assigned `id`; `None` for today's
+    /// ordinary forms (a lone body, or arms that each repeat their own
+    /// signature line). Ordered-group arms are tried in declaration order,
+    /// first matching guard wins, and need no pairwise disjointness proof —
+    /// see `solver::disjointness::check_ordered_group_coverage` — in
+    /// exchange for a coverage obligation (the arms' domains must jointly
+    /// cover the group's declared domain).
+    pub ordered_group: Option<u32>,
     pub span: Span,
 }
 

@@ -51,6 +51,8 @@ pub enum Token {
     // Built-in functions (reserved — cannot be shadowed by user definitions)
     From,
     Size,
+    // `_` — wildcard parameter pattern (ordered guard groups only).
+    Underscore,
 
     // Identifiers
     Ident(String),
@@ -144,6 +146,7 @@ impl fmt::Display for Token {
             Token::NoneLit => f.write_str("none"),
             Token::From => f.write_str("from"),
             Token::Size => f.write_str("size"),
+            Token::Underscore => f.write_str("_"),
             Token::Plus => f.write_str("+"),
             Token::PlusPlus => f.write_str("++"),
             Token::Minus => f.write_str("-"),
@@ -544,6 +547,7 @@ impl<'src> Lexer<'src> {
             "return" => Token::Return,
             "from" => Token::From,
             "size" => Token::Size,
+            "_" => Token::Underscore,
             _ => Token::Ident(word.to_owned()),
         };
         (tok, Span::new(start as u32, self.pos as u32))

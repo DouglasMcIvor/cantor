@@ -277,6 +277,7 @@ fn evaluate_expr(state: &ReplState, expr: cantor::ast::Expr) {
         sigs: vec![],
         params: vec![],
         body: FunctionBody::Expr(expr),
+        ordered_group: None,
         span: Span::dummy(),
     });
 

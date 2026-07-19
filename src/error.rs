@@ -94,6 +94,23 @@ pub enum CompileError {
         detail: String,
         span: Span,
     },
+    /// A param inside an ordered guard group (`FunctionDef::ordered_group`)
+    /// has no `for` guard, constructor pattern, or `_` wildcard — a bare
+    /// identifier would otherwise silently swallow every arm declared after
+    /// it, indistinguishably from an intentional `_` catch-all. `_` is the
+    /// only legal spelling for a catch-all inside such a group; a bare
+    /// param outside a group is unaffected by this check.
+    OrderedGroupBareParam {
+        name: String,
+        span: Span,
+    },
+    /// Two arms of one ordered guard group declare a different number of
+    /// parameters — every arm shares the group's single signature, so their
+    /// arities must agree too.
+    OrderedGroupArityMismatch {
+        name: String,
+        span: Span,
+    },
     /// A call to an overloaded name (backlog.md "function overloads —
     /// support different kinds") whose argument Kinds don't match any
     /// declared overload's parameter-Kind bucket — e.g. calling `f(true)`
@@ -178,6 +195,22 @@ impl std::fmt::Display for CompileError {
             Self::OverloadKindMismatch { name, detail, .. } => {
                 write!(f, "overloads of `{name}` disagree: {detail}")
             }
+            Self::OrderedGroupBareParam { name, .. } => {
+                write!(
+                    f,
+                    "`{name}`'s ordered guard group has a bare, unguarded parameter — every \
+                     arm needs a `for` guard, a constructor pattern, or `_`; a bare identifier \
+                     would silently match everything, including arms declared after it"
+                )
+            }
+            Self::OrderedGroupArityMismatch { name, .. } => {
+                write!(
+                    f,
+                    "`{name}`'s ordered guard group has arms of differing arity — every arm \
+                     shares one signature, so they must all declare the same number of \
+                     parameters"
+                )
+            }
             Self::NoMatchingOverload { name, detail, .. } => {
                 write!(f, "no overload of `{name}` matches: {detail}")
             }
@@ -254,6 +287,8 @@ impl CompileError {
             Self::InvalidInterpolation { span, .. } => span,
             Self::NamingConvention { span, .. } => span,
             Self::OverloadKindMismatch { span, .. } => span,
+            Self::OrderedGroupBareParam { span, .. } => span,
+            Self::OrderedGroupArityMismatch { span, .. } => span,
             Self::NoMatchingOverload { span, .. } => span,
             Self::Unsupported { span, .. } => span,
             Self::InvalidSetExpression { span, .. } => span,
@@ -279,6 +314,8 @@ impl CompileError {
             Self::InvalidInterpolation { span, .. } => Some(*span),
             Self::NamingConvention { span, .. } => Some(*span),
             Self::OverloadKindMismatch { span, .. } => Some(*span),
+            Self::OrderedGroupBareParam { span, .. } => Some(*span),
+            Self::OrderedGroupArityMismatch { span, .. } => Some(*span),
             Self::NoMatchingOverload { span, .. } => Some(*span),
             Self::Unsupported { span, .. } => Some(*span),
             Self::InvalidSetExpression { span, .. } => Some(*span),

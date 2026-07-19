@@ -16,6 +16,10 @@ pub struct Parser<'src> {
     lexer: Lexer<'src>,
     peek0: (Token, Span),
     peek1: (Token, Span),
+    /// Fresh-id counter for `ast::FunctionDef::ordered_group` — bumped once
+    /// per ordered guard group parsed, never reused, so two groups (even of
+    /// the same name) never collide.
+    next_ordered_group_id: u32,
 }
 
 impl<'src> Parser<'src> {
@@ -27,7 +31,16 @@ impl<'src> Parser<'src> {
             lexer,
             peek0,
             peek1,
+            next_ordered_group_id: 0,
         })
+    }
+
+    /// Allocate a fresh id for a new ordered guard group — see
+    /// `ast::FunctionDef::ordered_group`.
+    pub(super) fn fresh_ordered_group_id(&mut self) -> u32 {
+        let id = self.next_ordered_group_id;
+        self.next_ordered_group_id += 1;
+        id
     }
 
     // ── Lookahead ─────────────────────────────────────────────────────────────
@@ -92,7 +105,7 @@ impl<'src> Parser<'src> {
         let mut items = Vec::new();
         self.skip_newlines()?;
         while self.peek() != &Token::Eof {
-            items.push(self.parse_item()?);
+            items.extend(self.parse_item()?);
             self.skip_newlines()?;
         }
         Ok(items)

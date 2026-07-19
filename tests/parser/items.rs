@@ -261,3 +261,134 @@ fn ctor_pattern_param_index_avoids_collision_with_second_param() {
     assert_eq!(def.params[0].name.0, "__pat0");
     assert_eq!(def.params[1].name.0, "__pat1");
 }
+
+// ── Ordered guard groups (`_` wildcard + shared-signature arms) ────────────────
+
+#[test]
+fn underscore_param_sets_is_wildcard() {
+    let items = parse_file("f : Int -> Int\nf(x for x < 0) = -x\nf(_) = 0").unwrap();
+    let Item::FunctionDef(ref def) = items[1] else {
+        panic!("expected FunctionDef")
+    };
+    assert!(def.params[0].is_wildcard);
+    assert!(def.params[0].guard.is_none());
+    assert!(def.params[0].ctor_pattern.is_none());
+}
+
+#[test]
+fn two_bodies_no_repeated_sig_form_ordered_group() {
+    let items = parse_file("sign : Int -> Int\nsign(x for x < 0) = -x\nsign(_) = 0").unwrap();
+    assert_eq!(items.len(), 2);
+    let groups: Vec<Option<u32>> = items
+        .iter()
+        .map(|item| {
+            let Item::FunctionDef(def) = item else {
+                panic!("expected FunctionDef")
+            };
+            def.ordered_group
+        })
+        .collect();
+    assert!(groups[0].is_some());
+    assert_eq!(groups[0], groups[1]);
+}
+
+#[test]
+fn three_arm_ordered_group_all_share_one_group_id() {
+    let items =
+        parse_file("sign : Int -> Int\nsign(x for x < 0) = -x\nsign(x for x > 0) = x\nsign(_) = 0")
+            .unwrap();
+    assert_eq!(items.len(), 3);
+    let ids: Vec<u32> = items
+        .iter()
+        .map(|item| {
+            let Item::FunctionDef(def) = item else {
+                panic!("expected FunctionDef")
+            };
+            def.ordered_group.expect("expected an ordered_group id")
+        })
+        .collect();
+    assert_eq!(ids[0], ids[1]);
+    assert_eq!(ids[1], ids[2]);
+}
+
+#[test]
+fn single_body_still_has_no_ordered_group() {
+    let items = parse_file("f : Int -> Int\nf(x) = x").unwrap();
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
+    assert!(def.ordered_group.is_none());
+}
+
+#[test]
+fn repeated_sig_form_still_has_no_ordered_group() {
+    // Today's disjoint-overload form: every arm restates its own signature.
+    // Must NOT be mistaken for an ordered group.
+    let items =
+        parse_file("sign : {0} -> Int\nsign(x) = 0\nsign : Int -> Int\nsign(x for x < 0) = -x")
+            .unwrap();
+    assert_eq!(items.len(), 2);
+    for item in &items {
+        let Item::FunctionDef(def) = item else {
+            panic!("expected FunctionDef")
+        };
+        assert!(def.ordered_group.is_none());
+    }
+}
+
+#[test]
+fn two_separate_ordered_groups_get_distinct_ids() {
+    let items = parse_file(
+        "f : Int -> Int\nf(x for x < 0) = -x\nf(_) = 0\ng : Int -> Int\ng(x for x < 0) = -x\ng(_) = 0",
+    )
+    .unwrap();
+    let ids: Vec<u32> = items
+        .iter()
+        .map(|item| {
+            let Item::FunctionDef(def) = item else {
+                panic!("expected FunctionDef")
+            };
+            def.ordered_group.expect("expected an ordered_group id")
+        })
+        .collect();
+    assert_ne!(ids[0], ids[2]);
+}
+
+#[test]
+fn bare_unguarded_param_outside_group_still_legal() {
+    // No group formed (only one body) — a bare param is unaffected.
+    let items = parse_file("f : Int -> Int\nf(x) = x").unwrap();
+    let Item::FunctionDef(ref def) = items[0] else {
+        panic!("expected FunctionDef")
+    };
+    assert!(!def.params[0].is_wildcard);
+}
+
+#[test]
+fn bare_unguarded_param_in_last_arm_of_group_is_rejected() {
+    let err = parse_file("f : Int -> Int\nf(x for x < 0) = -x\nf(y) = y")
+        .expect_err("expected a parse error");
+    let cantor::error::CompileError::OrderedGroupBareParam { name, .. } = err else {
+        panic!("expected OrderedGroupBareParam, got {err:?}");
+    };
+    assert_eq!(name, "f");
+}
+
+#[test]
+fn bare_unguarded_param_in_first_arm_of_group_is_rejected() {
+    let err = parse_file("f : Int -> Int\nf(x) = x\nf(_) = 0").expect_err("expected a parse error");
+    let cantor::error::CompileError::OrderedGroupBareParam { name, .. } = err else {
+        panic!("expected OrderedGroupBareParam, got {err:?}");
+    };
+    assert_eq!(name, "f");
+}
+
+#[test]
+fn mismatched_arity_in_ordered_group_arm_is_rejected() {
+    let err = parse_file("f : Int -> Int\nf(x for x < 0) = -x\nf(x, y) = x + y")
+        .expect_err("expected a parse error");
+    let cantor::error::CompileError::OrderedGroupArityMismatch { name, .. } = err else {
+        panic!("expected OrderedGroupArityMismatch, got {err:?}");
+    };
+    assert_eq!(name, "f");
+}

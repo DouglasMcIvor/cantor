@@ -300,6 +300,19 @@ fn lex_ident_with_underscore() {
 }
 
 #[test]
+fn lex_bare_underscore_is_wildcard_token() {
+    assert_eq!(lex_all("_"), vec![Token::Underscore, Token::Eof]);
+}
+
+#[test]
+fn lex_underscore_prefixed_ident_is_still_ident() {
+    assert_eq!(
+        lex_all("_foo"),
+        vec![Token::Ident("_foo".into()), Token::Eof]
+    );
+}
+
+#[test]
 fn lex_keyword_prefix_not_keyword() {
     // `true_value` is an identifier, not `true` + `_value`
     assert_eq!(
