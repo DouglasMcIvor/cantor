@@ -34,7 +34,10 @@ You probably don't want to read this unless you're me.
     -  `cargo deny` for vulns, dupes and licensing
     -  `cargo +nightly miri test` for UB, aliasing, invalid references
   - "giving every stage a `validate()` method"
-- `check pred(x) for x in X` keyword for property based testing, unit testing as the degenerate case. Sits between `assert` and `require` in strength. Maybe `check ... or assume` for another assume variation.
+- `check pred(x) for x in X` keyword for property based testing, unit testing as the degenerate case. 
+  Sits between `assert` and `require` in strength. 
+  Maybe `check ... or assume` for another assume variation.
+- 'abduction' got me thinking: could we provide some priors and actually quantify how likely a check constraint is to hold?
 - termination checking on recursion and loops with a 'decreases n' annotation to declare a ranking function.
   automatic inference of the ranking function structurally where possible
 - more set comprehensions features
