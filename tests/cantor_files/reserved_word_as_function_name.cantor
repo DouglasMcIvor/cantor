@@ -1,0 +1,9 @@
+-- `size` is the built-in set-cardinality keyword, so it can't name a
+-- function. The parse error lands on the *signature* line, which looks
+-- perfectly well-formed, so the message has to say the word is reserved —
+-- otherwise "expected identifier, found size" reads like a compiler bug.
+size : Nat -> Nat
+size(x) = x
+
+main : -> Nat
+main() = size(1)

@@ -90,9 +90,17 @@ impl<'src> Parser<'src> {
         let (tok, _) = self.advance()?;
         match tok {
             Token::Ident(name) => Ok(Symbol::new(name)),
+            // A reserved word here is nearly always someone naming a
+            // function or set after a keyword — `size : Tree -> Nat` is the
+            // motivating case, since `size` reads like an ordinary name.
+            // Plain "found size" left you staring at a definition that looks
+            // perfectly well-formed, so say *why* it isn't a name.
             other => Err(CompileError::UnexpectedToken {
                 expected: "identifier".into(),
-                found: other.to_string(),
+                found: match other.reserved_spelling() {
+                    Some(word) => format!("reserved word `{word}`"),
+                    None => other.to_string(),
+                },
                 span,
             }),
         }

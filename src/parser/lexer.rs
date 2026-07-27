@@ -113,40 +113,113 @@ pub enum StrPart {
     Expr(String, Span),
 }
 
+/// The reserved-word table, written **once** and expanded into both
+/// directions: `Token::reserved` (source word → token, used by the lexer)
+/// and `Token::reserved_spelling` (token → source word, used by `Display`
+/// and by the parser's "you can't call something `size`" diagnostic).
+///
+/// Keeping one list is the point. When these were two hand-maintained
+/// matches, adding a keyword meant editing both, and forgetting the second
+/// silently produced error messages that named the wrong thing.
+macro_rules! reserved_words {
+    ($($word:literal => $variant:ident),* $(,)?) => {
+        impl Token {
+            /// Every reserved word, for callers that need the whole list
+            /// rather than a single lookup (README's documented list is
+            /// checked against this in `tests/parser/errors.rs`).
+            pub const RESERVED_WORDS: &'static [&'static str] = &[$($word),*];
+
+            /// The token `word` lexes to, if `word` is reserved.
+            pub fn reserved(word: &str) -> Option<Token> {
+                match word {
+                    $($word => Some(Token::$variant),)*
+                    _ => None,
+                }
+            }
+
+            /// This token's source spelling, if it is a reserved word —
+            /// `None` for identifiers, literals, and punctuation.
+            pub fn reserved_spelling(&self) -> Option<&'static str> {
+                match self {
+                    $(Token::$variant => Some($word),)*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+reserved_words! {
+    "true" => True,
+    "false" => False,
+    "not" => Not,
+    "and" => And,
+    "or" => Or,
+    "in" => In,
+    "rem" => Rem,
+    "quot" => Quot,
+    "if" => If,
+    "then" => Then,
+    "else" => Else,
+    "mut" => Mut,
+    "assert" => Assert,
+    "assume" => Assume,
+    "require" => Require,
+    "alias" => Alias,
+    "distinct" => Distinct,
+    "equiv" => Equiv,
+    "while" => While,
+    "for" => For,
+    "fail" => Fail,
+    "none" => NoneLit,
+    "return" => Return,
+    "from" => From,
+    "size" => Size,
+    "_" => Underscore,
+}
+
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            // Listed as an explicit alternation rather than folded into a
+            // catch-all so this match stays exhaustive: a newly added token
+            // must be handled here, and a newly added *keyword* fails to
+            // compile until it appears in both this list and the table
+            // above. The spelling itself still lives in exactly one place.
+            Token::True
+            | Token::False
+            | Token::Not
+            | Token::And
+            | Token::Or
+            | Token::In
+            | Token::Rem
+            | Token::Quot
+            | Token::If
+            | Token::Then
+            | Token::Else
+            | Token::Mut
+            | Token::Assert
+            | Token::Assume
+            | Token::Require
+            | Token::Return
+            | Token::Alias
+            | Token::Distinct
+            | Token::Equiv
+            | Token::While
+            | Token::For
+            | Token::Fail
+            | Token::NoneLit
+            | Token::From
+            | Token::Size
+            | Token::Underscore => f.write_str(
+                self.reserved_spelling()
+                    .expect("every variant listed here is in the reserved_words! table"),
+            ),
             Token::Int(n) => write!(f, "{n}"),
             Token::Char(c) => write!(f, "{c:?}"),
             Token::Str(s) => write!(f, "{s:?}"),
             Token::InterpStr(_) => f.write_str("interpolated string"),
             Token::Ident(s) => write!(f, "`{s}`"),
-            Token::True => f.write_str("true"),
-            Token::False => f.write_str("false"),
-            Token::Not => f.write_str("not"),
-            Token::And => f.write_str("and"),
-            Token::Or => f.write_str("or"),
-            Token::In => f.write_str("in"),
-            Token::Rem => f.write_str("rem"),
-            Token::Quot => f.write_str("quot"),
-            Token::If => f.write_str("if"),
-            Token::Then => f.write_str("then"),
-            Token::Else => f.write_str("else"),
-            Token::Mut => f.write_str("mut"),
-            Token::Assert => f.write_str("assert"),
-            Token::Assume => f.write_str("assume"),
-            Token::Require => f.write_str("require"),
-            Token::Return => f.write_str("return"),
-            Token::Alias => f.write_str("alias"),
-            Token::Distinct => f.write_str("distinct"),
-            Token::Equiv => f.write_str("equiv"),
-            Token::While => f.write_str("while"),
-            Token::For => f.write_str("for"),
-            Token::Fail => f.write_str("fail"),
-            Token::NoneLit => f.write_str("none"),
-            Token::From => f.write_str("from"),
-            Token::Size => f.write_str("size"),
-            Token::Underscore => f.write_str("_"),
             Token::Plus => f.write_str("+"),
             Token::PlusPlus => f.write_str("++"),
             Token::Minus => f.write_str("-"),
@@ -521,35 +594,7 @@ impl<'src> Lexer<'src> {
             self.advance_char();
         }
         let word = &self.src[start..self.pos];
-        let tok = match word {
-            "true" => Token::True,
-            "false" => Token::False,
-            "not" => Token::Not,
-            "and" => Token::And,
-            "or" => Token::Or,
-            "in" => Token::In,
-            "rem" => Token::Rem,
-            "quot" => Token::Quot,
-            "if" => Token::If,
-            "then" => Token::Then,
-            "else" => Token::Else,
-            "mut" => Token::Mut,
-            "assert" => Token::Assert,
-            "assume" => Token::Assume,
-            "require" => Token::Require,
-            "alias" => Token::Alias,
-            "distinct" => Token::Distinct,
-            "equiv" => Token::Equiv,
-            "while" => Token::While,
-            "for" => Token::For,
-            "fail" => Token::Fail,
-            "none" => Token::NoneLit,
-            "return" => Token::Return,
-            "from" => Token::From,
-            "size" => Token::Size,
-            "_" => Token::Underscore,
-            _ => Token::Ident(word.to_owned()),
-        };
+        let tok = Token::reserved(word).unwrap_or_else(|| Token::Ident(word.to_owned()));
         (tok, Span::new(start as u32, self.pos as u32))
     }
 

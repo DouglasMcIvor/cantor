@@ -27,6 +27,24 @@ fn parse_error_message_goes_to_stderr() {
     );
 }
 
+#[test]
+fn reserved_word_as_function_name_says_reserved_word() {
+    // Regression guard for a message, not for behaviour: naming a function
+    // `size` has always been rejected, but "expected identifier, found size"
+    // pointed at a signature line that looks fine and never explained why.
+    let out = run_file("reserved_word_as_function_name.cantor");
+    assert_ne!(
+        out.code, 0,
+        "expected non-zero exit:\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("reserved word") && out.stderr.contains("size"),
+        "expected a reserved-word diagnostic naming `size`:\n{}",
+        out.stderr
+    );
+}
+
 // ── Compile-time diagnostics (CompileError::Diagnostic/Unsupported) ──────────
 //
 // Regression tests for the error-taxonomy split (src/error.rs): these two
