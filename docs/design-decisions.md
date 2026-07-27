@@ -108,7 +108,17 @@ implementation detail the developer should not rely on.
      recursive reference that shows up somewhere *other* than a bare union
      arm or Cartesian-product factor — e.g. nested under `&`/`-`/a
      comprehension — is reported as unsupported rather than silently
-     guessed at either way).
+     guessed at either way). The dependency graph it walks covers `alias`
+     and `distinct` definitions alike: an earlier version excluded
+     `distinct`, on a then-true assumption about what `kind::set_kind`
+     recurses into, and silently stopped catching recursive `distinct` sets
+     when that assumption expired. `src/recursion.rs` is the backstop behind
+     it — a depth counter on the two passes that expand a definition
+     (`kind::set_kind`, `solver::membership::membership_constraint`) that
+     turns any future hole in the check into a reportable `Ice` instead of a
+     stack overflow, which is the one failure mode that escapes this
+     document's "fail loudly, never silently" rule entirely (the process
+     aborts: no span, no message, nothing to catch).
   2. **`decreasing by <measure>`** — explicit annotation escape hatch for
      non-structural cases. DEFERRED past v0 (ship as "not implemented yet"
      error initially).

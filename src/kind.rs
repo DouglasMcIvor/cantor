@@ -114,6 +114,13 @@ pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileEr
             if let Some(builtin) = builtins::lookup(&sym.0) {
                 builtin.kind
             } else if let Some(def) = name_defs.get(sym) {
+                // The one place this function leaves the (finite) expression
+                // tree it was handed and walks into another definition — so
+                // the one place a cycle in the definitions can spin forever.
+                // `semantics::wellfounded` rejects such cycles before we get
+                // here; the guard is the backstop for when that check next
+                // develops a hole (see src/recursion.rs).
+                let _guard = crate::recursion::enter_definition(&sym.0)?;
                 match def.kind {
                     // `distinct` is a purely solver-side opacity layer — at
                     // the LLVM level a `D = distinct B` value has exactly

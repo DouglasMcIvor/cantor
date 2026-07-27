@@ -5,6 +5,7 @@ pub mod kind;
 pub mod names;
 pub mod parser;
 pub mod pipeline;
+pub mod recursion;
 pub use cantor_runtime as runtime;
 pub mod semantics;
 pub mod solver;

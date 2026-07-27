@@ -373,6 +373,13 @@ pub(crate) fn membership_constraint<'tm>(
             None => {
                 // Check user-defined set definitions.
                 if let Some(def) = name_defs.get(sym) {
+                    // Expanding an alias is the one step here that leaves the
+                    // expression tree for another definition, so it's the one
+                    // step a definition cycle can spin forever on. Panics
+                    // rather than returning (no `CompileError` in this
+                    // function's signature) — still far better than the stack
+                    // overflow it replaces. See src/recursion.rs.
+                    let _guard = crate::recursion::enter_definition_or_panic(&sym.0);
                     match def.kind {
                         // Alias: transparent — expand to the RHS set expression.
                         DefKind::Alias => {
