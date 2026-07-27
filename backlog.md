@@ -117,8 +117,50 @@ You probably don't want to read this unless you're me.
 - human intros (familiar with types, newbie with the word type taboo'd) and LLM intro. The human intros would be good to include a bunch of Venn diagrams and ye olde curved arrows between ovals representing functions to visualise the concepts along the way.
 - error messages
   - review and improve error messages
-  - suggested constraints in error messages
+  - suggested constraints in error messages. **Use abduction, not the unsat
+    core** (design-decisions.md §1 said unsat core; corrected 2026-07-27).
+    The proof query asserts the domain constraints plus the *negation* of the
+    range obligation, so a failed check comes back `sat` — there is no unsat
+    core in exactly the case where the user needs a suggestion. cvc5's
+    `get_abduct` (`cvc5-0.4.0/src/solver.rs:653`) solves the right problem
+    directly: find ψ with `domain ∧ ψ ⊨ goal`. Use the grammar-constrained
+    variant (same `Grammar` type as the SyGuS bindings below) so every
+    suggestion is expressible in Cantor syntax — unrestricted abduction will
+    happily return the goal itself. Spike it standalone against the `cvc5`
+    crate first, the way `nl-cov` was validated in
+    docs/int-soundness-review-2026-07-05.md; performance in our setting is
+    unknown. Runs on the error path only, behind the usual `--timeout`.
+  - **unsat core has its own, different feature**: on a check that *succeeded*,
+    the core says which domain hypotheses were actually needed — so it can
+    report over-constrained signatures ("declared `NatPos`, proof only used
+    `x >= 0`"). Worth doing, but it is not the suggested-constraints feature.
+  - **static "roof" diagnostics** — some obligations are in fragments with no
+    decision procedure, and today they present as an indefinite hang rather
+    than a result (cvc5's `tlimit` is advisory; the Kleene-star fixture blows
+    past the 60s default, and the `x*x` review measured `tlimit=5000` ignored
+    outright). Detect the known-unanswerable shapes *before* calling cvc5 and
+    report a specific `Unknown` with a concrete fix. The main one today:
+    a quantified sequence-membership obligation combined with a loop
+    inductive step. Note the quantifier comes from the element set having a
+    scalar constraint — `Nat*` emits `∀i. out[i] >= 0`, whereas `Int*`,
+    `Char*` and `Bool*` are `Membership::Unconstrained` and emit no
+    quantifier at all, so "use `Int*` and assert non-negativity where the
+    elements are consumed" is a real, checkable suggestion no solver could
+    produce (it never returns). See
+    `tests/solver/vectors.rs:539`'s ignored fixture and
+    design-decisions.md's Kleene-star note.
   - counterexample printing TODOs
+- run cvc5 out-of-process. Three problems, one change: (a) `--timeout` becomes
+  *enforceable* — cvc5's own `tlimit` is advisory and demonstrably ignored on
+  the two known hangs, so today a roof-hit is an indefinite hang rather than
+  an honest `Unknown`, which violates the never-silently-assume principle
+  more badly than a plain `Unknown` would; (b) it retires the process-wide
+  `Mutex` in `check_file` that works around cvc5's concurrency segfaults; and
+  (c) with (b) gone, per-function checks can run in parallel (see "SMT solvers
+  are branch heavy" under *Things that surprised me* — the parallelism has to
+  come from running many solvers, not from one faster solver). Cost is
+  serializing queries to a worker process. Not urgent, but it's the structural
+  fix underneath several separate symptoms.
 - recursive set definitions: **Is this already done?**
   ```
   Tree = Int | Tree * Tree
