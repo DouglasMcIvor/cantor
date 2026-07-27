@@ -136,274 +136,49 @@ Algorithm:
 - could also add: tuple-level constraint `x, y : Int * Nat = ...`; nested patterns; `_` wildcard; per-binding mutability
 - along with recursive set definitions we get should allow constructors in binders
   ```
-  Tree = leaf: Int | leaf2: (X * Y) | node: (Tree * Tree)
+  Tree = distinct (Leaf: Int | Node: (Tree * Tree))
 
-  size(x, y : X, Y) = ...
-  size(Tree.leaf2(x, y)) = ..
+  area(Shape.Circle(r)) = r * r        -- DONE
+  area(Shape.Rect(x, y)) = x * y       -- DONE (tuple arm destructures)
   ```
-  Started prototyping this (2026-07-18, session_014Qh7K9iYP6WY8zKzc8VcjK) as step 4 of the
-  pattern-matching plan, using only Int-Kind-compatible named-union arms (see "named union
-  sets" above) — `size(Shape.Circle(r)) = ...` desugaring to a guard-style comprehension
-  domain (`{r for r in Shape if from(r) in Circle'sBasis}`), reusing guards' machinery.
-  Reverted before landing: `r` inside the body has *solver* sort `Shape` (uninterpreted),
-  not `Nat`, even though `from` is a runtime no-op — so `r * r`-style arithmetic on the
-  raw pattern binder is a genuine sort mismatch, not just a missing SMT encoding. Fixing
-  it needs either a real `let r = from(param)` rewrite prepended to the body (hygiene-aware
-  — must not capture an inner rebinding of `r`, e.g. a nested comprehension) or a different
-  design entirely. Two genuine, general, independently-useful bugs *were* found and fixed
-  along the way and are already shipped: `solver::sort::set_sort`'s `Comprehension` arm
-  hardcoded `integer_sort()` regardless of source (now delegates to the source's own sort),
-  and `solver::membership::encode_comp_expr` had no `from(x)` support in a filter at all.
+  **DONE** for non-recursive named unions where the argument's arm is statically
+  visible at the call site (commit `4c04957`, pattern-matching plan step 4/4).
+  User-facing writeup is in README.md ("Constructor patterns"), *not*
+  design-decisions.md — the latter only covers the labeled-arm tag-forcing
+  prerequisite. Tests: `tests/{solver,cli}/constructor_patterns.rs`.
+  Design notes live in the commit message; what follows is only what's left.
 
-  **Update (2026-07-18, later session)**: `distinct`'s Int-only basis assumption — the thing
-  flagged above as blocking a tuple/cross-kind arm — is now lifted for the *single
-  homogeneous Kind* case (`kind::is_distinct_basis_representable`,
-  `solver::preds::build_distinct_preds`'s two-pass `mk_D`/`from_D` sort resolution): `distinct`
-  can now wrap `Bool`, `Char`, a tuple, a vector, or a `distinct`-over-`distinct` chain, and a
-  named union's arms can share any one of those Kinds (not just `Int`), see
-  `tests/solver/distinct_basis.rs`. Still NOT lifted: a named union whose arms have
-  *genuinely different* Kinds from each other (`Circle: Nat | Rect: Nat * Nat`) — `Shape`
-  would need to become a real tagged-union-shaped `distinct` (wrap/unwrap via the arm's own
-  `ck_*` constructor before/after `mk_Shape`/`from_Shape`, mirroring
-  `solver::sort::build_union_datatype_sort`), which is genuinely new solver *and* codegen
-  work, not a hardcode removal — so this is still the right next step for resuming step 4,
-  now with one fewer prerequisite in the way. Two more bugs found (and fixed) while lifting
-  the basis restriction, both worth rereading before similar work: `solver::sort::set_sort`'s
-  `Var` arm checked `kind_of == Bool` *before* checking whether the var was a registered
-  `distinct` name, so a `distinct Bool` set was silently treated as the builtin `Bool` sort
-  itself; and `encode_call.rs`'s constructor blocks passed an array literal straight to
-  `mk_D` without coercing it to a `Seq` first (array literals always encode as a plain CVC5
-  tuple unless something downstream asks for a sequence — ordinary function calls get this
-  bridging for free from `membership_constraint`, but `ApplyUf` doesn't bridge).
+  Remaining work, in rough priority order:
 
-  A third bug was found the same way and turned out to be more than a curiosity — it's
-  **FIXED**, same session: `solver::sort::set_sort`'s `Union` arm treated **any** union with a
-  tuple arm as cross-kind (needs the tagged-datatype wrapper), even when both arms have the
-  *identical* tuple shape (`(Nat*Nat) | (Nat*Nat)`) — `kind::union_if_distinct` correctly
-  dedups this to a bare `Kind::Tuple` at the Kind level, so codegen already treated it as
-  untagged, but `set_sort` didn't check `ls == rs` the way it already did for the sequence
-  case right below it in the same match. Two live consequences, not just a plain-code
-  curiosity: on ordinary (non-`distinct`) code, `.0`/`.1` projection on such a value came back
-  a fabricated counterexample for a provably-valid program
-  (`tests/solver/cross_kind_unions.rs::identical_shape_tuple_union_domain_projection_proved`);
-  on a `distinct` named union with two same-shape tuple-arm labels (squarely inside this
-  session's own newly-lifted scope), it crashed `cvc5` outright — a raw C++-level abort, not
-  even a catchable Rust panic — because `mk_Shape`'s declared domain sort (the wrongly-cross-
-  kind DT) didn't match the plain-tuple argument term
-  (`tests/solver/distinct_basis.rs::named_union_tuple_arms_same_shape_proved`). Fixed by
-  gating both the tuple and (for parity) the general-DT cross-kind conditions on `ls != rs`,
-  same shape as the sequence/Bool checks already next to them.
+  - **`==`/`!=` on two `Kind::TaggedUnion` values is unsound at codegen** — still
+    live (`Shape.Circle(3) != Shape.Radius(3)` is solver-proved true, runs as
+    `false`). `codegen::expr::compile_binop`'s generic path calls
+    `narrow_tagged_union`, which drops the tag and compares payload only. Old
+    general code, but only *reachable* since labeled constructors let a user force
+    two overlapping same-Kind arms. Fix is either (a) tag-first compare with a
+    per-arm branch over the active arm's own leaves (mirror `codegen::show`'s
+    dispatch — avoids comparing `undef` trailing leaf slots), or (b) zero-fill
+    unused leaves at every `TaggedUnion` construction site so a whole-struct
+    compare is safe. Worked around in the suite by never comparing these values
+    (`tests/cantor_files/named_union_shape.cantor`).
 
-  **Update (2026-07-18, same day, third session)**: heterogeneous-Kind named-union arms
-  (`Circle: Nat | Rect: Nat * Nat`) are now **DONE** —
-  `tests/solver/heterogeneous_named_unions.rs`,
-  `tests/cli/heterogeneous_named_unions.rs`. Turned out smaller than expected: `kind::set_kind`,
-  `solver::preds::build_distinct_preds`, `from(x)`'s solver *and* codegen encoding, and
-  `sort::build_union_datatype_sort` were all *already* fully generic once the elaboration gate
-  (`semantics::elaborate::validate_distinct_basis`, née the `is_distinct_basis_representable`
-  check) allowed a `Kind::TaggedUnion` basis through for a labeled def. The two genuinely new
-  pieces were the constructor on each side: solver (`encode_call.rs`'s `coerce_arg_to_basis`)
-  now wraps the argument into the union DT's matching arm constructor via
-  `sort::maybe_coerce`/`coerce_to_union_dt` before `ApplyUf(mk_Shape, …)`; codegen
-  (`expr_call.rs`'s `Name.Label(x)` block) now builds the real `{ i32 tag, i64 leaves }` struct
-  via the *already-existing* `coerce::build_tagged_union_value` (previously only reachable from
-  ordinary `A | B` coercion) instead of the same-Kind case's pure passthrough, driven by a new
-  `Compiler::named_union_arms` table (`compile.rs`, populated the same `kind::set_kind`-over-a-
-  local-`ast::NameDefs` way `elaborate.rs` computes Kind, no solver dependency).
+  - **Indirect calls stay `Unknown`/counterexample** — `area(pick(b))`, where
+    `pick`'s returned arm isn't visible at the call site. Needs a cross-function
+    fact ("any `Shape` tagged `Circle` has a payload in `Nat`") for an *opaque*
+    term. **Dead end, do not retry as-is**: asserting it as a per-arm `Forall` over
+    the union's datatype sort made cvc5 report the entire assertion set as
+    inconsistent — a claim *and* its negation both came back "Proved". Reproduced
+    minimally against the `cvc5` crate directly with no Cantor code, independent of
+    `mbqi`/`nl-cov`/timeout. Strictly worse than the gap it closes, so it was
+    reverted. Worth retrying on a newer cvc5, or reshaping as a ground per-call
+    obligation threaded through call contracts (a real solver-architecture change).
 
-  **Update (2026-07-18, fourth session): the pairwise-distinctness v0 scope cut is now
-  LIFTED** — `Circle: Nat | Square: NatPos | Rect: Nat * Nat` (two `Int`-Kind arms mixed with a
-  `Tuple`-Kind one) is accepted and proved. The suspected constructor-naming-collision bug
-  turned out to be real, but not where first suspected: the domain-membership check itself
-  (`membership_constraint_for_dt`'s name-based lookup, `t ∈ whole_union`) is actually sound even
-  with colliding constructor names — `(P∧Q1)∨(P∧Q2) = P∧(Q1∨Q2)` holds regardless of whether the
-  two disjuncts happen to share a tester, so the `f : Nat | NatPos | (Nat*Nat) -> Int` smoke test
-  never could have shown a wrong proof. The real bug was in the *labeled constructor* call site:
-  `encode_call.rs`'s `coerce_arg_to_basis` wrapped a constructor's argument into the union DT by
-  matching CVC5 *sort* (`sort::coerce_to_union_dt`), not by label — so `Shape.Circle(5)` and
-  `Shape.Square(5)` (both `Int`-sorted) always resolved to the *same* physical constructor
-  regardless of which label was called, making them the literally identical CVC5 term.
-  Confirmed with the pairwise check temporarily disabled: `assert Shape.Circle(5) !=
-  Shape.Square(5)` was wrongly reported "always fails" — a genuine solver-level soundness bug,
-  not just a cosmetic naming collision. `codegen::compile::compile_elaborated` had an
-  independent, unrelated bug on the same feature: `Compiler::named_union_arms` zipped `labels`
-  (one per syntactic arm) against `kind::set_kind`'s *Kind-deduped* whole-union arm list, so any
-  named union with a real duplicate-Kind pair tripped an `assert_eq!` panic on every run — dead
-  code until this session, since the elaboration check above always rejected the input that
-  would reach it.
+  - **Recursive named unions** (`Node: Tree * Tree`) are blocked on
+    docs/recursive-sets-plan.md phases 1-3, not on anything pattern-specific.
 
-  Fixed with three changes, in order: (1) `solver::encode_call::coerce_arg_to_labeled_arm` —
-  given the labeled constructor's already-known arm index (`named_union_arm_for_constructor` now
-  returns it), builds `ApplyConstructor` directly against that position instead of searching by
-  sort; the basis-obligation check also had to move to *before* this wrapping (checking the raw
-  argument against the arm's own natural sort), since checking it after wrapping hit
-  `membership_constraint`'s DT fast path with a mismatched single-arm-list assumption and wrongly
-  rejected `Shape.Square(1)` (a genuine regression caught by the CLI/solver tests below, not
-  shipped). (2) `solver::membership_seq::membership_constraint_for_dt` now matches a union DT's
-  constructors by *position* (`dt.constructor(i)` against `flatten_any_union(set_expr)[i]`,
-  provably the same list/order `build_union_datatype_sort` used) instead of by name — makes it
-  robust to the naming collision directly, no longer relying on the "sound anyway" argument
-  above. (3) `kind::named_union_value_kind` (new, called from `set_kind`'s own `Var` arm so
-  nested `alias` references pick it up for free) reports one Kind per *syntactic* label for a
-  labeled `distinct` union, instead of `set_kind`'s ordinary Kind-deduping `Union` handling —
-  fixes both `codegen::compile`'s `named_union_arms` table (now just calls this) and every other
-  site that asks "what Kind is a `Shape` value" (e.g. a function's declared `-> Shape` range),
-  which is what the `assert_eq!` panic and a later ICE (`coerce_to_kind: value kind
-  TaggedUnion([Int, Int, Tuple(...)]) does not match any arm of [Int, Tuple(...)]`) both actually
-  were. Tests: `tests/solver/heterogeneous_named_unions.rs` (soundness regression guard +
-  second-same-Kind-arm basis-obligation guard), `tests/cli/heterogeneous_named_unions.rs`
-  (`heterogeneous_named_union_duplicate_kind.cantor`, full pipeline).
-
-  **Also found and fixed along the way, unrelated to `distinct`/labels at all**:
-  `kind::merge_if_branches`'s `AppendThenArm`/`AppendElseArm` cases (an ordinary `if`/`else if`/
-  `else` chain merging a new branch into an existing `TaggedUnion`) pushed the new arm's Kind
-  *unconditionally*, unlike the sibling `MergeTaggedUnions` case a few lines above it, which
-  already deduped — so a plain 3-way `if` chain revisiting a Kind (`if a then 5 else if b then 6
-  else (3, 4)`, no `distinct`/labels anywhere) produced a `TaggedUnion` with a duplicate-Kind arm
-  and ICE'd in codegen's `coerce_to_kind`. This is arguably the same underlying "duplicate-Kind
-  arm in a TaggedUnion" hazard the entry above worried about, but reachable in totally ordinary
-  code and via the value-Kind-merge path rather than the named-union-basis path. Fixed by adding
-  the same dedup `IfMerge::AppendThenArm`/`AppendElseArm` now carry a `then_tag`/`else_tag` field
-  (the existing arm's index on a Kind match, or the freshly-appended index otherwise) instead of
-  codegen always assuming "append at the end". Tests:
-  `tests/semantics/elaborate_tests.rs::if_extends_tagged_union_with_arm_matching_an_existing_kind`,
-  `tests/solver/if_else.rs` (two tests, including one confirming the reused arm's own range
-  obligation is still checked, not silently dropped), `tests/cli/if_kind_merge.rs`.
-
-  **Also found, out of scope, not fixed**: projecting into a specific arm after `from()` (e.g.
-  `from(Shape.Rect((3,4))).0`) is *not* provable today — confirmed this is a general,
-  pre-existing limitation of cross-kind-union narrowing, not `distinct`-specific: the plain
-  non-`distinct` equivalent (`g : -> (Nat*Nat) | Nat; g() = (3, 4); main() = g().0`) hits the
-  identical "not in Nat" false counterexample. This is the same narrowing gap already flagged
-  by the reverted step-4 constructor-pattern prototype above (`let r = from(param)` rewrite, or
-  a different design) — round-trip correctness for heterogeneous arms is instead verified via
-  `show()` (real per-arm runtime tag dispatch, commit `6210702`), which *does* work end to end
-  and confirms both the tag and the packed leaf values are correct without needing narrowing.
-
-  **Update (2026-07-18, fifth session): labeled arms are now always tag-forced, even when every
-  arm shares a Kind.** Resuming step 4 (constructor patterns) as a prerequisite: a *purely*
-  same-Kind labeled union (`Circle: Nat | Radius: NatPos`, no other differing-Kind arm mixed in)
-  had **no runtime tag at all** — `Shape.Circle(3)` and `Shape.Radius(3)` were the literally
-  identical value, since `parser::items::parse_distinct_value` folded labeled arms with `|`, and
-  `|` only builds a cross-kind CVC5 datatype when the arms' *sorts* genuinely differ
-  (`solver::sort::set_sort`'s `Union | DisjointUnion` arm). Fixed by folding labeled arms with
-  `+` instead (`BinOp::Add`/`DisjointUnion`) — the operator that already means "always force a
-  tag, never dedup by sort" at the Kind layer (`kind.rs`'s `BinOp::Add` arm) — plus generalizing
-  `ast::flatten_union` (renamed `ast::flatten_any_union`) to recurse into `BinOp::Add` too, so
-  its two AST-level callers (`kind::named_union_value_kind`, `semantics::wellfounded`) still see
-  one entry per arm. New regression test:
-  `tests/solver/named_unions.rs::named_union_same_kind_labels_stay_distinct_proved`.
-
-  Tried forcing the DT unconditionally for *every* `DisjointUnion` at the `solver::sort::set_sort`
-  layer first (matching `kind.rs`'s own unconditional behavior) — reverted, it broke a wide swath
-  of already-shipped, unrelated `+` domain/range proofs (`{0} + NatPos -> Nat`-style signatures in
-  `tests/solver/membership.rs`/`set_ops.rs`): once a same-sort `+`-value's *solver sort* is a DT,
-  proving a DT-sorted parameter satisfies a plain scalar return Kind (`x ∈ Nat`) hits the exact
-  narrowing gap two paragraphs up — so forcing it everywhere would have silently traded working
-  code for that different, larger, already-deferred gap. The fix is instead scoped narrowly to
-  `solver::preds::build_distinct_preds`'s basis-sort computation (`build_union_datatype_sort`
-  called directly for `def.labels.is_some()`, bypassing `set_sort`'s general same-sort-fallthrough)
-  — this only affects a labeled `distinct` def's own `mk_D`/`from_D` sort, not ordinary `+` used
-  directly in a signature.
-
-  **Also found while verifying the fix end-to-end (CLI/codegen, not just the solver proof),
-  confirmed real but deliberately NOT fixed as part of this change** — filed here for a dedicated
-  follow-up: `==`/`!=` between two `Kind::TaggedUnion` values is unsound at codegen.
-  `codegen::expr::compile_binop`'s generic comparison path (`scalarize_to_int` on both operands)
-  calls `narrow_tagged_union` for a `TaggedUnion` operand, which drops the tag and keeps only the
-  payload — so `Shape.Circle(3) != Shape.Radius(3)` is solver-*proved* true but runtime-*computes*
-  false (`main() = 0`, confirmed via `cargo run -- run` on a throwaway file — not currently
-  covered by any checked-in test). This is old, general code, not something this session's fix
-  introduced, but it was practically **unreachable** before labeled constructors existed: an
-  anonymous `+` value only ever reaches a specific arm through coercion, which always
-  self-selects the *one* arm the value actually satisfies — so two anonymous `+` values could
-  never end up in *different* arms while sharing the same payload, and the tag-blind comparison
-  happened to always give the right answer by coincidence. Labeled constructors are the first
-  thing that lets a user *deliberately* force two overlapping-range same-Kind arms
-  (`Circle: Nat`/`Radius: NatPos` both admit `3`) — exactly what this session's fix makes a
-  headline, tested property (`Shape.Circle(5) != Shape.Radius(5)` is a checked-in solver
-  regression guard) — so the codegen gap is now directly reachable and undermines that property
-  at runtime, even though the solver proof itself is sound. A real fix needs either (a) tag-first
-  comparison with a per-arm branch that only compares the *active* arm's own leaves (avoiding
-  `undef` payload bits in unused trailing leaf slots — comparing those directly is its own LLVM
-  IR hazard), mirroring `codegen::show`'s existing per-arm tag-dispatch structure, or (b) making
-  every `TaggedUnion` construction site zero-fill unused leaves instead of leaving them `undef`,
-  which would make a simple full-struct comparison safe. Worked around for now in
-  `tests/cantor_files/named_union_shape.cantor`/`tests/cli/named_unions.rs` by testing
-  construction + `show()` only, not `!=` — `show()` doesn't expose the label in its output
-  either (same payload prints identically for `Circle(3)`/`Radius(3)`), so it can't demonstrate
-  distinctness, only that both labeled constructors compile and run without crashing.
-
-  **Update (2026-07-18, sixth session): step 4 (constructor patterns) is DONE for the
-  statically-resolvable case** — `size(Tree.leaf2(x, y)) = ...` from the very top of this
-  backlog entry now works, e.g.:
-  ```
-  Shape = distinct (Circle: Nat | Rect: Nat * Nat)
-  area : Shape -> Nat
-  area(Shape.Circle(r)) = r * r
-  area : Shape -> Nat
-  area(Shape.Rect(x, y)) = x * y
-  main : -> Nat
-  main() = area(Shape.Circle(3)) + area(Shape.Rect((4, 5)))  -- proved, runs, = 29
-  ```
-  Scoped to **non-recursive** named unions (recursive sets aren't implemented past the Phase 0
-  well-foundedness check) and to call sites where the argument's arm is visible at the call site
-  (a literal constructor, or — transitively — anything the solver can already resolve
-  statically). See docs/design-decisions.md for the user-facing writeup.
-
-  Design: `Name.Label(x, ...)` in parameter position parses into a `CtorPattern`
-  (`ast::Param::ctor_pattern`) carrying the union name, label, and binder names, with the
-  parameter itself renamed to a synthesized `__pat{index}` (mirrors the `__lit{index}`
-  literal-arm convention). `semantics::elaborate::desugar_param_patterns` narrows that
-  parameter's domain to `{__patN for __patN in <declared slice> if tester(__patN) and
-  extractor(__patN) in <arm's own basis>}`, where `tester`/`extractor` are two new internal-
-  only synthesized callees (`{Union}.{Label}?`/`{Union}.{Label}!`, never lexed, so no
-  collision with the real `?` postfix operator) resolved by two new blocks in
-  `elaborate::builtin_call_kind`, `solver::encode_call::encode_call`, and
-  `codegen::expr_call::compile_call` — mirroring the existing `Name.Label(x)` constructor
-  block exactly, just dispatching on `ApplyTester`/`ApplySelector` at the label's known
-  `arm_idx` instead of building the tagged value. `build_ctor_pattern_prelude` (also in
-  elaborate.rs) prepends a `Stmt::Let` (scalar arm) or `Stmt::DestructLet` (tuple arm, one
-  binding per element) to the function body, extracting the arm's payload into the pattern's
-  own binder names via the same extractor call — `FunctionBody::Expr` bodies get wrapped into
-  a synthesized `FunctionBody::Block` for this. `solver::disjointness::
-  fresh_overload_param_terms` gained a `TaggedUnion` case (building the fresh per-position
-  solver constant via `set_sort` on the candidate's own declared domain part, not from `Kind`
-  alone — two unrelated named unions could share the same abstract `Kind::TaggedUnion` shape)
-  so overload-disjointness proofs between two labeled-arm overloads of the same function work,
-  closing a `TODO: only scalar... Lift together if ever needed` that was written during the
-  int-soundness-plan phase 2 work and finally became needed here.
-  `codegen::overload_dispatch::compile_domain_part_match` was generalized from `IntValue` to
-  `BasicValueEnum` (a `TaggedUnion` argument is a struct, not a scalar register) so the
-  existing runtime-dispatch chain doesn't panic if it's ever reached for a constructor-pattern
-  parameter — retained even though (see below) no currently-provable program reaches it for a
-  `TaggedUnion` position; a correctness improvement over the previous unconditional
-  `.into_int_value()`, and forward-looking for if the axiom gap below is ever closed.
-
-  **Major dead end, worth remembering**: the natural next step — proving a call like
-  `area(pick(b))` where `pick`'s return value's arm isn't visible at the call site (every
-  function is verified in isolation; `pick`'s call *contract* only says "result ∈ Shape", not
-  which arm) — needs a fact like "any `Shape` value tagged `Circle` has a payload in `Nat`" to
-  hold for an *opaque* term, not just the pattern-matched function's own parameter. Tried
-  asserting this as a universally-quantified axiom once per labeled union, per arm (∀y:the
-  union's basis DT sort. is_Circle(y) → payload(y)∈Nat), alongside `build_distinct_preds`,
-  sound in principle (the only way to construct such a value is through the labeled
-  constructor, which already independently enforces the same obligation at its own call
-  site) — **reverted**: reproducibly, quantifying over a custom algebraic datatype sort with
-  an *arithmetic* body (anything beyond a trivial `→ true`) made cvc5 report the **entire
-  assertion set as inconsistent** — both a claim and its negation came back "Proved"
-  simultaneously, confirmed with a minimal hand-built reproduction using the `cvc5` crate
-  directly (no Cantor-specific code at all), independent of `mbqi`/`nl-cov`/shared-selector-
-  naming/timeout settings. This is NOT the same class of thing as the already-known "narrowing"
-  gap a few paragraphs up (that one degrades safely to `Unknown`/counterexample) — the axiom
-  actively made false things provable, strictly worse than not having it. Left reverted; indirect
-  calls to a constructor-pattern function honestly report `Unknown`/counterexample instead
-  (safe, just incomplete). If this is ever revisited: the working theory is something about
-  `Forall` + `ApplyTester`/`ApplySelector` (datatype theory) + an arithmetic (`Geq`) body
-  together confuses cvc5's quantifier instantiation in this version/binding — worth checking
-  a newer cvc5 release, or a differently-shaped encoding (e.g. asserting the fact as a
-  ground/per-call obligation threaded through call contracts instead of a blanket `Forall`,
-  which is a real solver-architecture change, not a quick fix).
+  - **Arm narrowing after `from()`** (`from(Shape.Rect((3,4))).0`) isn't provable —
+    pre-existing and not `distinct`-specific (the plain `(Nat*Nat) | Nat` version
+    fails identically), so it's tracked with cross-kind unions rather than here.
 - more IO backends: CLI, TUI, web, SDL, OpenGL, vulkan, etc
 - write-only side effects via `emit`
 - compiled binaries

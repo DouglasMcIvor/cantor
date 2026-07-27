@@ -1,0 +1,12 @@
+-- A `distinct` set in a reference cycle. Well-founded (the `Nat` arm bottoms
+-- out) and shape-recognized, so this must reach the same "recursive-set
+-- support isn't implemented yet" diagnostic an `alias` cycle does.
+--
+-- `set_kind`'s `Var` arm recurses into a `DefKind::Distinct` def's basis
+-- (via `kind::named_union_value_kind`), so a distinct def in a cycle
+-- stack-overflows the compiler unless `wellfounded::build_raw_dep_graph`
+-- gives it an edge — see the doc comment there.
+T = distinct (Nat | T * T)
+
+f : Int -> Int
+f(x) = x

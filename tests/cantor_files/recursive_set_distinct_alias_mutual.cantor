@@ -1,0 +1,8 @@
+-- A mutual cycle split across both `DefKind`s: `A` is `distinct`, `B` is an
+-- `alias`. Neither name alone is self-referential, so this only gets caught
+-- if `distinct` defs source dependency edges like aliases do.
+A = distinct (Nat | B)
+B = Nat | A
+
+f : Int -> Int
+f(x) = x

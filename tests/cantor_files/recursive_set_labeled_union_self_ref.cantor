@@ -1,0 +1,9 @@
+-- The shape from backlog.md's "constructors in binders" entry: a labeled
+-- named union whose `Node` arm refers back to the union itself. Constructor
+-- patterns work over non-recursive named unions today, so this is the
+-- natural next thing a user tries — it must say "not yet supported", not
+-- stack-overflow.
+Tree = distinct (Leaf: Nat | Node: Tree * Tree)
+
+f : Int -> Int
+f(x) = x

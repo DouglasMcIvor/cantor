@@ -4,9 +4,10 @@
 //!
 //! Runs before any other elaboration step, because the failure mode it
 //! guards against isn't a bad diagnostic — it's `kind::set_kind`/
-//! `kind::set_sort` recursing forever the moment they resolve a
-//! `DefKind::Alias` whose value refers back to itself, directly or through
-//! a chain of other aliases. Two layers:
+//! `solver::sort::set_sort` recursing forever the moment they resolve a
+//! name whose value refers back to itself, directly or through a chain of
+//! other names (of either `DefKind` — see `build_raw_dep_graph`). Two
+//! layers:
 //!
 //! 1. **Generic cycle detection** (`find_cyclic_names`) — a plain
 //!    reachability walk over every `Var` reference reachable from a name's
@@ -35,7 +36,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{DefKind, Expr, ExprKind, Item, NameDefs, flatten_any_union, flatten_domain};
+use crate::ast::{Expr, ExprKind, Item, NameDefs, flatten_any_union, flatten_domain};
 use crate::error::CompileError;
 use crate::span::Symbol;
 
@@ -146,15 +147,25 @@ fn for_each_var(expr: &Expr, f: &mut impl FnMut(&Symbol)) {
     }
 }
 
-/// For every `DefKind::Alias` name, the set of *other* `name_defs` entries
-/// referenced anywhere in its value (any operator, any nesting depth).
-/// `DefKind::Distinct` entries never source an edge: `set_kind` never
-/// recurses into a distinct set's basis expression, so they can't
-/// participate in an infinite-recursion cycle as a starting point.
+/// For every name — `DefKind::Alias` *and* `DefKind::Distinct` alike — the
+/// set of *other* `name_defs` entries referenced anywhere in its value (any
+/// operator, any nesting depth).
+///
+/// This deliberately does not try to be clever about which defs "can" recurse.
+/// An earlier version filtered to `DefKind::Alias`, on the then-true grounds
+/// that `set_kind` never recursed into a distinct set's basis expression —
+/// and silently stopped catching a whole class of cycle when `set_kind`'s
+/// `Var` arm started routing `DefKind::Distinct` through
+/// `kind::named_union_value_kind` (which is a plain recursive `set_kind` call
+/// on the basis) for the labeled-named-union work. Every shape it stopped
+/// catching — `T = distinct (Nat | T * T)`, a labeled `Node: Tree * Tree`
+/// arm, a mutual `distinct`/`alias` cycle — stack-overflowed the compiler
+/// rather than reaching the diagnostics above. Over-approximating the graph
+/// costs nothing (a name with no cycle is never looked at again) whereas
+/// under-approximating it uninstalls the guard, so: no filter.
 fn build_raw_dep_graph(name_defs: &NameDefs) -> HashMap<Symbol, HashSet<Symbol>> {
     name_defs
         .iter()
-        .filter(|(_, def)| def.kind == DefKind::Alias)
         .map(|(name, def)| {
             let mut refs = HashSet::new();
             for_each_var(&def.value, &mut |sym| {
@@ -251,9 +262,10 @@ fn classify(
             if generating.contains(name) || unrecognized.contains(name) {
                 continue;
             }
-            // Only `DefKind::Alias` names ever source an edge in
-            // `build_raw_dep_graph`, so every `cyclic_names` member has a
-            // real value expression here.
+            // Every `cyclic_names` member is a `build_raw_dep_graph` key, and
+            // that graph is built by iterating `name_defs` itself — so the
+            // index is always in bounds and always has a value expression,
+            // whatever the def's `DefKind`.
             let def = &name_defs[name];
             let arms = flatten_any_union(&def.value);
 
