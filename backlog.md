@@ -38,7 +38,8 @@ You probably don't want to read this unless you're me.
 - `check pred(x) for x in X` keyword for property based testing, unit testing as the degenerate case. 
   Sits between `assert` and `require` in strength. 
   Maybe `check ... and assert` for another variation.
-- 'abduction' got me thinking: could we provide some priors and actually quantify how likely a check constraint is to hold?
+- abduction driven testing! use the suggested constraints to inform the cases that check looks at
+- path driven fuzzing as well, like afl
 - termination checking on recursion and loops with a 'decreases n' annotation to declare a ranking function.
   automatic inference of the ranking function structurally where possible
 - more set comprehensions features
