@@ -37,7 +37,7 @@ You probably don't want to read this unless you're me.
   - "giving every stage a `validate()` method"
 - `check pred(x) for x in X` keyword for property based testing, unit testing as the degenerate case. 
   Sits between `assert` and `require` in strength. 
-  Maybe `check ... or assert` for another variation.
+  Maybe `check ... and assert` for another variation.
 - 'abduction' got me thinking: could we provide some priors and actually quantify how likely a check constraint is to hold?
 - termination checking on recursion and loops with a 'decreases n' annotation to declare a ranking function.
   automatic inference of the ranking function structurally where possible
