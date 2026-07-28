@@ -3,6 +3,7 @@ You probably don't want to read this unless you're me.
 
 # To do
 
+- End goal: quantum paper bag using WASM and WebGL backend for Cantor
 - ordered guard groups: static call-site resolution to a direct call
   (`solver::encode_call::push_overload_call_obligation`) is unconditionally
   disabled for a call whose candidates belong to an ordered group — every
