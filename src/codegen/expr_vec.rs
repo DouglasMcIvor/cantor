@@ -100,7 +100,22 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (base_val, base_kind) = self.compile_expr(base, env)?;
-        let (idx_val, _idx_kind) = self.compile_expr(index, env)?;
+        let (idx_val, idx_kind) = self.compile_expr(index, env)?;
+        // `idx_val` is a *runtime* index (a literal constant index goes
+        // through `compile_proj`'s `.N`/`[N]` path instead, never here) —
+        // under whole-program BigInt tagging (always active for a real
+        // `cantor run`/`cantor build`, see `state_leaf_shape`'s doc comment),
+        // a `Kind::Int`/`Nat` variable's raw bits are a *tagged* word (small
+        // int shifted left one, or a boxed-BigInt pointer), not the plain
+        // integer value — untag it before using it as a raw Arrow array
+        // position, the same boundary `compile_tuple_as_vector`'s push side
+        // already crosses via `ensure_raw_int64_container` for *elements*.
+        // Skipping this let a tagged index silently read (or, once the
+        // tagged value ran past the real length, crash on) the wrong
+        // element — e.g. logical index 1 read raw position 2.
+        let idx_val = self
+            .ensure_raw_int64_container(idx_val.into_int_value(), &idx_kind)?
+            .into();
 
         match &base_kind {
             Kind::Vector(ek) => self.compile_vector_elem_get(base_val, ek, idx_val),
@@ -145,7 +160,38 @@ impl<'ctx> Compiler<'ctx> {
                 let tagged = self.ensure_tagged(result_i64.into_int_value(), &Kind::Int64)?;
                 return Ok((tagged.into(), Kind::Int));
             }
-            Kind::Bool => "cantor_vec_get_bool",
+            // `cantor_vec_get_bool` returns a raw `i64` (0 or 1) at the ABI
+            // boundary (`cantor-runtime/src/lib.rs`), not `Kind::Bool`'s own
+            // `i1` LLVM representation (`kind_to_llvm_type`) — truncate and
+            // return early, same reason Char/Signed32/Unsigned32 do below,
+            // since the shared call/return path past this match assumes the
+            // raw call result already IS the element's final LLVM type.
+            Kind::Bool => {
+                let fn_val = self
+                    .module
+                    .get_function("cantor_vec_get_bool")
+                    .ok_or_else(|| {
+                        CompileError::ice("runtime function `cantor_vec_get_bool` not declared")
+                    })?;
+                let base_i64 = base_val.into_int_value();
+                let idx_i64 = idx_val.into_int_value();
+                let result = self
+                    .builder
+                    .build_call(fn_val, &[base_i64.into(), idx_i64.into()], "vec_get")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                let result_i64 = result.try_as_basic_value().left().ok_or_else(|| {
+                    CompileError::ice("`cantor_vec_get_bool` returned void unexpectedly")
+                })?;
+                let truncated = self
+                    .builder
+                    .build_int_truncate(
+                        result_i64.into_int_value(),
+                        self.context.bool_type(),
+                        "vec_get_bool",
+                    )
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                return Ok((truncated.into(), Kind::Bool));
+            }
             // `Char*`/`Signed32*`/`Unsigned32*` reuse the `_i64` Arrow storage
             // (`vec_builder_fns`), but the element itself is an i32 register —
             // truncate the i64 read back down and return early, since the
@@ -205,9 +251,8 @@ impl<'ctx> Compiler<'ctx> {
             .try_as_basic_value()
             .left()
             .ok_or_else(|| CompileError::ice(format!("`{get_fn}` returned void unexpectedly")))?;
-        // Reached only for `Bool` (never tagged) and `Vector(_)` (an opaque
-        // pointer, never tagged either) — both need no boundary conversion,
-        // unlike `Int`/`Char` above.
+        // Reached only for `Vector(_)` (an opaque pointer, never tagged) —
+        // needs no boundary conversion, unlike every scalar case above.
         Ok((result_val, ek.clone()))
     }
 

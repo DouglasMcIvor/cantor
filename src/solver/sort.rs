@@ -11,7 +11,7 @@
 use cvc5::{DatatypeConstructorDecl, Kind, Sort, Term, TermManager};
 
 use crate::{
-    ast::BinOp,
+    ast::{BinOp, DefKind},
     kind::Kind as ValKind,
     semantics::tree::{SemExpr, SemExprKind, flatten_any_union, flatten_cartesian_product},
     span::Symbol,
@@ -298,6 +298,27 @@ pub(crate) fn set_sort<'tm>(
         // an integer-sorted parameter would silently restrict the domain to
         // the whole numbers and turn a genuine counterexample into a proof.
         SemExprKind::Var(_) if set_expr.kind_of == ValKind::Rational => tm.real_sort(),
+        // A plain `alias` (`Name = Expr`, the default `DefKind` — see the
+        // alias/distinct design doc section) is transparent to the solver,
+        // so its sort is whatever the aliased expression's own sort is —
+        // resolve through it rather than falling into the "named set ->
+        // integer" default below, which is wrong whenever the alias's basis
+        // isn't itself integer-sorted (e.g. `Grid = Bool*` needs a sequence
+        // sort, not integer; a distinct/labeled-union alias is already
+        // handled above via `distinct_preds`, so only a plain alias reaches
+        // here). Checked by name rather than `set_expr.kind_of` because
+        // `kind_of` can't distinguish "this Kind happens to be Vector/Tuple/
+        // etc." from "this Kind came from resolving an alias" — recursing
+        // into `def.value` is what actually recovers the right shape
+        // (`SemExprKind::KleeneStar`, `CartesianProduct`, …) for the arms
+        // above/below to match on.
+        SemExprKind::Var(sym)
+            if name_defs
+                .get(sym)
+                .is_some_and(|def| def.kind == DefKind::Alias) =>
+        {
+            return set_sort(tm, &name_defs[sym].value, distinct_preds, name_defs);
+        }
         // All other named sets (Nat, NatPos, Int, Int8…Int64, …) → integer.
         SemExprKind::Var(_) => tm.integer_sort(),
         // Set literals {0}, {1, 2, 3}, {'a', 'b'} — the sort follows the

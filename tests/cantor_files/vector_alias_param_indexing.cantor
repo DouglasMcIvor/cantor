@@ -1,0 +1,34 @@
+-- A named alias to a Vector Kind (`Grid = Bool*`), used directly as a
+-- function parameter's domain, must support `len()`/`xs[i]` exactly like a
+-- bare `Bool*` parameter would — `solver::sort::set_sort`'s `Var(_)` catch-
+-- all used to default a plain alias straight to `integer_sort()` without
+-- resolving through the aliased expression first, so `Grid`-typed
+-- parameters were wrongly treated as opaque (`len`/`[i]` came back
+-- `Unknown` in isolation, and "argument is an opaque runtime value" for any
+-- further call taking one as an argument).
+Grid = Bool*
+
+first_alive : Grid -> Bool
+first_alive(grid) = if len(grid) > 0 then grid[0] else false
+
+-- Passing a `Grid`-typed value into a plain `Bool*`-typed parameter
+-- (transparent alias, same Kind) must also work across the call boundary.
+count_true : Bool* -> Nat
+count_true(xs) {
+    mut count : Nat = 0
+    mut i : Nat = 0
+    while i < len(xs) {
+        count := count + (if xs[i] then 1 else 0)
+        i := i + 1
+    }
+    count
+}
+
+wrapper : Grid -> Nat
+wrapper(grid) = count_true(grid)
+
+main : -> Nat
+main() {
+    grid : Grid = [true, false, true]
+    (if first_alive(grid) then 100 else 0) + wrapper(grid)
+}

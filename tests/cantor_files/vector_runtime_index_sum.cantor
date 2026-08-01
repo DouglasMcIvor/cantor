@@ -1,0 +1,24 @@
+-- Regression test: `xs[i]` where `i` is a `mut` runtime counter (not a
+-- literal constant index, which `compile_proj`'s `.N` path already handled
+-- correctly) used to pass the *tagged* representation of `i` straight to
+-- the Arrow runtime as a raw array position — under whole-program BigInt
+-- tagging (always active for `cantor run`/`cantor build`), a small `Int`'s
+-- raw bits are `value << 1`, not `value`, so this silently read the wrong
+-- element (or crashed once the tagged value ran past the vector's real
+-- length: e.g. logical index 2 read raw position 4). `compile_index`
+-- (codegen/expr_vec.rs) now untags the index via `ensure_raw_int64_container`
+-- before using it, the same boundary array *elements* already crossed on
+-- push.
+sum_all : Int* -> Int
+sum_all(xs) {
+    mut total : Int = 0
+    mut i : Nat = 0
+    while i < len(xs) {
+        total := total + xs[i]
+        i := i + 1
+    }
+    total
+}
+
+main : -> Int
+main() = sum_all([10, 20, 30, 40, 50])

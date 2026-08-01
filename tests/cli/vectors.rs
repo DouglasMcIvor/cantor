@@ -104,6 +104,75 @@ fn vectors_unsigned32_signed32_run_prints_len_and_indexed_elements() {
     );
 }
 
+// ── Regression: `xs[i]` with a runtime (not literal) index ──────────────────
+
+#[test]
+fn vector_runtime_index_sum_all_proved() {
+    let out = run_file("vector_runtime_index_sum.cantor");
+    assert_eq!(
+        out.code, 0,
+        "vector_runtime_index_sum.cantor check should exit 0\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected all proved:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn vector_runtime_index_sum_run_computes_correct_sum() {
+    // sum_all([10,20,30,40,50]) = 150 — before the fix this either returned
+    // a silently wrong total (a tagged index reading the wrong element) or
+    // crashed (a tagged index running past the vector's real length).
+    let out = run_subcommand("vector_runtime_index_sum.cantor");
+    assert_eq!(
+        out.code, 0,
+        "vector_runtime_index_sum.cantor run should exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 150"),
+        "expected sum 150:\n{}",
+        out.stdout
+    );
+}
+
+// ── Regression: a named alias to a Vector Kind (`Grid = Bool*`) used as a
+// function parameter must support len()/[i] exactly like a bare `Bool*` ────
+
+#[test]
+fn vector_alias_param_indexing_all_proved() {
+    let out = run_file("vector_alias_param_indexing.cantor");
+    assert_eq!(
+        out.code, 0,
+        "vector_alias_param_indexing.cantor check should exit 0\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected all proved:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn vector_alias_param_indexing_run_computes_correct_value() {
+    // first_alive([true,false,true]) = true (100) + count_true(...) = 2 -> 102
+    let out = run_subcommand("vector_alias_param_indexing.cantor");
+    assert_eq!(
+        out.code, 0,
+        "vector_alias_param_indexing.cantor run should exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 102"),
+        "expected 102:\n{}",
+        out.stdout
+    );
+}
+
 // ── Vectors: local `mut` bindings reassigned via `++` inside a loop ─────────
 
 #[test]
