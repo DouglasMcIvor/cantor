@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
     pub start: u32,
     pub end: u32,
@@ -14,7 +16,32 @@ impl Span {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// `#[serde(with = "span_keyed_map")]` for a `HashMap<Span, V>`, which JSON
+/// otherwise rejects — it only allows string map keys, and `Span` is a struct.
+/// Round-trips as a sequence of `[span, value]` pairs instead.
+pub mod span_keyed_map {
+    use super::Span;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<V, S>(map: &HashMap<Span, V>, s: S) -> Result<S::Ok, S::Error>
+    where
+        V: Serialize,
+        S: Serializer,
+    {
+        map.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, V, D>(d: D) -> Result<HashMap<Span, V>, D::Error>
+    where
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        Ok(Vec::<(Span, V)>::deserialize(d)?.into_iter().collect())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Symbol(pub String);
 
 impl Symbol {

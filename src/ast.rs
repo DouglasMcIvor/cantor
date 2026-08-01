@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use std::collections::HashMap;
 use std::fmt;
 
@@ -5,7 +7,7 @@ use crate::span::{Span, Symbol};
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
@@ -181,7 +183,7 @@ impl Expr {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExprKind {
     IntLit(i64),
     BoolLit(bool),
@@ -250,7 +252,7 @@ pub enum ExprKind {
     KleeneStar(Box<Expr>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
     // Arithmetic / set constructors (context disambiguates)
     Add, // arithmetic addition in value position; disjoint union in set position (A + B requires A ∩ B = ∅)
@@ -280,7 +282,7 @@ pub enum BinOp {
     Or,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnOp {
     Neg,
     Not,
@@ -289,14 +291,14 @@ pub enum UnOp {
 // ── Statements (imperative block bodies) ─────────────────────────────────────
 
 /// One binding in a destructuring pattern, e.g. the `x : Int` in `x : Int, y = (...)`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DestructBinding {
     pub name: Symbol,
     /// Optional per-element set constraint (e.g. `: Int`). None means unconstrained.
     pub constraint: Option<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Stmt {
     /// `x: Set = expr` — introduce an immutable local with a constraint check.
     ///
@@ -385,7 +387,7 @@ pub enum Stmt {
 }
 
 /// The alternative action in `assert pred else <clause>`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AssertElse {
     /// `else fail expr` — return `fail expr` (offset-encoded failure payload).
     FailWith(Expr),
@@ -545,7 +547,7 @@ fn collect_loop_modified_rec(stmts: &[Stmt], names: &mut std::collections::HashS
 /// comprehension domain filter, with a `let`/destructuring prelude
 /// synthesized onto the body — see
 /// `semantics::elaborate::desugar_param_patterns`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CtorPattern {
     /// The named union, e.g. `Tree` in `Tree.leaf2(x, y)`.
     pub union_name: Symbol,
@@ -558,7 +560,7 @@ pub struct CtorPattern {
 }
 
 /// A named function parameter. Domain annotation added in phase 4 (cvc5).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Param {
     pub name: Symbol,
     /// `x for <expr>` — narrows this overload arm's already-declared domain
@@ -593,7 +595,7 @@ impl Param {
 /// One `name : Domain -> Range` line.
 /// Domain is `None` for zero-argument functions (`name : -> Set`).
 /// `*` in domain position means Cartesian product.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionSig {
     pub domain: Option<Expr>,
     pub range: Expr,
@@ -601,7 +603,7 @@ pub struct FunctionSig {
 }
 
 /// The body of a function definition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FunctionBody {
     /// `= expr` — pure functional body.
     Expr(Expr),
@@ -611,7 +613,7 @@ pub enum FunctionBody {
 
 /// A complete function definition: one or more signatures followed by a
 /// single implementation. Multiple signatures = overloaded function (§7).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionDef {
     pub name: Symbol,
     pub sigs: Vec<FunctionSig>,
@@ -635,7 +637,7 @@ pub struct FunctionDef {
 
 /// Whether a named definition is a transparent alias or introduces a new
 /// disjoint/opaque identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DefKind {
     /// Default — transparent to the solver.
     /// `x in Name` expands to `x in value` (set position) or inlines `value`
@@ -656,7 +658,7 @@ pub enum DefKind {
 ///
 /// Naming convention (§2a): lowercase names are value constants; uppercase
 /// names are compile-time set names.  Both use the same AST node.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NameDef {
     pub name: Symbol,
     pub kind: DefKind,
@@ -686,7 +688,7 @@ pub type NameDefs = HashMap<Symbol, NameDef>;
 
 // ── Top-level items ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Item {
     FunctionDef(FunctionDef),
     NameDef(NameDef),

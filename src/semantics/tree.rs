@@ -15,18 +15,20 @@
 //! `and`/`or`) have exactly one meaning regardless of position, so they keep
 //! using `ast::BinOp`/`ast::UnOp` directly rather than inventing parallel enums.
 
+use serde::{Deserialize, Serialize};
+
 use crate::ast::{BinOp, Param, UnOp};
 use crate::kind::Kind;
 use crate::span::{Span, Symbol};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemExpr {
     pub kind: SemExprKind,
     pub kind_of: Kind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SemExprKind {
     IntLit(i64),
     BoolLit(bool),
@@ -107,19 +109,19 @@ pub enum SemExprKind {
 
 // ── Statements ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemDestructBinding {
     pub name: Symbol,
     pub constraint: Option<SemExpr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SemAssertElse {
     FailWith(SemExpr),
     Return(SemExpr),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SemStmt {
     Let {
         name: Symbol,
@@ -189,7 +191,7 @@ pub enum SemStmt {
 
 // ── Function and name definitions ───────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemFunctionSig {
     pub domain: Option<SemExpr>,
     pub range: SemExpr,
@@ -199,13 +201,13 @@ pub struct SemFunctionSig {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SemFunctionBody {
     Expr(SemExpr),
     Block(Vec<SemStmt>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemFunctionDef {
     pub name: Symbol,
     pub sigs: Vec<SemFunctionSig>,
@@ -247,7 +249,7 @@ pub struct SemFunctionDef {
     pub declared_domain_sigs: Vec<SemFunctionSig>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemNameDef {
     pub name: Symbol,
     pub kind: crate::ast::DefKind,
@@ -258,7 +260,7 @@ pub struct SemNameDef {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SemItem {
     FunctionDef(SemFunctionDef),
     NameDef(SemNameDef),

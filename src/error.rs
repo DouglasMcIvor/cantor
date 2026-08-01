@@ -1,6 +1,37 @@
 use std::panic::Location;
 
+use serde::{Deserialize, Serialize};
+
 use crate::span::{Span, offset_to_line_col};
+
+/// A location in the *Rust* compiler source, captured for an [`CompileError::Ice`].
+///
+/// Owned rather than the `&'static Location<'static>` that `Location::caller()`
+/// hands back, because a `CompileError` has to survive being serialized out of
+/// the check-worker subprocess and `Location` has no public constructor to
+/// deserialize back into.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IceLocation {
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+}
+
+impl From<&'static Location<'static>> for IceLocation {
+    fn from(loc: &'static Location<'static>) -> Self {
+        Self {
+            file: loc.file().to_owned(),
+            line: loc.line(),
+            col: loc.column(),
+        }
+    }
+}
+
+impl std::fmt::Display for IceLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}:{}", self.file, self.line, self.col)
+    }
+}
 
 /// Three categories, kept deliberately separate because each means
 /// something different to the person reading it and will eventually
@@ -30,7 +61,7 @@ use crate::span::{Span, offset_to_line_col};
 /// docs/design-decisions.md §4 — that's about Cantor's own runtime
 /// semantics (`Fail`, `raises`); this enum is about the Rust compiler's
 /// compile-time diagnostics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompileError {
     UndefinedVariable {
         name: String,
@@ -180,7 +211,7 @@ pub enum CompileError {
     /// program. `rust_location` is captured automatically by `ice()`.
     Ice {
         detail: String,
-        rust_location: &'static Location<'static>,
+        rust_location: IceLocation,
     },
 }
 
@@ -269,7 +300,7 @@ impl CompileError {
     pub fn ice(detail: impl std::fmt::Display) -> Self {
         Self::Ice {
             detail: detail.to_string(),
-            rust_location: Location::caller(),
+            rust_location: Location::caller().into(),
         }
     }
 

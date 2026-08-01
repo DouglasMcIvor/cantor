@@ -40,6 +40,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use cvc5::{Kind, Term, TermManager};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::Item,
@@ -69,7 +70,7 @@ use self::sig_check::{SideChannels, check_block_sig, check_sig, configured_solve
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CheckResult {
     /// Every input satisfying the domain maps to an output in the range,
     /// and no built-in operation can produce undefined behaviour.
@@ -106,6 +107,7 @@ type FunctionEnv<'a> = HashMap<Symbol, Vec<&'a SemFunctionDef>>;
 /// This is distinct from `check_file`'s outer `Result`'s `Err` arm, which is
 /// reserved for a hard `CompileError` (elaboration/internal failure) —
 /// "not every obligation proved" is not a failure of `check_file` itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CheckOutcome {
     Proved(ConstrainedTree),
     NotProved(Vec<(String, Vec<(String, CheckResult)>)>),

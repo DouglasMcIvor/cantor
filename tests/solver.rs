@@ -56,3 +56,5 @@ mod statements;
 mod tuples;
 #[path = "solver/vectors.rs"]
 mod vectors;
+#[path = "solver/wire.rs"]
+mod wire;

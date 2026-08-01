@@ -19,6 +19,8 @@ rustyline = "14"
 # split into its own crate (no cvc5/inkwell dependency) so a `cantor build`
 # executable links against a lean artifact rather than the whole compiler.
 cantor-runtime = { path = "cantor-runtime" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
 
 [dev-dependencies]
 # (nothing yet)

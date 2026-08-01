@@ -11,6 +11,8 @@
 //! Many set names share the same Kind (e.g. `Nat`, `NatPos`, and `Int16` are
 //! all `Kind::Int`).
 
+use serde::{Deserialize, Serialize};
+
 use crate::ast::{
     BinOp, DefKind, Expr, ExprKind, NameDefs, UnOp, flatten_disjoint_union, flatten_domain,
 };
@@ -21,7 +23,7 @@ use crate::semantics::builtins;
 ///
 /// `Copy` was intentionally dropped when `Tuple(Vec<Kind>)` was added; use
 /// `.clone()` where a copy was previously implicit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
     /// i64 — the tagged/general integer representation. All named integer
     /// subsets (Nat, NatPos, Int8 … Int64, …) elaborate to this by default
@@ -544,7 +546,7 @@ fn into_union(kind: Kind) -> Vec<Kind> {
 /// How two `if`/`else` branch Kinds merge into a single result Kind.
 /// Mirrors `codegen::compile_if`'s coercion paths exactly; each variant here
 /// corresponds 1:1 to one of its branches.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IfMerge {
     /// Branches already agree — no coercion.
     Same(Kind),
@@ -703,7 +705,7 @@ pub fn merge_if_branches(then_ty: &Kind, else_ty: &Kind) -> Result<IfMerge, Stri
 /// Which side (if either) of a `lhs ++ rhs` needs its literal Tuple coerced
 /// into a Vector before the runtime concat call. Mirrors
 /// `codegen::compile_vec_concat`'s coercion exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConcatMerge {
     /// Both sides are already `Vector` — no coercion.
     Same,

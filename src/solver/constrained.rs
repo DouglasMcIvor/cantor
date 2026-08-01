@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{ast::Item, semantics::tree::SemItem, solver::CheckResult, span::Span};
 
 /// An elaborated file that has been fully verified: every signature's
@@ -15,6 +17,7 @@ use crate::{ast::Item, semantics::tree::SemItem, solver::CheckResult, span::Span
 /// `codegen::compile_constrained` can compile from `sem_items` without
 /// re-running `elaborate()`, while still having `items` available for the
 /// (deliberately AST-level) constant-folding pass in `codegen::compile_items`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstrainedTree {
     pub items: Vec<Item>,
     pub sem_items: Vec<SemItem>,
@@ -28,6 +31,7 @@ pub struct ConstrainedTree {
     /// checked instruction + runtime abort, never a compile error. Keyed by
     /// the arithmetic expression's own span (`Add`/`Sub`/`Mul`/`Div`/unary
     /// `Neg`); consulted only by `codegen::compile_constrained`.
+    #[serde(with = "crate::span::span_keyed_map")]
     pub overflow_checks: HashMap<Span, bool>,
     /// int-soundness-plan phase 2: per-call-node-span statically-resolved
     /// overload index, keyed the same way codegen's mangled-name table is
@@ -37,5 +41,6 @@ pub struct ConstrainedTree {
     /// instead of a direct call; it's an optimization side-channel, never a
     /// soundness requirement (the call's domain-membership obligation is
     /// proved unconditionally, regardless of whether resolution succeeded).
+    #[serde(with = "crate::span::span_keyed_map")]
     pub overload_resolution: HashMap<Span, usize>,
 }
