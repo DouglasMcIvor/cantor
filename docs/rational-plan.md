@@ -1,7 +1,10 @@
 # `Rational` and the numeric tower: plan
 
-**Status: design drafted 2026-07-27, not yet implemented.** Three forks were
-resolved with Doug before writing this:
+**Status: IMPLEMENTED 2026-08-01** (commits `18fcc64` stage 1, `adcb683`
+stages 2-5). All five stages landed; 1305 tests pass. Three things differed
+from the plan as written — see "What actually happened" at the end before
+trusting any detail below. Three forks were resolved with Doug before
+writing this:
 
 1. **`Int ⊆ Rational`** — a genuine numeric tower, not a disjoint sort.
    `2 in Rational` is true; an `Int`-Kinded value implicitly widens where a
@@ -247,3 +250,84 @@ mismatched LLVM value reaching codegen — which asserts loudly rather than
 miscompiling, so it surfaces as a crash in testing rather than a silent wrong
 answer. Budget for finding one or two of these during stage 3 rather than
 expecting the list above to be complete.
+
+
+---
+
+## What actually happened (2026-08-01)
+
+Implemented as planned except for three findings, each verified against cvc5
+rather than reasoned about:
+
+1. **The `ToReal` inventory was over-broad.** Stage 2 assumed cvc5 is
+   strictly sorted and that every mixed Int/Real site needs `Kind::ToReal`.
+   It isn't: cvc5 implicitly widens Int to Real for `+ - * /` and for
+   `< <= > >=`, and `Kind::Division` over two *integer*-sorted operands
+   already returns a Real-sorted term. The only sites that genuinely need an
+   explicit `to_real` are `Equal`/`Distinct`, where a mixed pair is a fatal
+   C++-level abort rather than a catchable error — which is also why the
+   existing `l.sort() != r.sort()` guard in `encode_binop` was already
+   sitting in the right place. Net: one coercion site, not an inventory.
+
+2. **`nl-cov` and the numeric tower are mutually exclusive, and the fix is an
+   encoding change, not an option change.** The plan's "decidability: LRA/LIRA
+   are decidable, so this should not make proofs harder" was too optimistic in
+   practice. `configured_solver` sets cvc5's `nl-cov` to stop the *integer*
+   `x * x` bounds check from hanging (design-decisions.md, 2026-07-05); it
+   turns out not to terminate on `is_int` applied to a nonlinear *real*
+   division, and to ignore `tlimit` there. Measured:
+
+   | query | `nl-cov=false` | `nl-cov=true` |
+   |---|---|---|
+   | `x*x` vs Int32 bounds | hangs | 3ms |
+   | `is_int(x/y)` counterexample | 5ms | hangs |
+   | `is_int((2x)/2)` proved | 72µs | 62µs |
+
+   Rather than reopen the 2026-07-05 decision or choose per file,
+   `solver::membership::is_integer_pred` restates integer divisibility as
+   `(= (mod a b) 0)` whenever the term is literally `(/ a b)` over two
+   integer-sorted operands. Both engines answer that in under 2ms, so
+   `nl-cov` stays on unconditionally and neither hang is reachable. Residual
+   gap: a genuinely-rational *nonlinear* narrowing (`f : Rational * Rational
+   -> Int; f(p, q) = p * q`) still emits `is_int` and could hang. No such
+   program exists yet; if one appears, the per-file `nl-cov` choice is the
+   next lever.
+
+3. **Open question 1 dissolved rather than needing either answer.** Neither
+   branch was necessary. Because ℚ is the *top* of the tower, stating `/`'s
+   operand obligations there is uniform: `t ∈ Rational` rejects exactly what
+   `t ∈ Int` used to (Bool, distinct-set values, wrapping sorts — none have a
+   numeric sort), and `NonZeroRational` builds the identical `t != 0`
+   predicate on an integer-sorted term, so integer division is bit-for-bit
+   unchanged. Stating it at `Int` would now be actively wrong:
+   `membership_constraint` reads `t ∈ Int` on a real-sorted term as `is_int(t)`,
+   which would force every rational operand to be a whole number.
+   `NonZeroRational` is shipped as a user-facing name (Doug's call) so a total
+   rational division's divisor domain is spellable; open question 2 is
+   unchanged (no `PosRational` in v0), as is open question 3 (no decimal
+   literals).
+
+The stage-3 "known soft spot" was accurate: `coerce_to_kind`'s
+`_ => Ok((val, val_kind))` fallthrough was indeed the one that needed
+extending, and one genuine bug turned up beyond the listed inventory —
+unary minus on a Rational reached `ensure_tagged` and raised an ICE.
+
+Two further things worth knowing:
+
+- `CheckResult::Counterexample`'s `params`/`output` had to become `String`.
+  A real-sorted witness fell through `integer_value`'s
+  `parse::<i64>().unwrap_or(0)`, so the headline counterexample would have
+  printed the self-contradictory `output = 0 (not in Int)`. It now reads
+  `x = 1, y = -2 -> output = -1/2 (not in Int)`.
+- `quot`/`rem` reject a `Rational` operand at *elaboration*
+  (`CompileError::InvalidOperandKind`, a new variant) rather than at the
+  solver, where the `Int` operand obligation would have read as "prove this
+  rational is a whole number" — a confusing way to say "you used the wrong
+  operator".
+
+Deliberately still `Unsupported`, as planned: `Set(Rational)`,
+`Vector(Rational)`, and a `Rational` inside an event-loop `State`.
+
+Unrelated pre-existing gap noticed while writing fixtures: a `main : -> Bool`
+prints `1` rather than `true` (`bool_run.cantor` sidesteps it by returning
+`Int`). Not touched here.
