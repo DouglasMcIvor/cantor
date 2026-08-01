@@ -201,9 +201,12 @@ fn timed_out(label: Option<String>, budget: Duration) -> CheckOutcome {
 }
 
 /// Kill `child` and reap it, so a wedged worker can't outlive the compiler.
-fn terminate(mut child: Child) {
+/// `kill` on an already-exited process is a harmless no-op, so this is also
+/// how the disconnected-without-a-timeout case below gets a real exit status
+/// without racing the OS to observe it.
+fn terminate(mut child: Child) -> Option<std::process::ExitStatus> {
     let _ = child.kill();
-    let _ = child.wait();
+    child.wait().ok()
 }
 
 /// Run the check in a worker process, killing it if it stops making progress.
@@ -262,9 +265,19 @@ pub(super) fn supervise(
     let budget = (timeout_ms > 0).then(|| progress_budget(timeout_ms));
     let mut label = None;
     loop {
+        // `recv_timeout`'s `Err` conflates two cases that need different
+        // handling below — genuinely wedged (`Timeout`) vs. the worker
+        // exiting without ever reporting `Done` (`Disconnected`, since that
+        // only happens once the sender thread has ended, which only happens
+        // once its stdout pipe has closed). Matching on the variant here
+        // instead of re-deriving it from `try_wait()` afterwards avoids a
+        // race: `try_wait` polls the OS for an exit status that may not be
+        // visible yet even though the pipe has already closed, which under
+        // CI's tighter scheduling could — and did — misreport a worker that
+        // had already died as one that was still wedged.
         let received = match budget {
-            Some(budget) => rx.recv_timeout(budget).map_err(|e| e.to_string()),
-            None => rx.recv().map_err(|e| e.to_string()),
+            Some(budget) => rx.recv_timeout(budget),
+            None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
         };
         match received {
             Ok(Message::Progress { label: current }) => label = current,
@@ -272,29 +285,33 @@ pub(super) fn supervise(
                 terminate(child);
                 return *outcome;
             }
-            // Timed out, or the worker died without reporting. The latter is
-            // a crash (a cvc5 segfault, an OOM kill); neither has proved
-            // anything, so both surface as `Unknown`.
-            Err(_) => {
-                let status = child.try_wait().ok().flatten();
+            // Wedged: no progress within budget, so kill it. `budget` is
+            // always `Some` here — `Timeout` can't arise from the plain
+            // `rx.recv()` used when there is no budget.
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let budget = budget.expect("Timeout only occurs when a budget is set");
                 terminate(child);
-                return Ok(match (budget, status) {
-                    (Some(budget), None) => timed_out(label, budget),
-                    _ => CheckOutcome::NotProved(vec![(
+                return Ok(timed_out(label, budget));
+            }
+            // The worker died without reporting — a crash (a cvc5 segfault,
+            // an OOM kill). `terminate` blocks until the OS confirms it's
+            // gone, so this always has a real exit status.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let status = terminate(child);
+                return Ok(CheckOutcome::NotProved(vec![(
+                    "the file".to_owned(),
+                    vec![(
                         "the file".to_owned(),
-                        vec![(
-                            "the file".to_owned(),
-                            CheckResult::Unknown(format!(
-                                "the check worker exited without reporting a result ({}) — \
-                                 nothing in this file has been verified",
-                                match status {
-                                    Some(status) => status.to_string(),
-                                    None => "still running".to_owned(),
-                                }
-                            )),
-                        )],
-                    )]),
-                });
+                        CheckResult::Unknown(format!(
+                            "the check worker exited without reporting a result ({}) — \
+                             nothing in this file has been verified",
+                            match status {
+                                Some(status) => status.to_string(),
+                                None => "unknown exit status".to_owned(),
+                            }
+                        )),
+                    )],
+                )]));
             }
         }
     }
