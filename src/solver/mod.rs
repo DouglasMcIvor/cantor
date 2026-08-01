@@ -38,7 +38,6 @@ pub mod worker;
 pub use constrained::ConstrainedTree;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use cvc5::{Kind, Term, TermManager};
 use serde::{Deserialize, Serialize};
@@ -131,30 +130,32 @@ pub enum CheckOutcome {
 /// only handle `codegen::compile_constrained` accepts, so a program can only
 /// be compiled once this function has verified it in full.
 ///
-/// cvc5 is not safe to call concurrently from multiple threads, even when
-/// each thread uses its own independent `TermManager`/`Solver` — the
-/// underlying C++ library has global state that data-races across threads
-/// (observed here as a segfault when `cargo test` ran the solver test suite
-/// in parallel; see e.g. https://github.com/CVC4/CVC4/issues/3456 for the
-/// same failure class upstream). This lock serializes every call through
-/// the one production entry point into cvc5 so callers can still use
-/// ordinary threads/parallel test runners around it safely.
-static CVC5_CALL_LOCK: Mutex<()> = Mutex::new(());
-
+/// The check runs in a worker subprocess (see [`worker`]) which is killed if
+/// it stops making progress, because cvc5 does not reliably honour `tlimit`
+/// and its Rust binding offers no `interrupt()` — a signal to a separate
+/// process is the only thing that can stop a wedged solve. A killed check
+/// yields `Unknown`, never a pass.
+///
+/// Running in a subprocess also settles cvc5's thread-unsafety, which used to
+/// need a process-wide lock here: the underlying C++ library has global state
+/// that data-races across threads even when each uses its own `TermManager`
+/// and `Solver` (observed as a segfault when `cargo test` ran the solver
+/// suite in parallel). A worker does one check and exits, so there is no
+/// second caller to race with, and callers are free to use ordinary threads
+/// and parallel test runners around this function.
 pub fn check_file(
     items: &[Item],
     timeout_ms: u64,
 ) -> Result<CheckOutcome, crate::error::CompileError> {
-    let _cvc5_guard = CVC5_CALL_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    check_file_in_process(items, timeout_ms)
+    if std::env::var_os(worker::INPROCESS_ENV).is_some_and(|v| !v.is_empty()) {
+        return check_file_in_process(items, timeout_ms);
+    }
+    worker::supervise(items, timeout_ms)
 }
 
-/// The check itself, with no concurrency or process management around it.
-/// Split out from [`check_file`] so the check worker (see [`worker`]) can
-/// call it directly: it is already alone in its own process, so the lock
-/// above would be pure overhead there.
+/// The check itself, with no process management around it. Split out from
+/// [`check_file`] so the worker can call it directly, and so
+/// `CANTOR_INPROCESS_SOLVER` can bypass the split for debugging.
 fn check_file_in_process(
     items: &[Item],
     timeout_ms: u64,
