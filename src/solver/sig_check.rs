@@ -82,6 +82,7 @@ pub(super) fn configured_solver<'tm>(tm: &'tm TermManager, timeout_ms: u64) -> S
 /// is a query the supervisor cannot see, and therefore a hang it would have
 /// to attribute to whichever query last reported in.
 pub(super) fn checked_sat<'tm>(solver: &mut Solver<'tm>) -> SatResult<'tm> {
+    super::worker::emit_progress();
     solver.check_sat()
 }
 

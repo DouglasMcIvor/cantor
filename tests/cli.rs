@@ -6,6 +6,8 @@ mod build;
 mod char_tests;
 #[path = "cli/check_basics.rs"]
 mod check_basics;
+#[path = "cli/check_worker.rs"]
+mod check_worker;
 #[path = "cli/cli_flags.rs"]
 mod cli_flags;
 #[path = "cli/constants_and_bool.rs"]

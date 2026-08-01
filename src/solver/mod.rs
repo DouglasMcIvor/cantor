@@ -33,6 +33,7 @@ mod obligations;
 mod preds;
 mod sig_check;
 mod sort;
+pub mod worker;
 
 pub use constrained::ConstrainedTree;
 
@@ -147,6 +148,17 @@ pub fn check_file(
     let _cvc5_guard = CVC5_CALL_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    check_file_in_process(items, timeout_ms)
+}
+
+/// The check itself, with no concurrency or process management around it.
+/// Split out from [`check_file`] so the check worker (see [`worker`]) can
+/// call it directly: it is already alone in its own process, so the lock
+/// above would be pure overhead there.
+fn check_file_in_process(
+    items: &[Item],
+    timeout_ms: u64,
+) -> Result<CheckOutcome, crate::error::CompileError> {
     let sem_items = elaborate(items)?;
 
     let name_defs: NameDefs = sem_items
@@ -163,7 +175,9 @@ pub fn check_file(
     // `int64_split`'s module doc) — everything below this point sees the
     // (possibly split) result and treats it exactly like an ordinary
     // phase 2 overload set, unchanged.
-    let sem_items = int64_split::generate_int64_bigint_splits(sem_items, &name_defs, timeout_ms);
+    let sem_items = worker::with_label("Int64 promotion/split trials", || {
+        int64_split::generate_int64_bigint_splits(sem_items, &name_defs, timeout_ms)
+    });
 
     let mut fn_env: FunctionEnv<'_> = FunctionEnv::new();
     for item in &sem_items {
@@ -212,8 +226,10 @@ pub fn check_file(
             SemItem::NameDef(def) => {
                 // Only annotated defs (`name : Set = value`) produce a check result.
                 let ty = def.ty.as_ref()?;
-                let result = check_name_def(def, ty, &fn_env, &name_defs, timeout_ms);
                 let label = format!("{} : {} = {}", def.name, ty, def.value);
+                let result = worker::with_label(&label, || {
+                    check_name_def(def, ty, &fn_env, &name_defs, timeout_ms)
+                });
                 Some(Ok((def.name.0.clone(), vec![(label, result)])))
             }
             // Checked separately below (`validate_equiv_decls`), once
@@ -227,20 +243,24 @@ pub fn check_file(
     // ordinary proof obligation, reusing the domain/range checker, not a new
     // escape hatch). Differing-arity overloads of the same name need no
     // check against each other (arity alone already makes them disjoint).
-    results.extend(check_overload_disjointness(&fn_env, &name_defs, timeout_ms));
+    results.extend(worker::with_label("overload disjointness", || {
+        check_overload_disjointness(&fn_env, &name_defs, timeout_ms)
+    }));
 
     // Quotient sets (docs/wrapping-and-quotient-sets-plan.md's Feature 2):
     // canonicalizer signature containment and idempotence, proved once here
     // rather than re-proved per call site — same "gates `all_proved`, no
     // `assume` escape" treatment as overload disjointness just above.
-    results.extend(validate_quotient_sets(&name_defs, &fn_env, timeout_ms));
+    results.extend(worker::with_label("quotient sets", || {
+        validate_quotient_sets(&name_defs, &fn_env, timeout_ms)
+    }));
 
     // Function equivalence checking (`equiv f, g`) — a new kind of claim
     // (two existing functions agree on their shared domain), same
     // "gates `all_proved`, no `assume` escape" treatment as the two above.
-    results.extend(validate_equiv_decls(
-        &sem_items, &name_defs, &fn_env, timeout_ms,
-    ));
+    results.extend(worker::with_label("equiv declarations", || {
+        validate_equiv_decls(&sem_items, &name_defs, &fn_env, timeout_ms)
+    }));
 
     let all_proved = results
         .iter()
@@ -287,7 +307,7 @@ pub fn check_function(
                 overflow_checks,
                 overload_resolutions,
             };
-            let result = match &def.body {
+            let result = worker::with_label(&label, || match &def.body {
                 SemFunctionBody::Expr(body) => check_sig(
                     sig,
                     &param_names,
@@ -306,7 +326,7 @@ pub fn check_function(
                     timeout_ms,
                     &mut channels,
                 ),
-            };
+            });
             (label, result)
         })
         .collect())

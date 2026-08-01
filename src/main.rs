@@ -17,7 +17,7 @@ use cantor::{
     pipeline::{FrontendError, parse_and_check_names, results_of},
     runtime::event_loop,
     semantics::tree::SemItem,
-    solver::{CheckOutcome, CheckResult, ConstrainedTree, check_file},
+    solver::{self, CheckOutcome, CheckResult, ConstrainedTree, check_file},
     span::Span,
 };
 
@@ -44,6 +44,14 @@ pub(crate) const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_SECS * 1000;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // Not a user-facing subcommand: this is how `check_file` re-enters the
+    // compiler to run cvc5 behind a process boundary. Handled before any
+    // other argument parsing because a worker's stdout is a protocol stream,
+    // so nothing else may write to it.
+    if args.get(1).is_some_and(|a| a == solver::worker::WORKER_ARG) {
+        solver::worker::run();
+    }
 
     // Strip out --timeout <n> / --timeout=<n>, -o <path> / -o=<path>, and
     // --keep-temps before positional parsing — the latter two only apply to
