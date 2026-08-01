@@ -1,0 +1,97 @@
+-- Conway's Game of Life — the first demo of the Image event-loop Output
+-- convention (docs/design-decisions.md §6). Every Event (the browser's
+-- requestAnimationFrame loop feeds an empty Char* Tick) advances the grid
+-- one generation and renders it as a bitmap.
+
+Grid = Bool*
+Image = Nat * Nat * Unsigned32*
+
+width : -> Nat
+width() = 6
+
+height : -> Nat
+height() = 6
+
+-- Whether (x, y) is alive in `grid` — false for any coordinate outside the
+-- grid, so neighbor counting near an edge never indexes off the end.
+cell : Grid * Int * Int -> Bool
+cell(grid, x, y) {
+    idx : Int = y * width() + x
+    (
+        if x < 0 or y < 0 or x >= width() or y >= height() or idx < 0 or idx >= len(grid) then
+            false
+        else
+            grid[idx]
+    )
+}
+
+count_neighbors : Grid * Int * Int -> Nat
+count_neighbors(grid, x, y) = (
+    (if cell(grid, x - 1, y - 1) then 1 else 0)
+    + (if cell(grid, x, y - 1) then 1 else 0)
+    + (if cell(grid, x + 1, y - 1) then 1 else 0)
+    + (if cell(grid, x - 1, y) then 1 else 0)
+    + (if cell(grid, x + 1, y) then 1 else 0)
+    + (if cell(grid, x - 1, y + 1) then 1 else 0)
+    + (if cell(grid, x, y + 1) then 1 else 0)
+    + (if cell(grid, x + 1, y + 1) then 1 else 0)
+)
+
+-- The standard Game of Life rule: a live cell survives with 2 or 3 live
+-- neighbors, a dead cell is born with exactly 3.
+next_alive : Bool * Nat -> Bool
+next_alive(alive, n) = (
+    if alive then n == 2 or n == 3 else n == 3
+)
+
+next_generation : Grid -> Grid
+next_generation(grid) {
+    mut result : Bool* = []
+    mut y : Nat = 0
+    while y < height() {
+        mut x : Nat = 0
+        while x < width() {
+            n : Nat = count_neighbors(grid, x, y)
+            alive : Bool = cell(grid, x, y)
+            result := result ++ [next_alive(alive, n)]
+            x := x + 1
+        }
+        y := y + 1
+    }
+    result
+}
+
+-- Black for a dead cell, white for a live one — packed 0xRRGGBBAA per pixel
+-- (docs/design-decisions.md §6's Image convention).
+render : Grid -> Unsigned32*
+render(grid) {
+    mut pixels : Unsigned32* = []
+    mut i : Nat = 0
+    while i < len(grid) {
+        color : Unsigned32 = if grid[i] then unsigned32(4294967295) else unsigned32(255)
+        pixels := pixels ++ [color]
+        i := i + 1
+    }
+    pixels
+}
+
+-- A glider, headed toward the bottom-right corner.
+seed_grid : -> Grid
+seed_grid() = [
+    false, true, false, false, false, false,
+    false, false, true, false, false, false,
+    true, true, true, false, false, false,
+    false, false, false, false, false, false,
+    false, false, false, false, false, false,
+    false, false, false, false, false, false
+]
+
+main : Char* * Grid -> Image * Grid
+main(event, grid) {
+    next : Grid = next_generation(grid)
+    pixels : Unsigned32* = render(next)
+    ((width(), height(), pixels), next)
+}
+
+main : -> Grid
+main() = seed_grid()

@@ -556,7 +556,7 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         let concat_fn = match &elem_kind {
-            Kind::Int | Kind::Char => "cantor_vec_concat_i64",
+            Kind::Int | Kind::Char | Kind::Signed32 | Kind::Unsigned32 => "cantor_vec_concat_i64",
             Kind::Bool => "cantor_vec_concat_bool",
             Kind::Vector(_) => "cantor_list_vec_concat",
             Kind::Tuple(_) => "cantor_struct_vec_concat",
