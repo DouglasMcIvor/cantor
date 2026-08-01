@@ -59,15 +59,17 @@ jobs:
     - name: Coverage
       # Coverage-instrumented binaries run markedly slower than the plain
       # `cargo test` above, which pushes otherwise-healthy checks past the
-      # check worker's default progress budget (src/solver/worker.rs). A
-      # spurious kill there isn't just a flaky test: SIGKILL discards that
-      # worker's unflushed .profraw, and cargo-llvm-cov's merge step aborts
-      # entirely the moment any input is corrupt — one false-positive kill
-      # fails the whole step. Widen the budget for this step only; the
-      # solver_timeout tests set their own tight override regardless.
+      # check worker's default progress budget (src/solver/worker.rs);
+      # widening it for this step only cuts down on those false-positive
+      # kills. But two solver_timeout tests set their own tight
+      # CANTOR_PROGRESS_BUDGET_MS to deliberately force a kill, regardless of
+      # this env var — SIGKILL always discards that worker's unflushed
+      # .profraw, so a corrupt profile here is expected, not a bug.
+      # --failure-mode=all tells the merge step to tolerate that instead of
+      # aborting the moment any single input is corrupt (its default).
       env:
         CANTOR_PROGRESS_BUDGET_MS: "300000"
-      run: cargo llvm-cov --html
+      run: cargo llvm-cov --html --failure-mode all
 
     # Deliberately the debug profile, matching the `cantor` binary `cargo
     # build` already produced above: `cantor build --target wasm32` links
