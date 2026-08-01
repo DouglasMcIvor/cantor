@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cantor</title>
+<style>
+  :root {
+    --teal: #1c7d6b;
+    --ink: #16211f;
+    --paper: #f6f8f7;
+  }
+  body {
+    margin: 0;
+    padding: 2rem 1rem;
+    background: var(--paper);
+    color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { color: var(--teal); font-weight: 600; margin: 0 0 .25rem; }
+  h1 .aleph { font-size: 1.2em; }
+  .tagline { margin: 0 0 2rem; color: #55605d; }
+  ul.links { list-style: none; margin: 0; padding: 0; display: grid; gap: 1rem; }
+  ul.links li {
+    border: 1px solid #dfe6e4;
+    border-radius: .5rem;
+    padding: 1rem 1.25rem;
+    background: #fff;
+  }
+  ul.links a { color: var(--teal); font-weight: 600; text-decoration: none; }
+  ul.links a:hover { text-decoration: underline; }
+  ul.links p { margin: .25rem 0 0; color: #55605d; font-size: 14px; }
+  footer { margin-top: 2rem; font-size: 14px; color: #55605d; }
+  a { color: var(--teal); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="aleph">&#8501;</span> Cantor</h1>
+  <p class="tagline">A statically typed language without any types &mdash; values are all you need.</p>
+
+  <ul class="links">
+    <li>
+      <a href="./demo/">Browser demo</a>
+      <p>A real Cantor program, verified by cvc5 and compiled through LLVM to WebAssembly, running live on this page.</p>
+    </li>
+    <li>
+      <a href="./coverage/">Test coverage</a>
+      <p>Line and region coverage for the compiler's test suite, from the latest build of <code>main</code>.</p>
+    </li>
+  </ul>
+
+  <footer>
+    <a href="https://github.com/DouglasMcIvor/cantor">Source on GitHub</a>.
+  </footer>
+</main>
+</body>
+</html>

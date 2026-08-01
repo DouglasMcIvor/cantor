@@ -4,6 +4,8 @@
 
 > *A statically typed language without any types - values are all you need!*
 
+[Browser demo](https://douglasmcivor.github.io/cantor/demo/) · [Test coverage](https://douglasmcivor.github.io/cantor/coverage/)
+
 Named after [Georg Cantor](https://en.wikipedia.org/wiki/Georg_Cantor), the mathematician who built the foundations of modern set theory.
 
 ## The idea
@@ -843,7 +845,9 @@ cargo run -- build <file.cantor>    # check then compile to an executable
 
 An event-loop program can also be compiled to WebAssembly and run on a page —
 see `web/` for the host shim and demo page, and `docs/design-decisions.md` §6
-for the design.
+for the design. A hosted build runs at
+[douglasmcivor.github.io/cantor/demo/](https://douglasmcivor.github.io/cantor/demo/),
+rebuilt from `main` on every push (see `.github/workflows/rust.yml`).
 
 ```
 rustup target add wasm32-unknown-unknown

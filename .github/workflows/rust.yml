@@ -82,10 +82,12 @@ jobs:
         cargo build -p cantor-runtime --target wasm32-unknown-unknown
         ./target/debug/cantor build --target wasm32 examples/parrot.cantor -o web/parrot.wasm
     - name: Assemble the Pages site
-      # Coverage stays at the site root (unchanged URL); demos go under /demo.
+      # Root is a landing page linking out; coverage lives under /coverage,
+      # demos under /demo.
       run: |
-        mkdir -p site/demo
-        cp -r target/llvm-cov/html/. site/
+        mkdir -p site/coverage site/demo
+        cp .github/pages/index.html site/
+        cp -r target/llvm-cov/html/. site/coverage/
         cp web/index.html web/cantor.js web/parrot.wasm site/demo/
 
     - name: Setup Pages
