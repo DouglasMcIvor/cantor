@@ -468,7 +468,7 @@ fn check_quotient_def(
             }
             Membership::Unsupported => unreachable!("handled above"),
         }
-        if !solver.check_sat().is_unsat() {
+        if !super::checked_sat(&mut solver).is_unsat() {
             return CheckResult::Counterexample {
                 params: HashMap::new(),
                 output: "0".to_string(),
@@ -519,7 +519,7 @@ fn check_quotient_def(
     };
     let vars = tm.mk_term(Kind::VariableList, &[x]);
     solver.assert_formula(tm.mk_term(Kind::Exists, &[vars, counterexample_body]));
-    let sat = solver.check_sat();
+    let sat = super::checked_sat(&mut solver);
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {
@@ -732,7 +732,7 @@ fn check_equiv_decl(
     };
     let vars = tm.mk_term(Kind::VariableList, &[x]);
     solver.assert_formula(tm.mk_term(Kind::Exists, &[vars, counterexample_body]));
-    let sat = solver.check_sat();
+    let sat = super::checked_sat(&mut solver);
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {

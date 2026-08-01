@@ -66,7 +66,7 @@ use self::preds::{
     build_distinct_preds, build_solver_preds, build_wrapping_preds, validate_equiv_decls,
     validate_quotient_sets,
 };
-use self::sig_check::{SideChannels, check_block_sig, check_sig, configured_solver};
+use self::sig_check::{SideChannels, check_block_sig, check_sig, checked_sat, configured_solver};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -402,7 +402,7 @@ fn check_name_def(
     };
     solver.assert_formula(tm.mk_term(Kind::Not, &[combined]));
 
-    let sat = solver.check_sat();
+    let sat = checked_sat(&mut solver);
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {

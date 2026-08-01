@@ -180,7 +180,7 @@ fn domain_within_int64(part: &SemExpr, name_defs: &NameDefs, timeout_ms: u64) ->
         }
         Membership::Unsupported => unreachable!("handled above"),
     }
-    solver.check_sat().is_unsat()
+    super::checked_sat(&mut solver).is_unsat()
 }
 
 /// Step A: promote a whole function to raw `Kind::Int64` in place, with no

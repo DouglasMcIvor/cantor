@@ -74,7 +74,7 @@ pub(super) fn validate_disjoint_unions(
                     if let Membership::Constrained(c) = cb {
                         solver.assert_formula(c);
                     }
-                    let sat = solver.check_sat();
+                    let sat = super::checked_sat(&mut solver);
                     if sat.is_unsat() {
                         None // proved disjoint
                     } else if sat.is_sat() {
@@ -311,7 +311,7 @@ fn check_pair_disjoint(
     solver.assert_formula(term_a);
     solver.assert_formula(term_b);
 
-    let sat = solver.check_sat();
+    let sat = super::checked_sat(&mut solver);
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {
@@ -439,7 +439,7 @@ fn check_ordered_group_coverage(
     solver.assert_formula(declared_term);
     solver.assert_formula(not_covered);
 
-    let sat = solver.check_sat();
+    let sat = super::checked_sat(&mut solver);
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {

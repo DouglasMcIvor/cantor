@@ -242,7 +242,7 @@ where
     };
     tmp.assert_formula(ctx.tm.mk_term(Kind::Not, &[combined]));
 
-    let sat = tmp.check_sat();
+    let sat = super::checked_sat(&mut tmp);
     if sat.is_unsat() {
         None
     } else if sat.is_sat() {

@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cvc5::{Kind, Solver, Term, TermManager};
+use cvc5::{Kind, Result as SatResult, Solver, Term, TermManager};
 
 use crate::semantics::tree::{SemExpr, SemFunctionSig, sem_param_set_exprs};
 use crate::span::{Span, Symbol};
@@ -67,6 +67,22 @@ pub(super) fn configured_solver<'tm>(tm: &'tm TermManager, timeout_ms: u64) -> S
         solver.set_option("tlimit", &timeout_ms.to_string());
     }
     solver
+}
+
+/// Run a `check-sat`. The single choke point through which *every* query in
+/// this crate reaches cvc5 — the companion to `configured_solver` above, and
+/// for the same reason: one function, called everywhere, so there's exactly
+/// one place to hook.
+///
+/// What hooks here is the check-worker heartbeat. `tlimit` is cvc5's only
+/// timeout knob and it is not reliably honoured (see the hang notes in
+/// docs/design-decisions.md), so the supervising process watches for progress
+/// instead and kills a worker that has stopped making any. That watchdog is
+/// only as good as this function's coverage: a `check_sat` that bypasses it
+/// is a query the supervisor cannot see, and therefore a hang it would have
+/// to attribute to whichever query last reported in.
+pub(super) fn checked_sat<'tm>(solver: &mut Solver<'tm>) -> SatResult<'tm> {
+    solver.check_sat()
 }
 
 /// Build each parameter's solver constant from `domain`, asserting its
@@ -277,7 +293,7 @@ fn finish_check<'tm>(
     ctx.solver
         .assert_formula(ctx.tm.mk_term(Kind::Not, &[combined]));
 
-    let sat = ctx.solver.check_sat();
+    let sat = checked_sat(ctx.solver);
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {

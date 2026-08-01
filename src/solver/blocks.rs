@@ -919,7 +919,7 @@ pub(crate) fn check_require<'tm>(
     }
     tmp.assert_formula(tm.mk_term(Kind::Not, &[obligation]));
 
-    let sat = tmp.check_sat();
+    let sat = super::checked_sat(&mut tmp);
     if sat.is_unsat() {
         CheckResult::Proved
     } else if sat.is_sat() {
