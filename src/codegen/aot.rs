@@ -182,17 +182,18 @@ fn build_executable_in(
 /// already resolved every branch at `cantor build` time.
 fn native_driver_source(n_state_leaves: usize, state_shape: &LeafShape) -> String {
     format!(
-        "{TRAMPOLINE_DECLS}\n\
-        fn main() {{\n\
-        \x20   unsafe {{\n\
-        \x20       cantor_runtime::event_loop::drive_event_loop(\n\
-        \x20           cantor_initial_state,\n\
-        \x20           cantor_step,\n\
-        \x20           {n_state_leaves},\n\
-        \x20           {},\n\
-        \x20       );\n\
-        \x20   }}\n\
-        }}\n",
+        r#"{TRAMPOLINE_DECLS}
+fn main() {{
+    unsafe {{
+        cantor_runtime::event_loop::drive_event_loop(
+            cantor_initial_state,
+            cantor_step,
+            {n_state_leaves},
+            {},
+        );
+    }}
+}}
+"#,
         render_leaf_shape(state_shape)
     )
 }
@@ -205,48 +206,50 @@ fn native_driver_source(n_state_leaves: usize, state_shape: &LeafShape) -> Strin
 /// doc comment for the calling sequence the host must follow.
 fn wasm_driver_source(n_state_leaves: usize, state_shape: &LeafShape) -> String {
     format!(
-        "{TRAMPOLINE_DECLS}\n\
-        #[unsafe(no_mangle)]\n\
-        pub extern \"C\" fn cantor_wasm_init() {{\n\
-        \x20   unsafe {{\n\
-        \x20       cantor_runtime::wasm::init(\n\
-        \x20           cantor_initial_state,\n\
-        \x20           cantor_step,\n\
-        \x20           {n_state_leaves},\n\
-        \x20           {},\n\
-        \x20       );\n\
-        \x20   }}\n\
-        }}\n\
-        \n\
-        #[unsafe(no_mangle)]\n\
-        pub extern \"C\" fn cantor_wasm_input_buffer(len: usize) -> *mut u8 {{\n\
-        \x20   cantor_runtime::wasm::input_buffer(len)\n\
-        }}\n\
-        \n\
-        #[unsafe(no_mangle)]\n\
-        pub extern \"C\" fn cantor_wasm_step(len: usize) {{\n\
-        \x20   cantor_runtime::wasm::step(len)\n\
-        }}\n\
-        \n\
-        #[unsafe(no_mangle)]\n\
-        pub extern \"C\" fn cantor_wasm_output_ptr() -> *const u8 {{\n\
-        \x20   cantor_runtime::wasm::output_ptr()\n\
-        }}\n\
-        \n\
-        #[unsafe(no_mangle)]\n\
-        pub extern \"C\" fn cantor_wasm_output_len() -> usize {{\n\
-        \x20   cantor_runtime::wasm::output_len()\n\
-        }}\n",
+        r#"{TRAMPOLINE_DECLS}
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_init() {{
+    unsafe {{
+        cantor_runtime::wasm::init(
+            cantor_initial_state,
+            cantor_step,
+            {n_state_leaves},
+            {},
+        );
+    }}
+}}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_input_buffer(len: usize) -> *mut u8 {{
+    cantor_runtime::wasm::input_buffer(len)
+}}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_step(len: usize) {{
+    cantor_runtime::wasm::step(len)
+}}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_output_ptr() -> *const u8 {{
+    cantor_runtime::wasm::output_ptr()
+}}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_output_len() -> usize {{
+    cantor_runtime::wasm::output_len()
+}}
+"#,
         render_leaf_shape(state_shape)
     )
 }
 
 /// The two symbols every event-loop program's object file exports, named
 /// identically by both driver templates.
-const TRAMPOLINE_DECLS: &str = "unsafe extern \"C\" {\n\
-    \x20   fn cantor_initial_state(out: *mut i64);\n\
-    \x20   fn cantor_step(input: *mut i64, out: *mut i64);\n\
-}\n";
+const TRAMPOLINE_DECLS: &str = r#"unsafe extern "C" {
+    fn cantor_initial_state(out: *mut i64);
+    fn cantor_step(input: *mut i64, out: *mut i64);
+}
+"#;
 
 /// Render a `LeafShape` as a literal Rust expression referencing
 /// `cantor_runtime::deep_copy::*` by its fully-qualified path — the
