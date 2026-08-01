@@ -234,6 +234,13 @@ pub extern "C" fn cantor_wasm_init() {{
         cantor_runtime::wasm::init(
             cantor_initial_state,
             cantor_step,
+            // TODO(Image output): always `CharStar` until the wasm build
+            // path threads a real `OutputKind` through from
+            // `wire::classify_output_shape` — `build_executable`'s guard
+            // (in this same file) only lets a `CharStar`-Output program
+            // reach this driver template at all today, so this is safe as
+            // written, just not yet general.
+            cantor_runtime::event_loop::OutputKind::CharStar,
             {n_state_leaves},
             {},
         );
