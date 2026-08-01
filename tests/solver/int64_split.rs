@@ -148,7 +148,7 @@ fn recursive_int64_preserving_function_splits_via_narrowed_induction_hypothesis(
     // self-entry override, not just the eligibility shape-matching.
     let results = check_all(
         "half_count : Int -> Int\n\
-         half_count(x) = if x == 0 then 0 else half_count(x / 2)",
+         half_count(x) = if x == 0 then 0 else half_count(x quot 2)",
     );
     assert_eq!(
         names_for(&results, "half_count"),

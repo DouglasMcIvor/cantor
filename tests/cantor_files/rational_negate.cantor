@@ -1,0 +1,10 @@
+-- Unary minus on a Rational: exact, and with no overflow corner to guard
+-- (unlike Int's `-i64::MIN`).
+q : Int * NonZeroInt -> Rational
+q(a, b) = a / b
+
+negq : Rational -> Rational
+negq(x) = -x
+
+main : -> Char*
+main() = show(negq(q(1, 2)))

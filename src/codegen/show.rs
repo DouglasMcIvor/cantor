@@ -66,11 +66,12 @@ impl<'ctx> Compiler<'ctx> {
                 let tagged = self.ensure_tagged(val.into_int_value(), kind)?;
                 self.call_show_bigint(tagged)
             }
-            // TODO(rational stage 3): route to `cantor_rational_show`.
-            Kind::Rational => Err(CompileError::Unsupported {
-                feature: "show(Rational)".to_string(),
-                span,
-            }),
+            // `3/2` prints as "3/2", `4/2` as "2" — `BigRational` normalizes,
+            // so a whole-number rational is indistinguishable from an Int in
+            // the output.
+            Kind::Rational => {
+                self.call_runtime_i64("cantor_show_rational", &[val.into_int_value()], "show_rat")
+            }
             // Signed32/Unsigned32: sign-/zero-extend to i64 then tag, same
             // widening `from(x)` does (`expr_call.rs`), before formatting —
             // `cantor_show_bigint` only understands the tagged `Int` word

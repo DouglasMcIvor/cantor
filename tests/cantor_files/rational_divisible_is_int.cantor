@@ -1,0 +1,8 @@
+-- The payoff: `(2 * x) / 2` is proved to be an Int, so the range check
+-- passes with no annotation and the result narrows back to the Int
+-- representation.
+g : Int -> Int
+g(x) = (2 * x) / 2
+
+main : -> Int
+main() = g(21)

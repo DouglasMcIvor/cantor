@@ -57,7 +57,7 @@ use crate::{
 pub(crate) type NameDefs = HashMap<Symbol, SemNameDef>;
 
 use self::disjointness::{check_overload_disjointness, validate_disjoint_unions};
-use self::encode::{EncodeCtx, Env, boolean_value, encode_expr, integer_value};
+use self::encode::{EncodeCtx, Env, boolean_value, encode_expr, model_value_string};
 use self::event_loop::validate_event_loop_main;
 use self::membership::{Membership, membership_constraint};
 use self::obligations::{BuiltinObligation, OverflowObligation};
@@ -78,8 +78,11 @@ pub enum CheckResult {
     /// obligation.  `reason` is a human-readable explanation such as
     /// `"not in Nat"` (range violation) or `"division by zero"`.
     Counterexample {
-        params: HashMap<String, i64>,
-        output: i64,
+        /// Witness parameter values, already rendered for display — a
+        /// `String` rather than an `i64` because the model value of a
+        /// `Rational` parameter is a fraction (`3/2`), not an integer.
+        params: HashMap<String, String>,
+        output: String,
         reason: String,
     },
     /// Could not determine (unsupported construct, solver timeout, etc.).
@@ -411,7 +414,7 @@ fn check_name_def(
             .unwrap_or_else(|| format!("constant value not in {}", ty));
         CheckResult::Counterexample {
             params: HashMap::new(),
-            output: 0,
+            output: "0".to_string(),
             reason,
         }
     } else {

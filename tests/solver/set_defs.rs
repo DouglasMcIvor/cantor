@@ -156,7 +156,7 @@ f(x) = from(x) + 5
         CheckResult::Counterexample { params, .. } => {
             assert_eq!(
                 params.get("x"),
-                Some(&-5),
+                Some(&"-5".to_string()),
                 "expected decoded witness x = -5, got {params:?}"
             );
         }

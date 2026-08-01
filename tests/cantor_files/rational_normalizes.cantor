@@ -1,0 +1,6 @@
+-- BigRational normalizes, so 4/2 prints bare and 2/4 reduces.
+q : Int * NonZeroInt -> Rational
+q(a, b) = a / b
+
+main : -> Char*
+main() = show(q(4, 2)) ++ " " ++ show(q(2, 4)) ++ " " ++ show(q(-1, -2))

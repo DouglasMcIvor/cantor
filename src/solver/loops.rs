@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::blocks::{BlockCtx, encode_block};
-use super::encode::{EncodeCtx, Env, boolean_value, encode_expr, integer_value};
+use super::encode::{EncodeCtx, Env, boolean_value, encode_expr, model_value_string};
 use super::membership::{Membership, SolverPreds, membership_constraint};
 use super::obligations::{
     BuiltinObligation, OverflowObligation, OverloadCallObligation, decide_overflow_obligations,
@@ -246,12 +246,12 @@ where
     if sat.is_unsat() {
         None
     } else if sat.is_sat() {
-        let mut cex_params: HashMap<String, i64> = HashMap::new();
+        let mut cex_params: HashMap<String, String> = HashMap::new();
         for (name, term) in ctx.param_names.iter().zip(ctx.param_terms.iter()) {
             let val = tmp.get_value(term.clone());
-            cex_params.insert(name.0.clone(), integer_value(&val));
+            cex_params.insert(name.0.clone(), model_value_string(&val));
         }
-        let mut output_val = 0i64;
+        let mut output_val = "0".to_string();
         // A violated built-in obligation is the root cause — the invariant
         // break (if any) is usually downstream of it, so it wins the reason.
         let mut reason = obligs
@@ -274,7 +274,7 @@ where
                     )
                     && !boolean_value(&tmp.get_value(c))
                 {
-                    output_val = integer_value(&tmp.get_value(post.clone()));
+                    output_val = model_value_string(&tmp.get_value(post.clone()));
                     reason = Some(format!(
                         "{inv_label} not maintained: `{}` ∉ {} (value {})",
                         name.0, constraint, output_val

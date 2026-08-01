@@ -242,5 +242,27 @@ impl<'ctx> Compiler<'ctx> {
         // `Char*` (`Vector(Char)`) instead of a `CString`.
         self.module
             .add_function("cantor_show_bigint", i64t.fn_type(i, false), None);
+
+        // Exact rationals (docs/rational-plan.md). Every value is a plain
+        // arena pointer-as-i64 — never tagged, unlike the `Int` words above.
+        for name in [
+            "cantor_rational_add",
+            "cantor_rational_sub",
+            "cantor_rational_mul",
+            "cantor_rational_div",
+            "cantor_rational_cmp",
+        ] {
+            self.module
+                .add_function(name, i64t.fn_type(ii, false), None);
+        }
+        for name in [
+            "cantor_rational_from_int",
+            "cantor_rational_to_int",
+            "cantor_rational_neg",
+            "cantor_rational_to_string",
+            "cantor_show_rational",
+        ] {
+            self.module.add_function(name, i64t.fn_type(i, false), None);
+        }
     }
 }

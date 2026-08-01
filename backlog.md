@@ -107,7 +107,6 @@ You probably don't want to read this unless you're me.
 - more operators:
   - bitwise ops on bytes
   - comparison operators (they are in the lexer but I don't think they are implemented)
-- `Rational` support, including making `/` for `Int` return `Rational`
   - adding `quot` and `rem` to keep `Int` inside `Int`
   - division soundness issue for ints, need to ensure cvc5 and codegen agree
 - operator overloading for things like `List(Byte)`?

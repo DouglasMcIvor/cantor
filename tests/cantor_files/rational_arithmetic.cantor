@@ -1,0 +1,9 @@
+-- Exact arithmetic across the tower: 1/3 + 1/6 == 1/2 exactly.
+q : Int * NonZeroInt -> Rational
+q(a, b) = a / b
+
+sum : -> Rational
+sum() = q(1, 3) + q(1, 6)
+
+main : -> Char*
+main() = show(sum())

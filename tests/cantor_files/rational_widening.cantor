@@ -1,0 +1,9 @@
+-- Int widens implicitly into a Rational position (ℤ ⊂ ℚ).
+add_one : Rational -> Rational
+add_one(x) = x + 1
+
+third : -> Rational
+third() = 1 / 3
+
+main : -> Char*
+main() = show(add_one(third()))

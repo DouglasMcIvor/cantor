@@ -70,6 +70,26 @@ impl<'ctx> Compiler<'ctx> {
             return Ok((v.into(), lk));
         }
 
+        // The numeric tower (docs/rational-plan.md): once either operand is a
+        // Rational, the whole node is exact rational arithmetic — widen the
+        // Int side and route to `cantor_rational_*`. Structurally the same
+        // shape as the tagged-BigInt branch just below, one level up. `/` is
+        // *always* here regardless of operand Kinds, since `elaborate::binop`
+        // reports `Kind::Rational` for every value-position `/`.
+        if op == BinOp::Div || lk == Kind::Rational || rk == Kind::Rational {
+            let lq = self.ensure_rational(li, &lk)?;
+            let rq = self.ensure_rational(ri, &rk)?;
+            let fn_name = match op {
+                BinOp::Add => "cantor_rational_add",
+                BinOp::Sub => "cantor_rational_sub",
+                BinOp::Mul => "cantor_rational_mul",
+                BinOp::Div => "cantor_rational_div",
+                _ => unreachable!("compile_arith is only called for Add/Sub/Mul/Div"),
+            };
+            let result = self.call_runtime_i64(fn_name, &[lq, rq], "rat_arith")?;
+            return Ok((result, Kind::Rational));
+        }
+
         // int-soundness-plan phase 3 step 4b: only a node whose *actual*
         // operand values are both raw `Int64` stays on the fast/checked raw
         // path below — anything touching a tagged `Kind::Int` operand (the
@@ -421,6 +441,12 @@ impl<'ctx> Compiler<'ctx> {
                         .build_int_sub(zero, iv, "wneg")
                         .map_err(|e| CompileError::ice(e.to_string()))?;
                     return Ok((v.into(), ty));
+                }
+                // Exact rational negation — no overflow corner at all, so
+                // unlike the Int paths below there is nothing to check.
+                if ty == Kind::Rational {
+                    let result = self.call_runtime_i64("cantor_rational_neg", &[iv], "rat_neg")?;
+                    return Ok((result, Kind::Rational));
                 }
                 // int-soundness-plan phase 3 step 4b: a tagged `Kind::Int`
                 // operand routes through `cantor_bigint_neg` (never

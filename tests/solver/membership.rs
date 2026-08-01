@@ -19,7 +19,7 @@ fn set_difference_domain_proved() {
     proved(
         "
 safe_div : Int * (Int - {0}) -> Int
-safe_div(x, y) = x / y
+safe_div(x, y) = x quot y
 ",
     );
 }
@@ -185,10 +185,10 @@ bool_to_nat(b) = if b then 1 else 0
 fn safe_div_fixture_all_proved() {
     let src = "
 safe_div : Int * (Int - {0}) -> Int
-safe_div(x, y) = x / y
+safe_div(x, y) = x quot y
 
 positive_div : NatPos * NatPos -> Nat
-positive_div(x, y) = x / y
+positive_div(x, y) = x quot y
 ";
     for (_fn_name, sig_results) in check_all(src) {
         for (label, result) in sig_results {
@@ -204,7 +204,7 @@ fn nonzeroint_domain_proved() {
     proved(
         "
 safe_recip : NonZeroInt -> Int
-safe_recip(x) = 1 / x
+safe_recip(x) = 1 quot x
 ",
     );
 }
@@ -214,7 +214,7 @@ fn nonzeroint_two_arg_proved() {
     proved(
         "
 safe_div : Int * NonZeroInt -> Int
-safe_div(x, y) = x / y
+safe_div(x, y) = x quot y
 ",
     );
 }
@@ -241,8 +241,8 @@ bad_range(x) = x
 
 #[test]
 fn nonzeroint_equivalent_to_set_diff() {
-    let src_named = "safe_div : Int * NonZeroInt -> Int\nsafe_div(x, y) = x / y";
-    let src_inline = "safe_div : Int * (Int - {0}) -> Int\nsafe_div(x, y) = x / y";
+    let src_named = "safe_div : Int * NonZeroInt -> Int\nsafe_div(x, y) = x quot y";
+    let src_inline = "safe_div : Int * (Int - {0}) -> Int\nsafe_div(x, y) = x quot y";
     proved(src_named);
     proved(src_inline);
 }
@@ -252,7 +252,7 @@ fn division_natpos_domain_proved() {
     proved(
         "
 inv_floor : NatPos -> Nat
-inv_floor(x) = 10 / x
+inv_floor(x) = 10 quot x
 ",
     );
 }
@@ -262,7 +262,7 @@ fn division_guarded_by_if_proved() {
     proved(
         "
 guarded_div : Int -> Int
-guarded_div(x) = if x != 0 then 10 / x else 0
+guarded_div(x) = if x != 0 then 10 quot x else 0
 ",
     );
 }
@@ -272,7 +272,7 @@ fn division_guarded_wrong_branch_counterexample() {
     counterexample(
         "
 bad_guard : Int -> Int
-bad_guard(x) = if x == 0 then 10 / x else 0
+bad_guard(x) = if x == 0 then 10 quot x else 0
 ",
     );
 }

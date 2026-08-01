@@ -9,3 +9,5 @@ arrow-buffer = "59"
 arrow-schema = "59"
 # Arbitrary-precision integers — int-soundness-plan.md phase 3 (BigInt runtime).
 num-bigint = "0.4"
+# Exact rationals — docs/rational-plan.md (Rational runtime).
+num-rational = { version = "0.4", default-features = false, features = ["num-bigint-std"] }

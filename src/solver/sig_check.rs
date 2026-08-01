@@ -16,6 +16,7 @@ use super::blocks::{BlockCtx, body_has_unconstrained_loop_var, encode_block};
 use super::disjointness::validate_disjoint_unions;
 use super::encode::{
     EncodeCtx, Env, boolean_value, encode_expr, integer_value, mk_decomposed_tuple,
+    model_value_string,
 };
 use super::membership::{Membership, SolverPreds, membership_constraint};
 use super::obligations::{
@@ -143,7 +144,7 @@ fn decode_cex_params<'tm>(
     param_terms: &[Term<'tm>],
     domain_parts: &[&SemExpr],
     distinct_preds: &SolverPreds<'tm>,
-) -> HashMap<String, i64> {
+) -> HashMap<String, String> {
     let mut cex_params = HashMap::new();
     for ((name, term), part) in param_names
         .iter()
@@ -153,13 +154,13 @@ fn decode_cex_params<'tm>(
         let val = solver.get_value(term.clone());
         let k = part.kind_of.clone();
         let n = if k == ValKind::Bool {
-            boolean_value(&val) as i64
+            boolean_value(&val).to_string()
         } else if matches!(
             k,
             ValKind::Tuple(_) | ValKind::TaggedUnion(_) | ValKind::Vector(_)
         ) {
             // TODO: render tuple/datatype-arm/vector model values in counterexample display
-            0
+            "0".to_string()
         } else if let Some(info) = distinct_preds
             .wrapping
             .values()
@@ -176,14 +177,16 @@ fn decode_cex_params<'tm>(
                 Kind::BitvectorUbvToInt
             };
             let int_app = tm.mk_term(to_int_kind, &[bv_app]);
-            integer_value(&solver.get_value(int_app))
+            integer_value(&solver.get_value(int_app)).to_string()
         } else if let Some(info) = distinct_preds.values().find(|i| i.sort == term.sort()) {
             // Parameter has a distinct (uninterpreted) sort — apply `from_D` to
             // recover the underlying integer for the counterexample display.
             let from_app = tm.mk_term(Kind::ApplyUf, &[info.from.clone(), term.clone()]);
-            integer_value(&solver.get_value(from_app))
+            integer_value(&solver.get_value(from_app)).to_string()
         } else {
-            integer_value(&val)
+            // Covers `Rational` too — a real-sorted witness renders as
+            // `num/den` rather than falling through to a bogus `0`.
+            model_value_string(&val)
         };
         cex_params.insert(name.0.clone(), n);
     }
@@ -300,7 +303,7 @@ fn finish_check<'tm>(
         let output_term = ctx.solver.get_value(body_term);
         CheckResult::Counterexample {
             params: cex_params,
-            output: integer_value(&output_term),
+            output: model_value_string(&output_term),
             reason,
         }
     } else {
@@ -348,7 +351,7 @@ fn check_try_propagation<'a>(
         };
         return Some(CheckResult::Counterexample {
             params: HashMap::new(),
-            output: 0,
+            output: "0".to_string(),
             reason: format!(
                 "`{}(...)?` can propagate {missing}, but this function's own return type \
                  does not include {missing} — add it to the return type",
@@ -478,7 +481,7 @@ pub(super) fn check_block_sig(
     if has_runtime_assert && !crate::semantics::tree::range_contains_fail(&sig.range) {
         return CheckResult::Counterexample {
             params: HashMap::new(),
-            output: 0,
+            output: "0".to_string(),
             reason: "assert may fail at runtime but return type does not include `Fail` \
                      — add `| Fail` or use `!!` on the return type, or prove the assertion statically"
                 .into(),

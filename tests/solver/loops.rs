@@ -340,7 +340,7 @@ f : Nat -> Nat
 f(n) {
     mut i: Nat = 0
     while i < n {
-        i := i + 10 / i
+        i := i + 10 quot i
     }
     i
 }"#,
@@ -364,7 +364,7 @@ h(n) {
     mut i: Nat = 0
     mut junk: Int = 0
     while i < n {
-        junk := 10 / (n - n)
+        junk := 10 quot (n - n)
         i := i + 1
     }
     i
@@ -387,7 +387,7 @@ f(n) {
     mut i: Nat = 0
     mut acc: Nat = 0
     while i < n {
-        acc := acc + 10 / (i + 1)
+        acc := acc + 10 quot (i + 1)
         i := i + 1
     }
     acc
@@ -400,7 +400,7 @@ fn loop_body_call_domain_violation_counterexample() {
     let results = check_all(
         r#"
 half : Nat -> Nat
-half(x) = x / 2
+half(x) = x quot 2
 
 f : Nat -> Nat
 f(n) {
@@ -427,7 +427,7 @@ fn loop_body_call_in_domain_proved() {
     proved_all(
         r#"
 half : Nat -> Nat
-half(x) = x / 2
+half(x) = x quot 2
 
 f : Nat -> Nat
 f(n) {
@@ -519,7 +519,7 @@ f : -> Nat
 f() {
     mut acc: Nat = 0
     for x in {0, 1, 2} {
-        acc := acc + 10 / x
+        acc := acc + 10 quot x
     }
     acc
 }"#,
@@ -539,7 +539,7 @@ f : -> Nat
 f() {
     mut acc: Nat = 0
     for x in {1, 2, 5} {
-        acc := acc + 10 / x
+        acc := acc + 10 quot x
     }
     acc
 }"#,

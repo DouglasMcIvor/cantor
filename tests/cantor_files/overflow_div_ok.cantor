@@ -1,5 +1,9 @@
-safe_div : Int * (Int - {0}) -> Int
-safe_div(x, y) = x / y
+-- Regression: `quot` (which owns integer division's overflow corner now
+-- that `/` is exact) must still handle ordinary division, and must still
+-- carry the divisor-nonzero obligation. Int32 domain so this routes through
+-- the raw promoted path — `quot` on an unbounded Int is still unimplemented.
+safe_quot : Int32 * (Int32 - {0}) -> Int
+safe_quot(x, y) = x quot y
 
 main : -> Int
-main() = safe_div(10, 3)
+main() = safe_quot(10, 3)

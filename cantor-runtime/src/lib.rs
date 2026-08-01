@@ -780,4 +780,6 @@ pub mod arena;
 mod bigint;
 pub mod deep_copy;
 pub mod event_loop;
+mod rational;
 pub use bigint::*;
+pub use rational::*;

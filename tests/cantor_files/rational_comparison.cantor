@@ -1,0 +1,10 @@
+-- Comparison and equality across the tower go through value comparison,
+-- never pointer identity. Returns Int rather than Bool only because a
+-- `main : -> Bool` prints as `1` rather than `true` (a pre-existing CLI
+-- display gap, unrelated to rationals — see bool_run.cantor, which sidesteps
+-- it the same way).
+q : Int * NonZeroInt -> Rational
+q(a, b) = a / b
+
+main : -> Int
+main() = if q(1, 2) < 1 and q(4, 2) == 2 then 99 else 0

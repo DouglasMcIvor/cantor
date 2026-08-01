@@ -164,7 +164,7 @@ fn division_by_literal_proved() {
     proved(
         "
 half : Int -> Int
-half(x) = x / 2
+half(x) = x quot 2
 ",
     );
 }
@@ -174,7 +174,7 @@ fn division_unconstrained_denominator_counterexample() {
     counterexample(
         "
 unsafe_div : Int * Int -> Int
-unsafe_div(x, y) = x / y
+unsafe_div(x, y) = x quot y
 ",
     );
 }
@@ -184,7 +184,7 @@ fn division_unconstrained_single_param_counterexample() {
     counterexample(
         "
 recip : Int -> Int
-recip(x) = 1 / x
+recip(x) = 1 quot x
 ",
     );
 }
@@ -194,7 +194,7 @@ fn division_by_zero_reason_in_result() {
     let results = check(
         "
 unsafe_div : Int * Int -> Int
-unsafe_div(x, y) = x / y
+unsafe_div(x, y) = x quot y
 ",
     );
     let (_, result) = results.into_iter().next().unwrap();
@@ -231,7 +231,7 @@ fn division_excluded_zero_domain_proved() {
     proved(
         "
 safe_recip : Int - {0} -> Int
-safe_recip(x) = 1 / x
+safe_recip(x) = 1 quot x
 ",
     );
 }
@@ -241,7 +241,7 @@ fn division_two_arg_excluded_zero_proved() {
     proved(
         "
 safe_div : Int * (Int - {0}) -> Int
-safe_div(x, y) = x / y
+safe_div(x, y) = x quot y
 ",
     );
 }
@@ -335,7 +335,7 @@ tau : Nat = 2 * pi
 fn constant_division_by_zero_counterexample() {
     // Built-in obligations inside constant values must be discharged, not
     // dropped — 1/0 is undefined even though the result "is an Int".
-    let results = check_all("badconst : Int = 1 / 0");
+    let results = check_all("badconst : Int = 1 quot 0");
     let CheckResult::Counterexample { reason, .. } = result_for(&results, "badconst") else {
         panic!("expected counterexample for badconst");
     };
@@ -351,7 +351,7 @@ fn constant_division_by_zero_counterexample() {
 
 const SAFE_DIV: &str = "
 safe_div : Int * (Int - {0}) -> Int
-safe_div(x, y) = x / y
+safe_div(x, y) = x quot y
 ";
 
 #[test]

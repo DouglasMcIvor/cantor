@@ -408,19 +408,17 @@ which feature lands first overall.
   directly with no correction needed. Domain obligation: divisor ≠ 0,
   exactly `/`'s existing `binary_builtin_domain` row (`src/solver/mod.rs`
   per `project_builtin_domains` memory) — add `(Rem, 1) -> NonZeroInt` and
-  `(Quot, 1) -> NonZeroInt` beside `(Div, 1)`.
-- **`/`'s own truncating-vs-Euclidean mismatch is explicitly *not* this
-  slice's problem to fix — confirmed with Doug 2026-07-05.** `/`'s current
-  encoding (secretly Euclidean, documented as truncating) is a
-  rapid-prototyping-era placeholder: `/` is intended to eventually produce
-  `Rational`, not `Int`, at which point today's Int-truncating `/` is
-  retired entirely and replaced by a dedicated, genuinely-truncating
-  `tdiv`/`trem` pair (separate future work, low priority, not part of this
-  plan). `quot`/`rem` are a wholly independent, Euclidean-by-design pair
-  needed now for quotient-set canonicalizers — they don't need to agree
-  with whatever `/` does today or will do once `Rational` lands. See
-  design-decisions.md's "Arithmetic widening" section and §12 for the
-  `Rational`/`tdiv`/`trem` forward-pointer.
+  `(Quot, 1) -> NonZeroInt` beside `(Div, 1)`. (`(Div, 1)` has since moved
+  up to `NonZeroRational`; `rem`/`quot` stay on `NonZeroInt`.)
+- **`/`'s own truncating-vs-Euclidean mismatch was explicitly *not* this
+  slice's problem to fix — confirmed with Doug 2026-07-05.** It has since
+  been resolved by the numeric tower (docs/rational-plan.md): `/` now
+  produces a `Rational` via exact division, so there is no rounding mode
+  left to disagree about, and the `tdiv`/`trem` pair this bullet used to
+  promise was retracted rather than built — Euclidean `quot`/`rem` already
+  cover integer division. `quot`/`rem` remain a wholly independent,
+  Euclidean-by-design pair, unaffected by that change except that they now
+  reject a `Rational` operand outright.
 - Codegen: LLVM `sdiv`/`srem` plus the standard sign-correction to convert
   hardware truncating division into Euclidean (`if rem < 0: rem += |d|;
   quot -= sign(d)`) — the same well-known transform used to implement

@@ -20,8 +20,10 @@ use crate::kind::Kind;
 /// the spelling.
 pub const SET_CONSTRUCTOR: &str = "Set";
 
-/// The value-range predicate for an integer-kinded built-in set.
-/// Meaningless for non-`Kind::Int` builtins (`Bool`, `Fail`).
+/// The value-range predicate for a numeric built-in set. `Kind::Int` uses
+/// every variant; `Kind::Rational` uses only `Any` and `NonZero` (see
+/// `lookup`'s `Rational` entry). Meaningless for the non-numeric builtins
+/// (`Bool`, `Fail`, `None`, `Char`, `Signed32`, `Unsigned32`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntBound {
     /// All of `Int` — no constraint beyond "is an integer".
@@ -100,16 +102,27 @@ pub fn lookup(name: &str) -> Option<BuiltinSet> {
             kind: Kind::Unsigned32,
             bound: IntBound::Any,
         }),
-        // ℚ — the one builtin that is a strict *superset* of `Int` rather
-        // than a subset or a disjoint sort, so `bound` is meaningless filler
-        // here (an `IntBound` can only ever narrow ℤ). Membership of an
-        // integer-sorted term in `Rational` is trivially true; the
-        // interesting direction is the other way (`IsInteger`), which
-        // `solver::membership` handles under the `Int` names above. See
-        // docs/rational-plan.md.
+        // ℚ — the one builtin family that is a strict *superset* of `Int`
+        // rather than a subset or a disjoint sort. Membership of an
+        // integer-sorted term is trivially true; the interesting direction is
+        // the other way (`IsInteger`), which `solver::membership` handles
+        // under the `Int` names above. See docs/rational-plan.md.
+        //
+        // `NonZeroRational` is what a *total* rational division's divisor
+        // domain is spelled as — `NonZeroInt`'s counterpart one level up the
+        // tower, and the domain `solver::obligations` uses for `/` at every
+        // Kind (on an integer-sorted term the two produce the identical
+        // `t != 0` predicate, so nothing regressed for integer division).
+        // `Nat`/`NatPos` have no ℚ analogue yet: shipped on demand rather
+        // than speculatively, and `solver::membership`'s `Rational` arm
+        // reports `Unsupported` rather than guessing if one ever appears.
         "Rational" => Some(BuiltinSet {
             kind: Kind::Rational,
             bound: IntBound::Any,
+        }),
+        "NonZeroRational" => Some(BuiltinSet {
+            kind: Kind::Rational,
+            bound: IntBound::NonZero,
         }),
         // A Unicode scalar value — a builtin *distinct* sort (like `Fail`),
         // not an `Int` subset, so `bound` is meaningless filler here too.

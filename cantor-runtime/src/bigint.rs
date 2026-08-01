@@ -51,7 +51,7 @@ fn box_bigint(v: BigInt) -> i64 {
 }
 
 /// Encode `v`, choosing the small-int word when it fits, boxing otherwise.
-fn encode_bigint(v: BigInt) -> i64 {
+pub(crate) fn encode_bigint(v: BigInt) -> i64 {
     if let Ok(small) = i64::try_from(&v)
         && let Some(word) = encode_small(small)
     {
@@ -64,7 +64,7 @@ fn encode_bigint(v: BigInt) -> i64 {
 /// clones the heap value for boxed ones. Used once either operand is already
 /// boxed, i.e. the arbitrary-precision path; the small/small fast path below
 /// never calls this.
-fn as_bigint(word: i64) -> BigInt {
+pub(crate) fn as_bigint(word: i64) -> BigInt {
     if word & 1 == 0 {
         BigInt::from(word >> 1)
     } else {

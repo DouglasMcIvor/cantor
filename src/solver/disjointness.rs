@@ -16,8 +16,8 @@ use crate::semantics::tree::{SemExpr, SemFunctionDef, SemFunctionSig, sem_param_
 
 use super::membership::{Membership, QuotientPreds, SolverPreds, membership_constraint};
 use super::{
-    CheckResult, FunctionEnv, NameDefs, boolean_value, build_distinct_preds, build_wrapping_preds,
-    configured_solver, integer_value,
+    CheckResult, FunctionEnv, NameDefs, build_distinct_preds, build_wrapping_preds,
+    configured_solver, model_value_string,
 };
 
 /// Verify that every `+` (disjoint union) in `set_expr` has genuinely disjoint operands.
@@ -80,7 +80,7 @@ pub(super) fn validate_disjoint_unions(
                     } else if sat.is_sat() {
                         Some(CheckResult::Counterexample {
                             params: HashMap::new(),
-                            output: 0,
+                            output: "0".to_string(),
                             reason: format!(
                                 "`{lhs}` and `{rhs}` are not disjoint \
                                  — `+` requires disjoint sets; use `|` for plain union"
@@ -318,16 +318,12 @@ fn check_pair_disjoint(
         let mut params = HashMap::new();
         for (i, term) in param_terms.iter().enumerate() {
             let val = solver.get_value(term.clone());
-            let n = if term.sort().is_boolean() {
-                boolean_value(&val) as i64
-            } else {
-                integer_value(&val)
-            };
+            let n = model_value_string(&val);
             params.insert(format!("arg{i}"), n);
         }
         CheckResult::Counterexample {
             params,
-            output: 0,
+            output: "0".to_string(),
             reason: format!(
                 "overloads of `{}` are not disjoint — a value exists in both declared domains; \
                  overload domains must be disjoint (design-decisions.md §7)",
@@ -450,16 +446,12 @@ fn check_ordered_group_coverage(
         let mut params = HashMap::new();
         for (i, term) in param_terms.iter().enumerate() {
             let val = solver.get_value(term.clone());
-            let n = if term.sort().is_boolean() {
-                boolean_value(&val) as i64
-            } else {
-                integer_value(&val)
-            };
+            let n = model_value_string(&val);
             params.insert(format!("arg{i}"), n);
         }
         CheckResult::Counterexample {
             params,
-            output: 0,
+            output: "0".to_string(),
             reason: format!(
                 "arms of `{}`'s ordered guard group do not cover its declared domain — a value \
                  exists that matches no arm; every ordered guard group's arms must jointly cover \

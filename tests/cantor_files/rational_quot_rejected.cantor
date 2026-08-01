@@ -1,0 +1,3 @@
+-- `quot` is integer division and has no meaning over ℚ.
+bad : Int * NonZeroInt -> Int
+bad(a, b) = (a / b) quot 2

@@ -293,6 +293,11 @@ pub(crate) fn set_sort<'tm>(
             .clone(),
         // Bool has its own CVC5 boolean sort.
         SemExprKind::Var(_) if set_expr.kind_of == ValKind::Bool => tm.boolean_sort(),
+        // `Rational`/`NonZeroRational` → real. A parameter declared over ℚ
+        // must be *declared* at real sort, not merely widened at use sites:
+        // an integer-sorted parameter would silently restrict the domain to
+        // the whole numbers and turn a genuine counterexample into a proof.
+        SemExprKind::Var(_) if set_expr.kind_of == ValKind::Rational => tm.real_sort(),
         // All other named sets (Nat, NatPos, Int, Int8…Int64, …) → integer.
         SemExprKind::Var(_) => tm.integer_sort(),
         // Set literals {0}, {1, 2, 3}, {'a', 'b'} — the sort follows the

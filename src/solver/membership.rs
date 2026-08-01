@@ -219,6 +219,91 @@ fn to_integer_term<'tm>(t: Term<'tm>) -> Option<Term<'tm>> {
     if t.sort().is_integer() { Some(t) } else { None }
 }
 
+/// The integer reading of `t` for a bound check against an `Int` subset, plus
+/// the side condition that makes that reading faithful.
+///
+/// - Integer-sorted `t`: itself, no side condition.
+/// - Real-sorted `t` (a `Rational`): `to_int(t)` paired with `is_int(t)`.
+///   SMT-LIB's `to_int` is *floor*, so it only agrees with `t` once `is_int(t)`
+///   holds — which is exactly why the guard is returned alongside rather than
+///   left to the caller to remember. This is the whole numeric tower in one
+///   function: narrowing ℚ to ℤ is a proof obligation, never a truncation.
+/// - Anything else (bool, tuple, a distinct sort): `None`, and callers return
+///   `Constrained(false)` — not a member.
+fn integer_reading<'tm>(
+    tm: &'tm TermManager,
+    t: Term<'tm>,
+) -> Option<(Term<'tm>, Option<Term<'tm>>)> {
+    if t.sort().is_integer() {
+        Some((t, None))
+    } else if t.sort().is_real() {
+        let guard = is_integer_pred(tm, &t);
+        Some((tm.mk_term(Kind::ToInteger, &[t]), Some(guard)))
+    } else {
+        None
+    }
+}
+
+/// "`t` is a whole number", for a real-sorted `t`.
+///
+/// The obvious encoding is `is_int(t)`, and that is what this falls back to.
+/// But when `t` is literally `(/ a b)` over two *integer*-sorted operands —
+/// overwhelmingly the common case, since every `a / b` on `Int`s has that
+/// shape — it instead emits the equivalent integer-arithmetic statement
+/// `(= (mod a b) 0)`.
+///
+/// This is not a micro-optimisation. cvc5's `nl-cov` (libpoly CAD) engine,
+/// which `configured_solver` enables to stop the *integer* `x * x` bounds
+/// check from hanging (docs/design-decisions.md, 2026-07-05), does not
+/// terminate on `is_int` over a nonlinear real division — and `tlimit` is
+/// ignored, so it hangs rather than reporting `Unknown`. The two engines turn
+/// out to be complementary: whichever one is selected globally, the other's
+/// query shape hangs. Restating divisibility in integer arithmetic sidesteps
+/// the choice entirely, keeping `nl-cov` on and both query shapes fast
+/// (measured: 1.5ms sat / 0.5ms unsat, versus a non-terminating `is_int`).
+///
+/// `mod` is SMT-LIB's Euclidean remainder, which is zero exactly when `b`
+/// divides `a`, for either sign — so this is an equivalence, not an
+/// approximation. A zero divisor is excluded separately and unconditionally
+/// by `/`'s own `NonZeroRational` obligation, so the `b = 0` corner (where
+/// both `mod` and `/` are underspecified) is never reachable in a query that
+/// gets this far.
+fn is_integer_pred<'tm>(tm: &'tm TermManager, t: &Term<'tm>) -> Term<'tm> {
+    if t.kind() == Kind::Division && t.num_children() == 2 {
+        let (a, b) = (t.child(0), t.child(1));
+        if a.sort().is_integer() && b.sort().is_integer() {
+            let m = tm.mk_term(Kind::IntsModulus, &[a, b]);
+            return tm.mk_term(Kind::Equal, &[m, tm.mk_integer(0)]);
+        }
+    }
+    tm.mk_term(Kind::IsInteger, std::slice::from_ref(t))
+}
+
+/// Conjoin an optional `is_int` side condition onto a bound predicate.
+fn with_guard<'tm>(
+    tm: &'tm TermManager,
+    guard: Option<Term<'tm>>,
+    pred: Term<'tm>,
+) -> Membership<'tm> {
+    Membership::Constrained(match guard {
+        Some(g) => tm.mk_term(Kind::And, &[g, pred]),
+        None => pred,
+    })
+}
+
+/// The additive identity at `t`'s own sort — cvc5 auto-coerces `Int` into
+/// `Real` for arithmetic and ordering, but *not* for `Equal`/`Distinct`,
+/// where a mixed pair is a fatal C++-level sort error rather than a catchable
+/// one. `NonZeroInt`/`NonZeroRational` both go through `Distinct`, so they
+/// need the literal built at the matching sort.
+fn zero_like<'tm>(tm: &'tm TermManager, t: &Term<'tm>) -> Term<'tm> {
+    if t.sort().is_real() {
+        tm.mk_real(0)
+    } else {
+        tm.mk_integer(0)
+    }
+}
+
 /// Recursively build a membership predicate for structured set expressions.
 ///
 /// Handles named built-in sets, user-defined alias sets (expanded inline),
@@ -336,36 +421,69 @@ pub(crate) fn membership_constraint<'tm>(
                     Membership::Constrained(tm.mk_boolean(false))
                 }
             }
+            // `Rational` / `NonZeroRational` — the one builtin family that is
+            // a *superset* of `Int`. Both an integer- and a real-sorted term
+            // is a member (ℤ ⊂ ℚ); every other sort is not. Only `Any` and
+            // `NonZero` are reachable, since those are the only two ℚ-Kinded
+            // builtins — the rest of `IntBound` has no ℚ analogue in v0 (see
+            // docs/rational-plan.md open question 2) and says so loudly.
+            Some(b) if b.kind == ValKind::Rational => {
+                if !t.sort().is_real() && !t.sort().is_integer() {
+                    return Membership::Constrained(tm.mk_boolean(false));
+                }
+                match b.bound {
+                    IntBound::Any => Membership::Unconstrained,
+                    IntBound::NonZero => {
+                        let zero = zero_like(tm, &t);
+                        Membership::Constrained(tm.mk_term(Kind::Distinct, &[t, zero]))
+                    }
+                    IntBound::NonNeg | IntBound::Positive => Membership::Unsupported,
+                    IntBound::Bounded(..) | IntBound::Outside(..) => Membership::Unsupported,
+                }
+            }
             // `Int` and its named integer subsets (Nat, NatPos, NonZeroInt,
             // Int8…Int64) all resolve to an integer-sort membership predicate
             // parameterised by `IntBound` — which name means which bound is
             // decided once, centrally, in `semantics::builtins`.
+            //
+            // A *real*-sorted term reaching here is the numeric tower's
+            // headline case: `f : Int -> Int` with a `/` body asks the solver
+            // to discharge a divisibility theorem, not to truncate. See
+            // `integer_reading`.
             Some(b) => {
                 if b.bound == IntBound::Any {
                     // Integer sort is the only sort in plain `Int`.  A term of
                     // distinct sort, boolean sort, or tuple sort is NOT in Int.
                     if t.sort().is_integer() {
                         Membership::Unconstrained
+                    } else if t.sort().is_real() {
+                        Membership::Constrained(is_integer_pred(tm, &t))
                     } else {
                         Membership::Constrained(tm.mk_boolean(false))
                     }
                 } else {
-                    let Some(t) = to_integer_term(t) else {
+                    let Some((t, guard)) = integer_reading(tm, t) else {
                         return Membership::Constrained(tm.mk_boolean(false));
                     };
                     let zero = tm.mk_integer(0);
                     match b.bound {
                         IntBound::NonNeg => {
-                            Membership::Constrained(tm.mk_term(Kind::Geq, &[t, zero]))
+                            with_guard(tm, guard, tm.mk_term(Kind::Geq, &[t, zero]))
                         }
                         IntBound::Positive => {
-                            Membership::Constrained(tm.mk_term(Kind::Gt, &[t, zero]))
+                            with_guard(tm, guard, tm.mk_term(Kind::Gt, &[t, zero]))
                         }
                         IntBound::NonZero => {
-                            Membership::Constrained(tm.mk_term(Kind::Distinct, &[t, zero]))
+                            with_guard(tm, guard, tm.mk_term(Kind::Distinct, &[t, zero]))
                         }
-                        IntBound::Bounded(min, max) => bounded(tm, t, min, max),
-                        IntBound::Outside(min, max) => outside(tm, t, min, max),
+                        IntBound::Bounded(min, max) => match bounded(tm, t, min, max) {
+                            Membership::Constrained(p) => with_guard(tm, guard, p),
+                            other => other,
+                        },
+                        IntBound::Outside(min, max) => match outside(tm, t, min, max) {
+                            Membership::Constrained(p) => with_guard(tm, guard, p),
+                            other => other,
+                        },
                         IntBound::Any => unreachable!(),
                     }
                 }

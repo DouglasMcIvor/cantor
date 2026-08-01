@@ -278,7 +278,7 @@ fn require_division_safety_proved() {
 safe_recip : NatPos -> Int
 safe_recip(x) {
     require x in NonZeroInt
-    1 / x
+    1 quot x
 }
 ",
     );
@@ -291,7 +291,7 @@ fn require_int_domain_fails() {
 bad_recip : Int -> Int
 bad_recip(x) {
     require x in NonZeroInt
-    1 / x
+    1 quot x
 }
 ",
     );
@@ -399,7 +399,7 @@ fn assert_enables_division_safety() {
 safe_recip : Int -> Int | Fail
 safe_recip(x) {
     assert x in NonZeroInt
-    1 / x
+    1 quot x
 }
 ",
     );
@@ -414,7 +414,7 @@ fn assert_in_infallible_function_is_counterexample() {
 runtime_div : Int * Int -> Int
 runtime_div(x, y) {
     assert y != 0
-    x / y
+    x quot y
 }
 ",
     );

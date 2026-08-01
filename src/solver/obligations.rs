@@ -164,15 +164,30 @@ pub(crate) fn decide_overload_resolutions<'tm>(
 pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(SemExpr, &'static str)> {
     match (op, arg_idx) {
         // ── Arithmetic ────────────────────────────────────────────────────────
-        // Div arg 1: divisor must be a plain Int AND non-zero.
+        //
+        // `+ - * /` are the numeric-tower operators, so their operand
+        // obligation is stated at the *top* of the tower (ℚ) rather than
+        // per-operand-Kind. Nothing is lost by doing so: `t ∈ Rational`
+        // rejects exactly what `t ∈ Int` used to (Bool, a distinct-set value,
+        // a wrapping value, a tuple — none of them have a numeric sort), and
+        // on an integer-sorted term `NonZeroRational` builds the identical
+        // `t != 0` predicate `NonZeroInt` did. Stating it at `Int` instead
+        // would be actively wrong now: `membership_constraint` reads
+        // `t ∈ Int` on a real-sorted term as the divisibility obligation
+        // `is_int(t)`, which would force every rational operand to be a whole
+        // number.
+        //
+        // Div arg 1: divisor must be a number AND non-zero.
         (BinOp::Div, 1) => vec![
             (
-                named_set("Int"),
-                "divisor must be Int, not a member of a distinct set",
+                named_set("Rational"),
+                "divisor must be a number, not a member of a distinct set",
             ),
-            (named_set("NonZeroInt"), "division by zero"),
+            (named_set("NonZeroRational"), "division by zero"),
         ],
-        // Rem/Quot arg 1 (the divisor): same shape as Div's.
+        // Rem/Quot arg 1 (the divisor): same shape, but genuinely Int-only —
+        // Euclidean division has no meaning over ℚ, and a Rational operand is
+        // rejected earlier, at elaboration.
         (BinOp::Rem | BinOp::Quot, 1) => vec![
             (
                 named_set("Int"),
@@ -180,11 +195,14 @@ pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(SemExpr,
             ),
             (named_set("NonZeroInt"), "division by zero"),
         ],
-        // All arithmetic args must be plain Int (not Bool, not a distinct set).
-        (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Quot, _) => {
+        (BinOp::Rem | BinOp::Quot, _) => vec![(
+            named_set("Int"),
+            "operand must be Int, not a member of a distinct set",
+        )],
+        (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, _) => {
             vec![(
-                named_set("Int"),
-                "operand must be Int, not a member of a distinct set",
+                named_set("Rational"),
+                "operand must be a number, not a member of a distinct set",
             )]
         }
         // ── Comparisons ───────────────────────────────────────────────────────
@@ -214,10 +232,13 @@ pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(SemExpr,
 /// Returns a list of `(set, reason)` pairs; empty means unconstrained.
 pub(crate) fn unary_builtin_domain(op: &UnOp) -> Vec<(SemExpr, &'static str)> {
     match op {
-        // Negation is defined on Int only — distinct sets cannot be negated.
+        // Negation is defined on numbers only — distinct sets cannot be
+        // negated. Stated at ℚ for the same reason `+ - * /` are (see
+        // `binary_builtin_domain`): `-q` must not carry an integrality
+        // obligation.
         UnOp::Neg => vec![(
-            named_set("Int"),
-            "operand of negation must be Int, not a member of a distinct set",
+            named_set("Rational"),
+            "operand of negation must be a number, not a member of a distinct set",
         )],
         // Operand of `not` must be in Bool.
         UnOp::Not => vec![(named_set("Bool"), "operand of `not` must be Bool")],

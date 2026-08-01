@@ -648,7 +648,13 @@ fn encode_binop<'tm>(
         BinOp::Add => Kind::Add,
         BinOp::Sub => Kind::Sub,
         BinOp::Mul => Kind::Mult,
-        BinOp::Div => Kind::IntsDivision,
+        // Exact rational division (SMT-LIB `/`). cvc5 gives this a Real sort
+        // even when both operands are Int-sorted, which is precisely the
+        // point: `a / b ∈ Int` then becomes a divisibility theorem for the
+        // range check to discharge rather than a silent truncation. Division
+        // by zero is left underspecified by SMT-LIB, so the divisor-nonzero
+        // obligation above stays a genuine proof gate.
+        BinOp::Div => Kind::Division,
         // Euclidean by design (fork 2 of docs/wrapping-and-quotient-sets-plan.md):
         // cvc5's `IntsDivision`/`IntsModulus` (SMT-LIB `div`/`mod`) are already
         // Euclidean, so `quot`/`rem` map onto them directly with no correction —
@@ -671,6 +677,21 @@ fn encode_binop<'tm>(
         }
     };
 
+    // cvc5 implicitly widens Int to Real for arithmetic and ordering
+    // (`(+ x q)`, `(< x q)` are both well-sorted as written), but *not* for
+    // `Equal`/`Distinct`, where a mixed pair is a fatal C++-level sort error
+    // that aborts the process rather than something we can catch. So this is
+    // the one place the numeric tower needs an explicit `to_real` — verified
+    // against the 0.4 bindings rather than assumed.
+    let (l, r) = if l.sort().is_integer() && r.sort().is_real() {
+        (ctx.tm.mk_term(Kind::ToReal, &[l]), r)
+    } else if l.sort().is_real() && r.sort().is_integer() {
+        let r = ctx.tm.mk_term(Kind::ToReal, &[r]);
+        (l, r)
+    } else {
+        (l, r)
+    };
+
     // `==`/`!=` between different solver sorts would be an ill-sorted CVC5
     // term (process abort). Elaboration already rejects cross-kind operands;
     // what reaches here is same-Kind-different-sort — e.g. a distinct-set
@@ -687,19 +708,28 @@ fn encode_binop<'tm>(
     // Guard: bail out with a sort-safe dummy when operands have the wrong sort.
     // The domain checks above push Constrained(false) obligations that cause
     // a counterexample; the dummy prevents a CVC5 sort panic.
+    //
+    // "Right sort" means integer *or* real for the tower operators: cvc5
+    // widens Int to Real on its own, so a mixed pair is fine. `rem`/`quot`
+    // stay integer-only — Euclidean division has no rational reading, and
+    // `elaborate::binop` already rejects a Rational-Kinded operand, so a real
+    // sort reaching here would be a genuine mismatch, not a widening.
+    let numeric = |t: &Term<'_>| t.sort().is_integer() || t.sort().is_real();
+    if matches!(op, BinOp::Rem | BinOp::Quot) && (!l.sort().is_integer() || !r.sort().is_integer())
+    {
+        return Ok(ctx.tm.mk_integer(0));
+    }
     if matches!(
         op,
         BinOp::Add
             | BinOp::Sub
             | BinOp::Mul
             | BinOp::Div
-            | BinOp::Rem
-            | BinOp::Quot
             | BinOp::Lt
             | BinOp::Le
             | BinOp::Gt
             | BinOp::Ge
-    ) && (!l.sort().is_integer() || !r.sort().is_integer())
+    ) && (!numeric(&l) || !numeric(&r))
     {
         return Ok(ctx.tm.mk_integer(0));
     }
@@ -717,34 +747,31 @@ fn encode_binop<'tm>(
     // runtime-valid i64 words) pick a cheaper guard than a general overflow
     // intrinsic for `/` specifically.
     //
-    // TODO: `Kind::IntsDivision` is SMT-LIB's Euclidean `div` (remainder
-    // always non-negative), while codegen's `sdiv` truncates toward zero
-    // (matching docs/design-decisions.md's *current* stated `/` semantics).
-    // These disagree for negative operands. Confirmed 2026-07-05: this is a
-    // rapid-prototyping-era placeholder, not a bug to reconcile in place —
-    // `/` is intended to eventually produce `Rational` (a future numeric-
-    // tower addition, see docs/wrapping-and-quotient-sets-plan.md), at which
-    // point today's Int-truncating `/` goes away entirely and is replaced by
-    // dedicated `tdiv`/`trem` truncating-division operators (low priority,
-    // separate from the Euclidean `quot`/`rem` pair that plan introduces).
-    // Leave this mismatch as-is until then rather than patching it piecemeal.
+    // `Quot` owns the one integer-division overflow corner (`i64::MIN quot
+    // -1`) so it gets the same obligation. `Rem` needs none: a Euclidean
+    // remainder is always `0 <= rem < |divisor|`, strictly bounded by an
+    // already-Int64 divisor, so it can never overflow — proving this
+    // needlessly would just cost a solver call for a fact that's true by
+    // construction.
     //
-    // `Quot` shares `/`'s exact overflow corner (`i64::MIN quot -1` is the
-    // one case that doesn't fit in Int64) so it gets the same obligation.
-    // `Rem` needs none: a Euclidean remainder is always `0 <= rem < |divisor|`,
-    // strictly bounded by an already-Int64 divisor, so it can never overflow —
-    // proving this needlessly would just cost a solver call for a fact that's
-    // true by construction.
+    // A real-sorted result is skipped entirely: `Rational` is exact and boxed
+    // at runtime, so there is no i64 for it to fail to fit into. Asking for
+    // `q ∈ Int64` would additionally read as a divisibility obligation
+    // (`membership_constraint`'s real-sorted `Int` case), which is a claim
+    // nobody made. This is also why `Div` no longer carries one at all — it
+    // is now always real-sorted.
     if matches!(
         op,
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Quot
-    ) && let Membership::Constrained(c) = membership_constraint(
-        ctx.tm,
-        result.clone(),
-        &named_set("Int64"),
-        ctx.name_defs,
-        ctx.distinct_preds,
-    ) {
+    ) && !result.sort().is_real()
+        && let Membership::Constrained(c) = membership_constraint(
+            ctx.tm,
+            result.clone(),
+            &named_set("Int64"),
+            ctx.name_defs,
+            ctx.distinct_preds,
+        )
+    {
         ctx.overflow_obligs.push(OverflowObligation {
             span,
             path_cond: path_cond.clone(),
@@ -771,6 +798,29 @@ pub(crate) fn integer_value(term: &Term<'_>) -> i64 {
 /// Extract a bool from a cvc5 boolean model term.
 pub(crate) fn boolean_value(term: &Term<'_>) -> bool {
     term.to_string().trim() == "true"
+}
+
+/// Render a cvc5 model value for counterexample display.
+///
+/// Real-sorted values (a `Rational` witness) print as `num/den`, or bare when
+/// the denominator is 1 — matching what `show` prints at runtime. Without
+/// this a rational witness would fall through `integer_value`'s
+/// `parse::<i64>().unwrap_or(0)` and silently display as `0`, which for the
+/// headline `f : Int * NonZeroInt -> Int; f(a, b) = a / b` counterexample
+/// would read as the self-contradictory "output = 0 (not in Int)".
+pub(crate) fn model_value_string(term: &Term<'_>) -> String {
+    if term.sort().is_real() && term.is_real_value() {
+        let (num, den) = term.real64_value();
+        return if den == 1 {
+            num.to_string()
+        } else {
+            format!("{num}/{den}")
+        };
+    }
+    if term.sort().is_boolean() {
+        return boolean_value(term).to_string();
+    }
+    integer_value(term).to_string()
 }
 
 // ── Tuple projection helpers ──────────────────────────────────────────────────

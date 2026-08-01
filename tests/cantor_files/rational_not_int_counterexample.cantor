@@ -1,0 +1,3 @@
+-- `a / b` is only an Int when b divides a, which nothing here proves.
+f : Int * NonZeroInt -> Int
+f(a, b) = a / b

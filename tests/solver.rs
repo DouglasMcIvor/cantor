@@ -42,6 +42,8 @@ mod ordered_guard_groups;
 mod overflow;
 #[path = "solver/overloads.rs"]
 mod overloads;
+#[path = "solver/rational.rs"]
+mod rational;
 #[path = "solver/runtime_sets.rs"]
 mod runtime_sets;
 #[path = "solver/set_defs.rs"]

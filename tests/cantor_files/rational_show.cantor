@@ -1,0 +1,6 @@
+-- `/` is exact division: 3/2 is a Rational, not a truncated 1.
+half : Int * NonZeroInt -> Rational
+half(a, b) = a / b
+
+main : -> Char*
+main() = show(half(3, 2))

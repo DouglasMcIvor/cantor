@@ -211,13 +211,16 @@ impl<'ctx> Compiler<'ctx> {
                     .into();
                 (tv, ev, merge.result_kind())
             }
-            // TODO(rational stage 3): widen the Int branch through
-            // `cantor_rational_from_int`, mirroring `CoerceInt64ToInt` above.
             crate::kind::IfMerge::CoerceIntToRational => {
-                return Err(CompileError::Unsupported {
-                    feature: "if-branches merging Int with Rational".to_string(),
-                    span: then_expr.span,
-                });
+                self.builder.position_at_end(then_bb_cur);
+                let tv = self
+                    .ensure_rational(then_val_raw.into_int_value(), &then_ty)?
+                    .into();
+                self.builder.position_at_end(else_bb_cur);
+                let ev = self
+                    .ensure_rational(else_val_raw.into_int_value(), &else_ty)?
+                    .into();
+                (tv, ev, merge.result_kind())
             }
             crate::kind::IfMerge::CoerceToFailStruct => {
                 self.builder.position_at_end(then_bb_cur);
@@ -436,6 +439,27 @@ impl<'ctx> Compiler<'ctx> {
             BinOp::Ge => Some(IntPredicate::SGE),
             _ => None,
         };
+        // The numeric tower: once either operand is a Rational, comparison
+        // and equality go through the runtime, never a bit-pattern `icmp` —
+        // a Rational is a pointer, and two allocations can hold the same
+        // value. The Int side is widened first (ℤ ⊂ ℚ), mirroring the tagged
+        // `cantor_bigint_cmp` path just below.
+        if let Some(pred) = tagged_pred
+            && (lk == Kind::Rational || rk == Kind::Rational)
+        {
+            let lq = self.ensure_rational(li, &lk)?;
+            let rq = self.ensure_rational(ri, &rk)?;
+            let cmp = self
+                .call_runtime_i64("cantor_rational_cmp", &[lq, rq], "rat_cmp")?
+                .into_int_value();
+            let zero = self.context.i64_type().const_int(0, true);
+            let v = self
+                .builder
+                .build_int_compare(pred, cmp, zero, "rat_cmp_result")
+                .map_err(|e| CompileError::ice(e.to_string()))?;
+            return Ok((v.into(), Kind::Bool));
+        }
+
         if let Some(pred) = tagged_pred
             && self.tagging_active()
             && both_int_like

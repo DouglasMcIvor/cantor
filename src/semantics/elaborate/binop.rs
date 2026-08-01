@@ -228,6 +228,21 @@ pub(super) fn elaborate_binop(
             Position::Value => {
                 let l = elaborate_expr(lhs, pos, ctx, env)?;
                 let r = elaborate_expr(rhs, pos, ctx, env)?;
+                // Euclidean division has no meaning over ℚ, so a Rational
+                // operand is rejected here rather than left to the solver:
+                // the solver's `Int` operand obligation would read as
+                // "prove this rational is a whole number", which is a
+                // confusing way to state "you used the wrong operator".
+                if l.kind_of == Kind::Rational || r.kind_of == Kind::Rational {
+                    return Err(CompileError::InvalidOperandKind {
+                        detail: format!(
+                            "`{op}` is integer division and has no meaning for a Rational \
+                             operand — note that `/` is exact division and produces a \
+                             Rational even for Int operands"
+                        ),
+                        span,
+                    });
+                }
                 Ok(SemExpr {
                     kind: SemExprKind::BinOp {
                         op: *op,

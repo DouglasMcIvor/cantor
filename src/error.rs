@@ -166,6 +166,14 @@ pub enum CompileError {
         detail: String,
         span: Span,
     },
+    /// A built-in operator was applied to an operand whose Kind it has no
+    /// meaning for — e.g. `quot`/`rem` (Euclidean *integer* division) on a
+    /// `Rational`. A permanent user error, not a gap: the operator genuinely
+    /// isn't defined there, and `detail` names the alternative that is.
+    InvalidOperandKind {
+        detail: String,
+        span: Span,
+    },
     // Future: DomainViolation, RangeViolation (driven by cvc5 unsat core)
     /// A compiler invariant was violated — a bug in Cantor's compiler
     /// itself, not something the developer can fix by editing their
@@ -230,6 +238,7 @@ impl std::fmt::Display for CompileError {
             Self::InvalidSetExpression { detail, .. } => {
                 write!(f, "invalid set expression: {detail}")
             }
+            Self::InvalidOperandKind { detail, .. } => write!(f, "{detail}"),
             Self::IllFoundedRecursiveSet { name, .. } => {
                 write!(
                     f,
@@ -305,6 +314,7 @@ impl CompileError {
             Self::NoMatchingOverload { span, .. } => span,
             Self::Unsupported { span, .. } => span,
             Self::InvalidSetExpression { span, .. } => span,
+            Self::InvalidOperandKind { span, .. } => span,
             Self::IllFoundedRecursiveSet { span, .. } => span,
             Self::EventLoopMainShape { span, .. } => span,
             Self::Ice { .. } => return self,
@@ -333,6 +343,7 @@ impl CompileError {
             Self::NoMatchingOverload { span, .. } => Some(*span),
             Self::Unsupported { span, .. } => Some(*span),
             Self::InvalidSetExpression { span, .. } => Some(*span),
+            Self::InvalidOperandKind { span, .. } => Some(*span),
             Self::IllFoundedRecursiveSet { span, .. } => Some(*span),
             Self::EventLoopMainShape { span, .. } => Some(*span),
             Self::Ice { .. } => None,

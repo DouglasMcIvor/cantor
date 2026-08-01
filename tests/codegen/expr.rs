@@ -2,7 +2,8 @@ use super::helpers::*;
 use cantor::ast::{BinOp, Param, UnOp};
 use cantor::codegen::Compiler;
 use cantor::kind::Kind;
-use cantor::semantics::tree::SemExpr;
+use cantor::semantics::tree::{SemExpr, SemExprKind};
+use cantor::span::Span;
 use inkwell::context::Context;
 
 // ── Literals ──────────────────────────────────────────────────────────────────
@@ -54,12 +55,23 @@ fn mul() {
 }
 
 #[test]
-fn div_truncates() {
+fn quot_truncates() {
+    // `quot` is the integer-division operator. `/` is exact and yields a
+    // Rational, so it has no meaningful reading in this harness — `jit_eval`
+    // returns an i64, and a Rational is a pointer. (A `/` here would instead
+    // exercise the narrowing guard: `compile_function`'s test wrapper always
+    // declares a `Kind::Int` return, so `10 / 3` aborts in
+    // `cantor_rational_to_int` rather than silently truncating — which is the
+    // intended behaviour, just not a useful assertion.)
     assert_eq!(
-        jit_eval(SemExpr::binop(
-            BinOp::Div,
-            SemExpr::int(10),
-            SemExpr::int(3)
+        jit_eval(SemExpr::new(
+            SemExprKind::BinOp {
+                op: BinOp::Quot,
+                lhs: Box::new(SemExpr::int(10)),
+                rhs: Box::new(SemExpr::int(3)),
+            },
+            Kind::Int,
+            Span::dummy(),
         )),
         3
     );

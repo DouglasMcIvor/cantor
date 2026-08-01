@@ -471,7 +471,7 @@ fn check_quotient_def(
         if !solver.check_sat().is_unsat() {
             return CheckResult::Counterexample {
                 params: HashMap::new(),
-                output: 0,
+                output: "0".to_string(),
                 reason: format!(
                     "canonicalizer `{canon_sym}`'s range `{range}` is not provably a subset of `{lhs}`"
                 ),
@@ -525,7 +525,7 @@ fn check_quotient_def(
     } else if sat.is_sat() {
         CheckResult::Counterexample {
             params: HashMap::new(),
-            output: 0,
+            output: "0".to_string(),
             reason: format!(
                 "canonicalizer `{canon_sym}` is not idempotent: found x ∈ `{lhs}` with \
                  `{canon_sym}({canon_sym}(x)) != {canon_sym}(x)`"
@@ -738,7 +738,7 @@ fn check_equiv_decl(
     } else if sat.is_sat() {
         CheckResult::Counterexample {
             params: HashMap::new(),
-            output: 0,
+            output: "0".to_string(),
             reason: format!(
                 "found x in the shared domain of `{lhs}`/`{rhs}` where `{lhs}(x) != {rhs}(x)`"
             ),

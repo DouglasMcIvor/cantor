@@ -1,5 +1,9 @@
-safe_div : Int * (Int - {0}) -> Int
+-- `i64::MIN / -1` used to be integer division's one overflow corner (UB in
+-- LLVM's sdiv), handled by promoting to a boxed BigInt. Exact division
+-- subsumes it: the result is a Rational that happens to be whole, and a
+-- Rational cannot overflow at all, so there is no corner left to guard.
+safe_div : Int * NonZeroInt -> Rational
 safe_div(x, y) = x / y
 
-main : -> Int
-main() = safe_div(-9223372036854775807 - 1, -1)
+main : -> Char*
+main() = show(safe_div(-9223372036854775807 - 1, -1))

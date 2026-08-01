@@ -70,7 +70,8 @@ fn negation_of_unconstrained_int_has_unproved_overflow_check() {
 fn unconstrained_division_has_unproved_overflow_check() {
     // i64::MIN / -1 isn't excluded by this domain, so the MIN/-1 overflow
     // obligation should remain unproved even though divisor-nonzero is fine.
-    let n = unproved_overflow_count("safe_div : Int * (Int - {0}) -> Int\nsafe_div(x, y) = x / y");
+    let n =
+        unproved_overflow_count("safe_div : Int * (Int - {0}) -> Int\nsafe_div(x, y) = x quot y");
     assert!(
         n >= 1,
         "unconstrained safe division should still have an unproved MIN/-1 overflow obligation"
@@ -82,5 +83,5 @@ fn divisor_nonzero_still_a_hard_gate_alongside_overflow_channel() {
     // Regression: the new overflow channel must not weaken or interfere with
     // the existing (unrelated) divisor-nonzero obligation, which stays a hard
     // proof gate untouched by this phase.
-    counterexample("bad_div : Int * Int -> Int\nbad_div(x, y) = x / y");
+    counterexample("bad_div : Int * Int -> Int\nbad_div(x, y) = x quot y");
 }

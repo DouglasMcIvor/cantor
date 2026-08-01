@@ -1826,6 +1826,18 @@ Other open items (lower priority, not blocking):
   is cvc5's separate nonlinear (NIA) module, exercised even by
   quantifier-free overflow obligations. See docs/int-soundness-plan.md step
   4a for the fuller incident writeup.
+  **Amended 2026-08-01 (numeric tower):** `nl-cov` turns out to have a
+  complementary blind spot — it does not terminate on `is_int` applied to a
+  nonlinear *real* division (`is_int(x / y)`), the numeric tower's headline
+  query, and ignores `tlimit` there just as the default engine does on
+  `x * x`. Measured: `x*x` bounds is 3ms with `nl-cov` and hangs without;
+  `is_int(x/y)` is 5ms without and hangs with. Rather than reopen this
+  decision, `solver::membership::is_integer_pred` restates integer
+  divisibility as `a mod b == 0`, which both engines handle in under 2ms —
+  so `nl-cov` stays on unconditionally and neither hang is reachable. A
+  genuinely-rational nonlinear narrowing (`f : Rational * Rational -> Int;
+  f(p, q) = p * q`) still emits `is_int` and remains a theoretical hang;
+  no such program has been written yet.
 - **`emits` and multithreading** — if concurrent IO threads share `emits`
   channels, synchronisation is needed. Defer until threading model is decided.
 - **Codegen/solver representation parity for `Fail`** — the solver now
@@ -1889,13 +1901,11 @@ Other open items (lower priority, not blocking):
   exits as SSA phi-merge paths.
 - **`raise` / `emits` syntax** — see §11.
 - Float, char/string, byte primitive values.
-- **`Rational`** — the intended eventual result Kind of `/` (see "Arithmetic
-  widening" above), replacing today's Int-truncating placeholder semantics.
-  Once it lands, truncating integer division/remainder move to their own
-  dedicated `tdiv`/`trem` operators — low priority, not scheduled. The
-  Euclidean `quot`/`rem` pair introduced by
-  docs/wrapping-and-quotient-sets-plan.md is unaffected either way (needed
-  now for quotient-set canonicalizers, independent of `/`'s future).
+- **`Set(Rational)` / `Vector(Rational)` / a `Rational` in an event-loop
+  `State`** — all three need value-based equality or an arena deep-copy for
+  a boxed pointer element, the same blocker that already keeps `Set(Int)`
+  from holding a boxed BigInt. Each reports a clean `Unsupported` today.
+  `Rational` itself has landed — see "Arithmetic widening" above.
 - `Vector(Int)`/`Set(Int)` arbitrary-precision elements — the one remaining
   piece of BigInt runtime support (scalar positions are DONE, see
   "Integers" above and int-soundness-plan.md phase 3's "Step 4b"). Needs a
@@ -2031,6 +2041,52 @@ No implicit coercion between `Bool` and any integer kind exists at any layer.
   (deduplicated) tagged form so `Set` membership/equality doesn't break
   once two different boxed allocations can hold the same integer.
 
+### Rational (DECIDED, docs/rational-plan.md)
+
+- **`Rational`** — the mathematical rationals ℚ, exact and unbounded. The
+  result Kind of `/`.
+- **`Int ⊆ Rational` is a genuine numeric tower**, not a pair of disjoint
+  sorts. `2 in Rational` is true; an `Int` widens implicitly wherever a
+  `Rational` is expected (call arguments, returns, `if`-branch merges, mixed
+  arithmetic, comparison, `==`). This is deliberately the opposite stance
+  from `Signed32`/`Unsigned32`/`Char`, which are fully disjoint, and it is
+  *not* a softening of the `Bool` ≠ `Int` rule: ℤ ⊂ ℚ is a real subset
+  relation, whereas `true`/`1` merely share a bit pattern.
+- **Narrowing back to `Int` is a proof obligation**, never implicit — see
+  "Arithmetic widening" above.
+- **`NonZeroRational`** — ℚ minus zero, the divisor domain of a total
+  rational division. `/`'s operand obligations are stated at the top of the
+  tower (`Rational`/`NonZeroRational`) rather than per-operand-Kind: on an
+  integer-sorted term these build predicates identical to `Int`/`NonZeroInt`,
+  so integer division is unchanged, while stating them at `Int` would now
+  wrongly force every rational operand to be a whole number. `Nat`/`NatPos`
+  have no ℚ analogue yet — added on demand rather than speculatively.
+- **Runtime representation:** a plain arena pointer-as-i64 to a boxed,
+  always-normalized `num_rational::BigRational` (gcd-reduced, positive
+  denominator). Deliberately *not* the tagged small/boxed scheme `Int` uses —
+  there is no useful "small rational" fitting in 63 bits, and a rational that
+  happens to be whole is narrowed to `Int` anyway. Because two allocations can
+  hold the same value, `==` and the ordered comparisons go through the runtime
+  (`cantor_rational_cmp`), never pointer identity. Exactness means no
+  `Rational` operation can overflow, so none carries an `Int64`-fit
+  obligation.
+- **Solver representation:** cvc5 `real_sort`, with `/` encoded as
+  `Kind::Division` (SMT-LIB `/`). cvc5 widens `Int` to `Real` implicitly for
+  arithmetic and ordering, so the only place an explicit `to_real` is needed
+  is `Equal`/`Distinct`, where a mixed-sort pair is a fatal C++-level error
+  rather than a catchable one.
+- **Divisibility is encoded in integer arithmetic.** `a / b ∈ Int` over two
+  integer-sorted operands emits `a mod b == 0`, not `is_int(a / b)`. The two
+  are equivalent, but cvc5's `nl-cov` engine — which
+  `configured_solver` enables to stop the *integer* `x * x` bounds check from
+  hanging (see the `nl-cov` note in the deferred/decisions list) — does not
+  terminate on `is_int` over
+  a nonlinear real division, and ignores `tlimit` while doing so. The engines
+  are complementary: whichever is selected globally, the other's query shape
+  hangs. Restating divisibility in integer arithmetic sidesteps the choice.
+- **Decimal literals** (`0.5`) deliberately do not lex — they read as floats,
+  a different and much larger feature. `1/2` is the spelling.
+
 ### Arithmetic widening
 
 - `+`, `-`, `*` operate in ℤ — exact and never overflow at the semantic
@@ -2039,21 +2095,20 @@ No implicit coercion between `Bool` and any integer kind exists at any layer.
 - **Cap at Int64**: `Int64 + Int64 → Int` (not `Int128`). 128-bit
   hardware support is inconsistent; `Int` (BigInt) is the correct
   mathematical fallback. Same cap applies to the other arithmetic operators.
-- `/` is integer division (currently documented as truncating toward zero,
-  but see the note immediately below — this is slated to change).
-  Domain excludes zero in the denominator — standard domain-check machinery
-  handles this.
-  <!-- TODO: the solver encodes `/` via CVC5's `Kind::IntsDivision` (SMT-LIB
-  `div`, Euclidean — remainder always non-negative), which disagrees with
-  the truncating-toward-zero semantics stated above for negative operands.
-  Confirmed 2026-07-05 with Doug: this is a rapid-prototyping-era
-  placeholder, not a gap to patch in place — `/` is intended to eventually
-  produce `Rational` (a future numeric-tower addition), at which point
-  today's Int-truncating `/` is retired entirely in favour of dedicated
-  `tdiv`/`trem` truncating-division operators (low priority, deferred). See
-  docs/wrapping-and-quotient-sets-plan.md, which introduces a *separate*,
-  Euclidean `quot`/`rem` pair in the meantime (needed for quotient-set
-  canonicalizers) that is unaffected by whatever `/` eventually becomes. -->
+- `/` is **exact division**, so it produces a `Rational` even for two `Int`
+  operands: `3 / 2` is `3/2`, not a truncated `1`. Domain excludes zero in
+  the denominator (`NonZeroInt`/`NonZeroRational`) — standard domain-check
+  machinery handles this. Integer division is spelled `quot` (Euclidean,
+  with `rem` as its remainder); `quot`/`rem` reject a `Rational` operand
+  outright, since Euclidean division has no meaning over ℚ.
+- Narrowing a `Rational` back to `Int` is a **proof obligation**, never an
+  implicit truncation — `f : Int * NonZeroInt -> Int; f(a, b) = a / b` is a
+  counterexample (`a = 1, b = -2 → -1/2`), while `g : Int -> Int;
+  g(x) = (2 * x) / 2` is proved and compiles to the `Int` representation.
+  This falls out of the existing range check with no new machinery: range
+  checking was already set-membership based, so `a / b ∈ Int` is simply a
+  divisibility theorem. Widening the other way (ℤ ⊂ ℚ) is implicit and free.
+  See docs/rational-plan.md.
 - **Checked arithmetic (DECIDED, int-soundness-plan phase 1)**: every
   `+ - * /`/unary `-` on integers carries an implicit compiler-generated
   claim that its result (computed in ℤ) lies in `Int64`, checked by the

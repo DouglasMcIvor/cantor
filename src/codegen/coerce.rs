@@ -251,6 +251,42 @@ impl<'ctx> Compiler<'ctx> {
                 self.ensure_tagged(val.into_int_value(), &val_kind)?.into(),
                 Kind::Int,
             )),
+            // The numeric tower's two return-boundary cases, one level up
+            // from the Int/Int64 pair above.
+            //
+            // Widening (`f : Int -> Rational` with an Int body) is free. The
+            // narrowing direction is the interesting one: `f : Int -> Int`
+            // with a `/` body computes a Rational, and unboxing it back to an
+            // Int is sound *only* because the range check already proved
+            // `body ∈ Int` — a divisibility theorem, not a truncation. Nothing
+            // reaches codegen unless every signature was proved (that is what
+            // a `ConstrainedTree` means), so the proof is a precondition of
+            // being here at all; `cantor_rational_to_int` still aborts rather
+            // than truncates if it is ever wrong.
+            (Kind::Int | Kind::Int64, Some(Kind::Rational)) => Ok((
+                self.ensure_rational(val.into_int_value(), &val_kind)?
+                    .into(),
+                Kind::Rational,
+            )),
+            (Kind::Rational, Some(want @ (Kind::Int | Kind::Int64))) => {
+                // `cantor_rational_to_int` yields a *tagged* word; a raw
+                // `Int64` return position (or a pipeline with tagging off)
+                // needs it unwrapped again.
+                let tagged = self
+                    .call_runtime_i64(
+                        "cantor_rational_to_int",
+                        &[val.into_int_value()],
+                        "rat_narrow",
+                    )?
+                    .into_int_value();
+                if *want == Kind::Int && self.tagging_active() {
+                    return Ok((tagged.into(), Kind::Int));
+                }
+                let raw = self
+                    .call_runtime_i64("cantor_bigint_to_i64", &[tagged], "rat_narrow_raw")?
+                    .into_int_value();
+                Ok((raw.into(), want.clone()))
+            }
             _ => Ok((val, val_kind)),
         }
     }
@@ -289,6 +325,18 @@ impl<'ctx> Compiler<'ctx> {
         expected: &Kind,
         set_expr: Option<&SemExpr>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        // ℤ ⊂ ℚ: an Int-Kinded value arriving where a Rational is expected is
+        // widened rather than passed through. Without this it would reach the
+        // `_ => Ok((val, val_kind))` fallthrough below and hand codegen an
+        // integer word where the rest of the pipeline expects a pointer to a
+        // boxed `CantorRational`. The reverse (a Rational where an Int is
+        // expected) is deliberately *not* handled here — narrowing needs a
+        // proof, and this function has none to consult.
+        if *expected == Kind::Rational && matches!(val_kind, Kind::Int | Kind::Int64) {
+            let widened = self.ensure_rational(val.into_int_value(), &val_kind)?;
+            return Ok((widened.into(), Kind::Rational));
+        }
+
         let arms = match expected {
             Kind::TaggedUnion(a) => a.clone(),
             _ => {
@@ -454,6 +502,68 @@ impl<'ctx> Compiler<'ctx> {
             }
             other => Err(CompileError::ice(format!(
                 "ensure_tagged: expected an Int/Int64 value, got {other:?}"
+            ))),
+        }
+    }
+
+    /// Call a `cantor_*` runtime entry point that takes and returns i64
+    /// words, returning its result. Every `Rational` operation has this
+    /// shape (values are pointer-as-i64), so they share one helper rather
+    /// than a dozen copies of the same six lines.
+    pub(crate) fn call_runtime_i64(
+        &self,
+        fn_name: &str,
+        args: &[inkwell::values::IntValue<'ctx>],
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CompileError> {
+        let fn_val = self
+            .module
+            .get_function(fn_name)
+            .ok_or_else(|| CompileError::ice(format!("{fn_name} not declared")))?;
+        let args: Vec<_> = args.iter().map(|a| (*a).into()).collect();
+        self.builder
+            .build_call(fn_val, &args, name)
+            .map_err(|e| CompileError::ice(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::ice(format!("{fn_name} returned void")))
+    }
+
+    /// Widen `val : kind` up to a `Rational` pointer — the ℤ ⊂ ℚ coercion.
+    /// A no-op for an already-`Rational` value; an `Int`/`Int64` one is
+    /// tagged first (so the runtime sees the word encoding it expects) and
+    /// then boxed by `cantor_rational_from_int`.
+    ///
+    /// There is deliberately no inverse helper alongside this one: narrowing
+    /// ℚ back to ℤ is a proof obligation, not a coercion, so it lives at the
+    /// one boundary that has a proof to appeal to — see `coerce_int_return`.
+    pub(crate) fn ensure_rational(
+        &self,
+        val: inkwell::values::IntValue<'ctx>,
+        kind: &Kind,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CompileError> {
+        match kind {
+            Kind::Rational => Ok(val),
+            Kind::Int | Kind::Int64 => {
+                // `cantor_rational_from_int` reads a *tagged* word, so a raw
+                // one must be tagged first. `ensure_tagged` is a no-op when
+                // `tagging_active()` is false (the REPL/`llvm-ir` pipelines
+                // keep `Kind::Int` as a plain i64 there), which is exactly
+                // the case where the tagging is genuinely needed — so this
+                // calls `cantor_bigint_from_i64` directly rather than
+                // routing through it.
+                let tagged = if self.tagging_active() && *kind == Kind::Int {
+                    val
+                } else {
+                    self.call_runtime_i64("cantor_bigint_from_i64", &[val], "rat_tag")?
+                        .into_int_value()
+                };
+                Ok(self
+                    .call_runtime_i64("cantor_rational_from_int", &[tagged], "to_rat")?
+                    .into_int_value())
+            }
+            other => Err(CompileError::ice(format!(
+                "ensure_rational: expected an Int/Int64/Rational value, got {other:?}"
             ))),
         }
     }

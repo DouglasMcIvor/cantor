@@ -171,7 +171,7 @@ fn diff_domain_safe_recip_proved() {
     proved(
         "
 recip : Int - {0} -> Int
-recip(x) = 1 / x
+recip(x) = 1 quot x
 ",
     );
 }
@@ -182,7 +182,7 @@ fn diff_domain_two_arg_safe_div_proved() {
     proved(
         "
 safe_div : Int * (Int - {0}) -> Int
-safe_div(x, y) = x / y
+safe_div(x, y) = x quot y
 ",
     );
 }
@@ -694,7 +694,7 @@ fn cross_two_diff_args_safe_div_proved() {
     proved(
         "
 f : (Int - {0}) * (Int - {0}) -> Int
-f(x, y) = x / y
+f(x, y) = x quot y
 ",
     );
 }

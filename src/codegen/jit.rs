@@ -275,6 +275,46 @@ impl<'ctx> Compiler<'ctx> {
                     "cantor_show_bigint",
                     runtime::cantor_show_bigint as *const () as usize,
                 ),
+                (
+                    "cantor_rational_add",
+                    runtime::cantor_rational_add as *const () as usize,
+                ),
+                (
+                    "cantor_rational_sub",
+                    runtime::cantor_rational_sub as *const () as usize,
+                ),
+                (
+                    "cantor_rational_mul",
+                    runtime::cantor_rational_mul as *const () as usize,
+                ),
+                (
+                    "cantor_rational_div",
+                    runtime::cantor_rational_div as *const () as usize,
+                ),
+                (
+                    "cantor_rational_neg",
+                    runtime::cantor_rational_neg as *const () as usize,
+                ),
+                (
+                    "cantor_rational_cmp",
+                    runtime::cantor_rational_cmp as *const () as usize,
+                ),
+                (
+                    "cantor_rational_from_int",
+                    runtime::cantor_rational_from_int as *const () as usize,
+                ),
+                (
+                    "cantor_rational_to_int",
+                    runtime::cantor_rational_to_int as *const () as usize,
+                ),
+                (
+                    "cantor_rational_to_string",
+                    runtime::cantor_rational_to_string as *const () as usize,
+                ),
+                (
+                    "cantor_show_rational",
+                    runtime::cantor_show_rational as *const () as usize,
+                ),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))

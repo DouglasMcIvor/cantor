@@ -607,7 +607,11 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
             event_loop::format_char_vector(vec_ptr)
         }
         Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in CLI output"),
-        // TODO(rational stage 3): decode via `cantor_rational_to_string`.
-        Kind::Rational => panic!("TODO: Rational not yet supported in CLI output"),
+        Kind::Rational => {
+            let ptr = cantor::runtime::cantor_rational_to_string(buf[*offset]);
+            *offset += 1;
+            let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::os::raw::c_char) };
+            s.to_string_lossy().into_owned()
+        }
     }
 }

@@ -13,7 +13,8 @@ use crate::{
 use super::CheckResult;
 use super::NameDefs;
 use super::encode::{
-    EncodeCtx, Env, coerce_to_sequence, encode_expr, integer_value, proj_from_tuple, tuple_arity,
+    EncodeCtx, Env, coerce_to_sequence, encode_expr, model_value_string, proj_from_tuple,
+    tuple_arity,
 };
 use super::loops::{LoopCtx, check_for_inductive_step, check_inductive_step};
 use super::membership::{Membership, SolverPreds, membership_constraint};
@@ -414,7 +415,7 @@ pub(crate) fn encode_block<'tm>(
                     if ctx.immutable_names.contains(name) {
                         return Err(CheckResult::Counterexample {
                             params: HashMap::new(),
-                            output: 0,
+                            output: "0".to_string(),
                             reason: format!(
                                 "cannot assign to `{}`: declared as an immutable binding \
                                  (use `mut {}` to allow reassignment)",
@@ -557,7 +558,7 @@ pub(crate) fn encode_block<'tm>(
             SemStmt::Assign { name, .. } if ctx.immutable_names.contains(name) => {
                 return Err(CheckResult::Counterexample {
                     params: HashMap::new(),
-                    output: 0,
+                    output: "0".to_string(),
                     reason: format!(
                         "cannot assign to `{}`: declared as an immutable binding \
                          (use `mut {}` to allow reassignment)",
@@ -925,11 +926,11 @@ pub(crate) fn check_require<'tm>(
         let mut params = HashMap::new();
         for (name, term) in param_names.iter().zip(param_terms.iter()) {
             let val = tmp.get_value(term.clone());
-            params.insert(name.0.clone(), integer_value(&val));
+            params.insert(name.0.clone(), model_value_string(&val));
         }
         CheckResult::Counterexample {
             params,
-            output: 0,
+            output: "0".to_string(),
             reason: "requirement failed".to_string(),
         }
     } else {

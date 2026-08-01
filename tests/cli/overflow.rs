@@ -93,11 +93,13 @@ fn negating_i64_min_promotes() {
 }
 
 #[test]
-fn division_of_i64_min_by_neg_one_promotes() {
-    // The one case division can overflow: divisor-nonzero (a separate, hard
-    // proof gate) is satisfied here, but plain i64::MIN/-1 is UB in LLVM's
-    // sdiv — this used to abort, now `cantor_bigint_div` computes the exact
-    // (BigInt-backed) answer, 9223372036854775808.
+fn division_of_i64_min_by_neg_one_is_exact() {
+    // `i64::MIN / -1` was integer division's one overflow corner (UB in
+    // LLVM's sdiv): it used to abort, then was fixed by promoting to a boxed
+    // BigInt. The numeric tower retires the corner rather than guarding it —
+    // `/` is exact, so the result is a Rational (here a whole one) that
+    // cannot overflow. Same headline answer, 9223372036854775808, reached
+    // without needing an overflow channel at all.
     let out = run_subcommand("overflow_div_min_neg1.cantor");
     assert_eq!(out.code, 0, "expected exit 0:\n{}", out.stdout);
     assert!(
@@ -109,8 +111,9 @@ fn division_of_i64_min_by_neg_one_promotes() {
 
 #[test]
 fn ordinary_division_unaffected_by_overflow_channel() {
-    // Regression: the new MIN/-1 guard must not interfere with normal
-    // division, nor with the existing divisor-nonzero obligation.
+    // Regression: the MIN/-1 guard — which now belongs to `quot`, the
+    // integer-division operator — must not interfere with normal division,
+    // nor with the existing divisor-nonzero obligation.
     let out = run_subcommand("overflow_div_ok.cantor");
     assert_eq!(
         out.code, 0,
