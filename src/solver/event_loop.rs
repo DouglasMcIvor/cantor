@@ -1,7 +1,9 @@
 //! MVP IO event loop (docs/design-decisions.md §6): validates the shape of
-//! an event-loop-style `main` — a 2-arity overload `Char* * S -> Char* * S`
+//! an event-loop-style `main` — a 2-arity overload `Char* * S -> Output * S`
 //! paired with a 0-arity `main : -> S` seed — before `check_file` hands
-//! control to the ordinary per-signature domain/range checker.
+//! control to the ordinary per-signature domain/range checker. Event is
+//! fixed at `Char*`; Output can be `Char*` or any other Kind codegen knows
+//! how to marshal for the chosen build target (`wire::classify_output_shape`).
 //!
 //! This is a structural/shape check, not a proof obligation: there is
 //! nothing for cvc5 to prove here (no domain/range containment claim), so
@@ -19,9 +21,12 @@ use crate::span::Symbol;
 use super::FunctionEnv;
 
 /// True when a Kind is exactly `Char*` (`Vector(Char)`) — the fixed v0
-/// Event/Output shape (docs/design-decisions.md §6). Event/Output aren't
-/// required to be spelled via a named alias (a bare `Char*` literal is the
-/// common case), so unlike State below, this is a Kind check only.
+/// Event shape (docs/design-decisions.md §6). Output is no longer required
+/// to match this (see `find_event_loop_candidate`'s doc comment) — codegen
+/// (`wire::classify_output_shape`) decides which Output Kinds it actually
+/// knows how to marshal for a given build target. Event isn't required to be
+/// spelled via a named alias (a bare `Char*` literal is the common case), so
+/// unlike State below, this is a Kind check only.
 fn is_char_star(kind: &ValKind) -> bool {
     matches!(kind, ValKind::Vector(elem) if **elem == ValKind::Char)
 }
@@ -38,11 +43,17 @@ struct EventLoopCandidate<'a> {
 }
 
 /// Find the (at most one, for v0) 2-arity `main` signature shaped like
-/// `Char* * S -> Char* * S`, across every `main` `SemFunctionDef`/`sigs`
-/// entry. Returns `Ok(None)` when no `main` looks like an event loop at all
-/// — an ordinary 2-arg function named `main` with an unrelated domain isn't
-/// `cantor run`'s concern, mirroring today's rule that only a 0-arg `main`
-/// is runnable at all.
+/// `Char* * S -> Output * S`, across every `main` `SemFunctionDef`/`sigs`
+/// entry. Event (domain component 1) is still fixed at `Char*` — Output
+/// (range component 0) no longer has to be, since `cantor build --target
+/// wasm32` can marshal more than strings across the wasm boundary now (see
+/// `wire::classify_output_shape`); which Output Kinds are actually usable for
+/// a given target is validated downstream, not here — this function only
+/// recognizes the *shape* (2-arity, tuple range) that makes a `main` an
+/// event loop at all. Returns `Ok(None)` when no `main` looks like an event
+/// loop at all — an ordinary 2-arg function named `main` with an unrelated
+/// domain isn't `cantor run`'s concern, mirroring today's rule that only a
+/// 0-arg `main` is runnable at all.
 fn find_event_loop_candidate<'a>(
     main_defs: &[&'a SemFunctionDef],
 ) -> Result<Option<EventLoopCandidate<'a>>, CompileError> {
@@ -58,7 +69,7 @@ fn find_event_loop_candidate<'a>(
             let ValKind::Tuple(range_elems) = &sig.return_kind else {
                 continue;
             };
-            if range_elems.len() != 2 || !is_char_star(&range_elems[0]) {
+            if range_elems.len() != 2 {
                 continue;
             }
             let Some(domain) = sig.domain.as_ref() else {
@@ -87,7 +98,7 @@ fn find_event_loop_candidate<'a>(
         1 => Ok(candidates.into_iter().next()),
         _ => Err(CompileError::EventLoopMainShape {
             detail: "multiple `main` overloads match the event-loop shape \
-                     `Char* * S -> Char* * S` — only one is supported"
+                     `Char* * S -> Output * S` — only one is supported"
                 .to_string(),
             span: candidates[1].domain_state.span,
         }),

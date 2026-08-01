@@ -80,6 +80,53 @@ fn event_loop_runs_once_for_eot_on_immediate_eof() {
     );
 }
 
+// ── Output shape gate: Char* is no longer the only Output Kind that proves,
+// but only Char* is wired into the driver yet ────────────────────────────
+
+#[test]
+fn image_output_shape_proves_fine() {
+    // The shape gate (`wire::is_event_loop_step_shape`) no longer requires
+    // Output to be `Char*` — a compound `Image` Output proves like any other
+    // Kind. Whether `cantor run`/`cantor build` can actually *drive* it is a
+    // separate, later question (see `image_output_run_refuses_cleanly`
+    // below) — this test is just "the solver doesn't reject the shape".
+    let out = run_file("event_loop_image_output.cantor");
+    assert_eq!(
+        out.code, 0,
+        "event_loop_image_output.cantor check should exit 0\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected all proved:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn image_output_run_refuses_cleanly() {
+    // `cantor run`'s driver only marshals `Char*` Output so far (the
+    // cantor-runtime/wasm.rs generalization is later work) — a proved
+    // Image-output program must be refused with a clear diagnostic, not
+    // silently miscompiled or crash as an ICE.
+    let out = run_subcommand("event_loop_image_output.cantor");
+    assert_ne!(
+        out.code, 0,
+        "should refuse to run:\n{}\n{}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stderr.contains("not yet supported") && out.stderr.contains("Char*"),
+        "expected a clear not-yet-supported diagnostic, not an ICE:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("internal compiler error"),
+        "must not be reported as an ICE:\n{}",
+        out.stderr
+    );
+}
+
 #[test]
 fn missing_seed_overload_is_a_compile_error() {
     let out = run_file("event_loop_missing_seed.cantor");

@@ -320,8 +320,8 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
     // below. Shape/identifier validity was already fully verified by
     // `solver::event_loop::validate_event_loop_main` before this
     // `ConstrainedTree` could exist, so this is a Kind-only re-scan.
-    if let Some((state_kind, state_span)) = find_event_loop_state_kind(&tree) {
-        run_event_loop(tree, path, src, state_kind, state_span);
+    if let Some((output_kind, state_kind, state_span)) = find_event_loop_state_kind(&tree) {
+        run_event_loop(tree, path, src, output_kind, state_kind, state_span);
         return;
     }
 
@@ -471,10 +471,10 @@ fn run_build(
     keep_temps: bool,
     target: BuildTarget,
 ) {
-    let Some((state_kind, state_span)) = find_event_loop_state_kind(&tree) else {
+    let Some((output_kind, state_kind, state_span)) = find_event_loop_state_kind(&tree) else {
         eprintln!(
             "error: `cantor build` only supports the IO event-loop `main` shape \
-             (`Char* * S -> Char* * S`, docs/design-decisions.md §6) — scalar/tuple \
+             (`Char* * S -> Output * S`, docs/design-decisions.md §6) — scalar/tuple \
              `main` is JIT-only, use `cantor run` instead"
         );
         process::exit(1);
@@ -498,6 +498,7 @@ fn run_build(
         tree: &tree,
         path,
         src,
+        output_kind: &output_kind,
         state_kind: &state_kind,
         state_span,
         output: &output_path,
@@ -530,9 +531,30 @@ fn run_event_loop(
     tree: ConstrainedTree,
     path: &str,
     src: &str,
+    output_kind: Kind,
     state_kind: Kind,
     state_span: Span,
 ) {
+    // `cantor run` drives its event loop over a blocking stdin/stdout text
+    // loop (`cantor_runtime::event_loop::drive_event_loop`) — there is no
+    // renderer for a non-`Char*` Output here (nor, yet, anywhere else — see
+    // the matching check in `codegen::aot::build_executable`), so fail
+    // loudly rather than let a mismatched Output Kind reach the driver.
+    if wire::classify_output_shape(&output_kind) != Some(wire::OutputShape::CharStar) {
+        print_compile_error(
+            path,
+            &CompileError::Unsupported {
+                feature: format!(
+                    "event-loop Output Kind {output_kind:?} — `cantor run` only supports \
+                     `Char*` Output"
+                ),
+                span: state_span,
+            },
+            src,
+        );
+        process::exit(1);
+    }
+
     let ctx = Context::create();
     let engine = match compile_constrained(&ctx, &tree, path, src) {
         Ok(e) => e,

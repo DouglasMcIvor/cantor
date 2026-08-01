@@ -1,0 +1,23 @@
+-- An event-loop `main` whose Output is the `Image` convention (Nat * Nat *
+-- Unsigned32*, docs/design-decisions.md §6) rather than the MVP `Char*`
+-- shape. The shape gate (`wire::is_event_loop_step_shape`) accepts this —
+-- Output Kind is no longer pinned to `Char*` — but the driver templates
+-- don't marshal anything besides `Char*` yet, so `cantor run`/`cantor build`
+-- must refuse it with a clear "not yet supported" error rather than silently
+-- miscompiling (CLAUDE.md's "unimplemented paths must fail loudly" rule).
+--
+-- Output MUST be a named alias (`Image`, not inlined as `(Nat*Nat*Unsigned32*)
+-- * Digit`) — `*` fully flattens per paren level regardless of grouping
+-- (docs/design-decisions.md's "parser nesting TODO" note), so an inline
+-- compound Output would flatten into one wide tuple with State, breaking
+-- the Output/State split `find_event_loop_state_kind` relies on. Naming it
+-- stops the flattening at the alias boundary, the same reason State itself
+-- must already be a named identifier.
+Image = Nat * Nat * Unsigned32*
+Digit = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+
+main : Char* * Digit -> Image * Digit
+main(event, state) = ((1, 1, [unsigned32(0)]), state)
+
+main : -> Digit
+main() = 0

@@ -37,21 +37,70 @@ pub fn tagged_union_leaf_count(arms: &[Kind]) -> usize {
     arms.iter().map(leaf_count).max().unwrap_or(0)
 }
 
-/// True when `(param_kinds, return_kind)` matches the MVP IO event loop's
-/// fixed v0 shape `Char* * S -> Char* * S` (docs/design-decisions.md §6) — 2
-/// params, first param `Char*`, 2-element tuple return whose first element
-/// is also `Char*`. Kind-only: the (stronger) identifier-equality checks on
-/// `S` already happened in `solver::event_loop::validate_event_loop_main`
-/// before a `ConstrainedTree` exposing this shape could exist at all.
+/// True when a Kind is exactly `Char*` (`Vector(Char)`).
+fn is_char_star(kind: &Kind) -> bool {
+    matches!(kind, Kind::Vector(elem) if **elem == Kind::Char)
+}
+
+/// True when `(param_kinds, return_kind)` matches the IO event loop's shape
+/// `Char* * S -> Output * S` (docs/design-decisions.md §6) — 2 params, first
+/// param `Char*` (Event, still fixed for v0), 2-element tuple return. Output
+/// (the first return element) is *not* Kind-checked here any more — it used
+/// to be pinned to `Char*` too, but codegen can now marshal more than
+/// strings across the event-loop boundary; `classify_output_shape` below
+/// decides which specific Output Kinds are actually usable, which build
+/// targets support them, and error out clearly if it recognizes neither.
+/// Kind-only: the (stronger) identifier-equality checks on `S` already
+/// happened in `solver::event_loop::validate_event_loop_main` before a
+/// `ConstrainedTree` exposing this shape could exist at all.
 ///
 /// Shared by `compile.rs` (decides which trampolines to emit), `main.rs`
 /// (JIT event-loop dispatch), and `aot.rs` (AOT event-loop dispatch) — one
 /// definition of the shape instead of three copies drifting apart.
 pub fn is_event_loop_step_shape(param_kinds: &[Kind], return_kind: &Kind) -> bool {
-    let is_char_star = |k: &Kind| matches!(k, Kind::Vector(elem) if **elem == Kind::Char);
     param_kinds.len() == 2
         && is_char_star(&param_kinds[0])
-        && matches!(return_kind, Kind::Tuple(elems) if elems.len() == 2 && is_char_star(&elems[0]))
+        && matches!(return_kind, Kind::Tuple(elems) if elems.len() == 2)
+}
+
+/// Which Output Kind an event-loop `main` uses, among the ones codegen
+/// actually knows how to marshal — `None` for anything else (an
+/// `Unsupported` error at the call site, not a silent fallback, per this
+/// codebase's rule that unimplemented paths must fail loudly).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputShape {
+    /// The original MVP shape: `Output` is `Char*`, printed as a line of
+    /// text. Supported by every target (native `cantor run`/`cantor build`,
+    /// and `--target wasm32`).
+    CharStar,
+    /// `Nat * Nat * Vector(Unsigned32)` — width, height, row-major pixels
+    /// packed one `0xRRGGBBAA` per element. A *convention*, not a new
+    /// builtin Kind (docs/design-decisions.md §6) — deliberately just a
+    /// Tuple/Vector/Unsigned32 shape the language already had, recognized
+    /// structurally here. `--target wasm32`-only: there is no way to render
+    /// an image over `cantor run`'s stdin/stdout loop.
+    Image,
+}
+
+/// Classify an event-loop `main`'s Output Kind (the event-loop return
+/// tuple's first element), or `None` if codegen doesn't know how to marshal
+/// it at all yet.
+pub fn classify_output_shape(kind: &Kind) -> Option<OutputShape> {
+    if is_char_star(kind) {
+        return Some(OutputShape::CharStar);
+    }
+    let Kind::Tuple(elems) = kind else {
+        return None;
+    };
+    let [width, height, pixels] = elems.as_slice() else {
+        return None;
+    };
+    let is_pixel_vector = matches!(pixels, Kind::Vector(elem) if **elem == Kind::Unsigned32);
+    if *width == Kind::Int && *height == Kind::Int && is_pixel_vector {
+        Some(OutputShape::Image)
+    } else {
+        None
+    }
 }
 
 /// Convert a `State` `Kind` into the deep-copy shape descriptor

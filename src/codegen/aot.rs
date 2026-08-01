@@ -27,16 +27,16 @@ use super::{
     wire,
 };
 
-/// Find the event-loop `main`'s State Kind, if `tree` defines one — `None`
-/// means this file just isn't using the event-loop feature (an ordinary
-/// zero-arg `main`, or none at all). Shared by `main.rs` (JIT dispatch) and
-/// `cantor build`'s CLI gate (the caller decides what "not an event-loop
-/// program" means for its own subcommand — `run` falls back to scalar
-/// dispatch, `build` refuses outright). The `Span` is `main`'s own
-/// definition span — used only to anchor `wire::state_leaf_shape`'s error
-/// case, since State itself is just a named set with no more specific
-/// sub-expression to blame.
-pub fn find_event_loop_state_kind(tree: &ConstrainedTree) -> Option<(Kind, Span)> {
+/// Find the event-loop `main`'s Output/State Kinds, if `tree` defines one —
+/// `None` means this file just isn't using the event-loop feature (an
+/// ordinary zero-arg `main`, or none at all). Shared by `main.rs` (JIT
+/// dispatch) and `cantor build`'s CLI gate (the caller decides what "not an
+/// event-loop program" means for its own subcommand — `run` falls back to
+/// scalar dispatch, `build` refuses outright). The `Span` is `main`'s own
+/// definition span — used to anchor both `wire::state_leaf_shape`'s and
+/// `wire::classify_output_shape`'s error cases, since Output/State are each
+/// just a Kind with no more specific sub-expression here to blame.
+pub fn find_event_loop_state_kind(tree: &ConstrainedTree) -> Option<(Kind, Kind, Span)> {
     tree.sem_items.iter().find_map(|item| match item {
         SemItem::FunctionDef(def)
             if def.name.0 == "main"
@@ -45,7 +45,7 @@ pub fn find_event_loop_state_kind(tree: &ConstrainedTree) -> Option<(Kind, Span)
             let Kind::Tuple(elems) = &def.return_kind else {
                 unreachable!("is_event_loop_step_shape already checked this is a Tuple");
             };
-            Some((elems[1].clone(), def.span))
+            Some((elems[0].clone(), elems[1].clone(), def.span))
         }
         _ => None,
     })
@@ -61,6 +61,7 @@ pub struct BuildRequest<'a> {
     pub tree: &'a ConstrainedTree,
     pub path: &'a str,
     pub src: &'a str,
+    pub output_kind: &'a Kind,
     pub state_kind: &'a Kind,
     pub state_span: Span,
     pub output: &'a Path,
@@ -69,6 +70,26 @@ pub struct BuildRequest<'a> {
 }
 
 pub fn build_executable(req: &BuildRequest) -> Result<(), CompileError> {
+    // TODO: Output is only wired all the way through the generated driver
+    // for the original `Char*` MVP shape so far — `wire::OutputShape::Image`
+    // is recognized by the shape gate (`is_event_loop_step_shape`) but the
+    // driver templates below still hardcode Char* string marshaling, so
+    // reject anything else loudly here rather than silently miscompiling.
+    // Lift this once the driver templates branch on `OutputShape` too.
+    match wire::classify_output_shape(req.output_kind) {
+        Some(wire::OutputShape::CharStar) => {}
+        _ => {
+            return Err(CompileError::Unsupported {
+                feature: format!(
+                    "event-loop Output Kind {:?} — only `Char*` is wired into the \
+                     `cantor build`/`cantor run` driver so far",
+                    req.output_kind
+                ),
+                span: req.state_span,
+            });
+        }
+    }
+
     let n_state_leaves = wire::leaf_count(req.state_kind);
     let state_shape = wire::state_leaf_shape(req.state_kind, req.state_span)?;
 
