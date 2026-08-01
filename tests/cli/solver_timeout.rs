@@ -117,6 +117,13 @@ fn a_missing_worker_binary_is_a_loud_error() {
         "expected an error naming the worker, got:\n{}",
         out.stderr
     );
+    // A broken environment is the user's to fix, so it must not be dressed up
+    // as an internal compiler error — see `CompileError`'s taxonomy.
+    assert!(
+        !out.stderr.contains("file an issue") && !out.stderr.contains("internal compiler error"),
+        "an environment problem must not be reported as a compiler bug:\n{}",
+        out.stderr
+    );
 }
 
 /// The debugging escape hatch still checks the file properly — it only gives

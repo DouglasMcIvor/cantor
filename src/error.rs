@@ -33,7 +33,7 @@ impl std::fmt::Display for IceLocation {
     }
 }
 
-/// Three categories, kept deliberately separate because each means
+/// Four categories, kept deliberately separate because each means
 /// something different to the person reading it and will eventually
 /// render differently:
 ///
@@ -46,6 +46,10 @@ impl std::fmt::Display for IceLocation {
 /// - `Ice`: a compiler invariant was violated. Points at the *Rust* source
 ///   (via `Location::caller()`), not the user's file — the user's span is
 ///   irrelevant to debugging a compiler bug.
+/// - `Environment`: the compiler can't run at all — a broken installation
+///   or a bad `CANTOR_*` setting. No span in either language, because the
+///   problem is in neither. Distinct from `Ice` because there *is*
+///   something for the user to fix, so "please file a bug" is wrong advice.
 ///
 /// Most `Ice` sites today are genuine invariant violations (LLVM builder
 /// failures, missing runtime declarations), but plenty are still
@@ -213,6 +217,14 @@ pub enum CompileError {
         detail: String,
         rust_location: IceLocation,
     },
+    /// The compiler cannot run, for a reason outside the user's program *and*
+    /// outside the compiler's own logic — a broken installation, a bad
+    /// `CANTOR_*` setting, a subprocess that won't start. Like `Ice` it has no
+    /// Cantor span, but unlike `Ice` there is something for the user to fix,
+    /// so it must not tell them to file a compiler bug.
+    Environment {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for CompileError {
@@ -286,6 +298,7 @@ impl std::fmt::Display for CompileError {
             } => {
                 write!(f, "internal compiler error ({rust_location}): {detail}")
             }
+            Self::Environment { detail } => write!(f, "{detail}"),
         }
     }
 }
@@ -348,7 +361,7 @@ impl CompileError {
             Self::InvalidOperandKind { span, .. } => span,
             Self::IllFoundedRecursiveSet { span, .. } => span,
             Self::EventLoopMainShape { span, .. } => span,
-            Self::Ice { .. } => return self,
+            Self::Ice { .. } | Self::Environment { .. } => return self,
         };
         span.start += offset;
         span.end += offset;
@@ -377,7 +390,7 @@ impl CompileError {
             Self::InvalidOperandKind { span, .. } => Some(*span),
             Self::IllFoundedRecursiveSet { span, .. } => Some(*span),
             Self::EventLoopMainShape { span, .. } => Some(*span),
-            Self::Ice { .. } => None,
+            Self::Ice { .. } | Self::Environment { .. } => None,
         }
     }
 }

@@ -215,11 +215,11 @@ pub(super) fn supervise(
     items: &[Item],
     timeout_ms: u64,
 ) -> Result<CheckOutcome, crate::error::CompileError> {
-    let exe = worker_exe().ok_or_else(|| {
-        CompileError::ice(format!(
+    let exe = worker_exe().ok_or_else(|| CompileError::Environment {
+        detail: format!(
             "could not locate a `cantor` binary to run the check worker; \
              set {WORKER_ENV} to its path, or {INPROCESS_ENV}=1 to check in-process"
-        ))
+        ),
     })?;
 
     let mut child = Command::new(&exe)
@@ -227,7 +227,9 @@ pub(super) fn supervise(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|e| CompileError::ice(format!("could not start check worker {exe:?}: {e}")))?;
+        .map_err(|e| CompileError::Environment {
+            detail: format!("could not start the check worker {exe:?}: {e}"),
+        })?;
 
     // Both pipes get their own thread. The request can be larger than a pipe
     // buffer and the worker starts replying before it has read all of it, so
