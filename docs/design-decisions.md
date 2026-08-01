@@ -1036,7 +1036,18 @@ well beyond the CLI's own default 60s `--timeout`, the same class of issue as
 "cvc5 doesn't honor tlimit for some quantifier shapes" noted elsewhere in this
 doc. Not a soundness gap (it never returns a wrong answer, just doesn't
 return), and not new — vector-let opacity simply made the query shape
-unreachable before. An *unconstrained* element kind (`Char*`, `Bool*` — the
+unreachable before.
+
+**Update 2026-08-01**: this no longer hangs the *compiler*. The check worker
+(see the decisions list) kills a solve that has stopped making progress, so
+this query now reports `unknown` and names `grow` rather than running
+forever. The underlying cvc5 limitation is unchanged — the obligation still
+can't be proved — but it degrades instead of wedging.
+`tests/cantor_files/solver_hang_kleene_loop.cantor` is exactly this shape,
+and is what the kill-path tests run against; if cvc5 ever starts answering
+it, that fixture and this note should both go.
+
+An *unconstrained* element kind (`Char*`, `Bool*` — the
 Kleene-star membership obligation is trivially `Unconstrained`, no quantifier
 generated at all) is unaffected and provably fast; self-referential `++` in a
 loop is only currently practical for those. TODO: revisit the
@@ -1812,6 +1823,54 @@ Other open items (lower priority, not blocking):
   every fresh solver instance.  A timed-out check returns `Unknown`.  Per-check
   resource limits (`rlimit`) are available in cvc5 but not yet exposed — they
   are deterministic (unaffected by system load) but harder to reason about.
+  **Amended 2026-08-01:** `tlimit` alone is not enough — see the check-worker
+  entry below.
+- **The check worker (cvc5 behind a process boundary)** — decided
+  (2026-08-01): `solver::check_file` does not call cvc5 in-process. It spawns
+  `cantor __check-worker`, streams the parsed file to it as JSON, and kills it
+  if it stops making progress.
+
+  The reason is that `tlimit` is advisory in practice. cvc5 checks it at
+  resource-manager spend points, and several query shapes go a long time
+  between them — three separate cases are recorded in this document
+  (`x * x` bounds without `nl-cov`, `is_int(x/y)` with it, and the
+  Kleene-star/loop-induction limitation noted in the "for x in S loops"
+  section), each confirmed running far past the limit it was given. The Rust
+  binding exposes no `interrupt()`, and even if it did, it would be checked at
+  the same points `tlimit` is. Signalling a separate process is the only
+  mechanism that actually stops a wedged solve.
+
+  Granularity is per-query, not per-file. The worker emits a progress message
+  before every `check-sat` (all of which route through one `checked_sat`
+  helper, so none can bypass it), and the supervisor kills a worker that has
+  gone quiet for longer than its budget — `2 x tlimit`, floor 10s, overridable
+  with `CANTOR_PROGRESS_BUDGET_MS`. A whole-file deadline would have had to
+  choose between killing large files early and letting a wedged query run for
+  the whole budget; watching for progress instead keeps the timeout meaning
+  what `tlimit` was always supposed to mean. Each message names the obligation
+  in flight, so a killed check reports *which* signature hung.
+
+  The budget is deliberately looser than `tlimit`: when cvc5 does honour its
+  own limit the result is strictly better than a kill (a per-signature
+  `Unknown`, with the rest of the file still checked), so the kill should only
+  fire for queries that have ignored `tlimit` entirely. A killed check reports
+  `Unknown` and never a pass, per the "never silently assumes anything that
+  isn't proved" rule — it has proved nothing.
+
+  This also retired a process-wide mutex around cvc5. The C++ library has
+  global state that data-races across threads even when each thread has its
+  own `TermManager` and `Solver` (observed as a segfault when `cargo test` ran
+  the solver suite in parallel), which used to force every check in the
+  process to serialize. A worker does one check and exits, so there is no
+  second caller to race with. Cost: the solver test suite went from 3.4s to
+  4.8s, since ~500 process spawns are only partly repaid by no longer
+  funnelling every test through one lock.
+
+  `CANTOR_INPROCESS_SOLVER=1` bypasses the split for debugging (a profiler or
+  a debugger has one fewer process to follow), at the cost of the ability to
+  kill a hang. Failing to *find* a worker binary is a hard error rather than a
+  silent fallback to that mode: quietly losing hang protection is exactly the
+  kind of thing nobody notices until it matters.
 - **cvc5 `nl-cov` nonlinear-arithmetic option** — decided (2026-07-05): every
   solver instance also sets `nl-cov`, which switches cvc5 from its default
   heuristic nonlinear-arithmetic engine to the libpoly-based covering/CAD

@@ -1,0 +1,23 @@
+-- A query cvc5 does not return from, used to test that the check worker
+-- gets killed rather than hanging the compiler.
+--
+-- The shape is the known limitation documented in docs/design-decisions.md:
+-- a Kleene-star membership obligation over a *range-constrained* element
+-- kind (`Nat*`, not `Char*`) combined with loop induction over a
+-- self-referentially growing sequence. cvc5 ignores `tlimit` here — measured
+-- still running past 25s with `--timeout 3`.
+--
+-- If this file ever starts finishing on its own, cvc5 has got better and the
+-- right response is to delete this fixture, its tests, and the
+-- known-limitation note in the docs — not to make the tests laxer.
+
+grow : Nat* * Nat -> Nat
+grow(xs, n) {
+    mut i : Nat = n
+    mut out : Nat* = xs
+    while i > 0 {
+        out := out ++ xs
+        i := i - 1
+    }
+    len(out)
+}

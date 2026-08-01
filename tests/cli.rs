@@ -52,6 +52,8 @@ mod rem_quot;
 mod repl;
 #[path = "cli/sets.rs"]
 mod sets;
+#[path = "cli/solver_timeout.rs"]
+mod solver_timeout;
 #[path = "cli/soundness_diagnostics.rs"]
 mod soundness_diagnostics;
 #[path = "cli/subcommands.rs"]

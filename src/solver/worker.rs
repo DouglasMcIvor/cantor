@@ -42,6 +42,10 @@ pub const INPROCESS_ENV: &str = "CANTOR_INPROCESS_SOLVER";
 /// Overrides worker discovery with an explicit path to a `cantor` binary.
 pub const WORKER_ENV: &str = "CANTOR_CHECK_WORKER";
 
+/// Overrides how long a worker may go without reporting progress before it is
+/// assumed wedged and killed. See [`progress_budget`].
+pub const BUDGET_ENV: &str = "CANTOR_PROGRESS_BUDGET_MS";
+
 /// The argv marker that turns `cantor` into a check worker. Deliberately
 /// ugly: it's an internal calling convention between two copies of the
 /// compiler, not a user-facing subcommand.
@@ -141,8 +145,20 @@ pub fn run() -> ! {
 /// should only fire for queries that have blown through `tlimit` entirely.
 /// The floor covers the two gaps that aren't a solver query at all:
 /// elaboration before the first check-sat, and building the result after the
-/// last one.
+/// last one. Both are fast, but the floor also has to absorb a heavily loaded
+/// machine — a budget tight enough to trip under parallel test load would turn
+/// a safety net into a source of spurious `Unknown`s.
+///
+/// [`BUDGET_ENV`] overrides the result outright, for a machine slow enough to
+/// need more headroom than the floor gives, and for tests that would otherwise
+/// have to wait it out.
 fn progress_budget(timeout_ms: u64) -> Duration {
+    if let Some(override_ms) = std::env::var(BUDGET_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return Duration::from_millis(override_ms);
+    }
     Duration::from_millis((timeout_ms * 2).max(10_000))
 }
 
