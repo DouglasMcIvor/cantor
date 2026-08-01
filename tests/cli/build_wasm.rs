@@ -18,6 +18,17 @@ const HOST_ABI_EXPORTS: [&str; 5] = [
     "cantor_wasm_output_len",
 ];
 
+/// The Image-Output counterpart of `HOST_ABI_EXPORTS` — `wasm_driver_source`
+/// emits exactly one of these two export sets per module, never both (see
+/// that function's doc comment), so an Image-Output module's export table
+/// has these instead of `cantor_wasm_output_ptr`/`_len`.
+const IMAGE_OUTPUT_ABI_EXPORTS: [&str; 4] = [
+    "cantor_wasm_output_width",
+    "cantor_wasm_output_height",
+    "cantor_wasm_output_pixels_ptr",
+    "cantor_wasm_output_pixels_len",
+];
+
 /// Linking a wasm module needs two things `cargo test` does not itself
 /// provide: the `wasm32-unknown-unknown` rust-std, and a cross-compiled
 /// `cantor-runtime` rlib (`cargo build -p cantor-runtime --target
@@ -97,6 +108,66 @@ fn build_wasm_emits_a_module_exporting_the_host_abi() {
         assert!(
             bytes.windows(symbol.len()).any(|w| w == symbol.as_bytes()),
             "expected the module to export `{symbol}`"
+        );
+    }
+}
+
+#[test]
+fn build_wasm_image_output_produces_a_module() {
+    let Some(_deps) = wasm_runtime_deps_dir() else {
+        eprintln!(
+            "SKIPPED build_wasm_image_output_produces_a_module: no wasm32 cantor-runtime \
+             rlib — run `rustup target add wasm32-unknown-unknown && cargo build -p \
+             cantor-runtime --target wasm32-unknown-unknown`"
+        );
+        return;
+    };
+
+    // Unlike native `cantor build`/`cantor run` (see tests/cli/build.rs's
+    // `build_refuses_image_output_for_native_target` and
+    // tests/cli/event_loop.rs's `image_output_run_refuses_cleanly`), the
+    // wasm32 target actually builds an Image-Output event-loop program —
+    // this is the one place `wasm_driver_source`'s Image branch is
+    // exercised end to end.
+    let (build_out, module) =
+        build_wasm_fixture("event_loop_image_output.cantor", "wasm-image-output");
+    assert_eq!(
+        build_out.code, 0,
+        "expected build to succeed\nstdout: {}\nstderr: {}",
+        build_out.stdout, build_out.stderr
+    );
+
+    let bytes = std::fs::read(&module).expect("wasm module should have been written");
+    std::fs::remove_file(&module).ok();
+
+    assert_eq!(&bytes[0..4], b"\0asm", "expected a wasm module");
+
+    for symbol in [
+        "cantor_wasm_init",
+        "cantor_wasm_input_buffer",
+        "cantor_wasm_step",
+    ] {
+        assert!(
+            bytes.windows(symbol.len()).any(|w| w == symbol.as_bytes()),
+            "expected the module to export `{symbol}`"
+        );
+    }
+    for symbol in IMAGE_OUTPUT_ABI_EXPORTS {
+        assert!(
+            bytes.windows(symbol.len()).any(|w| w == symbol.as_bytes()),
+            "expected the module to export the Image-Output accessor `{symbol}`"
+        );
+    }
+    // The Char*-Output accessors must NOT appear — `wasm_driver_source`
+    // emits exactly one export set per module (see IMAGE_OUTPUT_ABI_EXPORTS'
+    // doc comment), and a stray `cantor_wasm_output_ptr` export would be a
+    // real ABI-generation bug (a JS host could call it and read garbage,
+    // since cantor-runtime's `output_ptr` panics on the wrong OutputValue
+    // variant only at *call* time, not at export-table-inspection time).
+    for symbol in ["cantor_wasm_output_ptr", "cantor_wasm_output_len"] {
+        assert!(
+            !bytes.windows(symbol.len()).any(|w| w == symbol.as_bytes()),
+            "did not expect the module to export the Char*-Output accessor `{symbol}`"
         );
     }
 }

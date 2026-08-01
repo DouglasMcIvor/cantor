@@ -13,11 +13,27 @@
 -- the Output/State split `find_event_loop_state_kind` relies on. Naming it
 -- stops the flattening at the alias boundary, the same reason State itself
 -- must already be a named identifier.
+--
+-- The pixel array literal must also be built into a local `Unsigned32*`-
+-- declared variable first, then referenced by name inside the tuple
+-- literal — writing it inline (`(1, 1, [unsigned32(0)])`) hits a separate
+-- pre-existing codegen bug: `compile_tuple` compiles each tuple field with
+-- no expected-Kind context, so a bare array-literal field never gets
+-- coerced into a real Vector unless the *whole* return Kind is directly
+-- `X*` (`coerce_vector_return`'s only case) — nested one level inside
+-- another tuple, it silently stays an inline `{i32, ...}` struct instead,
+-- surfacing as an LLVM return-type-mismatch ICE. A local `let` with its own
+-- declared Vector Kind coerces correctly (that coercion path *is* wired
+-- up), so referencing the local sidesteps it. Not fixed here — flagged for
+-- a follow-up session.
 Image = Nat * Nat * Unsigned32*
 Digit = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
 
 main : Char* * Digit -> Image * Digit
-main(event, state) = ((1, 1, [unsigned32(0)]), state)
+main(event, state) {
+    pixels : Unsigned32* = [unsigned32(0)]
+    ((1, 1, pixels), state)
+}
 
 main : -> Digit
 main() = 0

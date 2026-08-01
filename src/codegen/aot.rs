@@ -1,10 +1,14 @@
 //! `cantor build` — AOT compilation to a standalone executable.
 //!
-//! v0 scope is deliberately narrow: only the MVP IO event loop `main` shape
-//! (`Char* * S -> Char* * S`, docs/design-decisions.md §6) is supported, by
+//! v0 scope is deliberately narrow: only the IO event loop `main` shape
+//! (`Char* * S -> Output * S`, docs/design-decisions.md §6) is supported, by
 //! explicit product decision — scalar/tuple `main` is JIT-only
 //! (`cantor run`) and always will be, so there's no driver-generation logic
-//! for those shapes here at all.
+//! for those shapes here at all. Output itself is narrower still —
+//! `build_executable`'s guard only accepts `Char*` (every target) or the
+//! `Image` convention (`--target wasm32` only, since there's no way to
+//! render a bitmap over a native stdin/stdout loop) — anything else is a
+//! clear `Unsupported` error, not a silent fallback.
 //!
 //! Pipeline: emit the proved `ConstrainedTree` to a native object file
 //! (`object::compile_constrained_to_object`), generate a tiny Rust "driver"
@@ -70,25 +74,33 @@ pub struct BuildRequest<'a> {
 }
 
 pub fn build_executable(req: &BuildRequest) -> Result<(), CompileError> {
-    // TODO: Output is only wired all the way through the generated driver
-    // for the original `Char*` MVP shape so far — `wire::OutputShape::Image`
-    // is recognized by the shape gate (`is_event_loop_step_shape`) but the
-    // driver templates below still hardcode Char* string marshaling, so
-    // reject anything else loudly here rather than silently miscompiling.
-    // Lift this once the driver templates branch on `OutputShape` too.
-    match wire::classify_output_shape(req.output_kind) {
-        Some(wire::OutputShape::CharStar) => {}
-        _ => {
-            return Err(CompileError::Unsupported {
-                feature: format!(
-                    "event-loop Output Kind {:?} — only `Char*` is wired into the \
-                     `cantor build`/`cantor run` driver so far",
-                    req.output_kind
-                ),
-                span: req.state_span,
-            });
+    let unsupported = |detail: String| CompileError::Unsupported {
+        feature: detail,
+        span: req.state_span,
+    };
+    let output_shape = match (wire::classify_output_shape(req.output_kind), req.target) {
+        (Some(wire::OutputShape::CharStar), _) => wire::OutputShape::CharStar,
+        (Some(wire::OutputShape::Image), BuildTarget::Wasm32) => wire::OutputShape::Image,
+        // There is no way to render a bitmap over a native stdin/stdout
+        // event loop — permanent scope, not a "not yet" gap, mirroring
+        // `cantor build`'s own event-loop-main-only scope boundary above.
+        (Some(wire::OutputShape::Image), BuildTarget::Native) => {
+            return Err(unsupported(format!(
+                "event-loop Output Kind {:?} (the `Image` convention) — only supported for \
+                 `--target wasm32`; there is no way to render an image over a native \
+                 stdin/stdout event loop",
+                req.output_kind
+            )));
         }
-    }
+        (None, _) => {
+            return Err(unsupported(format!(
+                "event-loop Output Kind {:?} — only `Char*` and the `Image` convention \
+                 (`Nat * Nat * Unsigned32*`, docs/design-decisions.md §6) are wired into the \
+                 `cantor build`/`cantor run` driver so far",
+                req.output_kind
+            )));
+        }
+    };
 
     let n_state_leaves = wire::leaf_count(req.state_kind);
     let state_shape = wire::state_leaf_shape(req.state_kind, req.state_span)?;
@@ -101,7 +113,7 @@ pub fn build_executable(req: &BuildRequest) -> Result<(), CompileError> {
         ))
     })?;
 
-    let result = build_executable_in(&tmp_dir, req, n_state_leaves, &state_shape);
+    let result = build_executable_in(&tmp_dir, req, output_shape, n_state_leaves, &state_shape);
 
     if req.keep_temps {
         eprintln!(
@@ -118,6 +130,7 @@ pub fn build_executable(req: &BuildRequest) -> Result<(), CompileError> {
 fn build_executable_in(
     tmp_dir: &Path,
     req: &BuildRequest,
+    output_shape: wire::OutputShape,
     n_state_leaves: usize,
     state_shape: &LeafShape,
 ) -> Result<(), CompileError> {
@@ -129,7 +142,7 @@ fn build_executable_in(
     let driver_path = tmp_dir.join("driver.rs");
     let driver = match target {
         BuildTarget::Native => native_driver_source(n_state_leaves, state_shape),
-        BuildTarget::Wasm32 => wasm_driver_source(n_state_leaves, state_shape),
+        BuildTarget::Wasm32 => wasm_driver_source(output_shape, n_state_leaves, state_shape),
     };
     std::fs::write(&driver_path, driver).map_err(|e| {
         CompileError::ice(format!("could not write {}: {e}", driver_path.display()))
@@ -225,7 +238,60 @@ fn main() {{
 /// one `Event` in at a time. Each is a one-liner over
 /// `cantor_runtime::wasm`, which holds the real logic — see that module's
 /// doc comment for the calling sequence the host must follow.
-fn wasm_driver_source(n_state_leaves: usize, state_shape: &LeafShape) -> String {
+///
+/// `output_shape` (resolved once, at `cantor build` time, by
+/// `build_executable`'s guard — never branched on again after this point)
+/// picks which `cantor_wasm_output_*` accessor exports to emit: the
+/// `Char*`-text pair for `CharStar`, or the width/height/pixel-buffer
+/// quartet for `Image` — never both, so a JS host can't accidentally call
+/// the wrong one for what this particular module actually produces.
+fn wasm_driver_source(
+    output_shape: wire::OutputShape,
+    n_state_leaves: usize,
+    state_shape: &LeafShape,
+) -> String {
+    let output_kind_expr = match output_shape {
+        wire::OutputShape::CharStar => "cantor_runtime::event_loop::OutputKind::CharStar",
+        wire::OutputShape::Image => "cantor_runtime::event_loop::OutputKind::Image",
+    };
+    let output_accessors = match output_shape {
+        wire::OutputShape::CharStar => {
+            r#"
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_output_ptr() -> *const u8 {
+    cantor_runtime::wasm::output_ptr()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_output_len() -> usize {
+    cantor_runtime::wasm::output_len()
+}
+"#
+        }
+        wire::OutputShape::Image => {
+            r#"
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_output_width() -> u32 {
+    cantor_runtime::wasm::output_width()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_output_height() -> u32 {
+    cantor_runtime::wasm::output_height()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_output_pixels_ptr() -> *const u8 {
+    cantor_runtime::wasm::output_pixels_ptr()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_wasm_output_pixels_len() -> usize {
+    cantor_runtime::wasm::output_pixels_len()
+}
+"#
+        }
+    };
     format!(
         r#"{TRAMPOLINE_DECLS}
 #[unsafe(no_mangle)]
@@ -234,13 +300,7 @@ pub extern "C" fn cantor_wasm_init() {{
         cantor_runtime::wasm::init(
             cantor_initial_state,
             cantor_step,
-            // TODO(Image output): always `CharStar` until the wasm build
-            // path threads a real `OutputKind` through from
-            // `wire::classify_output_shape` — `build_executable`'s guard
-            // (in this same file) only lets a `CharStar`-Output program
-            // reach this driver template at all today, so this is safe as
-            // written, just not yet general.
-            cantor_runtime::event_loop::OutputKind::CharStar,
+            {output_kind_expr},
             {n_state_leaves},
             {},
         );
@@ -256,17 +316,7 @@ pub extern "C" fn cantor_wasm_input_buffer(len: usize) -> *mut u8 {{
 pub extern "C" fn cantor_wasm_step(len: usize) {{
     cantor_runtime::wasm::step(len)
 }}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_wasm_output_ptr() -> *const u8 {{
-    cantor_runtime::wasm::output_ptr()
-}}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn cantor_wasm_output_len() -> usize {{
-    cantor_runtime::wasm::output_len()
-}}
-"#,
+{output_accessors}"#,
         render_leaf_shape(state_shape)
     )
 }

@@ -165,21 +165,22 @@ fn build_refuses_non_event_loop_main() {
 }
 
 #[test]
-fn build_refuses_image_output_not_yet_wired() {
-    // Native `cantor build` shares `build_executable`'s Output-Kind guard
-    // with `cantor run` (see tests/cli/event_loop.rs's
-    // `image_output_run_refuses_cleanly`) — a proved Image-output program
-    // still can't be built until the driver templates branch on
-    // `OutputShape`.
-    let (out, bin) = build_fixture("event_loop_image_output.cantor", "image-output");
+fn build_refuses_image_output_for_native_target() {
+    // Native `cantor build` permanently refuses Image Output — there's no
+    // terminal renderer for it, unlike `cantor build --target wasm32` (see
+    // `build_wasm_image_output_produces_a_module`, which builds the same
+    // fixture successfully for that target).
+    let (out, bin) = build_fixture("event_loop_image_output.cantor", "image-output-native");
     assert_ne!(
         out.code, 0,
         "should refuse to build:\n{}\n{}",
         out.stdout, out.stderr
     );
     assert!(
-        out.stderr.contains("not yet supported") && out.stderr.contains("Char*"),
-        "expected a clear not-yet-supported diagnostic, not an ICE:\n{}",
+        out.stderr.contains("not yet supported")
+            && out.stderr.contains("Image")
+            && out.stderr.contains("wasm32"),
+        "expected a clear not-yet-supported diagnostic naming --target wasm32, not an ICE:\n{}",
         out.stderr
     );
     assert!(!bin.exists(), "no executable should have been written");
