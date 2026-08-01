@@ -301,7 +301,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(err)?;
                 Ok(narrow.into())
             }
-            Kind::Int | Kind::Int64 | Kind::Set(_) | Kind::Vector(_) => {
+            Kind::Int | Kind::Int64 | Kind::Rational | Kind::Set(_) | Kind::Vector(_) => {
                 Ok(load_word(leaf_idx)?.into())
             }
             Kind::Signed32 | Kind::Unsigned32 | Kind::Char => {
@@ -362,7 +362,7 @@ impl<'ctx> Compiler<'ctx> {
                 builder.build_store(ptr, wide).map_err(err)?;
                 *leaf_idx += 1;
             }
-            Kind::Int | Kind::Int64 | Kind::Set(_) => {
+            Kind::Int | Kind::Int64 | Kind::Rational | Kind::Set(_) => {
                 let ptr = if *leaf_idx == 0 {
                     out_ptr
                 } else {

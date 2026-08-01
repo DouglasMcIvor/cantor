@@ -66,6 +66,11 @@ impl<'ctx> Compiler<'ctx> {
                 let tagged = self.ensure_tagged(val.into_int_value(), kind)?;
                 self.call_show_bigint(tagged)
             }
+            // TODO(rational stage 3): route to `cantor_rational_show`.
+            Kind::Rational => Err(CompileError::Unsupported {
+                feature: "show(Rational)".to_string(),
+                span,
+            }),
             // Signed32/Unsigned32: sign-/zero-extend to i64 then tag, same
             // widening `from(x)` does (`expr_call.rs`), before formatting —
             // `cantor_show_bigint` only understands the tagged `Int` word

@@ -100,6 +100,17 @@ pub fn lookup(name: &str) -> Option<BuiltinSet> {
             kind: Kind::Unsigned32,
             bound: IntBound::Any,
         }),
+        // ℚ — the one builtin that is a strict *superset* of `Int` rather
+        // than a subset or a disjoint sort, so `bound` is meaningless filler
+        // here (an `IntBound` can only ever narrow ℤ). Membership of an
+        // integer-sorted term in `Rational` is trivially true; the
+        // interesting direction is the other way (`IsInteger`), which
+        // `solver::membership` handles under the `Int` names above. See
+        // docs/rational-plan.md.
+        "Rational" => Some(BuiltinSet {
+            kind: Kind::Rational,
+            bound: IntBound::Any,
+        }),
         // A Unicode scalar value — a builtin *distinct* sort (like `Fail`),
         // not an `Int` subset, so `bound` is meaningless filler here too.
         // Unlike Signed32/Unsigned32, not every `Int` is a valid `Char`;

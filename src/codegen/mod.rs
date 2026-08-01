@@ -212,7 +212,11 @@ impl<'ctx> Compiler<'ctx> {
     /// TaggedUnion → `{ i32 tag, i64, …, i64 }` with enough i64 slots for the widest arm.
     pub(crate) fn kind_to_llvm_type(&self, kind: &Kind) -> BasicTypeEnum<'ctx> {
         match kind {
-            Kind::Int | Kind::Int64 | Kind::Set(_) => self.context.i64_type().into(),
+            // Rational is a pointer-as-i64 to an arena-allocated
+            // `CantorRational`, same wire type as `Set`/`Vector`.
+            Kind::Int | Kind::Int64 | Kind::Rational | Kind::Set(_) => {
+                self.context.i64_type().into()
+            }
             Kind::Bool | Kind::Fail | Kind::None => self.context.bool_type().into(),
             // Plain i32 register — wraps by construction via ordinary LLVM
             // i32 arithmetic (two's-complement is the default), no nsw/nuw
@@ -286,7 +290,7 @@ impl<'ctx> Compiler<'ctx> {
         let i64t = self.context.i64_type();
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match arm_kind {
-            Kind::Int | Kind::Int64 | Kind::Set(_) => {
+            Kind::Int | Kind::Int64 | Kind::Rational | Kind::Set(_) => {
                 *agg = self
                     .builder
                     .build_insert_value(*agg, val.into_int_value(), *field_idx, "tu_l")
@@ -374,7 +378,7 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match arm_kind {
-            Kind::Int | Kind::Int64 | Kind::Set(_) | Kind::Vector(_) => {
+            Kind::Int | Kind::Int64 | Kind::Rational | Kind::Set(_) | Kind::Vector(_) => {
                 let leaf = self
                     .builder
                     .build_extract_value(agg, *field_idx, "tu_dl")

@@ -38,6 +38,16 @@ pub enum Kind {
     /// solver sort); the one place it's meant to diverge is
     /// `check_overload_kind_agreement`'s compiler-generated-split exception.
     Int64,
+    /// i64 (pointer-as-i64) — an arena-allocated exact `BigRational`, the same
+    /// boxing scheme `Kind::Int`'s BigInt half uses. Unlike every other
+    /// non-`Int` numeric Kind (`Signed32`/`Unsigned32`/`Char`, all fully
+    /// disjoint sorts), this one sits *above* `Int` in a genuine numeric
+    /// tower: ℤ ⊂ ℚ, so an `Int` widens implicitly wherever a `Rational` is
+    /// expected, while narrowing back to `Int` is a proof obligation
+    /// (`membership_constraint`'s `IsInteger` case). `Int64 ⊆ Int` is the
+    /// direct precedent for that coercion shape, one level down. See
+    /// docs/rational-plan.md.
+    Rational,
     /// i1 — the two-element Bool set {true, false}, disjoint from all integers
     Bool,
     /// i1 — the `fail` singleton; always has value 1 when constructed.
@@ -268,6 +278,7 @@ pub fn is_distinct_basis_representable(kind: &Kind) -> bool {
     match kind {
         Kind::Int
         | Kind::Int64
+        | Kind::Rational
         | Kind::Bool
         | Kind::Char
         | Kind::Fail
@@ -571,6 +582,12 @@ pub enum IfMerge {
     /// the other doesn't) — the raw side needs tagging before the merge;
     /// `Int` is always the canonical shared representation.
     CoerceInt64ToInt,
+    /// One branch is `Int`/`Int64`, the other `Rational` (e.g. `if b then x /
+    /// y else 0`) — one level up from `CoerceInt64ToInt` and the same shape:
+    /// ℤ ⊂ ℚ, so the integer side widens via `cantor_rational_from_int` and
+    /// `Rational` is the shared representation. The reverse direction never
+    /// happens implicitly — narrowing ℚ back to ℤ is a proof obligation.
+    CoerceIntToRational,
 }
 
 impl IfMerge {
@@ -587,6 +604,7 @@ impl IfMerge {
             | IfMerge::AppendElseArm { merged_arms, .. }
             | IfMerge::AppendThenArm { merged_arms, .. } => Kind::TaggedUnion(merged_arms.clone()),
             IfMerge::CoerceInt64ToInt => Kind::Int,
+            IfMerge::CoerceIntToRational => Kind::Rational,
         }
     }
 }
@@ -608,6 +626,12 @@ pub fn merge_if_branches(then_ty: &Kind, else_ty: &Kind) -> Result<IfMerge, Stri
         (Kind::Int, Kind::Int64) | (Kind::Int64, Kind::Int)
     ) {
         return Ok(IfMerge::CoerceInt64ToInt);
+    }
+    if matches!(
+        (then_ty, else_ty),
+        (Kind::Int | Kind::Int64, Kind::Rational) | (Kind::Rational, Kind::Int | Kind::Int64)
+    ) {
+        return Ok(IfMerge::CoerceIntToRational);
     }
 
     let then_is_tu = matches!(then_ty, Kind::TaggedUnion(_));

@@ -211,6 +211,14 @@ impl<'ctx> Compiler<'ctx> {
                     .into();
                 (tv, ev, merge.result_kind())
             }
+            // TODO(rational stage 3): widen the Int branch through
+            // `cantor_rational_from_int`, mirroring `CoerceInt64ToInt` above.
+            crate::kind::IfMerge::CoerceIntToRational => {
+                return Err(CompileError::Unsupported {
+                    feature: "if-branches merging Int with Rational".to_string(),
+                    span: then_expr.span,
+                });
+            }
             crate::kind::IfMerge::CoerceToFailStruct => {
                 self.builder.position_at_end(then_bb_cur);
                 let tv = self.coerce_to_fail_struct(then_val_raw, &then_ty)?;

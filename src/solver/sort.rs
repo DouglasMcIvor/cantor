@@ -36,6 +36,7 @@ fn scalar_kind_sort<'tm>(
     Some(match kind {
         ValKind::Bool => tm.boolean_sort(),
         ValKind::Int | ValKind::Int64 => tm.integer_sort(),
+        ValKind::Rational => tm.real_sort(),
         ValKind::Char => distinct_preds.get(&Symbol::new("Char"))?.sort.clone(),
         ValKind::Fail => distinct_preds.get(&Symbol::new("Fail"))?.sort.clone(),
         ValKind::None => distinct_preds.get(&Symbol::new("None"))?.sort.clone(),
@@ -69,6 +70,7 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
         // codegen representation (int-soundness-plan phase 3) — Int64 is
         // just Int as far as CVC5 sorts/constructors are concerned.
         ValKind::Int | ValKind::Int64 => "ck_Int".to_string(),
+        ValKind::Rational => "ck_Rational".to_string(),
         ValKind::Bool => "ck_Bool".to_string(),
         ValKind::Fail => "ck_Fail".to_string(),
         ValKind::None => "ck_None".to_string(),

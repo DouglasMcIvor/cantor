@@ -106,9 +106,14 @@ pub(super) fn elaborate_binop(
         BinOp::Div => {
             let l = elaborate_expr(lhs, pos, ctx, env)?;
             let (node, kind_of) = match pos {
+                // `a / b` — exact division, so the result is a `Rational`
+                // even when both operands are `Int`. Narrowing back to `Int`
+                // is a divisibility proof obligation discharged by the
+                // ordinary range check, never an implicit truncation; `quot`
+                // is the integer-division operator. See docs/rational-plan.md.
                 Position::Value => {
                     let r = elaborate_expr(rhs, pos, ctx, env)?;
-                    (SemExprKind::Div(Box::new(l), Box::new(r)), Kind::Int)
+                    (SemExprKind::Div(Box::new(l), Box::new(r)), Kind::Rational)
                 }
                 // `L / canon` — quotient-set formation. Unlike `+ - *`'s
                 // Set-position duals, the RHS here is never itself a set
@@ -255,7 +260,10 @@ pub(super) fn elaborate_binop(
             // term and aborts the whole process with a raw C++ error.
             if pos == Position::Value {
                 match op {
-                    BinOp::Eq | BinOp::Ne if l.kind_of != r.kind_of => {
+                    BinOp::Eq | BinOp::Ne
+                        if l.kind_of != r.kind_of
+                            && !is_numeric_tower_pair(&l.kind_of, &r.kind_of) =>
+                    {
                         return Err(CompileError::ice(format!(
                             "`{op}` requires both operands from the same value family, \
                              got {:?} and {:?} — e.g. Bool and Int are disjoint in \
@@ -299,7 +307,8 @@ pub(super) fn elaborate_binop(
 }
 
 /// Value-position `+ - *`'s result Kind: `Int` for every combination except
-/// two matching wrapping operands, which stay in their own family (no
+/// two matching wrapping operands, which stay in their own family, and any
+/// pair with a `Rational` operand, which widens to `Rational` (no
 /// arithmetic Kind ever silently becomes `Int` — that would tell codegen to
 /// treat an i32 register as the tagged i64 `Int` wire type). A genuine
 /// mismatch (e.g. `Signed32 + Int`) falls through to plain `Kind::Int` here,
@@ -310,6 +319,10 @@ pub(super) fn elaborate_binop(
 fn arith_value_kind(l: &Kind, r: &Kind) -> Kind {
     if l == r && matches!(l, Kind::Signed32 | Kind::Unsigned32) {
         l.clone()
+    } else if matches!(l, Kind::Rational) || matches!(r, Kind::Rational) {
+        // ℤ ⊂ ℚ, so a mixed operand pair widens rather than being rejected —
+        // the one implicit numeric coercion in the language.
+        Kind::Rational
     } else {
         Kind::Int
     }
@@ -321,5 +334,22 @@ fn arith_value_kind(l: &Kind, r: &Kind) -> Kind {
 /// `Signed32 < Unsigned32` is rejected here just like `Bool < Int` always
 /// was, not silently accepted by falling back to `Int`'s comparison.
 fn is_ordered_pair(l: &Kind, r: &Kind) -> bool {
-    l == r && matches!(l, Kind::Int | Kind::Signed32 | Kind::Unsigned32)
+    (l == r
+        && matches!(
+            l,
+            Kind::Int | Kind::Rational | Kind::Signed32 | Kind::Unsigned32
+        ))
+        || is_numeric_tower_pair(l, r)
+}
+
+/// A mixed `Int`/`Rational` operand pair — accepted by comparison and
+/// equality by widening the `Int` side, since ℤ ⊂ ℚ. Deliberately spelled as
+/// its own case rather than by loosening `is_ordered_pair`'s `l == r` guard:
+/// that guard is what keeps `Signed32 < Unsigned32` (genuinely disjoint
+/// sorts) rejected, and loosening it would let those leak through.
+/// `Kind::Int64` is included because it is the same mathematical ℤ, just a
+/// raw rather than tagged runtime representation.
+fn is_numeric_tower_pair(l: &Kind, r: &Kind) -> bool {
+    let is_int = |k: &Kind| matches!(k, Kind::Int | Kind::Int64);
+    (*l == Kind::Rational && is_int(r)) || (is_int(l) && *r == Kind::Rational)
 }

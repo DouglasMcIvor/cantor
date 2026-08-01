@@ -535,7 +535,7 @@ fn format_tagged_int(word: i64) -> String {
 fn count_kind_leaves(kind: &Kind) -> usize {
     match kind {
         Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail | Kind::None | Kind::Set(_) => 1,
-        Kind::Signed32 | Kind::Unsigned32 | Kind::Char => 1,
+        Kind::Signed32 | Kind::Unsigned32 | Kind::Char | Kind::Rational => 1,
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
         // TODO: tagged-union IR — count tag field + widest arm
         Kind::TaggedUnion(_) => 1,
@@ -607,5 +607,7 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
             event_loop::format_char_vector(vec_ptr)
         }
         Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in CLI output"),
+        // TODO(rational stage 3): decode via `cantor_rational_to_string`.
+        Kind::Rational => panic!("TODO: Rational not yet supported in CLI output"),
     }
 }

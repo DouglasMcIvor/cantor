@@ -18,6 +18,9 @@ pub use crate::kind::range_kind;
 pub fn leaf_count(kind: &Kind) -> usize {
     match kind {
         Kind::Bool | Kind::Int | Kind::Int64 | Kind::Set(_) | Kind::Fail | Kind::None => 1,
+        // Rational is an i64 pointer to a boxed BigRational — one leaf, so
+        // adding it changes no wire shape anywhere.
+        Kind::Rational => 1,
         // Signed32/Unsigned32/Char cross the ABI boundary widened to i64
         // (sext/zext respectively), same convention as Bool's i1<->i64 —
         // one leaf each.
@@ -100,6 +103,17 @@ pub fn state_leaf_shape(kind: &Kind, span: Span) -> Result<LeafShape, CompileErr
                 feature: "event-loop State containing a TaggedUnion — arena deep-copy \
                           doesn't support this yet (mirrors the same gap in \
                           `codegen::trampoline`'s wire (de)serialization)"
+                    .to_string(),
+                span,
+            });
+        }
+        // A boxed `Rational` lives in the arena, so surviving an arena reset
+        // needs the same deep-copy entry point `CantorBigInt` has. Deferred
+        // rather than approximated — see docs/rational-plan.md stage 3.
+        Kind::Rational => {
+            return Err(CompileError::Unsupported {
+                feature: "event-loop State containing a Rational — arena deep-copy \
+                          doesn't support boxed rationals yet"
                     .to_string(),
                 span,
             });
