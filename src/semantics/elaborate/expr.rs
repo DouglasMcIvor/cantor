@@ -526,9 +526,14 @@ fn proj_kind(base_kind: &Kind, index: usize) -> Result<Kind, CompileError> {
 /// *same* element Kind it was given — indexing never changes the Kind.
 fn vector_elem_kind(ek: &Kind) -> Result<Kind, CompileError> {
     match ek {
-        Kind::Int | Kind::Bool | Kind::Vector(_) | Kind::Tuple(_) | Kind::TaggedUnion(_) => {
-            Ok(ek.clone())
-        }
+        Kind::Int
+        | Kind::Bool
+        | Kind::Char
+        | Kind::Signed32
+        | Kind::Unsigned32
+        | Kind::Vector(_)
+        | Kind::Tuple(_)
+        | Kind::TaggedUnion(_) => Ok(ek.clone()),
         other => Err(CompileError::ice(format!(
             "indexing into Vector({other:?}) is not supported"
         ))),

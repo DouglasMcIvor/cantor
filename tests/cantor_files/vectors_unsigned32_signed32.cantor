@@ -1,0 +1,13 @@
+-- Vector(Unsigned32)/Vector(Signed32) construction, len, and xs[i] indexing
+-- (codegen/expr_vec.rs's vec_builder_fns/compile_vector_elem_get/
+-- compile_tuple_as_vector gained Unsigned32/Signed32 support, alongside the
+-- existing Int/Char/Bool element kinds).
+main : -> Char*
+main() {
+    us : Unsigned32* = [unsigned32(10), unsigned32(20), unsigned32(30)]
+    ss : Signed32* = [signed32(0 - 1), signed32(2)]
+    (
+        show(len(us)) ++ [char(32)] ++ show(us[2]) ++ [char(32)]
+            ++ show(len(ss)) ++ [char(32)] ++ show(ss[0])
+    )
+}

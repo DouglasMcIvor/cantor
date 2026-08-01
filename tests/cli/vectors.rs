@@ -72,6 +72,38 @@ fn vectors_runtime_run_returns_len_of_composed_vector() {
     );
 }
 
+// ── Vector(Unsigned32)/Vector(Signed32): construction, len, xs[i] indexing ──
+
+#[test]
+fn vectors_unsigned32_signed32_all_proved() {
+    let out = run_file("vectors_unsigned32_signed32.cantor");
+    assert_eq!(
+        out.code, 0,
+        "vectors_unsigned32_signed32.cantor check should exit 0\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("  counterexample  ") && !out.stdout.contains("  unknown  "),
+        "expected all proved:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn vectors_unsigned32_signed32_run_prints_len_and_indexed_elements() {
+    let out = run_subcommand("vectors_unsigned32_signed32.cantor");
+    assert_eq!(
+        out.code, 0,
+        "vectors_unsigned32_signed32.cantor run should exit 0\nstdout: {}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("3 30 2 -1"),
+        "expected len(us)=3, us[2]=30, len(ss)=2, ss[0]=-1:\n{}",
+        out.stdout
+    );
+}
+
 // ── Vectors: local `mut` bindings reassigned via `++` inside a loop ─────────
 
 #[test]

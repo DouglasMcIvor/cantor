@@ -125,7 +125,9 @@ pub fn state_leaf_shape(kind: &Kind, span: Span) -> Result<LeafShape, CompileErr
 /// why `Tuple`/`TaggedUnion` elements are rejected rather than supported.
 fn vector_elem_shape(elem: &Kind, span: Span) -> Result<VectorElemShape, CompileError> {
     Ok(match elem {
-        Kind::Int | Kind::Char => VectorElemShape::FlatScalar { bool_backed: false },
+        Kind::Int | Kind::Char | Kind::Signed32 | Kind::Unsigned32 => {
+            VectorElemShape::FlatScalar { bool_backed: false }
+        }
         Kind::Bool => VectorElemShape::FlatScalar { bool_backed: true },
         Kind::Vector(inner) => VectorElemShape::Nested(Box::new(vector_elem_shape(inner, span)?)),
         other => {

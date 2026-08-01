@@ -48,14 +48,14 @@ fn vec_builder_fns(
             "cantor_vec_builder_finish_bool",
             "cantor_vec_len_bool",
         )),
-        // `Char*` (docs/design-decisions.md §13) reuses the plain `_i64`
-        // Arrow `Int64Array` family verbatim — zero new runtime code — via
-        // the same zero-extend-into-i64 trick already used for
-        // Signed32/Unsigned32 union-vector leaves (`extract_union_leaves`
-        // below). The i32<->i64 conversion happens at the two call sites
-        // (`compile_tuple_as_vector`'s push, `compile_vector_elem_get`'s get),
-        // not here.
-        Kind::Char => Ok((
+        // `Char*`/`Signed32*`/`Unsigned32*` (docs/design-decisions.md §13)
+        // reuse the plain `_i64` Arrow `Int64Array` family verbatim — zero new
+        // runtime code — via the same sign/zero-extend-into-i64 trick already
+        // used for Signed32/Unsigned32 union-vector leaves
+        // (`extract_union_leaves` below). The i32<->i64 conversion happens at
+        // the two call sites (`compile_tuple_as_vector`'s push,
+        // `compile_vector_elem_get`'s get), not here.
+        Kind::Char | Kind::Signed32 | Kind::Unsigned32 => Ok((
             "cantor_vec_builder_new_i64",
             "cantor_vec_builder_push_i64",
             "cantor_vec_builder_finish_i64",
@@ -80,7 +80,7 @@ pub(crate) fn vector_len_fn_name(ek: &Kind) -> Result<&'static str, CompileError
     Ok(match ek {
         Kind::Int => "cantor_vec_len_i64",
         Kind::Bool => "cantor_vec_len_bool",
-        Kind::Char => "cantor_vec_len_i64",
+        Kind::Char | Kind::Signed32 | Kind::Unsigned32 => "cantor_vec_len_i64",
         Kind::Vector(_) => "cantor_list_vec_len",
         Kind::Tuple(_) => "cantor_struct_vec_len",
         Kind::TaggedUnion(_) => "cantor_union_vec_len",
@@ -146,11 +146,13 @@ impl<'ctx> Compiler<'ctx> {
                 return Ok((tagged.into(), Kind::Int));
             }
             Kind::Bool => "cantor_vec_get_bool",
-            // `Char*` reuses the `_i64` Arrow storage (`vec_builder_fns`),
-            // but the element itself is an i32 register — truncate the i64
-            // read back down and return early, since the shared call/return
-            // path below assumes the raw result IS the element's LLVM type.
-            Kind::Char => {
+            // `Char*`/`Signed32*`/`Unsigned32*` reuse the `_i64` Arrow storage
+            // (`vec_builder_fns`), but the element itself is an i32 register —
+            // truncate the i64 read back down and return early, since the
+            // shared call/return path below assumes the raw result IS the
+            // element's LLVM type. Truncation is bit-identical for the
+            // signed/unsigned cases, so one code path covers both.
+            Kind::Char | Kind::Signed32 | Kind::Unsigned32 => {
                 let fn_val = self
                     .module
                     .get_function("cantor_vec_get_i64")
@@ -171,10 +173,10 @@ impl<'ctx> Compiler<'ctx> {
                     .build_int_truncate(
                         result_i64.into_int_value(),
                         self.context.i32_type(),
-                        "vec_get_char",
+                        "vec_get_i32",
                     )
                     .map_err(|e| CompileError::ice(e.to_string()))?;
-                return Ok((truncated.into(), Kind::Char));
+                return Ok((truncated.into(), ek.clone()));
             }
             Kind::Vector(_) => "cantor_list_vec_get",
             Kind::Tuple(field_kinds) => {
@@ -453,9 +455,14 @@ impl<'ctx> Compiler<'ctx> {
                     inner_ptr
                 }
                 (Kind::Vector(_), Kind::Vector(_)) => elem,
-                (_, Kind::Bool | Kind::Char) => self
+                (_, Kind::Bool | Kind::Char | Kind::Unsigned32) => self
                     .builder
                     .build_int_z_extend(elem.into_int_value(), i64t, "vec_elem_ext")
+                    .map_err(err)?
+                    .into(),
+                (_, Kind::Signed32) => self
+                    .builder
+                    .build_int_s_extend(elem.into_int_value(), i64t, "vec_elem_sext")
                     .map_err(err)?
                     .into(),
                 // `Vector(Int)` storage is always a raw (untagged) `Int64`
