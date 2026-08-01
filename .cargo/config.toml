@@ -4,3 +4,11 @@ LLVM_SYS_180_PREFIX = "/usr/lib/llvm-18"
 [build]
 rustflags = ["-C", "target-cpu=native", "-Dwarnings"]
 
+# `target-cpu=native` names a host CPU wasm has never heard of, so building
+# cantor-runtime for wasm32 otherwise buries the output in hundreds of
+# "'skylake' is not a recognized processor for this target" warnings. A
+# per-target `rustflags` replaces `build.rustflags` outright rather than
+# merging with it, so `-Dwarnings` has to be repeated here.
+[target.wasm32-unknown-unknown]
+rustflags = ["-Dwarnings"]
+

@@ -346,12 +346,16 @@ implementation detail the developer should not rely on.
   loop boundary (as described elsewhere in this section) remains future work.
 - **Concurrency**: strictly sequential, blocking read loop for v0 — no
   async/queued event handling.
-- FFI for foreign runtimes (GUI, HTTP server, etc.) is **not implemented in
-  v0**. The intended shape, for whenever it is designed: a foreign runtime
-  supplies `Output → Event` (given the program's last `Output`, produce the
-  next `Event`) — the v0 stdio runtime already has exactly this shape,
-  just hard-coded in Rust (`print(Output)` then `read a line as Event`)
-  rather than pluggable.
+- FFI for foreign runtimes (GUI, HTTP server, etc.) is **not a general
+  mechanism yet**. The intended shape, for whenever it is designed: a
+  foreign runtime supplies `Output → Event` (given the program's last
+  `Output`, produce the next `Event`) — the stdio runtime already has
+  exactly this shape, just hard-coded in Rust (`print(Output)` then `read a
+  line as Event`) rather than pluggable. The wasm backend below is the
+  first *second* implementation of that shape (a JS host supplying events
+  from DOM handlers), which is why it needed no new language surface — but
+  it too is hard-coded rather than program-selectable, and `Event`/`Output`
+  are still fixed at `Char*`.
 
 ### `cantor build` — AOT compilation (DECIDED, IMPLEMENTED)
 
@@ -393,12 +397,59 @@ instead of JIT-executing in-process.
 - **Toolchain requirement**: `cantor build` needs `rustc` on `PATH` at
   *build* time — exactly analogous to a C compiler needing `cc` for its
   link step, not a new *runtime* dependency of the compiled executable
-  itself (which needs nothing beyond libc). No cross-compilation story
-  yet — object files are emitted for the host target only.
+  itself (which needs nothing beyond libc).
 - Compiled-program temp artifacts (`program.o`, the generated driver
   source) live under the OS temp dir and are deleted unless `--keep-temps`
   is passed; only the final linked executable — written straight to the
   caller-chosen `-o` path — needs to be on an executable filesystem.
+
+### `cantor build --target wasm32` — the browser backend (DECIDED, IMPLEMENTED)
+
+`cantor build --target wasm32 <file.cantor>` emits a `.wasm` module instead
+of a native executable, so a proved Cantor program can be published as a
+live demo (GitHub Pages) rather than only described. Same verified
+`ConstrainedTree`, same object-file-plus-generated-driver pipeline as the
+native path — only the target triple, the driver template and the link
+flags differ.
+
+- **Why this was nearly free**: Cantor's LLVM output is already
+  pointer-width agnostic. Every runtime handle crosses the `extern "C"`
+  boundary as a bare `i64` (`codegen::runtime_decls`) rather than as an
+  LLVM pointer, and codegen never converts an integer *back* into a
+  pointer, so nothing in the emitted IR encodes a 64-bit pointer
+  assumption. Retargeting is therefore just setting the module's triple and
+  data layout before emission (`codegen::object::BuildTarget`).
+- **The host owns the loop, not the program.** A browser cannot hand a
+  program a blocking `stdin`, so the roles invert relative to
+  `drive_event_loop`: `cantor-runtime`'s `EventLoop` keeps `State` parked
+  between calls and the JS host feeds it one `Event` at a time. This is the
+  same "foreign runtime supplies `Output → Event`" extensibility point
+  sketched above, with JS as the first foreign runtime.
+- **Embedding ABI**: five exports (`cantor_wasm_init`,
+  `cantor_wasm_input_buffer`, `cantor_wasm_step`, `cantor_wasm_output_ptr`,
+  `cantor_wasm_output_len`), defined by the generated driver, implemented
+  in `cantor-runtime/src/wasm.rs`, and consumed by `web/cantor.js`. Strings
+  cross as UTF-8 bytes in the module's linear memory; passing one *in*
+  takes two calls because JS cannot write into that memory until it has an
+  offset to write at. Nothing in the compiled module is browser-specific —
+  the same exports drive it from Node, or from any other embedder.
+- **A `cdylib`, not a `bin`**: that is what makes `rustc` link with
+  `wasm-ld` and put the driver's `#[unsafe(no_mangle)]` shims in the
+  module's export table.
+- **Prerequisites** are the `wasm32-unknown-unknown` rust-std plus a
+  cross-compiled `cantor-runtime` (`cargo build -p cantor-runtime --target
+  wasm32-unknown-unknown`, matching the compiler's own profile). A plain
+  `cargo build` does not produce the latter, so its absence is reported as
+  `CompileError::Environment` naming the exact command — a fixable setup
+  problem, not a compiler bug.
+- **Size matters here in a way it doesn't natively**, since the module is
+  downloaded before it runs: the wasm link passes `-C strip=symbols`,
+  taking a release build of `examples/parrot.cantor` from 2.5M to 670K
+  (166K gzipped). The cost is that a trap's stack trace loses function
+  names.
+- **The compiler itself will never run in the browser** — it needs cvc5 and
+  LLVM. Published demos are therefore pre-compiled artifacts, not a live
+  playground: visitors run proved programs, they don't edit them.
 
 ### Arena memory reclamation (DECIDED, IMPLEMENTED for scalar/Set/flat-Vector/nested-Vector `State`)
 

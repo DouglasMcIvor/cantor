@@ -17,6 +17,10 @@ target
 *.swp
 .idea/
 
+# Demo wasm modules — build artifacts produced by `cantor build --target
+# wasm32` (locally, or by the Pages job in CI), not checked in.
+web/*.wasm
+
 # Machine-specific docker-compose settings (see docker-compose.yml)
 .env
 

@@ -25,14 +25,12 @@ pub fn encode_char_star(s: &str) -> i64 {
     cantor_vec_builder_finish_i64(builder)
 }
 
-/// The synthetic final `Event` fed to an event-loop `main` when `stdin`
-/// closes: a length-1 `Char*` containing codepoint 4 (ASCII EOT, the
-/// traditional Ctrl-D "end of transmission" control character — not
-/// U+2404 ␄, which is a printable *display glyph* for EOT and could
-/// theoretically appear in real input). docs/design-decisions.md §6.
-pub fn encode_eot_event() -> i64 {
-    encode_char_star("\u{4}")
-}
+/// The synthetic final `Event` fed to an event-loop `main` when its input
+/// stream ends: codepoint 4 (ASCII EOT, the traditional Ctrl-D "end of
+/// transmission" control character — not U+2404 ␄, which is a printable
+/// *display glyph* for EOT and could theoretically appear in real input).
+/// docs/design-decisions.md §6.
+pub const EOT_EVENT: &str = "\u{4}";
 
 /// Decode a `Char` leaf (zero-extended to i64, same convention as
 /// `Unsigned32`) into its display form — the actual character, not the
@@ -94,46 +92,93 @@ pub unsafe fn drive_event_loop(
     n_state_leaves: usize,
     state_shape: LeafShape,
 ) {
-    let mut state_buf = vec![0i64; n_state_leaves];
-    unsafe {
-        seed(state_buf.as_mut_ptr());
-    }
+    let mut loop_state = unsafe { EventLoop::new(seed, step, n_state_leaves, state_shape) };
 
     let stdin = std::io::stdin();
     let mut lines = stdin.lock().lines();
 
     loop {
-        let (event_ptr, is_final) = match lines.next() {
-            Some(Ok(line)) => (encode_char_star(&line), false),
+        let (event, is_final) = match lines.next() {
+            Some(Ok(line)) => (line, false),
             Some(Err(e)) => {
                 eprintln!("error reading stdin: {e}");
                 std::process::exit(1);
             }
-            None => (encode_eot_event(), true),
+            None => (EOT_EVENT.to_string(), true),
         };
 
-        let mut in_buf = Vec::with_capacity(1 + n_state_leaves);
-        in_buf.push(event_ptr);
-        in_buf.extend_from_slice(&state_buf);
-
-        let mut out_buf = vec![0i64; 1 + n_state_leaves];
-        unsafe {
-            step(in_buf.as_mut_ptr(), out_buf.as_mut_ptr());
-        }
-
-        println!("{}", format_char_vector(out_buf[0]));
-
-        // Everything this step allocated (including the just-printed Output
-        // and the previous State) lives in `old` from here on — deep-copy
-        // the new State's leaves into the now-current fresh arena first,
-        // then drop `old` to actually reclaim the rest.
-        let old_arena = arena::swap(arena::Arena::new());
-        let new_state = deep_copy::deep_copy_leaves(&state_shape, &out_buf[1..]);
-        state_buf.copy_from_slice(&new_state);
-        drop(old_arena);
+        println!("{}", loop_state.step(&event));
 
         if is_final {
             break;
         }
+    }
+}
+
+/// One suspended event-loop program: the compiled `step` trampoline plus the
+/// `State` carried between calls. Driving it one `Event` at a time — rather
+/// than owning a read loop the way `drive_event_loop` does — is what lets a
+/// host that *can't* block on stdin run the same program: the browser shim
+/// (see `cantor build --target wasm32`) calls `step` from a JS event handler
+/// and returns to the JS event loop in between.
+pub struct EventLoop {
+    step: unsafe extern "C" fn(*mut i64, *mut i64),
+    /// `State`'s Kind leaves, live across calls. Its length is the
+    /// `n_state_leaves` given to `new`.
+    state_buf: Vec<i64>,
+    state_shape: LeafShape,
+}
+
+impl EventLoop {
+    /// Seed `State` by calling the program's 0-arity `main` trampoline.
+    ///
+    /// # Safety
+    /// Same contract as [`drive_event_loop`]: `seed`/`step` must be the
+    /// genuine trampolines for a `State` of exactly `n_state_leaves` i64
+    /// leaves, and `state_shape` must describe that same `State` Kind.
+    pub unsafe fn new(
+        seed: unsafe extern "C" fn(*mut i64),
+        step: unsafe extern "C" fn(*mut i64, *mut i64),
+        n_state_leaves: usize,
+        state_shape: LeafShape,
+    ) -> Self {
+        let mut state_buf = vec![0i64; n_state_leaves];
+        unsafe {
+            seed(state_buf.as_mut_ptr());
+        }
+        Self {
+            step,
+            state_buf,
+            state_shape,
+        }
+    }
+
+    /// Feed one `Event` through the program and return its `Output`.
+    pub fn step(&mut self, event: &str) -> String {
+        let n_state_leaves = self.state_buf.len();
+
+        let mut in_buf = Vec::with_capacity(1 + n_state_leaves);
+        in_buf.push(encode_char_star(event));
+        in_buf.extend_from_slice(&self.state_buf);
+
+        let mut out_buf = vec![0i64; 1 + n_state_leaves];
+        unsafe {
+            (self.step)(in_buf.as_mut_ptr(), out_buf.as_mut_ptr());
+        }
+
+        // Read `Output` out into an owned String before the arena swap
+        // below — it was allocated by this step, so it dies with `old`.
+        let output = format_char_vector(out_buf[0]);
+
+        // Everything this step allocated (including the Output just read and
+        // the previous State) lives in `old` from here on — deep-copy the new
+        // State's leaves into the now-current fresh arena first, then drop
+        // `old` to actually reclaim the rest.
+        let old_arena = arena::swap(arena::Arena::new());
+        let new_state = deep_copy::deep_copy_leaves(&self.state_shape, &out_buf[1..]);
+        self.state_buf.copy_from_slice(&new_state);
+        drop(old_arena);
+
+        output
     }
 }

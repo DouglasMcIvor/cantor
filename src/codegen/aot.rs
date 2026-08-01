@@ -22,7 +22,10 @@ use crate::{
     solver::ConstrainedTree, span::Span,
 };
 
-use super::{object::compile_constrained_to_object, wire};
+use super::{
+    object::{BuildTarget, compile_constrained_to_object},
+    wire,
+};
 
 /// Find the event-loop `main`'s State Kind, if `tree` defines one — `None`
 /// means this file just isn't using the event-loop feature (an ordinary
@@ -54,17 +57,20 @@ pub fn find_event_loop_state_kind(tree: &ConstrainedTree) -> Option<(Kind, Span)
 /// `find_event_loop_state_kind`'s result. `path`/`src` are only used for
 /// overflow-abort diagnostics baked into the object file, same as
 /// `jit.rs::compile_constrained`.
-pub fn build_executable(
-    tree: &ConstrainedTree,
-    path: &str,
-    src: &str,
-    state_kind: &Kind,
-    state_span: Span,
-    output: &Path,
-    keep_temps: bool,
-) -> Result<(), CompileError> {
-    let n_state_leaves = wire::leaf_count(state_kind);
-    let state_shape = wire::state_leaf_shape(state_kind, state_span)?;
+pub struct BuildRequest<'a> {
+    pub tree: &'a ConstrainedTree,
+    pub path: &'a str,
+    pub src: &'a str,
+    pub state_kind: &'a Kind,
+    pub state_span: Span,
+    pub output: &'a Path,
+    pub keep_temps: bool,
+    pub target: BuildTarget,
+}
+
+pub fn build_executable(req: &BuildRequest) -> Result<(), CompileError> {
+    let n_state_leaves = wire::leaf_count(req.state_kind);
+    let state_shape = wire::state_leaf_shape(req.state_kind, req.state_span)?;
 
     let tmp_dir = unique_temp_dir();
     std::fs::create_dir_all(&tmp_dir).map_err(|e| {
@@ -74,17 +80,9 @@ pub fn build_executable(
         ))
     })?;
 
-    let result = build_executable_in(
-        &tmp_dir,
-        tree,
-        path,
-        src,
-        n_state_leaves,
-        &state_shape,
-        output,
-    );
+    let result = build_executable_in(&tmp_dir, req, n_state_leaves, &state_shape);
 
-    if keep_temps {
+    if req.keep_temps {
         eprintln!(
             "note: --keep-temps: build artifacts left at {}",
             tmp_dir.display()
@@ -98,27 +96,29 @@ pub fn build_executable(
 
 fn build_executable_in(
     tmp_dir: &Path,
-    tree: &ConstrainedTree,
-    path: &str,
-    src: &str,
+    req: &BuildRequest,
     n_state_leaves: usize,
     state_shape: &LeafShape,
-    output: &Path,
 ) -> Result<(), CompileError> {
+    let target = req.target;
     let obj_path = tmp_dir.join("program.o");
     let ctx = Context::create();
-    compile_constrained_to_object(&ctx, tree, path, src, &obj_path)?;
+    compile_constrained_to_object(&ctx, req.tree, req.path, req.src, &obj_path, target)?;
 
     let driver_path = tmp_dir.join("driver.rs");
-    std::fs::write(&driver_path, driver_source(n_state_leaves, state_shape)).map_err(|e| {
+    let driver = match target {
+        BuildTarget::Native => native_driver_source(n_state_leaves, state_shape),
+        BuildTarget::Wasm32 => wasm_driver_source(n_state_leaves, state_shape),
+    };
+    std::fs::write(&driver_path, driver).map_err(|e| {
         CompileError::ice(format!("could not write {}: {e}", driver_path.display()))
     })?;
 
-    let deps_dir = runtime_deps_dir()?;
-    let rlib = find_runtime_rlib(&deps_dir)?;
+    let deps_dir = runtime_deps_dir(target)?;
+    let rlib = find_runtime_rlib(&deps_dir, target)?;
 
-    let status = std::process::Command::new("rustc")
-        .arg("--edition")
+    let mut cmd = std::process::Command::new("rustc");
+    cmd.arg("--edition")
         .arg("2024")
         .arg("-O")
         .arg(&driver_path)
@@ -129,13 +129,38 @@ fn build_executable_in(
         .arg("-C")
         .arg(format!("link-arg={}", obj_path.display()))
         .arg("-o")
-        .arg(output)
-        .status()
-        .map_err(|e| {
-            CompileError::ice(format!(
-                "could not run `rustc` — is a Rust toolchain installed and on PATH? ({e})"
-            ))
-        })?;
+        .arg(req.output);
+
+    if target == BuildTarget::Wasm32 {
+        // A `cdylib` is what makes rustc link with `wasm-ld` and export the
+        // driver's `#[unsafe(no_mangle)]` shims in the module's export table
+        // — a plain bin would produce a `_start`-only module the JS host has
+        // no way to call into.
+        cmd.arg("--target")
+            .arg(target.triple())
+            .arg("--crate-type")
+            .arg("cdylib");
+        // cantor-runtime's transitive dependencies include proc macros
+        // (arrow pulls in zerocopy_derive), and a proc macro always builds
+        // for the *host* — cargo leaves those `.so`s in the native deps dir
+        // even during a cross build, so resolving the rlib's dependency
+        // graph needs both directories on the search path. The wasm one is
+        // passed first so it wins for every crate that exists in both.
+        cmd.arg("-L").arg(runtime_deps_dir(BuildTarget::Native)?);
+        // A wasm module is downloaded before it runs, so its size is a
+        // user-visible cost in a way a native binary's isn't: stripping
+        // takes a release build of the parrot example from 2.5M to 670K.
+        // The cost is that a trap's stack trace loses function names, which
+        // is worth it for a target whose whole point is being served over
+        // the network.
+        cmd.arg("-C").arg("strip=symbols");
+    }
+
+    let status = cmd.status().map_err(|e| {
+        CompileError::ice(format!(
+            "could not run `rustc` — is a Rust toolchain installed and on PATH? ({e})"
+        ))
+    })?;
 
     if !status.success() {
         return Err(CompileError::ice(format!(
@@ -155,13 +180,9 @@ fn build_executable_in(
 /// `n_state_leaves` and a literal `LeafShape` expression — no `Kind`-shape
 /// *branching* is needed here (see module doc), since `render_leaf_shape`
 /// already resolved every branch at `cantor build` time.
-fn driver_source(n_state_leaves: usize, state_shape: &LeafShape) -> String {
+fn native_driver_source(n_state_leaves: usize, state_shape: &LeafShape) -> String {
     format!(
-        "unsafe extern \"C\" {{\n\
-        \x20   fn cantor_initial_state(out: *mut i64);\n\
-        \x20   fn cantor_step(input: *mut i64, out: *mut i64);\n\
-        }}\n\
-        \n\
+        "{TRAMPOLINE_DECLS}\n\
         fn main() {{\n\
         \x20   unsafe {{\n\
         \x20       cantor_runtime::event_loop::drive_event_loop(\n\
@@ -175,6 +196,57 @@ fn driver_source(n_state_leaves: usize, state_shape: &LeafShape) -> String {
         render_leaf_shape(state_shape)
     )
 }
+
+/// The `wasm32` counterpart of `native_driver_source`: instead of a `main`
+/// that owns a stdin loop, a set of `#[unsafe(no_mangle)]` shims that land in
+/// the wasm module's export table, so the JS host can own the loop and call
+/// one `Event` in at a time. Each is a one-liner over
+/// `cantor_runtime::wasm`, which holds the real logic — see that module's
+/// doc comment for the calling sequence the host must follow.
+fn wasm_driver_source(n_state_leaves: usize, state_shape: &LeafShape) -> String {
+    format!(
+        "{TRAMPOLINE_DECLS}\n\
+        #[unsafe(no_mangle)]\n\
+        pub extern \"C\" fn cantor_wasm_init() {{\n\
+        \x20   unsafe {{\n\
+        \x20       cantor_runtime::wasm::init(\n\
+        \x20           cantor_initial_state,\n\
+        \x20           cantor_step,\n\
+        \x20           {n_state_leaves},\n\
+        \x20           {},\n\
+        \x20       );\n\
+        \x20   }}\n\
+        }}\n\
+        \n\
+        #[unsafe(no_mangle)]\n\
+        pub extern \"C\" fn cantor_wasm_input_buffer(len: usize) -> *mut u8 {{\n\
+        \x20   cantor_runtime::wasm::input_buffer(len)\n\
+        }}\n\
+        \n\
+        #[unsafe(no_mangle)]\n\
+        pub extern \"C\" fn cantor_wasm_step(len: usize) {{\n\
+        \x20   cantor_runtime::wasm::step(len)\n\
+        }}\n\
+        \n\
+        #[unsafe(no_mangle)]\n\
+        pub extern \"C\" fn cantor_wasm_output_ptr() -> *const u8 {{\n\
+        \x20   cantor_runtime::wasm::output_ptr()\n\
+        }}\n\
+        \n\
+        #[unsafe(no_mangle)]\n\
+        pub extern \"C\" fn cantor_wasm_output_len() -> usize {{\n\
+        \x20   cantor_runtime::wasm::output_len()\n\
+        }}\n",
+        render_leaf_shape(state_shape)
+    )
+}
+
+/// The two symbols every event-loop program's object file exports, named
+/// identically by both driver templates.
+const TRAMPOLINE_DECLS: &str = "unsafe extern \"C\" {\n\
+    \x20   fn cantor_initial_state(out: *mut i64);\n\
+    \x20   fn cantor_step(input: *mut i64, out: *mut i64);\n\
+}\n";
 
 /// Render a `LeafShape` as a literal Rust expression referencing
 /// `cantor_runtime::deep_copy::*` by its fully-qualified path — the
@@ -238,14 +310,29 @@ fn unique_temp_dir() -> PathBuf {
 /// binary (`target/{debug,release}/deps/`) — where cargo already put the
 /// rlib for `cantor-runtime` and its own transitive dependencies, since
 /// building `cantor` itself already built its `cantor-runtime` dependency.
-fn runtime_deps_dir() -> Result<PathBuf, CompileError> {
+fn runtime_deps_dir(target: BuildTarget) -> Result<PathBuf, CompileError> {
     let exe = std::env::current_exe().map_err(|e| {
         CompileError::ice(format!("could not determine current executable path: {e}"))
     })?;
-    let dir = exe
+    let profile_dir = exe
         .parent()
         .ok_or_else(|| CompileError::ice("current executable has no parent directory"))?;
-    Ok(dir.join("deps"))
+
+    match target {
+        BuildTarget::Native => Ok(profile_dir.join("deps")),
+        // Cargo puts cross-compiled artifacts under a per-triple directory
+        // one level up: `target/{profile}/` becomes
+        // `target/{triple}/{profile}/`.
+        BuildTarget::Wasm32 => {
+            let profile = profile_dir.file_name().ok_or_else(|| {
+                CompileError::ice("current executable's directory has no final component")
+            })?;
+            let target_dir = profile_dir
+                .parent()
+                .ok_or_else(|| CompileError::ice("current executable's directory has no parent"))?;
+            Ok(target_dir.join(target.triple()).join(profile).join("deps"))
+        }
+    }
 }
 
 /// Find the most-recently-built `libcantor_runtime-*.rlib` in `deps_dir`.
@@ -258,14 +345,32 @@ fn runtime_deps_dir() -> Result<PathBuf, CompileError> {
 /// =json` invocation would name the exact artifact robustly, at the cost of
 /// a subprocess + JSON parsing per build — not worth it yet for a
 /// prototype's local-only `cantor build`.
-fn find_runtime_rlib(deps_dir: &Path) -> Result<PathBuf, CompileError> {
-    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(deps_dir)
-        .map_err(|e| {
-            CompileError::ice(format!(
-                "could not read {}: {e} — run `cargo build` first",
-                deps_dir.display()
-            ))
-        })?
+fn find_runtime_rlib(deps_dir: &Path, target: BuildTarget) -> Result<PathBuf, CompileError> {
+    // A plain `cargo build` only produces the host rlib, so a wasm build's
+    // missing artifact is a routine "you haven't run the prerequisite
+    // command yet", not a broken compiler — say exactly what to run.
+    let missing = || match target {
+        BuildTarget::Native => CompileError::ice(format!(
+            "could not find a built cantor-runtime rlib in {} — run `cargo build` first",
+            deps_dir.display()
+        )),
+        BuildTarget::Wasm32 => CompileError::Environment {
+            detail: format!(
+                "no wasm32 build of cantor-runtime found in {} — run `cargo build -p \
+                 cantor-runtime --target {}` first (and `rustup target add {}` if you \
+                 haven't already)",
+                deps_dir.display(),
+                target.triple(),
+                target.triple(),
+            ),
+        },
+    };
+
+    let Ok(entries) = std::fs::read_dir(deps_dir) else {
+        return Err(missing());
+    };
+
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = entries
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|p| {
@@ -282,10 +387,5 @@ fn find_runtime_rlib(deps_dir: &Path) -> Result<PathBuf, CompileError> {
         .collect();
 
     candidates.sort_by_key(|(t, _)| *t);
-    candidates.pop().map(|(_, p)| p).ok_or_else(|| {
-        CompileError::ice(format!(
-            "could not find a built cantor-runtime rlib in {} — run `cargo build` first",
-            deps_dir.display()
-        ))
-    })
+    candidates.pop().map(|(_, p)| p).ok_or_else(missing)
 }

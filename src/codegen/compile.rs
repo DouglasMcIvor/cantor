@@ -437,7 +437,8 @@ pub fn compile_to_object(
     ctx: &Context,
     items: &[Item],
     path: &std::path::Path,
+    target: super::object::BuildTarget,
 ) -> Result<(), CompileError> {
     let compiler = compile_items(ctx, items)?;
-    super::write_object_file(compiler.module(), path)
+    super::write_object_file(compiler.module(), path, target)
 }

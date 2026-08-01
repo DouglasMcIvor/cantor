@@ -836,7 +836,27 @@ cargo test
 
 cargo run -- <file.cantor>          # check proofs
 cargo run -- run <file.cantor>      # check then JIT-run main()
+cargo run -- build <file.cantor>    # check then compile to an executable
 ```
+
+### Browser demos
+
+An event-loop program can also be compiled to WebAssembly and run on a page —
+see `web/` for the host shim and demo page, and `docs/design-decisions.md` §6
+for the design.
+
+```
+rustup target add wasm32-unknown-unknown
+cargo build -p cantor-runtime --target wasm32-unknown-unknown
+
+cargo run -- build --target wasm32 examples/parrot.cantor -o web/parrot.wasm
+python3 -m http.server -d web        # then open http://localhost:8000
+```
+
+The cross-compiled `cantor-runtime` must match the profile of the `cantor`
+binary doing the build (add `--release` to both, or neither). Note that the
+*compiler* never runs in the browser — it needs cvc5 and LLVM — so pages
+serve pre-compiled, already-proved programs.
 
 One-time setup to enable the checked-in pre-commit hook (blocks commits that
 aren't `cargo fmt`-clean):

@@ -2,6 +2,8 @@
 mod bigint;
 #[path = "cli/build.rs"]
 mod build;
+#[path = "cli/build_wasm.rs"]
+mod build_wasm;
 #[path = "cli/char.rs"]
 mod char_tests;
 #[path = "cli/check_basics.rs"]

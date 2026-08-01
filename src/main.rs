@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use cantor::{
     ast::Item,
     codegen::{
-        build_executable, compile_constrained, compile_to_ir, find_event_loop_state_kind, wire,
+        BuildRequest, BuildTarget, build_executable, compile_constrained, compile_to_ir,
+        find_event_loop_state_kind, wire,
     },
     error::CompileError,
     kind::Kind,
@@ -42,6 +43,19 @@ fn print_compile_error(path: &str, e: &CompileError, src: &str) {
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_SECS * 1000;
 
+/// `--target`'s only non-default value today is wasm32; `native` is accepted
+/// explicitly so a build script can pass the flag unconditionally.
+fn parse_target(name: &str) -> BuildTarget {
+    match name {
+        "native" => BuildTarget::Native,
+        "wasm32" | "wasm32-unknown-unknown" => BuildTarget::Wasm32,
+        other => {
+            eprintln!("error: unknown --target `{other}` (expected `native` or `wasm32`)");
+            process::exit(2);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -53,13 +67,15 @@ fn main() {
         solver::worker::run();
     }
 
-    // Strip out --timeout <n> / --timeout=<n>, -o <path> / -o=<path>, and
-    // --keep-temps before positional parsing — the latter two only apply to
-    // `build`, but stripping them unconditionally keeps this one pass
-    // shared across all subcommands, same as --timeout already is.
+    // Strip out --timeout <n> / --timeout=<n>, -o <path> / -o=<path>,
+    // --target <triple> / --target=<triple>, and --keep-temps before
+    // positional parsing — the latter three only apply to `build`, but
+    // stripping them unconditionally keeps this one pass shared across all
+    // subcommands, same as --timeout already is.
     let mut timeout_secs: u64 = DEFAULT_TIMEOUT_SECS;
     let mut output_path: Option<&str> = None;
     let mut keep_temps = false;
+    let mut target = BuildTarget::Native;
     let mut positional: Vec<&str> = Vec::new();
     let mut i = 1;
     while i < args.len() {
@@ -93,6 +109,15 @@ fn main() {
             output_path = Some(args[i].as_str());
         } else if let Some(val) = args[i].strip_prefix("-o=") {
             output_path = Some(val);
+        } else if args[i] == "--target" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("error: --target requires a target name");
+                process::exit(2);
+            }
+            target = parse_target(&args[i]);
+        } else if let Some(val) = args[i].strip_prefix("--target=") {
+            target = parse_target(val);
         } else if args[i] == "--keep-temps" {
             keep_temps = true;
         } else {
@@ -119,7 +144,7 @@ fn main() {
             eprintln!("       cantor [--timeout <secs>] run <file.cantor>");
             eprintln!("       cantor llvm-ir <file.cantor>");
             eprintln!(
-                "       cantor build <file.cantor> [-o <output>] [--keep-temps]  (event-loop `main` only)"
+                "       cantor build <file.cantor> [-o <output>] [--target native|wasm32] [--keep-temps]  (event-loop `main` only)"
             );
             process::exit(2);
         }
@@ -272,7 +297,9 @@ fn main() {
         }
     } else if do_build {
         match outcome {
-            CheckOutcome::Proved(tree) => run_build(tree, path, &src, output_path, keep_temps),
+            CheckOutcome::Proved(tree) => {
+                run_build(tree, path, &src, output_path, keep_temps, target)
+            }
             CheckOutcome::NotProved(_) => {
                 eprintln!(
                     "error: not building — {} counterexample(s), {} unknown result(s) found above",
@@ -436,7 +463,14 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
 /// with a clear message rather than silently falling back to some other
 /// behavior, mirroring `run_main`'s own "requires a zero-argument `main`"
 /// refusal for the opposite case.
-fn run_build(tree: ConstrainedTree, path: &str, src: &str, output: Option<&str>, keep_temps: bool) {
+fn run_build(
+    tree: ConstrainedTree,
+    path: &str,
+    src: &str,
+    output: Option<&str>,
+    keep_temps: bool,
+    target: BuildTarget,
+) {
     let Some((state_kind, state_span)) = find_event_loop_state_kind(&tree) else {
         eprintln!(
             "error: `cantor build` only supports the IO event-loop `main` shape \
@@ -448,22 +482,35 @@ fn run_build(tree: ConstrainedTree, path: &str, src: &str, output: Option<&str>,
 
     let output_path: PathBuf = match output {
         Some(o) => PathBuf::from(o),
-        None => Path::new(path)
-            .file_stem()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("a.out")),
+        None => {
+            let stem = Path::new(path)
+                .file_stem()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("a.out"));
+            match target {
+                BuildTarget::Native => stem,
+                BuildTarget::Wasm32 => stem.with_extension("wasm"),
+            }
+        }
     };
 
-    match build_executable(
-        &tree,
+    match build_executable(&BuildRequest {
+        tree: &tree,
         path,
         src,
-        &state_kind,
+        state_kind: &state_kind,
         state_span,
-        &output_path,
+        output: &output_path,
         keep_temps,
-    ) {
-        Ok(()) => println!("wrote executable: {}", output_path.display()),
+        target,
+    }) {
+        Ok(()) => {
+            let what = match target {
+                BuildTarget::Native => "executable",
+                BuildTarget::Wasm32 => "wasm module",
+            };
+            println!("wrote {what}: {}", output_path.display());
+        }
         Err(e) => {
             print_compile_error(path, &e, src);
             process::exit(1);

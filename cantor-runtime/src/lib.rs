@@ -781,5 +781,6 @@ mod bigint;
 pub mod deep_copy;
 pub mod event_loop;
 mod rational;
+pub mod wasm;
 pub use bigint::*;
 pub use rational::*;

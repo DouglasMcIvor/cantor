@@ -58,12 +58,30 @@ jobs:
       uses: taiki-e/install-action@cargo-llvm-cov
     - name: Coverage
       run: cargo llvm-cov --html
+
+    # Deliberately the debug profile, matching the `cantor` binary `cargo
+    # build` already produced above: `cantor build --target wasm32` links
+    # against a cross-compiled cantor-runtime of the *same* profile, and a
+    # release build of the whole compiler (LLVM + cvc5 bindings) costs far
+    # more CI time than the ~2x larger demo module is worth.
+    - name: Build the wasm demos
+      run: |
+        rustup target add wasm32-unknown-unknown
+        cargo build -p cantor-runtime --target wasm32-unknown-unknown
+        ./target/debug/cantor build --target wasm32 examples/parrot.cantor -o web/parrot.wasm
+    - name: Assemble the Pages site
+      # Coverage stays at the site root (unchanged URL); demos go under /demo.
+      run: |
+        mkdir -p site/demo
+        cp -r target/llvm-cov/html/. site/
+        cp web/index.html web/cantor.js web/parrot.wasm site/demo/
+
     - name: Setup Pages
       uses: actions/configure-pages@v5
     - name: Upload Pages artifact
       uses: actions/upload-pages-artifact@v3
       with:
-        path: target/llvm-cov/html
+        path: site
 
   deploy:
     needs: build

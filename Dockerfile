@@ -7,6 +7,15 @@ FROM rust:latest
 # that cleanup.
 RUN rustup component add rustfmt clippy
 
+# `cantor build --target wasm32` links the compiled program against a
+# cross-compiled cantor-runtime, which needs the wasm32 rust-std. Installed
+# here rather than on demand because this image's root filesystem is mounted
+# read-only at runtime, so `rustup target add` cannot work inside a running
+# container. After building the image, run
+# `cargo build -p cantor-runtime --target wasm32-unknown-unknown` once (per
+# profile) to produce the rlib itself — see docs/design-decisions.md §6.
+RUN rustup target add wasm32-unknown-unknown
+
 # Install Node.js and npm for Claude Code CLI
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \

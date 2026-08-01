@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cantor — browser demo</title>
+<style>
+  :root {
+    --teal: #1c7d6b;
+    --ink: #16211f;
+    --paper: #f6f8f7;
+  }
+  body {
+    margin: 0;
+    padding: 2rem 1rem;
+    background: var(--paper);
+    color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { color: var(--teal); font-weight: 600; margin: 0 0 .25rem; }
+  h1 .aleph { font-size: 1.2em; }
+  .tagline { margin: 0 0 1.5rem; color: #55605d; }
+  .terminal {
+    background: var(--ink);
+    color: #e6efec;
+    border-radius: .5rem;
+    padding: 1rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 14px;
+    min-height: 16rem;
+    max-height: 24rem;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .terminal .echo { color: #7fd9c4; }
+  .terminal .error { color: #ff8f7a; }
+  form { display: flex; gap: .5rem; margin-top: .75rem; }
+  input {
+    flex: 1;
+    padding: .6rem .75rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 14px;
+    border: 1px solid #c5d0cd;
+    border-radius: .375rem;
+  }
+  input:focus { outline: 2px solid var(--teal); border-color: transparent; }
+  button {
+    padding: .6rem 1.1rem;
+    background: var(--teal);
+    color: #fff;
+    border: 0;
+    border-radius: .375rem;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  pre.source {
+    background: #fff;
+    border: 1px solid #dfe6e4;
+    border-radius: .5rem;
+    padding: 1rem;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  footer { margin-top: 2rem; font-size: 14px; color: #55605d; }
+  a { color: var(--teal); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="aleph">&#8501;</span> Cantor</h1>
+  <p class="tagline">
+    A compiled, proof-carrying esoteric language. This page runs a real Cantor
+    program &mdash; verified by cvc5, compiled through LLVM to WebAssembly.
+  </p>
+
+  <div class="terminal" id="terminal" aria-live="polite"></div>
+
+  <form id="prompt">
+    <input id="input" autocomplete="off" autofocus
+           placeholder="type something and press enter" disabled>
+    <button type="submit" id="send" disabled>Send</button>
+  </form>
+
+  <h2>The program</h2>
+  <pre class="source">main : -&gt; Nat
+main() = 1
+
+main : Char* * Nat -&gt; Char* * Nat
+main(text, n) {
+  mut i : Nat = n
+  mut out : Char* = text
+  while i &gt; 0 {
+    out := out ++ " " ++ text
+    i := i - 1
+  }
+  (out, n + 1)
+}</pre>
+
+  <p>
+    <code>main</code> is an event loop: it takes an input line and the current
+    <code>State</code>, and returns a line to print and the next
+    <code>State</code>. Here <code>State</code> is a <code>Nat</code> counting
+    how many lines have been seen, so each reply repeats your text once more
+    than the last. The compiler proved <code>i - 1</code> never leaves
+    <code>Nat</code> before this page was ever built.
+  </p>
+
+  <footer>
+    Built with <code>cantor build --target wasm32</code>.
+    <a href="https://github.com/dougmcivor/cantor">Source on GitHub</a>.
+  </footer>
+</main>
+
+<script type="module">
+import { CantorProgram } from "./cantor.js";
+
+const terminal = document.getElementById("terminal");
+const form = document.getElementById("prompt");
+const input = document.getElementById("input");
+const send = document.getElementById("send");
+
+function write(text, className) {
+  const line = document.createElement("div");
+  if (className) line.className = className;
+  line.textContent = text;
+  terminal.append(line);
+  terminal.scrollTop = terminal.scrollHeight;
+}
+
+let program;
+try {
+  program = await CantorProgram.load("./parrot.wasm");
+  write("Cantor program loaded. Type a line to send it an event.");
+  input.disabled = false;
+  send.disabled = false;
+  input.focus();
+} catch (e) {
+  write(`failed to load the program: ${e}`, "error");
+}
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const line = input.value;
+  input.value = "";
+  write(`> ${line}`, "echo");
+  try {
+    write(program.step(line));
+  } catch (e) {
+    // A panic inside the module traps, which surfaces here as an exception
+    // and leaves the program's State unusable — so stop taking input.
+    write(`the program trapped: ${e}`, "error");
+    input.disabled = true;
+    send.disabled = true;
+  }
+});
+</script>
+</body>
+</html>
