@@ -3,7 +3,24 @@
 //
 // The compiled program is an event loop that can't block on input, so the
 // page owns the loop and calls one Event in at a time. Strings cross as
-// UTF-8 bytes in the module's linear memory.
+// UTF-8 bytes in the module's linear memory. Output crosses back either as
+// text (CantorProgram, the original Char* shape) or as a bitmap
+// (CantorImageProgram, the Image convention — docs/design-decisions.md §6)
+// — which one a given module supports is fixed at `cantor build` time
+// (`wasm_driver_source`'s exports differ per Output shape), so use whichever
+// class matches the module you compiled, not both against the same module.
+
+async function instantiate(url) {
+  try {
+    return await WebAssembly.instantiateStreaming(fetch(url), {});
+  } catch {
+    // instantiateStreaming rejects if the server sends the wrong
+    // Content-Type, which is easy to hit when previewing through a minimal
+    // static server. Buffering the whole module works regardless.
+    const bytes = await (await fetch(url)).arrayBuffer();
+    return await WebAssembly.instantiate(bytes, {});
+  }
+}
 
 export class CantorProgram {
   #exports;
@@ -14,16 +31,7 @@ export class CantorProgram {
   }
 
   static async load(url) {
-    let result;
-    try {
-      result = await WebAssembly.instantiateStreaming(fetch(url), {});
-    } catch {
-      // instantiateStreaming rejects if the server sends the wrong
-      // Content-Type, which is easy to hit when previewing through a
-      // minimal static server. Buffering the whole module works regardless.
-      const bytes = await (await fetch(url)).arrayBuffer();
-      result = await WebAssembly.instantiate(bytes, {});
-    }
+    const result = await instantiate(url);
     return new CantorProgram(result.instance.exports);
   }
 
@@ -44,6 +52,52 @@ export class CantorProgram {
     const outPtr = this.#exports.cantor_wasm_output_ptr();
     const outLen = this.#exports.cantor_wasm_output_len();
     return new TextDecoder().decode(this.#memory.slice(outPtr, outPtr + outLen));
+  }
+}
+
+// The Image-Output counterpart of `CantorProgram` — same Event-in/step
+// protocol, but Output is a bitmap (`Nat * Nat * Unsigned32*`, packed RGBA
+// pixels) instead of text. `step` returns an `ImageData`, ready for
+// `ctx.putImageData(imageData, 0, 0)`.
+export class CantorImageProgram {
+  #exports;
+
+  constructor(exports) {
+    this.#exports = exports;
+    exports.cantor_wasm_init();
+  }
+
+  static async load(url) {
+    const result = await instantiate(url);
+    return new CantorImageProgram(result.instance.exports);
+  }
+
+  get #memory() {
+    return new Uint8Array(this.#exports.memory.buffer);
+  }
+
+  // Feed one Event through the program and return its Output as an
+  // `ImageData`.
+  step(event) {
+    const bytes = new TextEncoder().encode(event);
+    const ptr = this.#exports.cantor_wasm_input_buffer(bytes.length);
+    this.#memory.set(bytes, ptr);
+
+    this.#exports.cantor_wasm_step(bytes.length);
+
+    const width = this.#exports.cantor_wasm_output_width();
+    const height = this.#exports.cantor_wasm_output_height();
+    const pixelsPtr = this.#exports.cantor_wasm_output_pixels_ptr();
+    const pixelsLen = this.#exports.cantor_wasm_output_pixels_len();
+
+    // Copy out of wasm memory into ImageData's own backing store: its
+    // pixels are already row-major RGBA, exactly what ImageData wants, but
+    // holding a view over the module's memory past this call would be
+    // unsafe — the module's memory can grow (detaching this view) before
+    // the next step.
+    const pixels = new Uint8ClampedArray(pixelsLen);
+    pixels.set(this.#memory.subarray(pixelsPtr, pixelsPtr + pixelsLen));
+    return new ImageData(pixels, width, height);
   }
 }
 
