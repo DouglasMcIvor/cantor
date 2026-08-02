@@ -1,0 +1,12 @@
+-- Regression test: a tuple leaf built from a Step-A-promoted function's raw
+-- `Kind::Int64` result (int-soundness-plan phase 3, `solver::int64_split`)
+-- used to be inserted into the tuple's struct with no re-tagging, so it was
+-- later misread as a *tagged* `Kind::Int` word by every consumer (`show`,
+-- `cantor_bigint_to_i64`, …) — corrupting the value or crashing outright.
+-- `codegen::coerce::Compiler::coerce_int_leaves` now recurses into
+-- `Kind::Tuple` to retag any such leaf before it's returned.
+safe_quot32 : Int32 * (Int32 - {0}) -> Int
+safe_quot32(x, y) = x quot y
+
+main : -> Int * Int
+main() = (safe_quot32(-7, 5), 100)

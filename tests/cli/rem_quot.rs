@@ -10,15 +10,14 @@
 //! below) since no `cantor_bigint_rem`/`cantor_bigint_quot` runtime function
 //! exists yet.
 //!
-//! `main`'s return type is deliberately a bare `-> Int` (not `Int | Fail`,
-//! not a tuple) in every correctness fixture here — a promoted call's raw
-//! `Int64` result flowing directly into a `Fail`-wire success payload or a
-//! tuple leaf turned out to hit a separate, pre-existing display/coercion
-//! bug (confirmed with `/` too, not introduced by this feature): the value
-//! reaches the runtime untagged but `format_tagged_int`/`cantor_bigint_*`
-//! assume it's tagged, corrupting the printed value or crashing outright.
-//! Flagged to Doug for separate follow-up; every fixture below avoids it by
-//! sticking to the one shape that's confirmed to tag correctly.
+//! `main`'s return type is a bare `-> Int` (not `Int | Fail`, not a tuple) in
+//! every correctness fixture here for historical reasons only: a promoted
+//! call's raw `Int64` result flowing into a `Fail`-wire success payload or a
+//! tuple leaf used to hit a separate, pre-existing display/coercion bug
+//! (confirmed with `/` too, not introduced by this feature) — now fixed, see
+//! tests/cli/int64_retag.rs's regression tests and
+//! `Compiler::coerce_int_leaves`/`wrap_return_value` (src/codegen/coerce.rs,
+//! src/codegen/mod.rs).
 
 use super::helpers::*;
 

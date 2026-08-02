@@ -196,6 +196,98 @@ fn build_wasm_reports_a_missing_runtime_as_environment_not_ice() {
     assert!(!module.exists(), "no module should have been written");
 }
 
+/// A minimal Node.js host script that drives one `cantor_wasm_step` call
+/// against an Image-Output module and prints `width`/`height` as the only
+/// two lines of stdout — just enough to check the decoded dimensions
+/// without pulling in the pixel buffer too.
+const NODE_IMAGE_DIMENSIONS_SCRIPT: &str = r#"
+import fs from "node:fs";
+const bytes = fs.readFileSync(process.argv[2]);
+const { instance } = await WebAssembly.instantiate(bytes, {});
+const exports = instance.exports;
+exports.cantor_wasm_init();
+exports.cantor_wasm_input_buffer(0);
+exports.cantor_wasm_step(0);
+console.log(exports.cantor_wasm_output_width());
+console.log(exports.cantor_wasm_output_height());
+"#;
+
+/// Returns `true` if a `node` binary is on `PATH` — Node.js isn't a Rust
+/// build dependency, so this test degrades to a skip (mirroring
+/// `wasm_runtime_deps_dir`'s pattern) rather than a hard failure on a
+/// machine that never installed it.
+fn node_available() -> bool {
+    std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+#[test]
+fn build_wasm_image_output_decodes_correct_dimensions() {
+    let Some(_deps) = wasm_runtime_deps_dir() else {
+        eprintln!(
+            "SKIPPED build_wasm_image_output_decodes_correct_dimensions: no wasm32 \
+             cantor-runtime rlib — run `rustup target add wasm32-unknown-unknown && \
+             cargo build -p cantor-runtime --target wasm32-unknown-unknown`"
+        );
+        return;
+    };
+    if !node_available() {
+        eprintln!("SKIPPED build_wasm_image_output_decodes_correct_dimensions: no `node` on PATH");
+        return;
+    }
+
+    // Regression test for the Int64→Int re-tagging gap (tests/cli/
+    // int64_retag.rs has the minimal non-wasm repros): `width`/`height` are
+    // 0-arity `Nat`-returning functions, both Step-A-promoted to raw
+    // `Kind::Int64` — before the fix, their values reached the wasm host
+    // untagged and `cantor-runtime::event_loop::decode_output` silently
+    // halved them (10, 7 became 5, 3).
+    let (build_out, module) = build_wasm_fixture(
+        "int64_retag_event_loop_image.cantor",
+        "wasm-image-dimensions",
+    );
+    assert_eq!(
+        build_out.code, 0,
+        "expected build to succeed\nstdout: {}\nstderr: {}",
+        build_out.stdout, build_out.stderr
+    );
+
+    let script_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target/cli-build-test-tmp")
+        .join(format!("image-dimensions-{}.mjs", std::process::id()));
+    std::fs::write(&script_path, NODE_IMAGE_DIMENSIONS_SCRIPT)
+        .expect("failed to write the node test script");
+
+    let node_out = std::process::Command::new("node")
+        .arg(&script_path)
+        .arg(&module)
+        .output()
+        .expect("failed to run node");
+    std::fs::remove_file(&script_path).ok();
+    std::fs::remove_file(&module).ok();
+
+    assert!(
+        node_out.status.success(),
+        "expected node to exit 0\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&node_out.stdout),
+        String::from_utf8_lossy(&node_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&node_out.stdout);
+    let mut lines = stdout.lines();
+    assert_eq!(
+        lines.next(),
+        Some("10"),
+        "expected width() = 10, correctly tagged:\n{stdout}"
+    );
+    assert_eq!(
+        lines.next(),
+        Some("7"),
+        "expected height() = 7, correctly tagged:\n{stdout}"
+    );
+}
+
 /// The browser shim is JavaScript, so nothing in `cargo test` type-checks it
 /// against the driver template that produces the exports it calls. This
 /// keeps the two from drifting silently: every symbol the module is required

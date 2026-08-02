@@ -1,0 +1,11 @@
+-- Regression test: a fallible function's success payload built from a
+-- Step-A-promoted function's raw `Kind::Int64` result used to be wrapped
+-- into the `{tag, i64}` propagation struct with no re-tagging
+-- (`Compiler::wrap_return_value`'s fallible branch) — every consumer of a
+-- fallible return's success payload assumes a *tagged* `Kind::Int` word,
+-- so the printed value came out silently wrong.
+safe_quot32 : Int32 * (Int32 - {0}) -> Int
+safe_quot32(x, y) = x quot y
+
+main : -> Int | Fail
+main() { safe_quot32(-7, 5) }

@@ -30,6 +30,8 @@ mod helpers;
 mod heterogeneous_named_unions;
 #[path = "cli/if_kind_merge.rs"]
 mod if_kind_merge;
+#[path = "cli/int64_retag.rs"]
+mod int64_retag;
 #[path = "cli/interpolation.rs"]
 mod interpolation;
 #[path = "cli/named_unions.rs"]

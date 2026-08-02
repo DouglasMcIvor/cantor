@@ -223,16 +223,21 @@ impl<'ctx> Compiler<'ctx> {
         self.coerce_to_kind(val, val_kind, &expected, set_expr)
     }
 
-    /// Coerce a returned scalar `val : val_kind` to `function`'s own
-    /// declared return Kind when they're a mismatched `Int`/`Int64` pair —
-    /// int-soundness-plan phase 3 step 4b. Needed whenever a function's
-    /// *declared* representation (raw `Int64` for a Step-A-promoted or
-    /// step-4a-split function, tagged `Int` otherwise) differs from what its
-    /// body happened to compute — e.g. a promoted function whose body's
-    /// final expression is a call into an ordinary tagged callee. Every
-    /// other Kind pairing (including a genuine mismatch that isn't
-    /// Int/Int64) is left untouched — that's a real bug elsewhere, not
-    /// something to paper over here.
+    /// Coerce a returned `val : val_kind` to `function`'s own declared return
+    /// Kind whenever they disagree on `Int`/`Int64` representation somewhere
+    /// inside — int-soundness-plan phase 3 step 4b. Needed whenever a
+    /// function's *declared* representation (raw `Int64` for a
+    /// Step-A-promoted or step-4a-split function, tagged `Int` otherwise)
+    /// differs from what its body happened to compute — e.g. a promoted
+    /// function whose body's final expression is a call into an ordinary
+    /// tagged callee, or (recursing into `Kind::Tuple`) an ordinary
+    /// tagged-`Int`-returning function whose tuple literal embeds a call to
+    /// a *different*, independently Step-A-promoted function (its result is
+    /// genuinely raw `Kind::Int64` at that leaf, even though the enclosing
+    /// tuple's own declared Kind is all tagged `Int`). Every other Kind
+    /// pairing (including a genuine mismatch that isn't Int/Int64) is left
+    /// untouched — that's a real bug elsewhere, not something to paper over
+    /// here.
     pub(crate) fn coerce_int_return(
         &self,
         val: BasicValueEnum<'ctx>,
@@ -240,7 +245,23 @@ impl<'ctx> Compiler<'ctx> {
         function: inkwell::values::FunctionValue<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let fn_name = function.get_name().to_str().unwrap_or("");
-        let expected = self.fn_return_kinds.get(fn_name);
+        let expected = self.fn_return_kinds.get(fn_name).cloned();
+        self.coerce_int_leaves(val, val_kind, expected.as_ref())
+    }
+
+    /// The actual (possibly recursive) work behind [`Self::coerce_int_return`]
+    /// — split out so a `Kind::Tuple` position can recurse per-field against
+    /// the matching position in `expected`, rebuilding the aggregate with
+    /// each field's own leaf(s) coerced. `expected: None` (an unrecognized
+    /// function name — shouldn't happen for any real caller) means "assume
+    /// `val_kind` is already right", the same fallback the scalar cases used
+    /// before this was split out.
+    fn coerce_int_leaves(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_kind: Kind,
+        expected: Option<&Kind>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         match (&val_kind, expected) {
             (Kind::Int, Some(Kind::Int64)) => Ok((
                 self.ensure_raw_int64(val.into_int_value(), &val_kind)?
@@ -286,6 +307,56 @@ impl<'ctx> Compiler<'ctx> {
                     .call_runtime_i64("cantor_bigint_to_i64", &[tagged], "rat_narrow_raw")?
                     .into_int_value();
                 Ok((raw.into(), want.clone()))
+            }
+            (Kind::Tuple(elems), Some(Kind::Tuple(expected_elems)))
+                if elems.len() == expected_elems.len() =>
+            {
+                let elems = elems.clone();
+                let expected_elems = expected_elems.clone();
+                let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+                let sv = AggregateValueEnum::StructValue(val.into_struct_value());
+                let mut new_elem_kinds = Vec::with_capacity(elems.len());
+                let mut new_fields = Vec::with_capacity(elems.len());
+                let mut any_changed = false;
+                for (i, (elem_kind, expected_elem)) in
+                    elems.iter().zip(expected_elems.iter()).enumerate()
+                {
+                    let field = self
+                        .builder
+                        .build_extract_value(sv, i as u32, "cir_field")
+                        .map_err(err)?;
+                    let (field, field_kind) =
+                        self.coerce_int_leaves(field, elem_kind.clone(), Some(expected_elem))?;
+                    any_changed |= field_kind != *elem_kind;
+                    new_fields.push(field);
+                    new_elem_kinds.push(field_kind);
+                }
+                // Only a genuine Int/Int64 leaf mismatch changes a field's
+                // Kind (the recursive cases above are the only ones that
+                // return a different Kind than they were given) — if none
+                // did, leave the aggregate untouched rather than rebuild it.
+                // The rebuild's `kind_to_llvm_type` mapping is for the
+                // *canonical* representation of each Kind and doesn't
+                // necessarily match how e.g. the `{tag, i64}` Fail/None
+                // propagation wire actually lays out its (non-canonical) i8
+                // tag field, so rebuilding when nothing needs retagging can
+                // manufacture a real LLVM type mismatch out of a pure no-op.
+                if !any_changed {
+                    return Ok((val, val_kind));
+                }
+                let llvm_types: Vec<_> = new_elem_kinds
+                    .iter()
+                    .map(|k| self.kind_to_llvm_type(k))
+                    .collect();
+                let struct_type = self.context.struct_type(&llvm_types, false);
+                let mut agg: AggregateValueEnum<'ctx> = struct_type.get_undef().into();
+                for (i, field) in new_fields.into_iter().enumerate() {
+                    agg = self
+                        .builder
+                        .build_insert_value(agg, field, i as u32, "cir_rebuild")
+                        .map_err(err)?;
+                }
+                Ok((agg.into_struct_value().into(), Kind::Tuple(new_elem_kinds)))
             }
             _ => Ok((val, val_kind)),
         }

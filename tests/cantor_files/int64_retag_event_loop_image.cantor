@@ -1,0 +1,26 @@
+-- Regression test: an Image event-loop `main`'s Output tuple
+-- `(width(), height(), pixels)` where `width`/`height` are 0-arity
+-- Nat-returning functions — both get Step-A-promoted to raw `Kind::Int64`
+-- (int-soundness-plan phase 3), and their results used to reach
+-- `cantor_step`'s output buffer untagged even though every decoder
+-- (`cantor-runtime::event_loop::decode_output`) assumes a tagged word,
+-- silently halving both dimensions (or trapping on an odd value). Fixed by
+-- `coerce_int_leaves` recursing into `Kind::Tuple` at the function-return
+-- boundary — see `int64_retag_tuple_leaf.cantor` for the minimal non-event-
+-- loop repro of the same gap.
+Image = Nat * Nat * Unsigned32*
+
+width : -> Nat
+width() = 10
+
+height : -> Nat
+height() = 7
+
+main : Char* * Nat -> Image * Nat
+main(event, state) {
+    pixels : Unsigned32* = [unsigned32(0)]
+    ((width(), height(), pixels), state)
+}
+
+main : -> Nat
+main() = 0

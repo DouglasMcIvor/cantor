@@ -66,7 +66,6 @@ fn decode_output(kind: OutputKind, leaves: &[i64]) -> OutputValue {
     match kind {
         OutputKind::CharStar => OutputValue::CharStar(format_char_vector(leaves[0])),
         OutputKind::Image => {
-            eprintln!("DEBUG raw leaves[0]={} leaves[1]={}", leaves[0], leaves[1]);
             let width = cantor_bigint_to_i64(leaves[0]);
             let height = cantor_bigint_to_i64(leaves[1]);
             let pixels_ptr = leaves[2];

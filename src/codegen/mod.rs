@@ -290,10 +290,23 @@ impl<'ctx> Compiler<'ctx> {
         let i64t = self.context.i64_type();
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match arm_kind {
+            // A raw `Kind::Int64` arm value (a Step-A-promoted function's
+            // result — `solver::int64_split`) must be re-tagged before it's
+            // stored as a leaf here: a `TaggedUnion`'s runtime tag only says
+            // *which* arm is live, not how that arm's own payload word is
+            // represented, and every consumer of a union's `Int`-shaped arm
+            // (`show`'s per-arm dispatch, `main.rs`'s fallible-return decode)
+            // assumes a tagged word regardless — see `coerce_int_leaves`'s
+            // doc comment for the equivalent gap this closes for tuples.
             Kind::Int | Kind::Int64 | Kind::Rational | Kind::Set(_) => {
+                let val = if *arm_kind == Kind::Int64 {
+                    self.ensure_tagged(val.into_int_value(), arm_kind)?
+                } else {
+                    val.into_int_value()
+                };
                 *agg = self
                     .builder
-                    .build_insert_value(*agg, val.into_int_value(), *field_idx, "tu_l")
+                    .build_insert_value(*agg, val, *field_idx, "tu_l")
                     .map_err(err)?;
                 *field_idx += 1;
             }
@@ -590,7 +603,19 @@ impl<'ctx> Compiler<'ctx> {
         if matches!(kind, Kind::Tuple(e) if crate::kind::is_propagation_tuple(e)) {
             return Ok(val); // already a propagation struct
         }
-        let payload = self.widen_scalar_to_i64(val, kind, "ret_wide")?;
+        // A raw `Kind::Int64` success value (a Step-A-promoted function's
+        // result — `solver::int64_split`) must be re-tagged here: unlike a
+        // plain scalar `-> Int64`-promoted `main`, whose own declared return
+        // Kind is promoted right along with it (so the JIT/AOT boundary
+        // already knows to read it as raw), the `{tag, i64}` propagation
+        // wire's payload field is always read back out assuming a tagged
+        // word (`main.rs`'s fallible-return decode) — see `insert_kind_leaves`'s
+        // matching fix for the equivalent `TaggedUnion`-arm gap.
+        let payload = if *kind == Kind::Int64 {
+            self.ensure_tagged(val.into_int_value(), kind)?.into()
+        } else {
+            self.widen_scalar_to_i64(val, kind, "ret_wide")?
+        };
         self.build_success_struct(payload)
     }
 
