@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cantor — Game of Life</title>
+<style>
+  :root {
+    --teal: #1c7d6b;
+    --ink: #16211f;
+    --paper: #f6f8f7;
+  }
+  body {
+    margin: 0;
+    padding: 2rem 1rem;
+    background: var(--paper);
+    color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { color: var(--teal); font-weight: 600; margin: 0 0 .25rem; }
+  h1 .aleph { font-size: 1.2em; }
+  .tagline { margin: 0 0 1.5rem; color: #55605d; }
+  canvas {
+    display: block;
+    margin: 0 auto;
+    background: #000;
+    border-radius: .5rem;
+    image-rendering: pixelated;
+    width: min(100%, 24rem);
+    height: min(100%, 24rem);
+  }
+  .controls { display: flex; gap: .5rem; margin-top: .75rem; justify-content: center; }
+  button {
+    padding: .6rem 1.1rem;
+    background: var(--teal);
+    color: #fff;
+    border: 0;
+    border-radius: .375rem;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { text-align: center; margin-top: .5rem; font-size: 14px; color: #55605d; }
+  .status.error { color: #b3261e; }
+  pre.source {
+    background: #fff;
+    border: 1px solid #dfe6e4;
+    border-radius: .5rem;
+    padding: 1rem;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  footer { margin-top: 2rem; font-size: 14px; color: #55605d; }
+  a { color: var(--teal); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="aleph">&#8501;</span> Cantor — Game of Life</h1>
+  <p class="tagline">
+    Conway's Game of Life, compiled from Cantor to WebAssembly. Every frame is
+    one <code>Event</code> through a proof-carrying event loop whose
+    <code>Output</code> is a bitmap (docs/design-decisions.md &sect;6's
+    <code>Nat * Nat * Unsigned32*</code> convention) rather than text — see
+    <a href="./index.html">the text-based demo</a> for the original shape.
+  </p>
+
+  <canvas id="board" width="6" height="6"></canvas>
+  <div class="controls">
+    <button id="toggle" disabled>Pause</button>
+  </div>
+  <p class="status" id="status">Loading…</p>
+
+  <h2>The program</h2>
+  <pre class="source">Grid = Bool*
+Image = Nat * Nat * Unsigned32*
+
+-- Whether (x, y) is alive in `grid` — false for any coordinate outside the
+-- grid, so neighbor counting near an edge never indexes off the end.
+cell : Grid * Int * Int -&gt; Bool
+cell(grid, x, y) {
+    idx : Int = y * width() + x
+    (
+        if x &lt; 0 or y &lt; 0 or x &gt;= width() or y &gt;= height() or idx &lt; 0 or idx &gt;= len(grid) then
+            false
+        else
+            grid[idx]
+    )
+}
+
+-- The standard Game of Life rule: a live cell survives with 2 or 3 live
+-- neighbors, a dead cell is born with exactly 3.
+next_alive : Bool * Nat -&gt; Bool
+next_alive(alive, n) = (
+    if alive then n == 2 or n == 3 else n == 3
+)
+
+main : Char* * Grid -&gt; Image * Grid
+main(event, grid) {
+    next : Grid = next_generation(grid)
+    pixels : Unsigned32* = render(next)
+    ((width(), height(), pixels), next)
+}</pre>
+
+  <p>
+    Every function above — including <code>cell</code>'s bounds check and the
+    grid-indexing inside it — was verified by cvc5 before this page was ever
+    built: there is no way for this program to index off the end of the
+    grid at runtime.
+  </p>
+
+  <footer>
+    Built with <code>cantor build --target wasm32</code>.
+    <a href="https://github.com/dougmcivor/cantor">Source on GitHub</a>.
+  </footer>
+</main>
+
+<script type="module">
+import { CantorImageProgram } from "./cantor.js";
+
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+const toggle = document.getElementById("toggle");
+const status = document.getElementById("status");
+
+function setStatus(text, isError) {
+  status.textContent = text;
+  status.classList.toggle("error", Boolean(isError));
+}
+
+let program;
+let running = true;
+let lastFrame = 0;
+const FRAME_MS = 250;
+
+function draw() {
+  let image;
+  try {
+    // The demo's `main` ignores its Event entirely (every tick just
+    // advances one generation) — any non-EOT string works as the input.
+    image = program.step("tick");
+  } catch (e) {
+    setStatus(`the program trapped: ${e}`, true);
+    running = false;
+    toggle.disabled = true;
+    return;
+  }
+  if (canvas.width !== image.width || canvas.height !== image.height) {
+    canvas.width = image.width;
+    canvas.height = image.height;
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+function frame(now) {
+  if (running && now - lastFrame >= FRAME_MS) {
+    lastFrame = now;
+    draw();
+  }
+  requestAnimationFrame(frame);
+}
+
+toggle.addEventListener("click", () => {
+  running = !running;
+  toggle.textContent = running ? "Pause" : "Resume";
+});
+
+try {
+  program = await CantorImageProgram.load("./game_of_life.wasm");
+  setStatus("Running — a glider, headed toward the bottom-right corner.");
+  toggle.disabled = false;
+  draw();
+  requestAnimationFrame(frame);
+} catch (e) {
+  setStatus(`failed to load the program: ${e}`, true);
+}
+</script>
+</body>
+</html>

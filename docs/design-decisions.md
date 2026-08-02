@@ -305,14 +305,19 @@ implementation detail the developer should not rely on.
 
 ### MVP event loop (`cantor run`) — DECIDED, IMPLEMENTED
 
-- **Event = Output = `Char*`** for v0 — line-based CLIs only. Not
+- **Event is always `Char*`** for v0 — line-based CLIs only. Not
   user-configurable yet; a fixed part of the `cantor run` contract, not a
-  general `Event`/`Output` mechanism. The eventual extensibility point is a
-  foreign runtime supplying `Output → Event` (see below) rather than
-  widening the built-in `Event`/`Output` sets themselves.
+  general `Event` mechanism. The eventual extensibility point is a foreign
+  runtime supplying `Output → Event` (see below) rather than widening the
+  built-in `Event` set itself.
+- **Output is `Char*` or the `Image` convention** — see "Output shapes"
+  below. `cantor run`/native `cantor build` only ever accept `Char*` (there's
+  no terminal renderer for a bitmap); `cantor build --target wasm32` accepts
+  either.
 - **Shape**: `main` has a **2-arity overload** with signature
-  `Char* * S -> Char* * S` for some set `S` the developer chooses (any name,
-  does not have to be called `State`).
+  `Char* * S -> Output * S` for some set `S` the developer chooses (any
+  name, does not have to be called `State`) and some `Output` matching one
+  of the recognized shapes below.
 - **Seeding State**: `main` must also have a **0-arity overload**
   `main : -> S`, reusing ordinary overload-by-arity (§7 "arity is a free
   dispatch key" — a 0-arity and 2-arity overload of the same name need no
@@ -342,8 +347,9 @@ implementation detail the developer should not rely on.
   back — a documented gotcha, not a soundness issue. No tagged-union
   `Event` (e.g. `Char* | EOF`) is needed for v0 as a result.
 - **No `Fail`/`raises` integration in the loop for v0** — `Output` is bare
-  `Char*`, not `Char* !! ErrorSet`. Class 2 (`raises`) catching at the event
-  loop boundary (as described elsewhere in this section) remains future work.
+  `Char*`/`Image`, not `Char* !! ErrorSet`. Class 2 (`raises`) catching at
+  the event loop boundary (as described elsewhere in this section) remains
+  future work.
 - **Concurrency**: strictly sequential, blocking read loop for v0 — no
   async/queued event handling.
 - FFI for foreign runtimes (GUI, HTTP server, etc.) is **not a general
@@ -354,8 +360,35 @@ implementation detail the developer should not rely on.
   line as Event`) rather than pluggable. The wasm backend below is the
   first *second* implementation of that shape (a JS host supplying events
   from DOM handlers), which is why it needed no new language surface — but
-  it too is hard-coded rather than program-selectable, and `Event`/`Output`
-  are still fixed at `Char*`.
+  it too is hard-coded rather than program-selectable, and `Event` is still
+  fixed at `Char*`.
+
+### Output shapes — `Char*` and `Image` (DECIDED, IMPLEMENTED)
+
+`Output` isn't a new built-in Kind — it's whichever of these two *structural*
+shapes the event-loop `main`'s return actually matches
+(`codegen::wire::classify_output_shape`):
+
+- **`Char*`** — text, printed with a trailing newline by `cantor run`'s
+  stdio driver, or read back as a JS string by `CantorProgram` (`web/
+  cantor.js`).
+- **`Image`** — structurally `Nat * Nat * Unsigned32*`: width, height, then
+  row-major pixels, one `Unsigned32` per pixel packed `0xRRGGBBAA` (red,
+  green, blue, alpha, high byte first). **Known gotcha**: write it as a
+  named alias (`Image = Nat * Nat * Unsigned32*`), not inline in `main`'s
+  signature — an inline literal can hit a pre-existing, unrelated cvc5
+  crash ("index out of bounds" while building the tuple sort's membership
+  constraint) that's the same family as the "parenthesized nesting is not
+  yet honoured" gap in "Product set values (tuples)" above: something in
+  the return Kind's tuple-literal flattening disagrees with cvc5's own
+  tuple sort once `Output` isn't introduced via a name. Not yet root-caused
+  precisely or fixed; a named alias is the reliable spelling for now, not a
+  permanent language requirement.
+- **wasm32-only**: there is no terminal renderer for a bitmap, so
+  `cantor run`/native `cantor build` accept `Char*` only
+  (`CompileError::Unsupported`, naming both shapes, for anything else); only
+  `cantor build --target wasm32` accepts `Image` too. See
+  `examples/game_of_life.cantor` / `web/game-of-life.html` for a full demo.
 
 ### `cantor build` — AOT compilation (DECIDED, IMPLEMENTED)
 
@@ -369,16 +402,17 @@ same as `cantor run` refuses to execute one) but emitting a linked binary
 instead of JIT-executing in-process.
 
 - **Scope is permanently the event-loop `main` shape only**
-  (`Char* * S -> Char* * S`, above) — **not** a "not yet implemented" gap
+  (`Char* * S -> Output * S`, above) — **not** a "not yet implemented" gap
   to close later. Scalar/tuple `main` was only ever a JIT convenience for
   playing with the language and will not get AOT support. One practical
   consequence: an event-loop program's driver needs zero `Kind`-shape
   *branching* to compile — `State`'s arena deep-copy shape (see "Arena
-  memory reclamation" below) is fully resolved to a literal value at
-  `cantor build` time and baked into the generated driver source, not
-  dispatched on at runtime; `Output` is always `Char*` — so `cantor build`
-  never generates per-program dispatch logic — see `src/codegen/aot.rs`'s
-  module doc.
+  memory reclamation" below) and `Output`'s shape (`Char*` vs `Image`) are
+  both fully resolved at `cantor build` time and baked into the generated
+  driver source, not dispatched on at runtime — so `cantor build` never
+  generates per-program dispatch logic — see `src/codegen/aot.rs`'s module
+  doc. Native `cantor build` still only ever accepts `Char*` (see "Output
+  shapes" above).
 - **`cantor-runtime` is its own workspace crate**, split out of what used
   to be `src/runtime/`. It only ever depended on
   arrow-array/arrow-buffer/arrow-schema/num-bigint, never cvc5/inkwell, so
@@ -425,14 +459,18 @@ flags differ.
   between calls and the JS host feeds it one `Event` at a time. This is the
   same "foreign runtime supplies `Output → Event`" extensibility point
   sketched above, with JS as the first foreign runtime.
-- **Embedding ABI**: five exports (`cantor_wasm_init`,
-  `cantor_wasm_input_buffer`, `cantor_wasm_step`, `cantor_wasm_output_ptr`,
-  `cantor_wasm_output_len`), defined by the generated driver, implemented
-  in `cantor-runtime/src/wasm.rs`, and consumed by `web/cantor.js`. Strings
-  cross as UTF-8 bytes in the module's linear memory; passing one *in*
-  takes two calls because JS cannot write into that memory until it has an
-  offset to write at. Nothing in the compiled module is browser-specific —
-  the same exports drive it from Node, or from any other embedder.
+- **Embedding ABI**: three exports common to every module
+  (`cantor_wasm_init`, `cantor_wasm_input_buffer`, `cantor_wasm_step`) plus
+  exactly one Output-shape-specific export set, never both — `cantor_wasm_
+  output_ptr`/`cantor_wasm_output_len` for `Char*`, or `cantor_wasm_output_
+  width`/`_height`/`_pixels_ptr`/`_pixels_len` for `Image`. Defined by the
+  generated driver (`codegen::aot::wasm_driver_source`), implemented in
+  `cantor-runtime/src/wasm.rs`, and consumed by `web/cantor.js`'s
+  `CantorProgram`/`CantorImageProgram` respectively. Strings cross as UTF-8
+  bytes in the module's linear memory; passing one *in* takes two calls
+  because JS cannot write into that memory until it has an offset to write
+  at. Nothing in the compiled module is browser-specific — the same exports
+  drive it from Node, or from any other embedder.
 - **A `cdylib`, not a `bin`**: that is what makes `rustc` link with
   `wasm-ld` and put the driver's `#[unsafe(no_mangle)]` shims in the
   module's export table.

@@ -81,6 +81,7 @@ jobs:
         rustup target add wasm32-unknown-unknown
         cargo build -p cantor-runtime --target wasm32-unknown-unknown
         ./target/debug/cantor build --target wasm32 examples/parrot.cantor -o web/parrot.wasm
+        ./target/debug/cantor build --target wasm32 examples/game_of_life.cantor -o web/game_of_life.wasm
     - name: Assemble the Pages site
       # Root is a landing page linking out; coverage lives under /coverage,
       # demos under /demo.
@@ -88,7 +89,7 @@ jobs:
         mkdir -p site/coverage site/demo
         cp .github/pages/index.html site/
         cp -r target/llvm-cov/html/. site/coverage/
-        cp web/index.html web/cantor.js web/parrot.wasm site/demo/
+        cp web/index.html web/game-of-life.html web/cantor.js web/parrot.wasm web/game_of_life.wasm site/demo/
 
     - name: Setup Pages
       uses: actions/configure-pages@v5
