@@ -59,14 +59,15 @@
 <main>
   <h1><span class="aleph">&#8501;</span> Cantor — Game of Life</h1>
   <p class="tagline">
-    Conway's Game of Life, compiled from Cantor to WebAssembly. Every frame is
-    one <code>Event</code> through a proof-carrying event loop whose
-    <code>Output</code> is a bitmap (docs/design-decisions.md &sect;6's
+    Conway's Game of Life, compiled from Cantor to WebAssembly, on a 30&times;30
+    torus — a glider walking off one edge reappears on the opposite edge.
+    Every frame is one <code>Event</code> through a proof-carrying event loop
+    whose <code>Output</code> is a bitmap (docs/design-decisions.md &sect;6's
     <code>Nat * Nat * Unsigned32*</code> convention) rather than text — see
     <a href="./index.html">the text-based demo</a> for the original shape.
   </p>
 
-  <canvas id="board" width="6" height="6"></canvas>
+  <canvas id="board" width="30" height="30"></canvas>
   <div class="controls">
     <button id="toggle" disabled>Pause</button>
   </div>
@@ -76,13 +77,17 @@
   <pre class="source">Grid = Bool*
 Image = Nat * Nat * Unsigned32*
 
--- Whether (x, y) is alive in `grid` — false for any coordinate outside the
--- grid, so neighbor counting near an edge never indexes off the end.
+-- Whether (x, y) is alive in `grid`. The board is a torus: `count_neighbors`
+-- only ever calls this one step outside [0, width()) / [0, height()), so a
+-- single conditional wrap sends an off-the-left edge back to the right edge
+-- and vice versa.
 cell : Grid * Int * Int -&gt; Bool
 cell(grid, x, y) {
-    idx : Int = y * width() + x
+    wrapped_x : Int = if x &lt; 0 then x + width() else if x &gt;= width() then x - width() else x
+    wrapped_y : Int = if y &lt; 0 then y + height() else if y &gt;= height() then y - height() else y
+    idx : Int = wrapped_y * width() + wrapped_x
     (
-        if x &lt; 0 or y &lt; 0 or x &gt;= width() or y &gt;= height() or idx &lt; 0 or idx &gt;= len(grid) then
+        if idx &lt; 0 or idx &gt;= len(grid) then
             false
         else
             grid[idx]
@@ -168,7 +173,7 @@ toggle.addEventListener("click", () => {
 
 try {
   program = await CantorImageProgram.load("./game_of_life.wasm");
-  setStatus("Running — a glider, headed toward the bottom-right corner.");
+  setStatus("Running — a glider, looping around the torus.");
   toggle.disabled = false;
   draw();
   requestAnimationFrame(frame);
