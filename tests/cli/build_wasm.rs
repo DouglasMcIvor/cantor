@@ -288,6 +288,115 @@ fn build_wasm_image_output_decodes_correct_dimensions() {
     );
 }
 
+/// A Node.js host script that drives one `cantor_wasm_step` call against the
+/// Game of Life demo and prints the decoded pixel buffer as one `#`/`.` row
+/// per pixel row (thresholding each pixel's red channel, since the demo
+/// packs pure black/white — `0xFFFFFFFF`/`0x000000FF` — one `Unsigned32` per
+/// pixel).
+const NODE_GAME_OF_LIFE_ASCII_SCRIPT: &str = r##"
+import fs from "node:fs";
+const bytes = fs.readFileSync(process.argv[2]);
+const { instance } = await WebAssembly.instantiate(bytes, {});
+const exports = instance.exports;
+exports.cantor_wasm_init();
+exports.cantor_wasm_input_buffer(0);
+exports.cantor_wasm_step(0);
+const width = exports.cantor_wasm_output_width();
+const height = exports.cantor_wasm_output_height();
+const ptr = exports.cantor_wasm_output_pixels_ptr();
+const len = exports.cantor_wasm_output_pixels_len();
+const mem = new Uint8Array(exports.memory.buffer, ptr, len * 4);
+let rows = [];
+for (let y = 0; y < height; y++) {
+    let row = "";
+    for (let x = 0; x < width; x++) {
+        row += mem[(y * width + x) * 4] > 128 ? "#" : ".";
+    }
+    rows.push(row);
+}
+console.log(rows.join("\n"));
+"##;
+
+#[test]
+fn build_wasm_game_of_life_evolves_the_glider_one_generation() {
+    let Some(_deps) = wasm_runtime_deps_dir() else {
+        eprintln!(
+            "SKIPPED build_wasm_game_of_life_evolves_the_glider_one_generation: no wasm32 \
+             cantor-runtime rlib — run `rustup target add wasm32-unknown-unknown && \
+             cargo build -p cantor-runtime --target wasm32-unknown-unknown`"
+        );
+        return;
+    };
+    if !node_available() {
+        eprintln!(
+            "SKIPPED build_wasm_game_of_life_evolves_the_glider_one_generation: no `node` on PATH"
+        );
+        return;
+    }
+
+    // examples/game_of_life.cantor lives outside tests/cantor_files (it's a
+    // real user-facing demo, not a test fixture) — build it directly rather
+    // than through `build_wasm_fixture`/`fixture`.
+    let example_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/game_of_life.cantor");
+    let out_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/cli-build-test-tmp");
+    std::fs::create_dir_all(&out_dir).expect("failed to create test output dir");
+    let module = out_dir.join(format!("game-of-life-{}.wasm", std::process::id()));
+    let build_out = run(&[
+        "build",
+        "--target",
+        "wasm32",
+        example_path.to_str().unwrap(),
+        "-o",
+        module.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        build_out.code, 0,
+        "expected build to succeed\nstdout: {}\nstderr: {}",
+        build_out.stdout, build_out.stderr
+    );
+
+    let script_path = out_dir.join(format!("game-of-life-{}.mjs", std::process::id()));
+    std::fs::write(&script_path, NODE_GAME_OF_LIFE_ASCII_SCRIPT)
+        .expect("failed to write the node test script");
+
+    let node_out = std::process::Command::new("node")
+        .arg(&script_path)
+        .arg(&module)
+        .output()
+        .expect("failed to run node");
+    std::fs::remove_file(&script_path).ok();
+    std::fs::remove_file(&module).ok();
+
+    assert!(
+        node_out.status.success(),
+        "expected node to exit 0\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&node_out.stdout),
+        String::from_utf8_lossy(&node_out.stderr)
+    );
+
+    // The demo seeds a glider (docs/design-decisions.md's canonical `.#.` /
+    // `..#` / `###` shape); one generation forward under the standard B3/S23
+    // rule is the well-known `#.#` / `.##` / `.#.` phase, shifted down by one
+    // row from the seed. This is a real regression test for the Int64
+    // re-tagging fix (tests/cli/int64_retag.rs) in its actual motivating
+    // context — a wrong width/height here would misalign every row.
+    let expected = "\
+......
+#.#...
+.##...
+.#....
+......
+......";
+    let stdout = String::from_utf8_lossy(&node_out.stdout);
+    assert_eq!(
+        stdout.trim_end(),
+        expected,
+        "expected the glider's known one-generation-forward shape:\n{stdout}"
+    );
+}
+
 /// The browser shim is JavaScript, so nothing in `cargo test` type-checks it
 /// against the driver template that produces the exports it calls. This
 /// keeps the two from drifting silently: every symbol the module is required
