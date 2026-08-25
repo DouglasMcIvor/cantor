@@ -82,6 +82,7 @@ jobs:
         cargo build -p cantor-runtime --target wasm32-unknown-unknown
         ./target/debug/cantor build --target wasm32 examples/parrot.cantor -o web/parrot.wasm
         ./target/debug/cantor build --target wasm32 examples/game_of_life.cantor -o web/game_of_life.wasm
+        ./target/debug/cantor build --target wasm32 examples/quantum_paper_bag.cantor -o web/quantum_paper_bag.wasm
     - name: Assemble the Pages site
       # Root is a landing page linking out; coverage lives under /coverage,
       # demos under /demo. The demo pages fetch their own .cantor source to
@@ -91,9 +92,9 @@ jobs:
         mkdir -p site/coverage site/demo
         cp .github/pages/index.html site/
         cp -r target/llvm-cov/html/. site/coverage/
-        cp web/index.html web/game-of-life.html web/cantor.js site/demo/
-        cp web/parrot.wasm web/game_of_life.wasm site/demo/
-        cp web/parrot.cantor web/game_of_life.cantor site/demo/
+        cp web/index.html web/game-of-life.html web/paper-bag.html web/cantor.js site/demo/
+        cp web/parrot.wasm web/game_of_life.wasm web/quantum_paper_bag.wasm site/demo/
+        cp web/parrot.cantor web/game_of_life.cantor web/quantum_paper_bag.cantor site/demo/
 
     - name: Setup Pages
       uses: actions/configure-pages@v5

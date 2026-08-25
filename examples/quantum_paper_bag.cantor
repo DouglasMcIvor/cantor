@@ -1,0 +1,536 @@
+-- Programming your way out of a sealed paper bag — by quantum tunneling.
+--
+-- Frances Buontempo's "escape a paper bag with the diffusion equation" talk
+-- (C++ on Sea 2019) has an obvious sequel: add an imaginary unit and the
+-- diffusion equation becomes the Schrodinger equation, so the escape can
+-- happen by tunneling straight *through* a sealed bag rather than over its
+-- rim.
+--
+-- A particle starts as a wave packet at the centre of a closed rectangular
+-- barrier (the bag, a finite potential wall). Its wave function evolves by
+-- Visscher's staggered leapfrog scheme; some amplitude leaks through the
+-- wall. Measuring collapses the wave function to a single cell — once that
+-- cell lands outside the bag, you have escaped.
+--
+-- Cantor has no floating point, so all of this is exact fixed-point integer
+-- arithmetic with `scale()` representing 1.0, and the compiler discharges an
+-- overflow obligation on every arithmetic node along the way.
+
+Image = Nat * Nat * Unsigned32*
+
+-- re, im, rng, mark, escaped
+--   re/im   the wave function's real and imaginary parts, row-major
+--   rng     LCG state, stirred by host entropy arriving in the Event
+--   mark    index of the last measurement's collapse, or -1 before any
+--   escaped 1 once a measurement has landed outside the bag
+State = Int* * Int* * Int * Int * Int
+
+-- ── Geometry ─────────────────────────────────────────────────────────────
+
+n : -> Nat
+n() = 32
+
+centre : -> Int32
+centre() = 16
+
+-- The bag: a closed rectangle of wall cells, one cell thick.
+bag_lo : -> Int
+bag_lo() = 10
+
+bag_hi : -> Int
+bag_hi() = 22
+
+inside_bag : Int * Int -> Bool
+inside_bag(x, y) = (
+    x > bag_lo() and x < bag_hi() and y > bag_lo() and y < bag_hi()
+)
+
+on_wall : Int * Int -> Bool
+on_wall(x, y) = (
+    x >= bag_lo() and x <= bag_hi() and y >= bag_lo() and y <= bag_hi()
+    and (x == bag_lo() or x == bag_hi() or y == bag_lo() or y == bag_hi())
+)
+
+-- ── Fixed point ──────────────────────────────────────────────────────────
+
+-- 2^24 represents an amplitude of 1.0. Chosen so that a packet spread over
+-- the whole grid, and even amplitude that has tunneled through the wall,
+-- still has several significant bits left.
+scale : -> Int32
+scale() = 16777216
+
+-- Every fixed-point kernel below takes bounded builtin sets (`Int32`/`Int8`)
+-- as its domain, which is what lets the compiler promote it to raw i64
+-- arithmetic and so emit `quot` at all. Values read out of a vector carry no
+-- static bound, so they come back through `clamp32` first — the compiler
+-- will not take the range on trust.
+clamp32 : Int -> Int32
+clamp32(v) = (
+    if v > 2147483647 then 2147483647
+    else if v < -2147483648 then -2147483648
+    else v
+)
+
+clamp8 : Int -> Int8
+clamp8(v) = (
+    if v > 127 then 127
+    else if v < -128 then -128
+    else v
+)
+
+-- ── Physics ──────────────────────────────────────────────────────────────
+
+-- Barrier height. Two constraints meet here. Stability of the leapfrog
+-- needs dt * (4 + v_wall) < 2, which with dt = 1/8 allows anything under
+-- 12. Playability wants the escape rare but not hopeless: measured over
+-- 3000 steps, a height of 6 leaves ~1% of the probability outside the bag,
+-- 3 gives ~4%, and 2 gives ~6-9% — so 2 is a wall the packet visibly
+-- bounces off while still being escapable in a handful of measurements.
+v_wall : -> Int8
+v_wall() = 2
+
+potential : Int * Int -> Int8
+potential(x, y) = if on_wall(x, y) then v_wall() else 0
+
+-- Field lookup with Dirichlet edges: everything outside the grid reads as
+-- zero. The index bound stays a runtime check because the compiler cannot
+-- relate len(f) to n() * n().
+at : Int* * Int * Int -> Int
+at(f, x, y) {
+    idx : Int = y * n() + x
+    (
+        if x < 0 or x >= n() or y < 0 or y >= n() or idx < 0 or idx >= len(f) then
+            0
+        else
+            f[idx]
+    )
+}
+
+-- One leapfrog half-step's increment: dt * H(other) at a single cell, where
+-- H f = (2 + V) f - (1/2) * laplacian-sum, dt = 1/8.
+--
+-- Writing it as a single `quot 16` rather than a chain of shifts keeps the
+-- truncation to one rounding, and the `+ 8` makes that rounding symmetric
+-- instead of a systematic drift toward negative infinity over many steps.
+hdelta : Int32 * Int32 * Int32 * Int32 * Int32 * Int8 -> Int
+hdelta(other, n1, n2, n3, n4, v) = (
+    ((4 + 2 * v) * other - (n1 + n2 + n3 + n4) + 8) quot 16
+)
+
+-- Advance one field by a half-step driven by the other. `sign` is +1 when
+-- updating the real part from the imaginary one, -1 for the reverse — that
+-- alternation is what makes the scheme a leapfrog and keeps the norm from
+-- running away the way a forward Euler step would.
+update : Int* * Int* * Int8 -> Int*
+update(cur, other, sign) {
+    mut out : Int* = []
+    mut y : Nat = 0
+    while y < n() {
+        mut x : Nat = 0
+        while x < n() {
+            d : Int = hdelta(
+                clamp32(at(other, x, y)),
+                clamp32(at(other, x - 1, y)),
+                clamp32(at(other, x + 1, y)),
+                clamp32(at(other, x, y - 1)),
+                clamp32(at(other, x, y + 1)),
+                potential(x, y)
+            )
+            out := out ++ [at(cur, x, y) + sign * d]
+            x := x + 1
+        }
+        y := y + 1
+    }
+    out
+}
+
+-- ── Initial packet ───────────────────────────────────────────────────────
+
+-- A smooth compact bump instead of a Gaussian: there is no `exp` to call,
+-- and (rad2 - r2)^2 is close enough in shape while staying exact in
+-- integers.
+--
+-- Deliberately two functions with literal radii rather than one taking the
+-- radius as a parameter: a variable divisor makes the obligation nonlinear
+-- and cvc5 spins on it indefinitely, while dividing by a constant stays
+-- linear and discharges instantly.
+packet_wide : Int8 * Int8 -> Int
+packet_wide(dx, dy) {
+    r2 : Int = dx * dx + dy * dy
+    (if r2 >= 36 then 0 else (scale() * (36 - r2) * (36 - r2)) quot 1296)
+}
+
+packet_tight : Int8 * Int8 -> Int
+packet_tight(dx, dy) {
+    r2 : Int = dx * dx + dy * dy
+    (if r2 >= 9 then 0 else (scale() * (9 - r2) * (9 - r2)) quot 81)
+}
+
+-- The wave function as a packet centred on (cx, cy): both the opening state
+-- and, with a tighter radius, whatever a measurement collapses it to.
+packet_field : Int32 * Int32 * Bool -> Int*
+packet_field(cx, cy, tight) {
+    mut v : Int* = []
+    mut y : Nat = 0
+    while y < n() {
+        mut x : Nat = 0
+        while x < n() {
+            dx : Int8 = clamp8(x - cx)
+            dy : Int8 = clamp8(y - cy)
+            v := v ++ [if tight then packet_tight(dx, dy) else packet_wide(dx, dy)]
+            x := x + 1
+        }
+        y := y + 1
+    }
+    v
+}
+
+seed_re : -> Int*
+seed_re() = packet_field(centre(), centre(), false)
+
+zeros : -> Int*
+zeros() {
+    mut v : Int* = []
+    mut i : Nat = 0
+    while i < n() * n() {
+        v := v ++ [0]
+        i := i + 1
+    }
+    v
+}
+
+-- ── Rendering ────────────────────────────────────────────────────────────
+
+-- Probability density at one cell. Both parts are shifted down before
+-- squaring so the product provably stays inside Int64 for any Int32 input.
+-- The declared `Int32` range is load-bearing, not decoration: `intensity`
+-- below multiplies this by 255, and the compiler will only emit that
+-- multiply if it can already bound the operand. Declaring `-> Int` here
+-- leaves the result unbounded and the auto-gain divide fails to compile.
+density : Int32 * Int32 -> Int32
+density(re, im) {
+    a : Int64 = re quot 4096
+    b : Int64 = im quot 4096
+    s : Int64 = a * a + b * b
+    (if s > 2147483647 then 2147483647 else s)
+}
+
+peak_density : Int* * Int* -> Int32
+peak_density(re, im) {
+    mut best : Int32 = 1
+    mut i : Nat = 0
+    while i < len(re) and i < len(im) {
+        d : Int32 = density(clamp32(re[i]), clamp32(im[i]))
+        best := if d > best then d else best
+        i := i + 1
+    }
+    best
+}
+
+-- Integer square root by binary search. 46340 is the largest value whose
+-- square still fits Int32, so `lo`/`hi` provably stay in range and the
+-- `mid * mid` probe provably stays inside Int64.
+isqrt : Int32 -> Int32
+isqrt(v) {
+    mut lo : Int32 = 0
+    mut hi : Int32 = 46340
+    while lo < hi {
+        mid : Int32 = (lo + hi + 1) quot 2
+        ok : Bool = mid * mid <= v
+        lo := if ok then mid else lo
+        hi := if ok then hi else mid - 1
+    }
+    lo
+}
+
+-- Auto-gain plus a fourth-root response curve. Two things force this:
+-- the packet's peak falls by orders of magnitude as it spreads (so a fixed
+-- exposure fades to black), and the amplitude that actually tunnels through
+-- the wall is ~10^-5 of the peak — invisible on a linear ramp, but a clear
+-- glow once the fourth root pulls 2^-16 up to 1/16 of full brightness.
+-- 16384 is the fixed-point unit here; every intermediate is bounded so the
+-- two `quot`s and the squaring inside `isqrt` all prove.
+intensity : Int32 * Int32 * Int32 -> Int
+intensity(re, im, peak) {
+    d : Int32 = density(re, im)
+    p : Int32 = if peak < 1 then 1 else peak
+    q : Int32 = clamp32((d * 16384) quot p)
+    s1 : Int32 = isqrt(clamp32(q * 16384))
+    s2 : Int32 = isqrt(clamp32(s1 * 16384))
+    v : Int64 = (s2 * 255) quot 16384
+    (if v > 255 then 255 else if v < 0 then 0 else v)
+}
+
+-- Phase as a hue, without an `atan2` to call: the "diamond angle" is a
+-- monotonic reparametrisation of the true angle onto [0, 1536), needing one
+-- divide instead of a transcendental, and is indistinguishable from a real
+-- hue wheel once it is being used to colour pixels.
+hue_of : Int32 * Int32 -> Int32
+hue_of(re, im) {
+    ar : Int64 = if re < 0 then -re else re
+    ai : Int64 = if im < 0 then -im else im
+    d : Int64 = ar + ai
+    (
+        if d <= 0 then
+            0
+        else if re >= 0 and im >= 0 then
+            (ai * 384) quot d
+        else if re < 0 and im >= 0 then
+            384 + (ar * 384) quot d
+        else if re < 0 then
+            768 + (ai * 384) quot d
+        else
+            1152 + (ar * 384) quot d
+    )
+}
+
+-- One channel of a fully saturated hue wheel: a trapezoid over [0, 1536).
+-- Red reads it directly, green and blue at 2/3 and 1/3 of a turn — which is
+-- why this needs no division and no table.
+ramp : Int32 -> Int
+ramp(h) = (
+    if h < 256 then 255
+    else if h < 512 then 255 - (h - 256)
+    else if h < 1024 then 0
+    else if h < 1280 then h - 1024
+    else 255
+)
+
+-- Rotate a hue by `off` around the 1536-wide wheel. The offset is folded in
+-- here rather than done at the call site so the addition provably stays
+-- inside Int32 — `hue_of`'s declared range is only `Int32`, which is not
+-- tight enough for the solver to bound `h + 1024` on its own.
+hue_shift : Int32 * Int32 -> Int32
+hue_shift(h, off) {
+    s : Int64 = h + off
+    (if s >= 1536 then clamp32(s - 1536) else clamp32(s))
+}
+
+shade : Int32 * Int32 -> Int
+shade(channel, level) = (channel * level) quot 255
+
+pack_rgba : Int * Int * Int -> Unsigned32
+pack_rgba(r, g, b) {
+    rr : Int = if r > 255 then 255 else if r < 0 then 0 else r
+    gg : Int = if g > 255 then 255 else if g < 0 then 0 else g
+    bb : Int = if b > 255 then 255 else if b < 0 then 0 else b
+    unsigned32(rr * 16777216 + gg * 65536 + bb * 256 + 255)
+}
+
+-- ── The ESCAPED banner ───────────────────────────────────────────────────
+--
+-- An `Output` is a bitmap *or* text, never both, so the one piece of prose
+-- this program needs to say has to be drawn as pixels. The image is
+-- `banner_h()` rows taller than the grid, and those rows hold a 3x5 font.
+
+banner_h : -> Nat
+banner_h() = 8
+
+-- The letters of "ESCAPED", one 3-bit row pattern per glyph row, MSB left.
+glyph_row : Int32 * Int32 -> Int32
+glyph_row(g, r) = (
+    if g == 0 or g == 5 then
+        (if r == 1 or r == 3 then 4 else 7)
+    else if g == 1 then
+        (if r == 1 then 4 else if r == 3 then 1 else 7)
+    else if g == 2 then
+        (if r == 0 or r == 4 then 7 else 4)
+    else if g == 3 then
+        (if r == 0 or r == 2 then 7 else 5)
+    else if g == 4 then
+        (if r == 0 or r == 2 then 7 else if r == 1 then 5 else 4)
+    else
+        (if r == 0 or r == 4 then 6 else 5)
+)
+
+-- Returns 1/0 rather than a Bool on purpose: whole-function Int64 promotion
+-- only fires for a function whose *range* is an integer too, and without
+-- that promotion `rem` does not codegen at all.
+bit_set : Int32 * Int32 -> Int32
+bit_set(pattern, c) = (
+    if c == 0 then (if pattern >= 4 then 1 else 0)
+    else if c == 1 then (if (pattern rem 4) >= 2 then 1 else 0)
+    else (pattern rem 2)
+)
+
+-- Seven glyphs on a 4-pixel pitch, inset two pixels from the left edge.
+--
+-- Returns 1/0 for the same reason `bit_set` does: a `Bool` range would cost
+-- this function its Int64 promotion, and with it `quot`/`rem`. The bounds
+-- are also written as a guard rather than as `clamp32(x - 2)` for that same
+-- reason — routing the operand through `clamp32` first loses the promotion
+-- too, even though the clamped value is just as provably in range.
+banner_on : Int32 * Int32 -> Int32
+banner_on(x, ry) {
+    (
+        if x < 2 or x > 29 or ry < 0 or ry > 4 or (x - 2) rem 4 > 2 then
+            0
+        else
+            bit_set(glyph_row((x - 2) quot 4, ry), (x - 2) rem 4)
+    )
+}
+
+wave_colour : Int* * Int* * Int32 * Int32 * Int32 -> Unsigned32
+wave_colour(re, im, peak, x, y) {
+    idx : Int = y * n() + x
+    oob : Bool = idx < 0 or idx >= len(re) or idx >= len(im)
+    cre : Int32 = if oob then 0 else clamp32(re[idx])
+    cim : Int32 = if oob then 0 else clamp32(im[idx])
+    level : Int32 = clamp32(intensity(cre, cim, peak))
+    h : Int32 = hue_of(cre, cim)
+    pack_rgba(
+        shade(clamp32(ramp(h)), level),
+        shade(clamp32(ramp(hue_shift(h, 1024))), level),
+        shade(clamp32(ramp(hue_shift(h, 512))), level)
+    )
+}
+
+render : Int* * Int* * Int * Int -> Unsigned32*
+render(re, im, mark, escaped) {
+    peak : Int32 = clamp32(peak_density(re, im))
+    mut pixels : Unsigned32* = []
+    mut y : Nat = 0
+    while y < n() + banner_h() {
+        mut x : Nat = 0
+        while x < n() {
+            px : Unsigned32 = (
+                if y >= n() then
+                    (
+                        if escaped == 1 and banner_on(clamp32(x), clamp32(y - n() - 2)) == 1 then
+                            pack_rgba(90, 230, 150)
+                        else
+                            pack_rgba(10, 14, 18)
+                    )
+                else if on_wall(x, y) then
+                    pack_rgba(150, 105, 60)
+                else if y * n() + x == mark then
+                    pack_rgba(255, 255, 255)
+                else
+                    wave_colour(re, im, peak, clamp32(x), clamp32(y))
+            )
+            pixels := pixels ++ [px]
+            x := x + 1
+        }
+        y := y + 1
+    }
+    pixels
+}
+
+-- ── Measurement ──────────────────────────────────────────────────────────
+
+-- A textbook linear congruential generator, mod 2^31. Cantor has no source
+-- of randomness of its own and this program is a pure function, so the
+-- entropy has to come from outside: the host stirs this by varying the
+-- length of the Event string it sends (see `main`), which is the same
+-- "foreign runtime supplies Output -> Event" seam the whole event loop
+-- rests on.
+next_rng : Int32 -> Int32
+next_rng(r) {
+    v : Int64 = 1103515245 * r + 12345
+    m : Int64 = v rem 2147483648
+    clamp32(m)
+}
+
+-- Probability at one cell, rescaled against the current peak so a whole
+-- grid's worth of them still sums inside Int32.
+rel_density : Int32 * Int32 * Int32 -> Int32
+rel_density(re, im, peak) {
+    p : Int32 = if peak < 1 then 1 else peak
+    clamp32((density(re, im) * 16384) quot p)
+}
+
+total_weight : Int* * Int* * Int32 -> Int32
+total_weight(re, im, peak) {
+    mut acc : Int32 = 0
+    mut i : Nat = 0
+    while i < len(re) and i < len(im) {
+        acc := clamp32(acc + rel_density(clamp32(re[i]), clamp32(im[i]), peak))
+        i := i + 1
+    }
+    acc
+}
+
+-- Sample a cell from |psi|^2 by inverse transform: walk the grid
+-- accumulating probability and take the first cell that crosses a uniformly
+-- drawn target. Returns coordinates rather than a flat index purely so the
+-- caller needs no division to recover them.
+-- Map a raw LCG draw onto [0, total). Split out into its own function only
+-- because `sample_cell` takes vectors, which blocks the Int64 promotion that
+-- `quot` needs.
+scale_target : Int32 * Int32 -> Int32
+scale_target(rand, total) = clamp32((rand * total) quot 2147483648)
+
+sample_cell : Int* * Int* * Int32 * Int32 -> Int32 * Int32
+sample_cell(re, im, peak, rand) {
+    total : Int32 = total_weight(re, im, peak)
+    t : Int32 = if total < 1 then 1 else total
+    target : Int32 = scale_target(rand, t)
+    -- These three are deliberately unbounded `Int` rather than `Int32`: a
+    -- `mut` declared outside a *nested* loop and reassigned inside it loses
+    -- its declared-set invariant across the inner loop, so an `Int32`
+    -- annotation here fails to prove even when every assigned value is
+    -- clamped. `Int` carries no invariant to lose, and the values are
+    -- clamped back on the way out.
+    mut acc : Int = 0
+    mut fx : Int = -1
+    mut fy : Int = -1
+    mut y : Nat = 0
+    while y < n() {
+        mut x : Nat = 0
+        while x < n() {
+            idx : Nat = y * n() + x
+            d : Int32 = (
+                if idx >= len(re) or idx >= len(im) then
+                    0
+                else
+                    rel_density(clamp32(re[idx]), clamp32(im[idx]), peak)
+            )
+            acc := acc + d
+            hit : Bool = fx < 0 and acc > target
+            fx := if hit then x else fx
+            fy := if hit then y else fy
+            x := x + 1
+        }
+        y := y + 1
+    }
+    (
+        if fx < 0 then centre() else clamp32(fx),
+        if fy < 0 then centre() else clamp32(fy)
+    )
+}
+
+escaped_at : Int32 * Int32 -> Int
+escaped_at(x, y) = if inside_bag(x, y) or on_wall(x, y) then 0 else 1
+
+-- ── Event loop ───────────────────────────────────────────────────────────
+
+-- Event protocol, carried entirely by the Event string's *length* because
+-- Cantor can construct a `Char` but cannot read one back as a number
+-- (there is `char : Int -> Char` and no inverse):
+--   empty    -> plain tick, just advance the physics
+--   non-empty -> measure, with the length doubling as the entropy the host
+--                is injecting for this draw
+main : Char* * State -> Image * State
+main(event, s) {
+    re, im, rng, mark, escaped = s
+
+    re1 : Int* = update(re, im, 1)
+    im1 : Int* = update(im, re1, -1)
+
+    rng1 : Int32 = next_rng(clamp32(rng + len(event)))
+    measuring : Bool = len(event) > 0 and escaped == 0
+
+    peak : Int32 = peak_density(re1, im1)
+    cx, cy = sample_cell(re1, im1, peak, rng1)
+
+    re2 : Int* = if measuring then packet_field(cx, cy, true) else re1
+    im2 : Int* = if measuring then zeros() else im1
+    mark2 : Int = if measuring then cy * n() + cx else mark
+    escaped2 : Int = if measuring then escaped_at(cx, cy) else escaped
+
+    pixels : Unsigned32* = render(re2, im2, mark2, escaped2)
+    ((n(), n() + banner_h(), pixels), (re2, im2, rng1, mark2, escaped2))
+}
+
+main : -> State
+main() = (seed_re(), zeros(), 1, -1, 0)

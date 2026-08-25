@@ -388,7 +388,16 @@ shapes the event-loop `main`'s return actually matches
   `cantor run`/native `cantor build` accept `Char*` only
   (`CompileError::Unsupported`, naming both shapes, for anything else); only
   `cantor build --target wasm32` accepts `Image` too. See
-  `examples/game_of_life.cantor` / `web/game-of-life.html` for a full demo.
+  `examples/game_of_life.cantor` / `web/game-of-life.html` for a full demo,
+  and `examples/quantum_paper_bag.cantor` / `web/paper-bag.html` for a
+  larger one (a fixed-point Schrodinger solver).
+- **An `Output` is one shape or the other, never both** — a program that
+  wants a bitmap *and* a line of text has no way to say so. The paper-bag
+  demo hits this squarely: it announces the player's escape by drawing a
+  3x5 bitmap font into extra rows below the grid, because "ESCAPED" has no
+  other route to the page. A combined shape (`Image * Char*`) is the
+  obvious extension whenever this comes up a second time; deliberately not
+  added on one demo's evidence.
 
 ### `cantor build` — AOT compilation (DECIDED, IMPLEMENTED)
 

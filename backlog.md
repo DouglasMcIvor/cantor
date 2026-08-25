@@ -4,6 +4,40 @@ You probably don't want to read this unless you're me.
 # To do
 
 - End goal: quantum paper bag using WASM and WebGL backend for Cantor
+  - **WASM half DONE 2026-08-25** — `examples/quantum_paper_bag.cantor` +
+    `web/paper-bag.html`. Fixed-point Visscher leapfrog, phase-as-hue
+    rendering, measurement/collapse driven by host entropy, ESCAPED drawn
+    into the bitmap in a 3x5 font. The WebGL/WebGPU half is still open; the
+    thing that would make it worth doing is below (vector append), not the
+    shader work.
+  - **The resolution ceiling is `v := v ++ [x]`, not wasm.**
+    `cantor_vec_push_i64`/`cantor_vec_concat_i64` copy the whole vector and
+    arena-allocate per element, so building an NxN grid a cell at a time is
+    O(N^4). Measured on the paper bag: 32x32 = 63fps, 48x48 = 16fps,
+    64x64 = 6fps. `cantor-runtime` already exposes an O(1)-push builder
+    (`cantor_vec_builder_new/push/finish`); teaching codegen to recognise
+    the loop-accumulator pattern and lower onto it would make this O(N^2)
+    and speed up Game of Life for free. Probably the single highest-value
+    perf change available right now.
+- **False counterexample: a `mut` loses its declared-set invariant across a
+  *nested* loop.** A `mut acc : Int32` declared outside a loop and
+  reassigned inside an inner loop fails "loop invariant not maintained"
+  even when every assigned value is clamped into `Int32`; the identical
+  single-loop version proves. Minimal repro: two functions, one flat and
+  one nested, both doing `acc := clamp32(acc + 1)`. The reported
+  counterexample is impossible (`k = 1` gives `acc = 1`). Errs safe — it
+  rejects a correct program rather than accepting a wrong one — but it
+  forces widening to unbounded `Int` as a workaround, which is exactly the
+  annotation you didn't want to give up.
+- **`quot`/`rem` are unavailable in more places than expected.** They only
+  codegen inside an Int64-promoted function, and promotion additionally
+  requires the *range* to be an integer — a `-> Bool` predicate that wants
+  `rem` silently can't have it, and has to return 1/0 instead. Also
+  observed while writing the paper bag: routing an operand through
+  `clamp32` immediately before the `quot` loses the promotion, while a
+  guard proving the same bound keeps it. Not root-caused; worth a look
+  since the workaround is non-obvious and the error message ("not proven to
+  fit Int64") points at the value rather than at the promotion.
 - ordered guard groups: static call-site resolution to a direct call
   (`solver::encode_call::push_overload_call_obligation`) is unconditionally
   disabled for a call whose candidates belong to an ordered group — every

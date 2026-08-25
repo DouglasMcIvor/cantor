@@ -457,6 +457,7 @@ fn the_demo_pages_serve_the_real_example_sources() {
     for (page, program) in [
         ("web/index.html", "parrot.cantor"),
         ("web/game-of-life.html", "game_of_life.cantor"),
+        ("web/paper-bag.html", "quantum_paper_bag.cantor"),
     ] {
         let served = root.join("web").join(program);
         let original = root.join("examples").join(program);
@@ -504,5 +505,127 @@ fn build_wasm_rejects_an_unknown_target() {
         out.stderr.contains("unknown --target"),
         "expected an unknown-target diagnostic:\n{}",
         out.stderr
+    );
+}
+
+/// A Node host that runs the paper-bag demo far enough to be interesting and
+/// prints three facts about the result: the image dimensions, whether the
+/// banner strip is dark before any measurement, and whether measuring
+/// repeatedly eventually lights it (the escape).
+const NODE_PAPER_BAG_SCRIPT: &str = r##"
+import fs from "node:fs";
+const bytes = fs.readFileSync(process.argv[2]);
+const { instance } = await WebAssembly.instantiate(bytes, {});
+const ex = instance.exports;
+ex.cantor_wasm_init();
+const enc = new TextEncoder();
+function step(s) {
+    const b = enc.encode(s);
+    const p = ex.cantor_wasm_input_buffer(b.length);
+    new Uint8Array(ex.memory.buffer).set(b, p);
+    ex.cantor_wasm_step(b.length);
+    const w = ex.cantor_wasm_output_width(), h = ex.cantor_wasm_output_height();
+    const pp = ex.cantor_wasm_output_pixels_ptr(), pl = ex.cantor_wasm_output_pixels_len();
+    return { w, h, m: new Uint8Array(ex.memory.buffer.slice(pp, pp + pl)) };
+}
+function bannerLit(f) {
+    for (let y = f.w; y < f.h; y++)
+        for (let x = 0; x < f.w; x++) {
+            const o = (y * f.w + x) * 4;
+            if (f.m[o] + f.m[o + 1] + f.m[o + 2] > 120) return true;
+        }
+    return false;
+}
+let f = step("");
+console.log(`dims ${f.w}x${f.h}`);
+console.log(`banner-before ${bannerLit(f)}`);
+// The Event protocol is carried by length alone: empty ticks, non-empty
+// measures. Deterministic lengths here — the program's own LCG supplies the
+// variation, so the test does not depend on Math.random and this sequence
+// escapes on measurement 2 every time. The loop bound is only a safety net,
+// and is kept low because each step is real work (~16ms at 32x32).
+let escaped = false;
+for (let k = 1; k <= 20 && !escaped; k++) {
+    for (let i = 0; i < 150; i++) f = step("");
+    f = step("x".repeat(1 + ((k * 977) % 4093)));
+    escaped = bannerLit(f);
+}
+console.log(`banner-after ${escaped}`);
+"##;
+
+/// The paper-bag demo end to end: it is the only program that exercises a
+/// multi-vector tuple `State` across the wasm event loop, and the only one
+/// whose Image is taller than it is wide (the grid plus the banner strip
+/// that "ESCAPED" is drawn into). Both of those were codegen bugs during
+/// development, so this pins them.
+#[test]
+fn build_wasm_paper_bag_tunnels_out_and_lights_the_banner() {
+    let Some(_deps) = wasm_runtime_deps_dir() else {
+        eprintln!(
+            "SKIPPED build_wasm_paper_bag_tunnels_out_and_lights_the_banner: no wasm32 \
+             cantor-runtime rlib — run `rustup target add wasm32-unknown-unknown && \
+             cargo build -p cantor-runtime --target wasm32-unknown-unknown`"
+        );
+        return;
+    };
+    if !node_available() {
+        eprintln!(
+            "SKIPPED build_wasm_paper_bag_tunnels_out_and_lights_the_banner: no `node` on PATH"
+        );
+        return;
+    }
+
+    let example_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/quantum_paper_bag.cantor");
+    let out_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/cli-build-test-tmp");
+    std::fs::create_dir_all(&out_dir).expect("failed to create test output dir");
+    let module = out_dir.join(format!("paper-bag-{}.wasm", std::process::id()));
+    let build_out = run(&[
+        "build",
+        "--target",
+        "wasm32",
+        example_path.to_str().unwrap(),
+        "-o",
+        module.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        build_out.code, 0,
+        "expected build to succeed\nstdout: {}\nstderr: {}",
+        build_out.stdout, build_out.stderr
+    );
+
+    let script_path = out_dir.join(format!("paper-bag-{}.mjs", std::process::id()));
+    std::fs::write(&script_path, NODE_PAPER_BAG_SCRIPT)
+        .expect("failed to write the node test script");
+    let node_out = std::process::Command::new("node")
+        .arg(&script_path)
+        .arg(&module)
+        .output()
+        .expect("failed to run node");
+    std::fs::remove_file(&script_path).ok();
+    std::fs::remove_file(&module).ok();
+
+    assert!(
+        node_out.status.success(),
+        "expected node to exit 0\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&node_out.stdout),
+        String::from_utf8_lossy(&node_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&node_out.stdout);
+
+    // 32-wide grid plus the 8-row banner strip.
+    assert!(
+        stdout.contains("dims 32x40"),
+        "expected a 32x40 image (grid plus banner strip), got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("banner-before false"),
+        "the banner must be dark before any measurement, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("banner-after true"),
+        "expected the particle to tunnel out and light the ESCAPED banner \
+         within 20 measurements, got:\n{stdout}"
     );
 }

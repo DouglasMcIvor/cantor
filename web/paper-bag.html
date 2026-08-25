@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cantor — Quantum Paper Bag</title>
+<style>
+  :root {
+    --teal: #1c7d6b;
+    --ink: #16211f;
+    --paper: #f6f8f7;
+  }
+  body {
+    margin: 0;
+    padding: 2rem 1rem;
+    background: var(--paper);
+    color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { color: var(--teal); font-weight: 600; margin: 0 0 .25rem; }
+  h1 .aleph { font-size: 1.2em; }
+  .tagline { margin: 0 0 1.5rem; color: #55605d; }
+  canvas {
+    display: block;
+    margin: 0 auto;
+    background: #000;
+    border-radius: .5rem;
+    image-rendering: pixelated;
+    width: min(100%, 26rem);
+  }
+  .controls { display: flex; gap: .5rem; margin-top: .75rem; justify-content: center; }
+  button {
+    padding: .6rem 1.1rem;
+    background: var(--teal);
+    color: #fff;
+    border: 0;
+    border-radius: .375rem;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.escape { background: #b3261e; }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { text-align: center; margin-top: .5rem; font-size: 14px; color: #55605d; }
+  .status.error { color: #b3261e; }
+  .status.win { color: var(--teal); font-weight: 600; }
+  .legend {
+    display: flex; gap: 1.25rem; justify-content: center;
+    margin-top: .75rem; font-size: 13px; color: #55605d; flex-wrap: wrap;
+  }
+  .legend span::before {
+    content: ""; display: inline-block; width: .75rem; height: .75rem;
+    border-radius: .2rem; margin-right: .35rem; vertical-align: -1px;
+  }
+  .legend .bag::before { background: #96693c; }
+  .legend .phase::before {
+    background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f);
+  }
+  pre.source {
+    background: #fff;
+    border: 1px solid #dfe6e4;
+    border-radius: .5rem;
+    padding: 1rem;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  pre.source.error { color: #b3261e; }
+  .source-note { margin: 0 0 .75rem; font-size: 14px; color: #55605d; }
+  footer { margin-top: 2rem; font-size: 14px; color: #55605d; }
+  a { color: var(--teal); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="aleph">&#8501;</span> Cantor — Programming your way out of a paper bag</h1>
+  <p class="tagline">
+    Frances Buontempo used diffusion to escape a paper bag. Add an imaginary
+    unit and the diffusion equation becomes the Schr&ouml;dinger equation — so
+    this particle escapes a <em>sealed</em> bag by tunneling straight through
+    the wall. Colour is the wave function's phase, brightness its magnitude.
+    Hit <strong>Measure</strong> to collapse the wave function; sooner or later
+    it collapses outside the bag and you are free.
+  </p>
+
+  <canvas id="board" width="32" height="40"></canvas>
+  <div class="controls">
+    <button id="measure" class="escape" disabled>Measure</button>
+    <button id="toggle" disabled>Pause</button>
+    <button id="reset" disabled>Reset</button>
+  </div>
+  <p class="status" id="status">Loading&hellip;</p>
+  <p class="legend">
+    <span class="bag">the bag (a finite potential wall)</span>
+    <span class="phase">phase</span>
+  </p>
+
+  <h2>The program</h2>
+  <p class="source-note">
+    Served verbatim from
+    <a href="https://github.com/DouglasMcIvor/cantor/blob/main/examples/quantum_paper_bag.cantor"><code>examples/quantum_paper_bag.cantor</code></a>
+    &mdash; the same file this page's module was compiled from.
+  </p>
+  <pre class="source" id="source">Loading&hellip;</pre>
+
+  <p>
+    Cantor has no floating point, so every amplitude above is a fixed-point
+    integer with 2<sup>24</sup> standing in for 1.0 — and cvc5 discharged an
+    overflow obligation on every single arithmetic node before this page was
+    built. The simulation cannot overflow at runtime, and the sampler cannot
+    index off the end of the grid, because neither was allowed to compile
+    until that was proved.
+  </p>
+
+  <footer>
+    Built with <code>cantor build --target wasm32</code>.
+    <a href="https://github.com/DouglasMcIvor/cantor">Source on GitHub</a>.
+  </footer>
+</main>
+
+<script type="module">
+import { CantorImageProgram, showProgramSource } from "./cantor.js";
+
+showProgramSource(document.getElementById("source"), "./quantum_paper_bag.cantor");
+
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+const toggle = document.getElementById("toggle");
+const measureBtn = document.getElementById("measure");
+const resetBtn = document.getElementById("reset");
+const status = document.getElementById("status");
+
+function setStatus(text, cls) {
+  status.textContent = text;
+  status.className = `status${cls ? ` ${cls}` : ""}`;
+}
+
+let program;
+let running = true;
+let escaped = false;
+let steps = 0;
+let measurements = 0;
+let pendingEvent = "";
+
+// The program's Event protocol is carried by the string's *length* alone:
+// empty means "tick", non-empty means "measure", and the length doubles as
+// the entropy for that measurement's random draw. Cantor has no RNG of its
+// own, so the host is the source of randomness.
+function measureEvent() {
+  return "x".repeat(1 + Math.floor(Math.random() * 4095));
+}
+
+// The program announces an escape by drawing ESCAPED into the bitmap itself
+// (Output is either a bitmap or text, never both). The banner strip is
+// everything below the square grid, so a lit pixel there means we are out.
+function bannerLit(image) {
+  const gridHeight = image.width;
+  for (let y = gridHeight; y < image.height; y++) {
+    for (let x = 0; x < image.width; x++) {
+      const o = (y * image.width + x) * 4;
+      if (image.data[o] + image.data[o + 1] + image.data[o + 2] > 120) return true;
+    }
+  }
+  return false;
+}
+
+function draw() {
+  let image;
+  try {
+    image = program.step(pendingEvent);
+  } catch (e) {
+    setStatus(`the program trapped: ${e}`, "error");
+    running = false;
+    toggle.disabled = true;
+    measureBtn.disabled = true;
+    return;
+  }
+  if (pendingEvent !== "") {
+    measurements += 1;
+    pendingEvent = "";
+  }
+  steps += 1;
+
+  if (canvas.width !== image.width || canvas.height !== image.height) {
+    canvas.width = image.width;
+    canvas.height = image.height;
+  }
+  ctx.putImageData(image, 0, 0);
+
+  if (!escaped && bannerLit(image)) {
+    escaped = true;
+    measureBtn.disabled = true;
+    setStatus(
+      `Escaped! The wave function collapsed outside the bag after ` +
+        `${measurements} measurement${measurements === 1 ? "" : "s"}.`,
+      "win",
+    );
+  } else if (!escaped) {
+    setStatus(
+      `Evolving — ${steps} steps, ${measurements} measurement` +
+        `${measurements === 1 ? "" : "s"}, still in the bag.`,
+    );
+  }
+}
+
+function frame() {
+  if (running) draw();
+  requestAnimationFrame(frame);
+}
+
+toggle.addEventListener("click", () => {
+  running = !running;
+  toggle.textContent = running ? "Pause" : "Resume";
+});
+
+measureBtn.addEventListener("click", () => {
+  pendingEvent = measureEvent();
+  if (!running) draw();
+});
+
+resetBtn.addEventListener("click", async () => {
+  program = await CantorImageProgram.load("./quantum_paper_bag.wasm");
+  escaped = false;
+  steps = 0;
+  measurements = 0;
+  pendingEvent = "";
+  measureBtn.disabled = false;
+  running = true;
+  toggle.textContent = "Pause";
+});
+
+try {
+  program = await CantorImageProgram.load("./quantum_paper_bag.wasm");
+  setStatus("Running.");
+  toggle.disabled = false;
+  measureBtn.disabled = false;
+  resetBtn.disabled = false;
+  requestAnimationFrame(frame);
+} catch (e) {
+  setStatus(`failed to load the program: ${e}`, "error");
+}
+</script>
+</body>
+</html>
