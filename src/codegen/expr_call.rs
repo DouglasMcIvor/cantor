@@ -444,6 +444,25 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CompileError::ice(e.to_string()))?;
                 Ok((i1_val.into(), Kind::Bool))
             }
+            // Same restore as `Bool` one arm up, for the three Kinds whose
+            // LLVM wire type is i32: the uniform call ABI widens every scalar
+            // return to i64 (`declare_function`), so without this truncation
+            // the value would keep claiming `Char`/`Signed32`/`Unsigned32`
+            // while actually being an i64 — which only blows up once a
+            // consumer builds something from the Kind's own LLVM type (e.g. a
+            // tuple/array literal), and only on the AOT path, since the JIT
+            // never runs the LLVM verifier.
+            Kind::Char | Kind::Signed32 | Kind::Unsigned32 => {
+                let i32_val = self
+                    .builder
+                    .build_int_truncate(
+                        result_i64.into_int_value(),
+                        self.context.i32_type(),
+                        "call_narrow",
+                    )
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                Ok((i32_val.into(), return_kind))
+            }
             // Tuples and TaggedUnions are returned as struct values directly.
             // Union is i64 at this stage but we preserve the Kind for future stages.
             Kind::Tuple(_) | Kind::TaggedUnion(_) => Ok((result_i64, return_kind)),
