@@ -528,7 +528,21 @@ function step(s) {
     const pp = ex.cantor_wasm_output_pixels_ptr(), pl = ex.cantor_wasm_output_pixels_len();
     return { w, h, m: new Uint8Array(ex.memory.buffer.slice(pp, pp + pl)) };
 }
-function bannerLit(f) {
+// The strip below the grid always carries the live escape chance, drawn in
+// a muted blue-grey; only the ESCAPED banner is green. So the escape signal
+// is the colour, not merely a lit pixel.
+function escapeLit(f) {
+    for (let y = f.w; y < f.h; y++)
+        for (let x = 0; x < f.w; x++) {
+            const o = (y * f.w + x) * 4;
+            const r = f.m[o], g = f.m[o + 1], b = f.m[o + 2];
+            if (g > 180 && r < 140 && b > 100 && b < 200) return true;
+        }
+    return false;
+}
+// Any lit pixel at all — the percentage readout should be there from the
+// very first frame.
+function anyLit(f) {
     for (let y = f.w; y < f.h; y++)
         for (let x = 0; x < f.w; x++) {
             const o = (y * f.w + x) * 4;
@@ -538,7 +552,8 @@ function bannerLit(f) {
 }
 let f = step("");
 console.log(`dims ${f.w}x${f.h}`);
-console.log(`banner-before ${bannerLit(f)}`);
+console.log(`banner-before ${escapeLit(f)}`);
+console.log(`readout ${anyLit(f)}`);
 // The Event protocol is carried by length alone: empty ticks, non-empty
 // measures. Deterministic lengths here — the program's own LCG supplies the
 // variation, so the test does not depend on Math.random and this sequence
@@ -548,7 +563,7 @@ let escaped = false;
 for (let k = 1; k <= 20 && !escaped; k++) {
     for (let i = 0; i < 150; i++) f = step("");
     f = step("x".repeat(1 + ((k * 977) % 4093)));
-    escaped = bannerLit(f);
+    escaped = escapeLit(f);
 }
 console.log(`banner-after ${escaped}`);
 "##;
@@ -621,7 +636,12 @@ fn build_wasm_paper_bag_tunnels_out_and_lights_the_banner() {
     );
     assert!(
         stdout.contains("banner-before false"),
-        "the banner must be dark before any measurement, got:\n{stdout}"
+        "the ESCAPED banner must not be lit before any measurement, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("readout true"),
+        "the escape-chance readout should occupy the banner strip from the \
+         first frame, got:\n{stdout}"
     );
     assert!(
         stdout.contains("banner-after true"),

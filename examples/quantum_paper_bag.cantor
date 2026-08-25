@@ -18,12 +18,13 @@
 
 Image = Nat * Nat * Unsigned32*
 
--- re, im, rng, mark, escaped
+-- re, im, rng, mark, escaped, wall
 --   re/im   the wave function's real and imaginary parts, row-major
 --   rng     LCG state, stirred by host entropy arriving in the Event
 --   mark    index of the last measurement's collapse, or -1 before any
 --   escaped 1 once a measurement has landed outside the bag
-State = Int* * Int* * Int * Int * Int
+--   wall    barrier height, chosen by the player (see `clamp_wall`)
+State = Int* * Int* * Int * Int * Int * Int8
 
 -- ── Geometry ─────────────────────────────────────────────────────────────
 
@@ -80,17 +81,24 @@ clamp8(v) = (
 
 -- ── Physics ──────────────────────────────────────────────────────────────
 
--- Barrier height. Two constraints meet here. Stability of the leapfrog
--- needs dt * (4 + v_wall) < 2, which with dt = 1/8 allows anything under
--- 12. Playability wants the escape rare but not hopeless: measured over
--- 3000 steps, a height of 6 leaves ~1% of the probability outside the bag,
--- 3 gives ~4%, and 2 gives ~6-9% — so 2 is a wall the packet visibly
--- bounces off while still being escapable in a handful of measurements.
-v_wall : -> Int8
-v_wall() = 2
+-- Barrier height, chosen by the player rather than fixed. Two constraints
+-- meet here. Stability of the leapfrog needs dt * (4 + v_wall) < 2, which
+-- with dt = 1/8 allows anything under 12 — hence the hard clamp, which is
+-- a correctness bound and not a taste one. Playability wants the escape
+-- rare but not hopeless: measured over 3000 steps, a height of 6 leaves
+-- ~1% of the probability outside the bag, 3 gives ~4%, 2 gives ~6-9%.
+default_wall : -> Int8
+default_wall() = 2
 
-potential : Int * Int -> Int8
-potential(x, y) = if on_wall(x, y) then v_wall() else 0
+clamp_wall : Int -> Int8
+clamp_wall(v) = (
+    if v < 0 then 0
+    else if v > 11 then 11
+    else v
+)
+
+potential : Int * Int * Int8 -> Int8
+potential(x, y, wall) = if on_wall(x, y) then wall else 0
 
 -- Field lookup with Dirichlet edges: everything outside the grid reads as
 -- zero. The index bound stays a runtime check because the compiler cannot
@@ -121,8 +129,8 @@ hdelta(other, n1, n2, n3, n4, v) = (
 -- updating the real part from the imaginary one, -1 for the reverse — that
 -- alternation is what makes the scheme a leapfrog and keeps the norm from
 -- running away the way a forward Euler step would.
-update : Int* * Int* * Int8 -> Int*
-update(cur, other, sign) {
+update : Int* * Int* * Int8 * Int8 -> Int*
+update(cur, other, sign, wall) {
     mut out : Int* = []
     mut y : Nat = 0
     while y < n() {
@@ -134,7 +142,7 @@ update(cur, other, sign) {
                 clamp32(at(other, x + 1, y)),
                 clamp32(at(other, x, y - 1)),
                 clamp32(at(other, x, y + 1)),
-                potential(x, y)
+                potential(x, y, wall)
             )
             out := out ++ [at(cur, x, y) + sign * d]
             x := x + 1
@@ -326,21 +334,60 @@ pack_rgba(r, g, b) {
 banner_h : -> Nat
 banner_h() = 8
 
--- The letters of "ESCAPED", one 3-bit row pattern per glyph row, MSB left.
+-- The 3x5 font, one 3-bit row pattern per glyph row, MSB leftmost.
+-- Glyph indices: 0-9 digits, 10 `%`, 11 `.`, 12 blank, 13-18 E S C A P D.
 glyph_row : Int32 * Int32 -> Int32
 glyph_row(g, r) = (
-    if g == 0 or g == 5 then
-        (if r == 1 or r == 3 then 4 else 7)
-    else if g == 1 then
-        (if r == 1 then 4 else if r == 3 then 1 else 7)
-    else if g == 2 then
-        (if r == 0 or r == 4 then 7 else 4)
-    else if g == 3 then
-        (if r == 0 or r == 2 then 7 else 5)
-    else if g == 4 then
-        (if r == 0 or r == 2 then 7 else if r == 1 then 5 else 4)
+    if g == 0 then (if r == 0 or r == 4 then 7 else 5)
+    else if g == 1 then (if r == 0 then 2 else if r == 4 then 7 else 2)
+    else if g == 2 then (if r == 1 then 1 else if r == 3 then 4 else 7)
+    else if g == 3 then (if r == 1 or r == 3 then 1 else 7)
+    else if g == 4 then (if r == 0 or r == 1 then 5 else if r == 2 then 7 else 1)
+    else if g == 5 then (if r == 1 then 4 else if r == 3 then 1 else 7)
+    else if g == 6 then (if r == 1 then 4 else if r == 3 then 5 else 7)
+    else if g == 7 then (if r == 0 then 7 else 1)
+    else if g == 8 then (if r == 1 or r == 3 then 5 else 7)
+    else if g == 9 then (if r == 1 then 5 else if r == 3 then 1 else 7)
+    else if g == 10 then (if r == 0 then 5 else if r == 1 then 1 else if r == 2 then 2 else if r == 3 then 4 else 5)
+    else if g == 11 then (if r == 4 then 2 else 0)
+    else if g == 12 then 0
+    else if g == 13 then (if r == 1 or r == 3 then 4 else 7)
+    else if g == 14 then (if r == 1 then 4 else if r == 3 then 1 else 7)
+    else if g == 15 then (if r == 0 or r == 4 then 7 else 4)
+    else if g == 16 then (if r == 0 or r == 2 then 7 else 5)
+    else if g == 17 then (if r == 0 or r == 2 then 7 else if r == 1 then 5 else 4)
+    else (if r == 0 or r == 4 then 6 else 5)
+)
+
+-- Which glyph belongs in banner slot `slot` (0-6).
+--
+-- After an escape the strip reads ESCAPED; before it, the live chance that
+-- measuring right now collapses the wave function outside the bag, as
+-- `NN.N%` centred in slots 1-5 with the leading zero blanked.
+banner_glyph : Int32 * Int32 * Int32 -> Int32
+banner_glyph(slot, permille, escaped) = (
+    if escaped == 1 then
+        (
+            if slot == 0 or slot == 5 then 13
+            else if slot == 1 then 14
+            else if slot == 2 then 15
+            else if slot == 3 then 16
+            else if slot == 4 then 17
+            else if slot == 6 then 18
+            else 12
+        )
+    else if slot == 1 then
+        (if permille quot 100 == 0 then 12 else permille quot 100)
+    else if slot == 2 then
+        (permille quot 10) rem 10
+    else if slot == 3 then
+        11
+    else if slot == 4 then
+        permille rem 10
+    else if slot == 5 then
+        10
     else
-        (if r == 0 or r == 4 then 6 else 5)
+        12
 )
 
 -- Returns 1/0 rather than a Bool on purpose: whole-function Int64 promotion
@@ -360,13 +407,16 @@ bit_set(pattern, c) = (
 -- are also written as a guard rather than as `clamp32(x - 2)` for that same
 -- reason — routing the operand through `clamp32` first loses the promotion
 -- too, even though the clamped value is just as provably in range.
-banner_on : Int32 * Int32 -> Int32
-banner_on(x, ry) {
+banner_on : Int32 * Int32 * Int32 * Int32 -> Int32
+banner_on(x, ry, permille, escaped) {
     (
         if x < 2 or x > 29 or ry < 0 or ry > 4 or (x - 2) rem 4 > 2 then
             0
         else
-            bit_set(glyph_row((x - 2) quot 4, ry), (x - 2) rem 4)
+            bit_set(
+                glyph_row(banner_glyph((x - 2) quot 4, permille, escaped), ry),
+                (x - 2) rem 4
+            )
     )
 }
 
@@ -385,8 +435,8 @@ wave_colour(re, im, peak, x, y) {
     )
 }
 
-render : Int* * Int* * Int * Int -> Unsigned32*
-render(re, im, mark, escaped) {
+render : Int* * Int* * Int * Int * Int32 -> Unsigned32*
+render(re, im, mark, escaped, permille) {
     peak : Int32 = clamp32(peak_density(re, im))
     mut pixels : Unsigned32* = []
     mut y : Nat = 0
@@ -396,8 +446,8 @@ render(re, im, mark, escaped) {
             px : Unsigned32 = (
                 if y >= n() then
                     (
-                        if escaped == 1 and banner_on(clamp32(x), clamp32(y - n() - 2)) == 1 then
-                            pack_rgba(90, 230, 150)
+                        if banner_on(clamp32(x), clamp32(y - n() - 2), permille, clamp32(escaped)) == 1 then
+                            (if escaped == 1 then pack_rgba(90, 230, 150) else pack_rgba(120, 150, 170))
                         else
                             pack_rgba(10, 14, 18)
                     )
@@ -480,6 +530,44 @@ total_weight(re, im, peak) {
 -- accumulating probability and take the first cell that crosses a uniformly
 -- drawn target. Returns coordinates rather than a flat index purely so the
 -- caller needs no division to recover them.
+-- How much probability currently sits outside the bag — i.e. exactly the
+-- chance that measuring right now collapses the wave function to freedom.
+-- Same walk as `total_weight`, restricted to cells that are neither inside
+-- the bag nor part of its wall.
+--
+-- `acc` is unbounded `Int` for the nested-loop reason described in
+-- `sample_cell`, and clamped by the caller.
+outside_weight : Int* * Int* * Int32 -> Int
+outside_weight(re, im, peak) {
+    mut acc : Int = 0
+    mut y : Nat = 0
+    while y < n() {
+        mut x : Nat = 0
+        while x < n() {
+            idx : Nat = y * n() + x
+            d : Int = (
+                if idx >= len(re) or idx >= len(im) or inside_bag(x, y) or on_wall(x, y) then
+                    0
+                else
+                    rel_density(clamp32(re[idx]), clamp32(im[idx]), peak)
+            )
+            acc := acc + d
+            x := x + 1
+        }
+        y := y + 1
+    }
+    acc
+}
+
+-- The escape chance in tenths of a percent, capped at 99.9% so it always
+-- fits the banner's two-digits-and-a-tenth layout.
+escape_permille : Int32 * Int32 -> Int32
+escape_permille(outside, total) {
+    t : Int32 = if total < 1 then 1 else total
+    p : Int64 = (outside * 1000) quot t
+    (if p > 999 then 999 else if p < 0 then 0 else p)
+}
+
 -- Map a raw LCG draw onto [0, total). Split out into its own function only
 -- because `sample_cell` takes vectors, which blocks the Int64 promotion that
 -- `quot` needs.
@@ -530,31 +618,56 @@ escaped_at(x, y) = if inside_bag(x, y) or on_wall(x, y) then 0 else 1
 
 -- ── Event loop ───────────────────────────────────────────────────────────
 
+-- The Event's first character, or -1 for an empty Event. `from` is the
+-- general destructor for a `distinct` sort, and `Char` is one, so this is
+-- `ord` — no dedicated builtin needed.
+first_char : Char* -> Int
+first_char(s) = if len(s) == 0 then -1 else from(s[0])
+
 -- Event protocol:
---   empty     -> plain tick, just advance the physics
---   non-empty -> measure, and the string is a decimal seed the host mixes
---                into this draw
+--   empty        -> plain tick, just advance the physics
+--   "v<digits>"  -> set the barrier height and restart the run
+--   "<digits>"   -> measure, the digits seeding this draw
 main : Char* * State -> Image * State
 main(event, s) {
-    re, im, rng, mark, escaped = s
+    re, im, rng, mark, escaped, wall = s
 
-    re1 : Int* = update(re, im, 1)
-    im1 : Int* = update(im, re1, -1)
+    -- 118 is 'v'. Changing the barrier restarts rather than editing the
+    -- potential under a wave function that evolved in the old one, which
+    -- would leave the packet in a state the new barrier never shaped.
+    setting_wall : Bool = first_char(event) == 118
+    wall2 : Int8 = if setting_wall then clamp_wall(parse_seed(event)) else wall
+
+    re1 : Int* = update(re, im, 1, wall2)
+    im1 : Int* = update(im, re1, -1, wall2)
 
     rng1 : Int32 = next_rng(clamp32(rng + parse_seed(event)))
-    measuring : Bool = len(event) > 0 and escaped == 0
+    measuring : Bool = len(event) > 0 and not setting_wall and escaped == 0
 
     peak : Int32 = peak_density(re1, im1)
     cx, cy = sample_cell(re1, im1, peak, rng1)
 
-    re2 : Int* = if measuring then packet_field(cx, cy, true) else re1
-    im2 : Int* = if measuring then zeros() else im1
-    mark2 : Int = if measuring then cy * n() + cx else mark
-    escaped2 : Int = if measuring then escaped_at(cx, cy) else escaped
+    re2 : Int* = (
+        if setting_wall then seed_re()
+        else if measuring then packet_field(cx, cy, true)
+        else re1
+    )
+    im2 : Int* = if setting_wall or measuring then zeros() else im1
+    mark2 : Int = if setting_wall then -1 else if measuring then cy * n() + cx else mark
+    escaped2 : Int = if setting_wall then 0 else if measuring then escaped_at(cx, cy) else escaped
 
-    pixels : Unsigned32* = render(re2, im2, mark2, escaped2)
-    ((n(), n() + banner_h(), pixels), (re2, im2, rng1, mark2, escaped2))
+    peak2 : Int32 = peak_density(re2, im2)
+    permille : Int32 = escape_permille(
+        clamp32(outside_weight(re2, im2, peak2)),
+        total_weight(re2, im2, peak2)
+    )
+
+    pixels : Unsigned32* = render(re2, im2, mark2, escaped2, permille)
+    (
+        (n(), n() + banner_h(), pixels),
+        (re2, im2, rng1, mark2, escaped2, wall2)
+    )
 }
 
 main : -> State
-main() = (seed_re(), zeros(), 1, -1, 0)
+main() = (seed_re(), zeros(), 1, -1, 0, default_wall())

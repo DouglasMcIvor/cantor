@@ -41,6 +41,9 @@
   }
   button.escape { background: #b3261e; }
   button:disabled { opacity: .5; cursor: default; }
+  .controls.wall { align-items: center; font-size: 14px; color: #55605d; }
+  .controls.wall input { width: min(60%, 14rem); }
+  .controls.wall output { min-width: 1.5rem; font-variant-numeric: tabular-nums; }
   .status { text-align: center; margin-top: .5rem; font-size: 14px; color: #55605d; }
   .status.error { color: #b3261e; }
   .status.win { color: var(--teal); font-weight: 600; }
@@ -79,7 +82,9 @@
     this particle escapes a <em>sealed</em> bag by tunneling straight through
     the wall. Colour is the wave function's phase, brightness its magnitude.
     Hit <strong>Measure</strong> to collapse the wave function; sooner or later
-    it collapses outside the bag and you are free.
+    it collapses outside the bag and you are free. The strip under the grid
+    shows your live chance of escaping if you measure right now — and if the
+    bag is holding you too well, weaken it.
   </p>
 
   <canvas id="board" width="32" height="40"></canvas>
@@ -88,10 +93,16 @@
     <button id="toggle" disabled>Pause</button>
     <button id="reset" disabled>Reset</button>
   </div>
+  <div class="controls wall">
+    <label for="wall">Bag strength</label>
+    <input type="range" id="wall" min="0" max="11" step="1" value="2" disabled>
+    <output id="wall-value">2</output>
+  </div>
   <p class="status" id="status">Loading&hellip;</p>
   <p class="legend">
     <span class="bag">the bag (a finite potential wall)</span>
     <span class="phase">phase</span>
+    <span>readout: chance this measurement frees you</span>
   </p>
 
   <h2>The program</h2>
@@ -127,6 +138,8 @@ const ctx = canvas.getContext("2d");
 const toggle = document.getElementById("toggle");
 const measureBtn = document.getElementById("measure");
 const resetBtn = document.getElementById("reset");
+const wall = document.getElementById("wall");
+const wallValue = document.getElementById("wall-value");
 const status = document.getElementById("status");
 
 function setStatus(text, cls) {
@@ -150,14 +163,17 @@ function measureEvent() {
 }
 
 // The program announces an escape by drawing ESCAPED into the bitmap itself
-// (Output is either a bitmap or text, never both). The banner strip is
-// everything below the square grid, so a lit pixel there means we are out.
-function bannerLit(image) {
+// (Output is either a bitmap or text, never both). The strip below the grid
+// is never blank now — it carries the live escape chance in a muted
+// blue-grey — so the *colour* is the signal, not merely a lit pixel: only
+// the ESCAPED banner is drawn in green.
+function escapeBannerLit(image) {
   const gridHeight = image.width;
   for (let y = gridHeight; y < image.height; y++) {
     for (let x = 0; x < image.width; x++) {
       const o = (y * image.width + x) * 4;
-      if (image.data[o] + image.data[o + 1] + image.data[o + 2] > 120) return true;
+      const r = image.data[o], g = image.data[o + 1], b = image.data[o + 2];
+      if (g > 180 && r < 140 && b > 100 && b < 200) return true;
     }
   }
   return false;
@@ -175,7 +191,7 @@ function draw() {
     return;
   }
   if (pendingEvent !== "") {
-    measurements += 1;
+    if (!pendingEvent.startsWith("v")) measurements += 1;
     pendingEvent = "";
   }
   steps += 1;
@@ -186,7 +202,7 @@ function draw() {
   }
   ctx.putImageData(image, 0, 0);
 
-  if (!escaped && bannerLit(image)) {
+  if (!escaped && escapeBannerLit(image)) {
     escaped = true;
     measureBtn.disabled = true;
     setStatus(
@@ -217,16 +233,24 @@ measureBtn.addEventListener("click", () => {
   if (!running) draw();
 });
 
-resetBtn.addEventListener("click", async () => {
-  program = await CantorImageProgram.load("./quantum_paper_bag.wasm");
+function restart() {
+  // "v<n>" sets the barrier height and restarts the run inside the program;
+  // the module keeps running, so this is not a reload.
+  pendingEvent = `v${wall.value}`;
   escaped = false;
   steps = 0;
   measurements = 0;
-  pendingEvent = "";
   measureBtn.disabled = false;
-  running = true;
-  toggle.textContent = "Pause";
+  if (!running) draw();
+}
+
+wall.addEventListener("input", () => {
+  wallValue.textContent = wall.value;
 });
+// Restart on release rather than on every intermediate value, so dragging
+// the slider does not throw away a run per pixel of travel.
+wall.addEventListener("change", restart);
+resetBtn.addEventListener("click", restart);
 
 try {
   program = await CantorImageProgram.load("./quantum_paper_bag.wasm");
@@ -234,6 +258,7 @@ try {
   toggle.disabled = false;
   measureBtn.disabled = false;
   resetBtn.disabled = false;
+  wall.disabled = false;
   requestAnimationFrame(frame);
 } catch (e) {
   setStatus(`failed to load the program: ${e}`, "error");

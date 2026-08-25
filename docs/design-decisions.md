@@ -393,11 +393,14 @@ shapes the event-loop `main`'s return actually matches
   larger one (a fixed-point Schrodinger solver).
 - **An `Output` is one shape or the other, never both** — a program that
   wants a bitmap *and* a line of text has no way to say so. The paper-bag
-  demo hits this squarely: it announces the player's escape by drawing a
-  3x5 bitmap font into extra rows below the grid, because "ESCAPED" has no
-  other route to the page. A combined shape (`Image * Char*`) is the
-  obvious extension whenever this comes up a second time; deliberately not
-  added on one demo's evidence.
+  demo hits this squarely: it draws a 3x5 bitmap font into extra rows below
+  the grid, for both the live escape-chance readout (`NN.N%`) and the
+  "ESCAPED" announcement, because neither has any other route to the page.
+  It also has to *encode a status bit in a colour* so the host can tell the
+  two apart — the JS reads back whether any banner pixel is green. That is
+  the same pressure showing up twice over, and is real evidence for a
+  combined shape (`Image * Char*`); still deliberately not added on one
+  demo's say-so, but this is now the strongest case for it.
 
 ### `cantor build` — AOT compilation (DECIDED, IMPLEMENTED)
 
