@@ -65,3 +65,25 @@ main(x) = [mk(x)]
     assert!(!bytes.is_empty(), "object file should be non-empty");
     assert_eq!(&bytes[0..4], b"\x7fELF", "expected an ELF object file");
 }
+
+/// A sequence literal is coerced to the vector representation at a direct
+/// `X*` return boundary, but a declared range can also mention `X*` *inside*
+/// a tuple — the `Image` convention (`Nat * Nat * Unsigned32*`) is exactly
+/// that shape. Before `coerce_value_to_expected` recursed into tuple fields,
+/// the literal stayed a `Kind::Tuple` and the function returned
+/// `{ i64, { i32 } }` against its own `{ i64, i64 }` return type.
+#[test]
+fn vector_literal_is_coerced_inside_a_returned_tuple() {
+    let src = "\
+Pair = Nat * Unsigned32*
+
+nested : Nat -> Pair
+nested(x) = (1, [unsigned32(255)])
+
+empty_nested : Nat -> Nat * Char*
+empty_nested(x) = (1, \"\")
+";
+    let bytes = object_bytes_of(src, BuildTarget::Native, "nested-veclit");
+    assert!(!bytes.is_empty(), "object file should be non-empty");
+    assert_eq!(&bytes[0..4], b"\x7fELF", "expected an ELF object file");
+}

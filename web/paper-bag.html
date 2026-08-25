@@ -141,12 +141,12 @@ let steps = 0;
 let measurements = 0;
 let pendingEvent = "";
 
-// The program's Event protocol is carried by the string's *length* alone:
-// empty means "tick", non-empty means "measure", and the length doubles as
-// the entropy for that measurement's random draw. Cantor has no RNG of its
-// own, so the host is the source of randomness.
+// Event protocol: empty means "tick", non-empty means "measure" and is a
+// decimal seed for that draw. Cantor has no RNG of its own, so the host is
+// the source of randomness; the program reads the digits back with `from`,
+// which is `ord` for the builtin `Char` distinct sort.
 function measureEvent() {
-  return "x".repeat(1 + Math.floor(Math.random() * 4095));
+  return String(Math.floor(Math.random() * 2147483647));
 }
 
 // The program announces an escape by drawing ESCAPED into the bitmap itself

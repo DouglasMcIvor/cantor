@@ -431,6 +431,32 @@ next_rng(r) {
     clamp32(m)
 }
 
+-- `Char` is a builtin `distinct` sort, so the general destructor `from`
+-- doubles as `ord`: it hands back the codepoint. That is what lets the host
+-- send real entropy as a decimal string rather than smuggling it in as the
+-- Event's length.
+digit_value : Char -> Int
+digit_value(c) {
+    v : Int = from(c)
+    (if v >= 48 and v <= 57 then v - 48 else -1)
+}
+
+-- Read a decimal seed out of the Event, ignoring anything that isn't a
+-- digit. The `acc > 200000000` guard is what keeps the accumulator provably
+-- inside Int32: without it the compiler has no bound on a string of
+-- arbitrary length.
+parse_seed : Char* -> Int32
+parse_seed(s) {
+    mut acc : Int32 = 0
+    mut i : Nat = 0
+    while i < len(s) {
+        d : Int = digit_value(s[i])
+        acc := if d < 0 or acc > 200000000 then acc else clamp32(acc * 10 + d)
+        i := i + 1
+    }
+    acc
+}
+
 -- Probability at one cell, rescaled against the current peak so a whole
 -- grid's worth of them still sums inside Int32.
 rel_density : Int32 * Int32 * Int32 -> Int32
@@ -504,12 +530,10 @@ escaped_at(x, y) = if inside_bag(x, y) or on_wall(x, y) then 0 else 1
 
 -- ── Event loop ───────────────────────────────────────────────────────────
 
--- Event protocol, carried entirely by the Event string's *length* because
--- Cantor can construct a `Char` but cannot read one back as a number
--- (there is `char : Int -> Char` and no inverse):
---   empty    -> plain tick, just advance the physics
---   non-empty -> measure, with the length doubling as the entropy the host
---                is injecting for this draw
+-- Event protocol:
+--   empty     -> plain tick, just advance the physics
+--   non-empty -> measure, and the string is a decimal seed the host mixes
+--                into this draw
 main : Char* * State -> Image * State
 main(event, s) {
     re, im, rng, mark, escaped = s
@@ -517,7 +541,7 @@ main(event, s) {
     re1 : Int* = update(re, im, 1)
     im1 : Int* = update(im, re1, -1)
 
-    rng1 : Int32 = next_rng(clamp32(rng + len(event)))
+    rng1 : Int32 = next_rng(clamp32(rng + parse_seed(event)))
     measuring : Bool = len(event) > 0 and escaped == 0
 
     peak : Int32 = peak_density(re1, im1)

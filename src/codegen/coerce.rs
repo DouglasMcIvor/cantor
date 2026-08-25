@@ -166,11 +166,62 @@ impl<'ctx> Compiler<'ctx> {
             .get(fn_name)
             .cloned()
             .unwrap_or_else(|| val_kind.clone());
-        let elem_kind = match &expected {
-            Kind::Vector(ek) => ek.as_ref().clone(),
-            _ => return Ok((val, val_kind)),
-        };
-        self.coerce_value_to_vector(val, val_kind, &elem_kind)
+        self.coerce_value_to_expected(val, val_kind, &expected)
+    }
+
+    /// `coerce_vector_return`'s recursive core. A declared range may mention
+    /// `X*` inside a tuple rather than as the whole range — the `Image`
+    /// convention (`Nat * Nat * Unsigned32*`) is exactly that shape — so a
+    /// sequence literal written directly in a returned tuple needs the same
+    /// tuple-to-vector coercion the top-level case has always done. Without
+    /// this, `(1, [x])` returns a `{ i64, { i32 } }` struct against a
+    /// `{ i64, i64 }` return type, which is invalid IR.
+    fn coerce_value_to_expected(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        val_kind: Kind,
+        expected: &Kind,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        match expected {
+            Kind::Vector(ek) => self.coerce_value_to_vector(val, val_kind, ek.as_ref()),
+            // A propagation tuple is the `{tag, payload}` Fail/None wire, not
+            // a user-written product — its fields are built by
+            // `build_fail_wire`, never coerced field-by-field.
+            Kind::Tuple(exp_elems)
+                if !crate::kind::is_propagation_tuple(exp_elems)
+                    && matches!(&val_kind, Kind::Tuple(got) if got.len() == exp_elems.len()) =>
+            {
+                let Kind::Tuple(got_elems) = &val_kind else {
+                    unreachable!("guarded by the matches! above")
+                };
+                if got_elems == exp_elems {
+                    return Ok((val, val_kind));
+                }
+                let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+                let agg: inkwell::values::AggregateValueEnum<'ctx> = val.into_struct_value().into();
+                let mut fields = Vec::with_capacity(exp_elems.len());
+                for (i, (got, want)) in got_elems.iter().zip(exp_elems).enumerate() {
+                    let field = self
+                        .builder
+                        .build_extract_value(agg, i as u32, "ret_field")
+                        .map_err(err)?;
+                    fields.push(self.coerce_value_to_expected(field, got.clone(), want)?);
+                }
+                let kinds: Vec<Kind> = fields.iter().map(|(_, k)| k.clone()).collect();
+                let types: Vec<_> = kinds.iter().map(|k| self.kind_to_llvm_type(k)).collect();
+                let struct_type = self.context.struct_type(&types, false);
+                let mut out: inkwell::values::AggregateValueEnum<'ctx> =
+                    struct_type.get_undef().into();
+                for (i, (v, _)) in fields.into_iter().enumerate() {
+                    out = self
+                        .builder
+                        .build_insert_value(out, v, i as u32, "ret_tf")
+                        .map_err(err)?;
+                }
+                Ok((out.into_struct_value().into(), Kind::Tuple(kinds)))
+            }
+            _ => Ok((val, val_kind)),
+        }
     }
 
     /// Convert `val : val_kind` (an already-compiled scalar, tuple, or vector)
