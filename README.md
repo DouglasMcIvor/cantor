@@ -854,6 +854,8 @@ rustup target add wasm32-unknown-unknown
 cargo build -p cantor-runtime --target wasm32-unknown-unknown
 
 cargo run -- build --target wasm32 examples/parrot.cantor -o web/parrot.wasm
+cargo run -- build --target wasm32 examples/game_of_life.cantor \
+  -o web/game_of_life.wasm
 python3 -m http.server -d web        # then open http://localhost:8000
 ```
 
@@ -861,6 +863,12 @@ The cross-compiled `cantor-runtime` must match the profile of the `cantor`
 binary doing the build (add `--release` to both, or neither). Note that the
 *compiler* never runs in the browser — it needs cvc5 and LLVM — so pages
 serve pre-compiled, already-proved programs.
+
+Each page displays the program it runs by fetching the `.cantor` file at load
+time rather than embedding a copy in its HTML. `web/parrot.cantor` and
+`web/game_of_life.cantor` are symlinks to the real files in `examples/`, so
+the code a reader sees is by construction the code that was compiled — an
+earlier inlined copy had already drifted out of date.
 
 One-time setup to enable the checked-in pre-commit hook (blocks commits that
 aren't `cargo fmt`-clean):

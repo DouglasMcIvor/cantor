@@ -84,12 +84,16 @@ jobs:
         ./target/debug/cantor build --target wasm32 examples/game_of_life.cantor -o web/game_of_life.wasm
     - name: Assemble the Pages site
       # Root is a landing page linking out; coverage lives under /coverage,
-      # demos under /demo.
+      # demos under /demo. The demo pages fetch their own .cantor source to
+      # display, so it ships alongside them — `web/*.cantor` are symlinks into
+      # examples/, which `cp` dereferences into real files here.
       run: |
         mkdir -p site/coverage site/demo
         cp .github/pages/index.html site/
         cp -r target/llvm-cov/html/. site/coverage/
-        cp web/index.html web/game-of-life.html web/cantor.js web/parrot.wasm web/game_of_life.wasm site/demo/
+        cp web/index.html web/game-of-life.html web/cantor.js site/demo/
+        cp web/parrot.wasm web/game_of_life.wasm site/demo/
+        cp web/parrot.cantor web/game_of_life.cantor site/demo/
 
     - name: Setup Pages
       uses: actions/configure-pages@v5

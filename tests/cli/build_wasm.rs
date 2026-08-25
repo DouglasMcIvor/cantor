@@ -443,6 +443,54 @@ fn the_browser_shim_uses_the_exported_host_abi() {
     }
 }
 
+/// The demo pages display the program they run by fetching it at load time,
+/// so `web/<demo>.cantor` is a symlink to the real `examples/<demo>.cantor`
+/// rather than a second copy. That is exactly the drift this guards: the
+/// pages previously pasted the source into their HTML, and the Game of Life
+/// copy was already several functions out of date by the time anyone noticed.
+/// A broken symlink, or someone "helpfully" replacing one with a plain file,
+/// fails here rather than quietly on the deployed page.
+#[test]
+fn the_demo_pages_serve_the_real_example_sources() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    for (page, program) in [
+        ("web/index.html", "parrot.cantor"),
+        ("web/game-of-life.html", "game_of_life.cantor"),
+    ] {
+        let served = root.join("web").join(program);
+        let original = root.join("examples").join(program);
+        let served_text = std::fs::read_to_string(&served)
+            .unwrap_or_else(|e| panic!("could not read {}: {e}", served.display()));
+        let original_text = std::fs::read_to_string(&original)
+            .unwrap_or_else(|e| panic!("could not read {}: {e}", original.display()));
+        assert_eq!(
+            served_text,
+            original_text,
+            "{} has drifted from {} — it is meant to be a symlink to it, not a copy",
+            served.display(),
+            original.display()
+        );
+
+        let html = std::fs::read_to_string(root.join(page))
+            .unwrap_or_else(|e| panic!("could not read {page}: {e}"));
+        assert!(
+            html.contains(&format!(
+                "showProgramSource(document.getElementById(\"source\"), \"./{program}\")"
+            )),
+            "{page} no longer fetches ./{program} to display — the page and \
+             web/cantor.js's showProgramSource have drifted apart"
+        );
+        // A signature line is the unmistakable fingerprint of Cantor source
+        // pasted into the HTML; prose mentioning `<code>main</code>` is fine.
+        assert!(
+            !html.contains("main :"),
+            "{page} looks like it has an inlined copy of the program again — \
+             it should fetch ./{program} instead, so it cannot go stale"
+        );
+    }
+}
+
 #[test]
 fn build_wasm_rejects_an_unknown_target() {
     let out = run(&[

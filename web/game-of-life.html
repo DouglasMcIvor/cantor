@@ -51,6 +51,8 @@
     overflow-x: auto;
     font-size: 13px;
   }
+  pre.source.error { color: #b3261e; }
+  .source-note { margin: 0 0 .75rem; font-size: 14px; color: #55605d; }
   footer { margin-top: 2rem; font-size: 14px; color: #55605d; }
   a { color: var(--teal); }
 </style>
@@ -74,39 +76,12 @@
   <p class="status" id="status">Loading…</p>
 
   <h2>The program</h2>
-  <pre class="source">Grid = Bool*
-Image = Nat * Nat * Unsigned32*
-
--- Whether (x, y) is alive in `grid`. The board is a torus: `count_neighbors`
--- only ever calls this one step outside [0, width()) / [0, height()), so a
--- single conditional wrap sends an off-the-left edge back to the right edge
--- and vice versa.
-cell : Grid * Int * Int -&gt; Bool
-cell(grid, x, y) {
-    wrapped_x : Int = if x &lt; 0 then x + width() else if x &gt;= width() then x - width() else x
-    wrapped_y : Int = if y &lt; 0 then y + height() else if y &gt;= height() then y - height() else y
-    idx : Int = wrapped_y * width() + wrapped_x
-    (
-        if idx &lt; 0 or idx &gt;= len(grid) then
-            false
-        else
-            grid[idx]
-    )
-}
-
--- The standard Game of Life rule: a live cell survives with 2 or 3 live
--- neighbors, a dead cell is born with exactly 3.
-next_alive : Bool * Nat -&gt; Bool
-next_alive(alive, n) = (
-    if alive then n == 2 or n == 3 else n == 3
-)
-
-main : Char* * Grid -&gt; Image * Grid
-main(event, grid) {
-    next : Grid = next_generation(grid)
-    pixels : Unsigned32* = render(next)
-    ((width(), height(), pixels), next)
-}</pre>
+  <p class="source-note">
+    Served verbatim from
+    <a href="https://github.com/DouglasMcIvor/cantor/blob/main/examples/game_of_life.cantor"><code>examples/game_of_life.cantor</code></a>
+    &mdash; the same file this page's module was compiled from.
+  </p>
+  <pre class="source" id="source">Loading&hellip;</pre>
 
   <p>
     Every function above — including <code>cell</code>'s bounds check and the
@@ -117,12 +92,14 @@ main(event, grid) {
 
   <footer>
     Built with <code>cantor build --target wasm32</code>.
-    <a href="https://github.com/dougmcivor/cantor">Source on GitHub</a>.
+    <a href="https://github.com/DouglasMcIvor/cantor">Source on GitHub</a>.
   </footer>
 </main>
 
 <script type="module">
-import { CantorImageProgram } from "./cantor.js";
+import { CantorImageProgram, showProgramSource } from "./cantor.js";
+
+showProgramSource(document.getElementById("source"), "./game_of_life.cantor");
 
 const canvas = document.getElementById("board");
 const ctx = canvas.getContext("2d");

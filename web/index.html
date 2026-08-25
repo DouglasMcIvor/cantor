@@ -64,6 +64,8 @@
     overflow-x: auto;
     font-size: 13px;
   }
+  pre.source.error { color: #b3261e; }
+  .source-note { margin: 0 0 .75rem; font-size: 14px; color: #55605d; }
   footer { margin-top: 2rem; font-size: 14px; color: #55605d; }
   a { color: var(--teal); }
 </style>
@@ -87,19 +89,12 @@
   </form>
 
   <h2>The program</h2>
-  <pre class="source">main : -&gt; Nat
-main() = 1
-
-main : Char* * Nat -&gt; Char* * Nat
-main(text, n) {
-  mut i : Nat = n
-  mut out : Char* = text
-  while i &gt; 0 {
-    out := out ++ " " ++ text
-    i := i - 1
-  }
-  (out, n + 1)
-}</pre>
+  <p class="source-note">
+    Served verbatim from
+    <a href="https://github.com/DouglasMcIvor/cantor/blob/main/examples/parrot.cantor"><code>examples/parrot.cantor</code></a>
+    &mdash; the same file this page's module was compiled from.
+  </p>
+  <pre class="source" id="source">Loading&hellip;</pre>
 
   <p>
     <code>main</code> is an event loop: it takes an input line and the current
@@ -112,12 +107,14 @@ main(text, n) {
 
   <footer>
     Built with <code>cantor build --target wasm32</code>.
-    <a href="https://github.com/dougmcivor/cantor">Source on GitHub</a>.
+    <a href="https://github.com/DouglasMcIvor/cantor">Source on GitHub</a>.
   </footer>
 </main>
 
 <script type="module">
-import { CantorProgram } from "./cantor.js";
+import { CantorProgram, showProgramSource } from "./cantor.js";
+
+showProgramSource(document.getElementById("source"), "./parrot.cantor");
 
 const terminal = document.getElementById("terminal");
 const form = document.getElementById("prompt");

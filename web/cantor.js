@@ -9,6 +9,9 @@
 // — which one a given module supports is fixed at `cantor build` time
 // (`wasm_driver_source`'s exports differ per Output shape), so use whichever
 // class matches the module you compiled, not both against the same module.
+//
+// `showProgramSource` at the bottom is the one thing here that isn't ABI —
+// shared page furniture, kept alongside it so both demos agree.
 
 async function instantiate(url) {
   try {
@@ -98,6 +101,25 @@ export class CantorImageProgram {
     const pixels = new Uint8ClampedArray(pixelsLen);
     pixels.set(this.#memory.subarray(pixelsPtr, pixelsPtr + pixelsLen));
     return new ImageData(pixels, width, height);
+  }
+}
+
+// Demo-page support rather than part of the embedding ABI: show the .cantor
+// source a module was built from, fetched at page load instead of pasted into
+// the HTML. The demo pages used to inline a copy, which silently went stale
+// the first time the example changed; `web/*.cantor` are symlinks to the real
+// `examples/*.cantor`, so what a reader sees is always what was compiled.
+export async function showProgramSource(element, url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    element.textContent = await response.text();
+  } catch (e) {
+    // Worth surfacing rather than leaving "Loading…" on screen: the usual
+    // cause is serving the page without the sources alongside it, and the
+    // link above the block still gets the reader to the program.
+    element.textContent = `could not load ${url}: ${e.message}`;
+    element.classList.add("error");
   }
 }
 
