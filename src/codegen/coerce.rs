@@ -230,7 +230,7 @@ impl<'ctx> Compiler<'ctx> {
     /// and tagged-union-arm boundary), which both need to turn an array
     /// literal's `Kind::Tuple` (or a bare scalar, via sequence unification)
     /// into the vector representation a `X*` destination expects.
-    fn coerce_value_to_vector(
+    pub(super) fn coerce_value_to_vector(
         &self,
         val: BasicValueEnum<'ctx>,
         val_kind: Kind,

@@ -169,11 +169,39 @@ pub extern "C" fn cantor_vec_builder_new_i64() -> i64 {
     })
 }
 
+/// A builder pre-loaded with `vec`'s elements.
+///
+/// The loop-accumulator lowering (`codegen::loops`) needs this because the
+/// accumulator it takes over may already hold elements — it is usually `[]`,
+/// but nothing requires that. Copying them once here is O(len), against the
+/// O(len^2) the append loop would otherwise cost in total.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_vec_builder_from_i64(vec: i64) -> i64 {
+    let old = unsafe { &*(vec as *const CantorVecI64) };
+    let mut builder = Int64Builder::with_capacity(old.array.len());
+    for i in 0..old.array.len() {
+        builder.append_value(old.array.value(i));
+    }
+    crate::arena::alloc(CantorVecBuilderI64 { builder })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_vec_builder_push_i64(builder: i64, val: i64) {
     unsafe { &mut *(builder as *mut CantorVecBuilderI64) }
         .builder
         .append_value(val);
+}
+
+/// Append every element of `vec` to `builder` — the general
+/// `acc := acc ++ rhs` case, where `rhs` is a whole vector rather than a
+/// one-element literal.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_vec_builder_extend_i64(builder: i64, vec: i64) {
+    let src = unsafe { &*(vec as *const CantorVecI64) }.clone();
+    let b = unsafe { &mut *(builder as *mut CantorVecBuilderI64) };
+    for i in 0..src.array.len() {
+        b.builder.append_value(src.array.value(i));
+    }
 }
 
 /// Freeze the builder into a `CantorVecI64`. The builder is left alive in
@@ -235,11 +263,32 @@ pub extern "C" fn cantor_vec_builder_new_bool() -> i64 {
     })
 }
 
+/// The Bool counterpart of `cantor_vec_builder_from_i64`.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_vec_builder_from_bool(vec: i64) -> i64 {
+    let old = unsafe { &*(vec as *const CantorVecBool) };
+    let mut builder = BooleanBuilder::with_capacity(old.array.len());
+    for i in 0..old.array.len() {
+        builder.append_value(old.array.value(i));
+    }
+    crate::arena::alloc(CantorVecBuilderBool { builder })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn cantor_vec_builder_push_bool(builder: i64, val: i64) {
     unsafe { &mut *(builder as *mut CantorVecBuilderBool) }
         .builder
         .append_value(val != 0);
+}
+
+/// The Bool counterpart of `cantor_vec_builder_extend_i64`.
+#[unsafe(no_mangle)]
+pub extern "C" fn cantor_vec_builder_extend_bool(builder: i64, vec: i64) {
+    let src = unsafe { &*(vec as *const CantorVecBool) }.clone();
+    let b = unsafe { &mut *(builder as *mut CantorVecBuilderBool) };
+    for i in 0..src.array.len() {
+        b.builder.append_value(src.array.value(i));
+    }
 }
 
 #[unsafe(no_mangle)]

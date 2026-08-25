@@ -918,10 +918,32 @@ Runtime indexing uses `ExprKind::Index { base, index }`.  Concatenation uses
 via `Box::into_raw` and carried across function calls as `i64` pointer values, matching
 the compiler's uniform calling convention.
 
+*Construction — the loop-accumulator lowering* (`src/codegen/accumulator.rs`):
+`v := v ++ [x]` inside a loop is the idiomatic way to build a vector, and
+taken literally it is quadratic — `++` copies the whole vector and
+arena-allocates every iteration, so filling an N-element vector costs
+O(N^2) (measured: 47ms at N=4000). Codegen therefore recognises the idiom
+and accumulates into a `cantor_vec_builder_*` (O(1) push) for the duration
+of the loop nest, freezing it once on the way out (1.4ms at the same N).
+
+This is **not** an in-place mutation and needs no escape analysis: the
+builder is seeded from a *copy* of the accumulator's current contents
+(`cantor_vec_builder_from_*`) and produces a *new* vector at loop exit, so
+an alias taken before the loop still sees exactly what it saw. The single
+requirement is that nothing **reads** the accumulator during the loop —
+for that window its own storage holds the stale pre-loop value while the
+builder holds the truth — which is what `find_accumulators` establishes.
+It also bails on any `return` in the nest (which would leave the builder
+unfrozen) and currently covers `while` only, not `for … in`.
+
 *Construction — array literals*: An array literal `[1, 2, 3]` parses to
 `ExprKind::Tuple`.  Coercion to a vector happens at two sites:
 - **Function-return boundary**: when the declared range is `X*`, `coerce_vector_return`
-  calls `compile_tuple_as_vector` before the LLVM `ret`.
+  calls `compile_tuple_as_vector` before the LLVM `ret`. The range's `X*`
+  may also sit *inside* a tuple (the `Image` convention is
+  `Nat * Nat * Unsigned32*`); `coerce_value_to_expected` recurses into
+  tuple fields so a literal written directly in a returned tuple is
+  coerced too.
 - **Block-body binding site**: `xs : Nat* = [1, 2, 3]` in a block body is handled by
   `coerce_to_vector_if_needed` in `compile_stmts`, which checks the constraint and
   coerces the tuple to a vector before binding the name.

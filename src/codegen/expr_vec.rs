@@ -32,7 +32,7 @@ use super::{Compiler, Env};
 ///
 /// TaggedUnion and Union element kinds are NOT handled here because they use a
 /// different multi-step ABI (builder_new / set_arm / push_leaf / finish).
-fn vec_builder_fns(
+pub(super) fn vec_builder_fns(
     ek: &Kind,
 ) -> Result<(&'static str, &'static str, &'static str, &'static str), String> {
     match ek {

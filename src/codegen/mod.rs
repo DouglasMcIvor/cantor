@@ -6,7 +6,7 @@ use inkwell::{
     context::Context,
     module::Module,
     types::{BasicType, BasicTypeEnum},
-    values::{AggregateValueEnum, BasicValueEnum, FunctionValue},
+    values::{AggregateValueEnum, BasicValueEnum, FunctionValue, IntValue},
 };
 
 use crate::{
@@ -17,6 +17,7 @@ use crate::{
     span::{Span, Symbol},
 };
 
+mod accumulator;
 mod aot;
 mod arith;
 mod blocks;
@@ -56,6 +57,12 @@ pub struct Compiler<'ctx> {
     /// The function currently being compiled — needed for appending basic
     /// blocks when lowering `if-then-else` expressions.
     current_fn: Option<FunctionValue<'ctx>>,
+    /// Vector accumulators the enclosing loop nest has taken over — see
+    /// `codegen::accumulator`. While an entry is live, `name := name ++ rhs`
+    /// compiles to an O(1) builder push instead of a whole-vector copy, and
+    /// the variable's own storage holds a stale value that nothing is
+    /// allowed to read (which is what the analysis proves).
+    active_accumulators: HashMap<Symbol, (IntValue<'ctx>, Kind)>,
     /// The "fail" basic block for the function currently being compiled.
     /// `Some` only when the function is fallible (range contains `Fail`).
     /// Branches here when an `assert` fails at runtime or a `?` propagates.
@@ -147,6 +154,7 @@ impl<'ctx> Compiler<'ctx> {
             builder: context.create_builder(),
             current_fn: None,
             fail_bb: None,
+            active_accumulators: HashMap::new(),
             fn_return_kinds: HashMap::new(),
             fn_ranges: HashMap::new(),
             user_set_vals: HashMap::new(),

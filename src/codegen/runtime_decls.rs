@@ -71,6 +71,15 @@ impl<'ctx> Compiler<'ctx> {
             i64t.fn_type(i, false),
             None,
         );
+        // Loop-accumulator lowering (`codegen::loops`): seed a builder from
+        // an existing vector, and append a whole vector to one.
+        self.module
+            .add_function("cantor_vec_builder_from_i64", i64t.fn_type(i, false), None);
+        self.module.add_function(
+            "cantor_vec_builder_extend_i64",
+            void.fn_type(ii, false),
+            None,
+        );
         self.module
             .add_function("cantor_vec_len_i64", i64t.fn_type(i, false), None);
         self.module
@@ -93,6 +102,13 @@ impl<'ctx> Compiler<'ctx> {
         self.module.add_function(
             "cantor_vec_builder_finish_bool",
             i64t.fn_type(i, false),
+            None,
+        );
+        self.module
+            .add_function("cantor_vec_builder_from_bool", i64t.fn_type(i, false), None);
+        self.module.add_function(
+            "cantor_vec_builder_extend_bool",
+            void.fn_type(ii, false),
             None,
         );
         self.module

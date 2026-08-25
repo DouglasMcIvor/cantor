@@ -70,6 +70,18 @@ impl<'ctx> Compiler<'ctx> {
                 }
 
                 SemStmt::Assign { name, value, .. } => {
+                    // An accumulator the enclosing loop nest has taken over:
+                    // `name := name ++ rhs` becomes an O(1) push/extend on
+                    // its builder, and `name`'s own storage is deliberately
+                    // left stale until the loop freezes it — see
+                    // `codegen::accumulator` for why nothing may read it.
+                    if let Some((builder_val, elem_kind)) =
+                        self.active_accumulators.get(name).cloned()
+                        && let Some(rhs) = super::accumulator::accumulate_rhs(value, name)
+                    {
+                        self.compile_accumulator_append(builder_val, &elem_kind, rhs, env)?;
+                        continue;
+                    }
                     let result = self.compile_expr(value, env)?;
                     // If this variable is backed by an alloca (i.e. we're in a loop
                     // body and this variable persists across iterations), write

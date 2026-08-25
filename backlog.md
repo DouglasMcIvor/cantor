@@ -10,15 +10,23 @@ You probably don't want to read this unless you're me.
     into the bitmap in a 3x5 font. The WebGL/WebGPU half is still open; the
     thing that would make it worth doing is below (vector append), not the
     shader work.
-  - **The resolution ceiling is `v := v ++ [x]`, not wasm.**
-    `cantor_vec_push_i64`/`cantor_vec_concat_i64` copy the whole vector and
-    arena-allocate per element, so building an NxN grid a cell at a time is
-    O(N^4). Measured on the paper bag: 32x32 = 63fps, 48x48 = 16fps,
-    64x64 = 6fps. `cantor-runtime` already exposes an O(1)-push builder
-    (`cantor_vec_builder_new/push/finish`); teaching codegen to recognise
-    the loop-accumulator pattern and lower onto it would make this O(N^2)
-    and speed up Game of Life for free. Probably the single highest-value
-    perf change available right now.
+  - **The resolution ceiling was `v := v ++ [x]`, not wasm — DONE
+    2026-08-25.** `cantor_vec_concat_i64` copied the whole vector and
+    arena-allocated per element, so building an NxN grid a cell at a time
+    was O(N^4). `src/codegen/accumulator.rs` now recognises the
+    loop-accumulator idiom and lowers it onto the existing O(1)-push
+    builder. Micro-benchmark (N appends): 3.6ms -> 0.4ms at N=1000,
+    47.5ms -> 1.4ms at N=4000, and the growth is linear rather than
+    quadratic. Paper bag: 32x32 63 -> 102fps, 48x48 16 -> 33fps,
+    64x64 6 -> 13fps.
+    - Remaining: `acc ++ [x]` still allocates a one-element Arrow array per
+      iteration, because the lowering reuses `coerce_value_to_vector` to
+      inherit its per-element tagging rules exactly. Pushing the single
+      element straight onto the builder would remove that allocation — the
+      asymptotics are already fixed, so this is a constant factor.
+    - The analysis is deliberately conservative: it bails on any read of the
+      accumulator inside the nest, on a `return`, and on nested-loop
+      re-entry. `for ... in` loops are not covered yet, only `while`.
 - **False counterexample: a `mut` loses its declared-set invariant across a
   *nested* loop.** A `mut acc : Int32` declared outside a loop and
   reassigned inside an inner loop fails "loop invariant not maintained"

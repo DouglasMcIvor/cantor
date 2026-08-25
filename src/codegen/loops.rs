@@ -72,6 +72,44 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
+        // Take over any vector accumulator this nest only ever extends, so
+        // `v := v ++ [x]` costs an O(1) builder push instead of copying the
+        // whole vector every iteration (see `codegen::accumulator`). Seeded
+        // *before* the loop from the variable's current value, and frozen
+        // once after it — the original vector is never mutated.
+        let accumulators = if outer_alloca_map.is_empty() {
+            super::accumulator::find_accumulators(cond, body, |name| {
+                env.get(name).map(|(_, k)| k.clone())
+            })
+        } else {
+            // A non-empty outer map means an enclosing loop is already
+            // compiling this nest; it has had first refusal on every
+            // accumulator, and taking one over again here would freeze it
+            // per outer iteration.
+            Vec::new()
+        };
+        let mut taken: Vec<(Symbol, Kind)> = Vec::new();
+        for acc in &accumulators {
+            let Some(&(cur, _)) = env.get(&acc.name) else {
+                continue;
+            };
+            let from_fn = self
+                .module
+                .get_function(super::accumulator::builder_from_fn_name(&acc.elem_kind))
+                .ok_or_else(|| CompileError::ice("vector builder-from fn not declared"))?;
+            let builder_val = self
+                .builder
+                .build_call(from_fn, &[cur.into()], "acc_builder")
+                .map_err(|e| CompileError::ice(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .ok_or_else(|| CompileError::ice("builder-from returned void"))?
+                .into_int_value();
+            self.active_accumulators
+                .insert(acc.name.clone(), (builder_val, acc.elem_kind.clone()));
+            taken.push((acc.name.clone(), acc.elem_kind.clone()));
+        }
+
         let function = self
             .current_fn
             .ok_or_else(|| CompileError::ice("while loop outside a function"))?;
@@ -126,6 +164,41 @@ impl<'ctx> Compiler<'ctx> {
         // Reload the final alloca values back into the caller's env so
         // subsequent statements in the enclosing block see the results.
         self.builder.position_at_end(after_bb);
+
+        // Freeze each accumulator's builder into a real vector first, and
+        // write it through the variable's alloca, so the generic reload
+        // below picks up the accumulated value rather than the stale
+        // pre-loop one.
+        for (name, elem_kind) in &taken {
+            let (builder_val, _) = self
+                .active_accumulators
+                .remove(name)
+                .ok_or_else(|| CompileError::ice("accumulator vanished during its own loop"))?;
+            let (_, _, finish_name, _) =
+                super::expr_vec::vec_builder_fns(elem_kind).map_err(CompileError::ice)?;
+            let finish_fn = self
+                .module
+                .get_function(finish_name)
+                .ok_or_else(|| CompileError::ice("vector builder-finish fn not declared"))?;
+            let finished = self
+                .builder
+                .build_call(finish_fn, &[builder_val.into()], "acc_finish")
+                .map_err(|e| CompileError::ice(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .ok_or_else(|| CompileError::ice("builder-finish returned void"))?;
+            if let Some(&ptr) = inner_alloca_map.get(name) {
+                self.builder
+                    .build_store(ptr, finished.into_int_value())
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+            }
+            let kind = env
+                .get(name)
+                .map(|(_, k)| k.clone())
+                .unwrap_or(Kind::Vector(Box::new(elem_kind.clone())));
+            env.insert(name.clone(), (finished, kind));
+        }
+
         for (name, &ptr) in &inner_alloca_map {
             let val = self
                 .builder

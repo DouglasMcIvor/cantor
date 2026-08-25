@@ -95,6 +95,14 @@ impl<'ctx> Compiler<'ctx> {
                     runtime::cantor_vec_builder_finish_i64 as *const () as usize,
                 ),
                 (
+                    "cantor_vec_builder_from_i64",
+                    runtime::cantor_vec_builder_from_i64 as *const () as usize,
+                ),
+                (
+                    "cantor_vec_builder_extend_i64",
+                    runtime::cantor_vec_builder_extend_i64 as *const () as usize,
+                ),
+                (
                     "cantor_vec_len_i64",
                     runtime::cantor_vec_len_i64 as *const () as usize,
                 ),
@@ -118,6 +126,14 @@ impl<'ctx> Compiler<'ctx> {
                 (
                     "cantor_vec_builder_finish_bool",
                     runtime::cantor_vec_builder_finish_bool as *const () as usize,
+                ),
+                (
+                    "cantor_vec_builder_from_bool",
+                    runtime::cantor_vec_builder_from_bool as *const () as usize,
+                ),
+                (
+                    "cantor_vec_builder_extend_bool",
+                    runtime::cantor_vec_builder_extend_bool as *const () as usize,
                 ),
                 (
                     "cantor_vec_len_bool",
