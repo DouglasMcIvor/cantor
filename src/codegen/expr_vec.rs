@@ -523,12 +523,24 @@ impl<'ctx> Compiler<'ctx> {
                 // not `ensure_raw_int64`'s "compiler bug" wording — this is
                 // an expected language limitation) rather than silently
                 // storing (and later misreading) a truncated/mistagged word.
-                (Kind::Int, _) => self
-                    .ensure_raw_int64_container(
-                        elem.into_int_value(),
-                        &self.current_bare_int_kind(),
-                    )?
-                    .into(),
+                //
+                // The one exception to "current representation is
+                // `current_bare_int_kind()`": an element that is *itself*
+                // `Kind::Int64` (the result of a call into a Step-A-promoted
+                // function) is already a raw word, even inside a
+                // tagging-active caller. Untagging it as if it were tagged
+                // halves an even value and dereferences an odd one as a
+                // bogus BigInt box — the same Int64-to-Int re-tagging family
+                // as the tuple-leaf/Fail-wire/TaggedUnion-arm sites.
+                (Kind::Int, _) => {
+                    let repr = if *outer_ek == Kind::Int64 {
+                        Kind::Int64
+                    } else {
+                        self.current_bare_int_kind()
+                    };
+                    self.ensure_raw_int64_container(elem.into_int_value(), &repr)?
+                        .into()
+                }
                 (other_elem_kind, other_outer_kind) => {
                     return Err(CompileError::ice(format!(
                         "compile_tuple_as_vector: no push rule for vector element kind \
