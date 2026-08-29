@@ -274,6 +274,38 @@ Algorithm:
 - automatic range inference
 - pattern matching with `match x { a => ... , b => ...}`?
 - higher order functions: X -> Y is already the set of functions from X -> Y and we can use Haskell precedence rules for X -> Y -> Z.
+  **In progress (v0, no closures/lambdas yet):** `->` now parses as a real,
+  right-associative operator anywhere it's explicitly parenthesized
+  (`(Int -> Int) * Int -> Int`, and `(A -> B -> C)` right-associates) —
+  `parser::expr`'s `LParen` arm, the only place it nests; the bare top-level
+  `name : domain -> range` split is untouched. `Kind::Function(domain,
+  range)` exists, stored as a plain i64 function pointer, reusing all the
+  scalar-Kind wire plumbing. A bare reference to a **non-overloaded**
+  top-level function name elaborates as a value of that Kind
+  (`semantics::elaborate::expr`'s `Var` fallback, after locals/name_defs);
+  an overloaded name is a clear `Unsupported` error, not a crash — no single
+  LLVM entry point exists for it yet (planned next: synthesize one, a
+  runtime-dispatch wrapper reusing `codegen::overload_dispatch`'s existing
+  logic). Calling through a function-Kind local/param routes by an
+  env-first lookup in `Call` elaboration (mirroring `Var`'s own
+  locals-shadow-everything priority) and exact-Kind-checks the argument
+  (`CompileError::FunctionValueArgKindMismatch` on mismatch) — no coercion
+  story for function values yet.
+  **Known gap, not yet started:** call-site *domain* proof (as opposed to
+  Kind agreement) through a function-Kind parameter. `solver::encode_call`
+  resolves a callee's domain obligation by looking up a global
+  `SemFunctionDef` **by name** (`sig_domain_match`/`sem_param_set_exprs`) —
+  there is no such lookup for a parameter whose value is only known at the
+  call site. The real fix threads the *declared Set expression* for a
+  function-Kind parameter (not just its Kind) from the enclosing signature
+  into the solver-encoding stage, so `f(x)` inside `apply(f, x)` can assert
+  `x` against `f`'s own declared domain-Set the same way an ordinary named
+  call does. Until that lands, any such call reports a clean `unknown`
+  (verified end-to-end, no crash, no false `proved`) — `solver::sort::
+  set_sort` had a raw `unreachable!()` panic on this shape (a `BinOp::Arrow`
+  domain reaching a solver query, e.g. just from *declaring* `apply`'s own
+  signature) that's now a graceful `None`/`Unknown` instead; codegen for an
+  indirect call through a function value hasn't been started at all.
 - partial application via `_` as a placeholder `add(_, 1)` or `sub(1, _)` or `f(x, _, y, _)`
 - infix operators as named functions `(+)(1, 2)`, combines nicely `_` with as a placeholder 
 - once we have higher order functions we can add 'Litre = distinct Float32 deriving Ordered + Arithmetic + Printable' 

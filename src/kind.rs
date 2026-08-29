@@ -18,7 +18,6 @@ use crate::ast::{
 };
 use crate::error::CompileError;
 use crate::semantics::builtins;
-use crate::span::Span;
 
 /// All the possible fundamental Cantor values
 ///
@@ -115,6 +114,19 @@ pub enum Kind {
     /// Variable-length sequence of `elem` values — the runtime representation of `X*`.
     /// Wire type: i64 (pointer-as-i64) to a heap-allocated Apache Arrow array.
     Vector(Box<Kind>),
+    /// i64 (function pointer) — a first-class function value, `Domain ->
+    /// Range` (see `BinOp::Arrow`, `set_kind`'s matching arm). No closures:
+    /// the only values of this Kind are references to non-overloaded
+    /// top-level named functions (`semantics::elaborate::expr`'s `Var`
+    /// fallback), so there's never an environment to capture — a plain
+    /// function pointer is the whole representation, reusing every piece of
+    /// scalar-Kind plumbing (tuple leaves, `Fail`/`IfMerge` wire) that
+    /// treats a Kind as "one i64" already, the same trick `Rational`'s
+    /// boxed-pointer representation uses. Overloaded names can't be taken
+    /// as a value yet — no single LLVM entry point exists for them (see
+    /// backlog.md's higher-order-functions entry for the follow-up that
+    /// synthesizes one).
+    Function(Box<Kind>, Box<Kind>),
 }
 
 /// The Kind of a set-*describing* expression (domain/range annotations, `let`
@@ -304,7 +316,10 @@ pub fn is_distinct_basis_representable(kind: &Kind) -> bool {
         // sort as every other basis here — a real, separate feature (not
         // covered by Float32 arithmetic/comparisons/`show` support) that
         // just hasn't been built yet.
-        Kind::TaggedUnion(_) | Kind::Set(_) | Kind::Float32 => false,
+        // No `distinct Function` basis either — same "no structural
+        // equality/ordering yet" reasoning as `Set(_)`, and doubly so for a
+        // bare function pointer.
+        Kind::TaggedUnion(_) | Kind::Set(_) | Kind::Float32 | Kind::Function(_, _) => false,
     }
 }
 
@@ -410,16 +425,15 @@ fn binop_kind(
             ));
         }
 
-        // `A -> B` — function Kind. Parsing already supports nested `->`
-        // (`parser::expr`'s `LParen` arm), but `Kind::Function` itself
-        // doesn't exist yet — first-class function values land in a
-        // follow-up step (see backlog.md's higher-order-functions entry).
-        BinOp::Arrow => {
-            return Err(CompileError::Unsupported {
-                feature: "function values (`Domain -> Range` as a Kind)".to_string(),
-                span: Span::new(lhs.span.start, rhs.span.end),
-            });
-        }
+        // `A -> B` — function Kind. `A`/`B` are each parsed the same way an
+        // ordinary domain/range term is, so a multi-param domain still uses
+        // `*` (`(Int * Int -> Int)`), collapsing via `Mul`'s own Cartesian-
+        // product handling above into a single `Kind::Tuple` domain — no
+        // separate currying grammar needed.
+        BinOp::Arrow => Kind::Function(
+            Box::new(set_kind(lhs, name_defs)?),
+            Box::new(set_kind(rhs, name_defs)?),
+        ),
     })
 }
 

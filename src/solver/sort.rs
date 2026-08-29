@@ -57,7 +57,14 @@ fn scalar_kind_sort<'tm>(
             .get(&Symbol::new("Unsigned32"))?
             .d_sort
             .clone(),
-        ValKind::Tuple(_) | ValKind::TaggedUnion(_) | ValKind::Vector(_) | ValKind::Set(_) => {
+        // No CVC5 sort for a function value — v0 first-class functions are
+        // verified structurally (the value's own Kind *is* the contract),
+        // never via a solver query. See `Kind::Function`'s doc comment.
+        ValKind::Tuple(_)
+        | ValKind::TaggedUnion(_)
+        | ValKind::Vector(_)
+        | ValKind::Set(_)
+        | ValKind::Function(_, _) => {
             return None;
         }
         // cvc5's native FloatingPoint theory — a genuine leaf sort, not the
@@ -106,6 +113,12 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
         }
         ValKind::Vector(elem) => format!("ck_V_{}", arm_ctor_name(elem)),
         ValKind::Float32 => "ck_F32".to_string(),
+        // Unreachable in practice: `scalar_kind_sort` returns `None` for
+        // `Function` first, so no union-datatype construction involving it
+        // ever reaches this naming helper.
+        ValKind::Function(_, _) => {
+            unreachable!("function values have no CVC5 sort, see scalar_kind_sort")
+        }
     }
 }
 
@@ -383,6 +396,18 @@ pub(crate) fn set_sort<'tm>(
         } => {
             return set_sort(tm, lhs, distinct_preds, name_defs);
         }
+        // `Domain -> Range` (function Kind, higher-order functions v0) has
+        // no CVC5 sort yet — first-class function values are verified
+        // structurally (the value's own Kind is the whole contract), never
+        // via a solver query, see `Kind::Function`'s doc comment. `None`
+        // here propagates to `Unknown`/`Unsupported` at the caller instead
+        // of falling into the catch-all `unreachable!()` below (which
+        // predates `Arrow` and assumes any other bare `BinOp` reaching this
+        // function is a genuine elaboration bug, not a real, if
+        // not-yet-solver-supported, set expression).
+        SemExprKind::BinOp {
+            op: BinOp::Arrow, ..
+        } => return None,
         // Symmetric diff (`^`): the result contains elements from EITHER side.
         // When both sides have the same CVC5 sort, that sort suffices.
         SemExprKind::BinOp {

@@ -71,21 +71,51 @@ pub(super) fn elaborate_expr(
                 // position for a name lookup, only *whether* it's local.
                 Position::Value => match env.get(sym) {
                     Some(k) => k.clone(),
-                    None => {
-                        let def = ctx.name_defs.get(sym).ok_or_else(|| {
-                            CompileError::ice(format!(
-                                "elaborate: reference to undefined local `{}`",
-                                sym.0
-                            ))
-                        })?;
-                        match def.kind {
+                    None => match ctx.name_defs.get(sym) {
+                        Some(def) => match def.kind {
                             // `distinct` is Kind-transparent — see
                             // `kind::set_kind`'s `DefKind::Distinct` arm.
                             ast::DefKind::Alias | ast::DefKind::Distinct => {
                                 set_kind(&def.value, ctx.name_defs)?
                             }
-                        }
-                    }
+                        },
+                        // Not a local, not a named constant/set — a bare
+                        // reference to a top-level *function* name, taken as
+                        // a first-class value (higher-order functions v0).
+                        // Only a non-overloaded name has a single well-
+                        // defined Kind here: an overloaded name compiles to
+                        // several distinct LLVM functions with no one entry
+                        // point to take the address of (see
+                        // `codegen::overload_dispatch`), so it can't be a
+                        // value yet — a synthesized runtime-dispatch wrapper
+                        // is the planned follow-up (backlog.md).
+                        None => match ctx.fn_sigs.get(sym).map(Vec::as_slice) {
+                            Some([only]) => {
+                                let domain = match only.param_kinds.as_slice() {
+                                    [single] => single.clone(),
+                                    params => Kind::Tuple(params.to_vec()),
+                                };
+                                Kind::Function(Box::new(domain), Box::new(only.return_kind.clone()))
+                            }
+                            Some(_overloaded) => {
+                                return Err(CompileError::Unsupported {
+                                    feature: format!(
+                                        "using overloaded function `{}` as a value — only \
+                                         a non-overloaded (single-signature) function can \
+                                         be referenced as a first-class value today",
+                                        sym.0
+                                    ),
+                                    span,
+                                });
+                            }
+                            None => {
+                                return Err(CompileError::ice(format!(
+                                    "elaborate: reference to undefined local `{}`",
+                                    sym.0
+                                )));
+                            }
+                        },
+                    },
                 },
             };
             Ok(SemExpr {
@@ -184,11 +214,40 @@ pub(super) fn elaborate_expr(
                 .iter()
                 .map(|a| elaborate_expr(a, Position::Value, ctx, env))
                 .collect::<Result<Vec<_>, _>>()?;
-            // `from`/`size`/`len`/auto-generated `distinct` constructors are
-            // recognized directly by name in codegen::compile_call — they're
-            // never user-declared functions, so they'd never appear in
-            // `fn_sigs`. Mirrors that special-casing exactly.
-            let kind_of = if let Some(k) = builtin_call_kind(callee, &sem_args, ctx.name_defs) {
+            // A call through a first-class function value (higher-order
+            // functions v0): `callee` is a local/param whose Kind is
+            // `Kind::Function`, not a top-level declared name. Checked
+            // *before* `fn_sigs`/builtins — mirrors `Var`'s own
+            // locals-shadow-everything-else priority, so a param named the
+            // same as some unrelated top-level function still calls through
+            // the param. Only an exact domain-Kind match is accepted: a
+            // function value carries no coercion story yet (see
+            // `Kind::Function`'s doc comment), unlike an ordinary
+            // single-signature callee.
+            let kind_of = if let Some(Kind::Function(domain, range)) = env.get(callee) {
+                let domain = domain.as_ref().clone();
+                let range = range.as_ref().clone();
+                let arg_kind = match sem_args.as_slice() {
+                    [single] => single.kind_of.clone(),
+                    many => Kind::Tuple(many.iter().map(|a| a.kind_of.clone()).collect()),
+                };
+                if canonical_bucket_kind(&arg_kind) != canonical_bucket_kind(&domain) {
+                    return Err(CompileError::FunctionValueArgKindMismatch {
+                        name: callee.0.clone(),
+                        detail: format!(
+                            "`{}` expects an argument of Kind {domain:?}, but this call \
+                             passes {arg_kind:?}",
+                            callee.0
+                        ),
+                        span,
+                    });
+                }
+                range
+            } else if let Some(k) = builtin_call_kind(callee, &sem_args, ctx.name_defs) {
+                // `from`/`size`/`len`/auto-generated `distinct` constructors
+                // are recognized directly by name in codegen::compile_call —
+                // they're never user-declared functions, so they'd never
+                // appear in `fn_sigs`. Mirrors that special-casing exactly.
                 k
             } else {
                 let sigs =

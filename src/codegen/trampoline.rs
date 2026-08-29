@@ -330,6 +330,12 @@ impl<'ctx> Compiler<'ctx> {
             Kind::TaggedUnion(_) => Err(CompileError::ice(
                 "trampoline_load_leaves: TaggedUnion input not yet supported",
             )),
+            // A function pointer has no meaning as event-loop Event/State/
+            // Output crossing the trampoline ABI to a caller outside the
+            // process — reject rather than silently marshal raw bytes.
+            Kind::Function(_, _) => Err(CompileError::ice(
+                "trampoline_load_leaves: function values are not supported as event-loop I/O",
+            )),
             Kind::Float32 => {
                 let word = load_word(leaf_idx)?;
                 self.narrow_i64_param(word.into(), kind, "ld_f32")
@@ -418,6 +424,12 @@ impl<'ctx> Compiler<'ctx> {
             Kind::TaggedUnion(_) => {
                 return Err(CompileError::ice(
                     "trampoline_store_leaves: TaggedUnion output not yet supported",
+                ));
+            }
+            // See the matching arm in `trampoline_load_leaves`.
+            Kind::Function(_, _) => {
+                return Err(CompileError::ice(
+                    "trampoline_store_leaves: function values are not supported as event-loop I/O",
                 ));
             }
             // `Float32`: bitcast to i32 then zero-extend — same convention

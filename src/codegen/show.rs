@@ -135,6 +135,13 @@ impl<'ctx> Compiler<'ctx> {
                 let wide = self.widen_scalar_to_i64(val, kind, "show_f32")?;
                 self.call_runtime_i64("cantor_show_float32", &[wide.into_int_value()], "show_f32")
             }
+            // No textual representation for a function value yet (it's an
+            // opaque pointer with no useful display form) — TODO: revisit
+            // once higher-order functions are further along.
+            Kind::Function(_, _) => Err(CompileError::Unsupported {
+                feature: "`show` on a function value".to_string(),
+                span,
+            }),
         }
     }
 

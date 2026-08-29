@@ -625,6 +625,8 @@ fn count_kind_leaves(kind: &Kind) -> usize {
         // decoding the pointed-to elements (`format_kind_val`) is the part
         // that's only implemented for `Char*` so far.
         Kind::Vector(_) => 1,
+        // A function pointer is always a single i64 leaf, same as Vector.
+        Kind::Function(_, _) => 1,
     }
 }
 
@@ -688,6 +690,9 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
             event_loop::format_char_vector(vec_ptr)
         }
         Kind::Vector(_) => panic!("TODO: Kleene-star Vector kind not yet supported in CLI output"),
+        Kind::Function(_, _) => {
+            panic!("TODO: a function value returned from `main` isn't printable yet")
+        }
         Kind::Rational => {
             let ptr = cantor::runtime::cantor_rational_to_string(buf[*offset]);
             *offset += 1;

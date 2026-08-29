@@ -391,9 +391,12 @@ impl<'ctx> Compiler<'ctx> {
         let i64t = self.context.i64_type();
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match kind {
-            Kind::Int | Kind::Int64 | Kind::Rational | Kind::Set(_) | Kind::Vector(_) => {
-                Ok(vec![val])
-            }
+            Kind::Int
+            | Kind::Int64
+            | Kind::Rational
+            | Kind::Set(_)
+            | Kind::Vector(_)
+            | Kind::Function(_, _) => Ok(vec![val]),
             Kind::Bool | Kind::Fail | Kind::None => {
                 let wide = self
                     .builder

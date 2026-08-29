@@ -30,6 +30,8 @@ mod float32;
 mod helpers;
 #[path = "cli/heterogeneous_named_unions.rs"]
 mod heterogeneous_named_unions;
+#[path = "cli/higher_order_functions.rs"]
+mod higher_order_functions;
 #[path = "cli/if_kind_merge.rs"]
 mod if_kind_merge;
 #[path = "cli/int64_retag.rs"]

@@ -259,6 +259,12 @@ impl<'ctx> Compiler<'ctx> {
             // Float32 value-producing codegen (literals, arithmetic, the
             // ABI leaf-widening convention) isn't implemented yet.
             Kind::Float32 => self.context.f32_type().into(),
+            // Function pointer, stored as a plain i64 like every other
+            // pointer-shaped Kind here (Rational/Set/Vector) — the actual
+            // LLVM function-pointer type (with its real param/return types)
+            // is only needed at an indirect-call site, not for generic
+            // struct/ABI layout. See `Kind::Function`'s doc comment.
+            Kind::Function(_, _) => self.context.i64_type().into(),
         }
     }
 
@@ -372,8 +378,9 @@ impl<'ctx> Compiler<'ctx> {
                     "insert_kind_leaves: nested TaggedUnion not yet supported",
                 ));
             }
-            // Vector is an i64 pointer — insert it like Int/Set.
-            Kind::Vector(_) => {
+            // Vector and Function are both plain i64 (pointer, resp.
+            // function pointer) — insert like Int/Set.
+            Kind::Vector(_) | Kind::Function(_, _) => {
                 *agg = self
                     .builder
                     .build_insert_value(*agg, val.into_int_value(), *field_idx, "tu_l")
@@ -413,7 +420,12 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, CompileError> {
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         match arm_kind {
-            Kind::Int | Kind::Int64 | Kind::Rational | Kind::Set(_) | Kind::Vector(_) => {
+            Kind::Int
+            | Kind::Int64
+            | Kind::Rational
+            | Kind::Set(_)
+            | Kind::Vector(_)
+            | Kind::Function(_, _) => {
                 let leaf = self
                     .builder
                     .build_extract_value(agg, *field_idx, "tu_dl")

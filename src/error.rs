@@ -168,6 +168,18 @@ pub enum CompileError {
         detail: String,
         span: Span,
     },
+    /// A call through a first-class function value (higher-order functions
+    /// v0, `Kind::Function`) whose argument Kinds don't exactly match the
+    /// value's declared domain Kind — e.g. `f(true)` where `f : (Int ->
+    /// Int)`. Unlike an ordinary call, a function-*value* has no coercion
+    /// story yet (its Kind is the only contract available at the call
+    /// site — see `Kind::Function`'s doc comment), so this is an exact-Kind
+    /// check, caught here rather than deferred to the solver.
+    FunctionValueArgKindMismatch {
+        name: String,
+        detail: String,
+        span: Span,
+    },
     /// Valid Cantor the compiler doesn't implement yet.
     Unsupported {
         feature: String,
@@ -277,6 +289,9 @@ impl std::fmt::Display for CompileError {
             Self::NoMatchingOverload { name, detail, .. } => {
                 write!(f, "no overload of `{name}` matches: {detail}")
             }
+            Self::FunctionValueArgKindMismatch { name, detail, .. } => {
+                write!(f, "call to function value `{name}` doesn't match: {detail}")
+            }
             Self::Unsupported { feature, .. } => write!(f, "not yet supported: {feature}"),
             Self::InvalidSetExpression { detail, .. } => {
                 write!(f, "invalid set expression: {detail}")
@@ -356,6 +371,7 @@ impl CompileError {
             Self::OrderedGroupArityMismatch { span, .. } => span,
             Self::OrderedGroupConflict { span, .. } => span,
             Self::NoMatchingOverload { span, .. } => span,
+            Self::FunctionValueArgKindMismatch { span, .. } => span,
             Self::Unsupported { span, .. } => span,
             Self::InvalidSetExpression { span, .. } => span,
             Self::InvalidOperandKind { span, .. } => span,
@@ -385,6 +401,7 @@ impl CompileError {
             Self::OrderedGroupArityMismatch { span, .. } => Some(*span),
             Self::OrderedGroupConflict { span, .. } => Some(*span),
             Self::NoMatchingOverload { span, .. } => Some(*span),
+            Self::FunctionValueArgKindMismatch { span, .. } => Some(*span),
             Self::Unsupported { span, .. } => Some(*span),
             Self::InvalidSetExpression { span, .. } => Some(*span),
             Self::InvalidOperandKind { span, .. } => Some(*span),

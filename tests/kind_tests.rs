@@ -150,3 +150,42 @@ fn cyclic_distinct_definition_is_an_ice_not_a_stack_overflow() {
     let err = set_kind(&Expr::var("A"), &defs).unwrap_err();
     assert!(err.is_ice(), "expected an Ice, got {err:?}");
 }
+
+// ── `Kind::Function` — `Domain -> Range` (higher-order functions step 2) ────
+
+#[test]
+fn set_kind_of_simple_arrow() {
+    let expr = Expr::binop(BinOp::Arrow, Expr::var("Int"), Expr::var("Nat"));
+    assert_eq!(
+        set_kind(&expr, &NameDefs::new()).unwrap(),
+        Kind::Function(Box::new(Kind::Int), Box::new(Kind::Int))
+    );
+}
+
+#[test]
+fn set_kind_of_arrow_with_tuple_domain() {
+    // (Int * Bool) -> Bool
+    let domain = Expr::binop(BinOp::Mul, Expr::var("Int"), Expr::var("Bool"));
+    let expr = Expr::binop(BinOp::Arrow, domain, Expr::var("Bool"));
+    assert_eq!(
+        set_kind(&expr, &NameDefs::new()).unwrap(),
+        Kind::Function(
+            Box::new(Kind::Tuple(vec![Kind::Int, Kind::Bool])),
+            Box::new(Kind::Bool)
+        )
+    );
+}
+
+#[test]
+fn set_kind_of_curried_arrow_right_associates() {
+    // Int -> (Int -> Int)
+    let inner = Expr::binop(BinOp::Arrow, Expr::var("Int"), Expr::var("Int"));
+    let expr = Expr::binop(BinOp::Arrow, Expr::var("Int"), inner);
+    assert_eq!(
+        set_kind(&expr, &NameDefs::new()).unwrap(),
+        Kind::Function(
+            Box::new(Kind::Int),
+            Box::new(Kind::Function(Box::new(Kind::Int), Box::new(Kind::Int)))
+        )
+    );
+}

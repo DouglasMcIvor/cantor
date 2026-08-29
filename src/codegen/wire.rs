@@ -29,6 +29,8 @@ pub fn leaf_count(kind: &Kind) -> usize {
         Kind::TaggedUnion(arms) => 1 + tagged_union_leaf_count(arms),
         // Vector is an i64 pointer (like Set) — one leaf.
         Kind::Vector(_) => 1,
+        // Function is an i64 function pointer — one leaf, same as Vector.
+        Kind::Function(_, _) => 1,
         // Bitcast to i32 then zero-extended to i64 at the ABI boundary,
         // same "every value crosses as i64" convention as
         // Signed32/Unsigned32/Char — one leaf.
@@ -175,6 +177,13 @@ pub fn state_leaf_shape(kind: &Kind, span: Span) -> Result<LeafShape, CompileErr
             return Err(CompileError::Unsupported {
                 feature: "event-loop State containing a Float32 — Float32 codegen \
                           isn't implemented yet"
+                    .to_string(),
+                span,
+            });
+        }
+        Kind::Function(_, _) => {
+            return Err(CompileError::Unsupported {
+                feature: "event-loop State containing a function value — not supported yet"
                     .to_string(),
                 span,
             });

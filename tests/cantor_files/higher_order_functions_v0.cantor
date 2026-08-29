@@ -1,0 +1,15 @@
+-- Higher-order functions v0 (backlog.md): `Domain -> Range` as a Kind and a
+-- bare function-name reference as a first-class value. The Kind/elaboration
+-- layer is implemented; call-site domain-obligation proof through a
+-- function-Kind parameter is deferred (solver step, not yet landed) — this
+-- fixture pins today's honest boundary: no crash, no false `proved`, a
+-- clear `unknown` naming the unsupported piece.
+
+double : Int -> Int
+double(x) = x + x
+
+apply : (Int -> Int) * Int -> Int
+apply(f, x) = f(x)
+
+main : -> Int
+main() = apply(double, 5)
