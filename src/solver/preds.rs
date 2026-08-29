@@ -20,9 +20,10 @@ use crate::{
 };
 
 use super::membership::{
-    CompCtx, DistinctInfo, DistinctPreds, Membership, QuotientInfo, QuotientPreds, SolverPreds,
-    WrappingInfo, WrappingPreds, encode_comp_expr, membership_constraint,
+    DistinctInfo, DistinctPreds, Membership, QuotientInfo, QuotientPreds, SolverPreds,
+    WrappingInfo, WrappingPreds, membership_constraint,
 };
+use super::membership_comp::{CompCtx, encode_comp_expr};
 use super::sort::{build_union_datatype_sort, set_sort};
 use super::{CheckResult, FunctionEnv, NameDefs, configured_solver};
 

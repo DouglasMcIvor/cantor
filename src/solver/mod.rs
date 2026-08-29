@@ -28,6 +28,8 @@ mod event_loop;
 mod int64_split;
 mod loops;
 mod membership;
+mod membership_comp;
+mod membership_named;
 mod membership_seq;
 mod obligations;
 mod preds;

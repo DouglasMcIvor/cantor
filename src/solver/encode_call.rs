@@ -327,7 +327,7 @@ pub(crate) fn encode_call<'tm>(
     {
         let arg_term = enc!(&args[0])?;
         if let Membership::Constrained(c) =
-            super::membership::unicode_scalar_valid(ctx.tm, arg_term.clone())
+            super::membership_named::unicode_scalar_valid(ctx.tm, arg_term.clone())
         {
             ctx.builtin_obligs.push(BuiltinObligation {
                 path_cond: path_cond.clone(),

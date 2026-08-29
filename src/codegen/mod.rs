@@ -26,6 +26,7 @@ mod compile;
 mod expr;
 mod expr_call;
 mod expr_vec;
+mod expr_vec_build;
 mod jit;
 mod loops;
 mod membership;

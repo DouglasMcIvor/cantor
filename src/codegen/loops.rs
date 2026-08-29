@@ -175,7 +175,7 @@ impl<'ctx> Compiler<'ctx> {
                 .remove(name)
                 .ok_or_else(|| CompileError::ice("accumulator vanished during its own loop"))?;
             let (_, _, finish_name, _) =
-                super::expr_vec::vec_builder_fns(elem_kind).map_err(CompileError::ice)?;
+                super::expr_vec_build::vec_builder_fns(elem_kind).map_err(CompileError::ice)?;
             let finish_fn = self
                 .module
                 .get_function(finish_name)
