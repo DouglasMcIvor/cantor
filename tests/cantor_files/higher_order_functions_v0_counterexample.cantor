@@ -1,0 +1,7 @@
+-- Higher-order functions v0 (backlog.md): a call through a function-Kind
+-- parameter, checked against a real narrower domain (`NatPos`, not `Int`).
+-- `x` is unconstrained `Int`, so `f(x)` can genuinely violate `f`'s
+-- declared domain (e.g. x = 0) -- must be a real counterexample.
+
+apply_narrow : (NatPos -> Int) * Int -> Int
+apply_narrow(f, x) = f(x)

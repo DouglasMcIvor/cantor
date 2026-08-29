@@ -157,6 +157,18 @@ pub(crate) fn encode_call<'tm>(
         };
     }
 
+    // A call through a first-class function value (higher-order functions
+    // v0): `callee` names a parameter of the *enclosing* function whose own
+    // declared Kind is `Kind::Function`, not a globally-declared name.
+    // Checked first, mirroring `semantics::elaborate::expr`'s `Call` arm's
+    // own env-first priority. See `encode_function_value_call`'s doc
+    // comment for what this can and can't prove yet.
+    if let Some(arrow) = ctx.param_domain_exprs.get(callee).cloned() {
+        return super::encode_hof::encode_function_value_call(
+            &arrow, call, env, ctx, path_cond, coerce_to, narrow_try,
+        );
+    }
+
     // Auto-generated constructor: `Shape.Circle(r)` for a named union arm
     // (`Shape = distinct (Circle: Nat | Rect: NatPos)`). Reuses the *same*
     // `mk_Shape`/`from_Shape` uninterpreted functions `build_distinct_preds`
@@ -523,7 +535,7 @@ pub(crate) fn encode_call<'tm>(
 // ── Call-site domain obligation ───────────────────────────────────────────────
 
 /// How one callee signature relates to the arguments of a specific call.
-enum DomainMatch<'tm> {
+pub(super) enum DomainMatch<'tm> {
     /// The signature's arity cannot cover this call — it contributes nothing.
     Mismatch,
     /// The domain imposes no constraint on these arguments (e.g. all `Int`
@@ -533,7 +545,7 @@ enum DomainMatch<'tm> {
     Constrained(Term<'tm>),
 }
 
-fn sig_domain_match<'tm>(
+pub(super) fn sig_domain_match<'tm>(
     sig: &SemFunctionSig,
     args: &[SemExpr],
     arg_terms: &[Term<'tm>],
@@ -734,7 +746,7 @@ pub(crate) fn assert_call_contract<'tm>(
 /// matched with the same tuple-vs-scalars rule as parameter binding
 /// (`sem_param_set_exprs`); a signature that can't cover this call, or any
 /// unsupported membership, skips the fact — fewer facts, never wrong ones.
-fn assert_domain_implies_membership<'tm>(
+pub(super) fn assert_domain_implies_membership<'tm>(
     sig: &SemFunctionSig,
     arg_terms: &[Term<'tm>],
     result: Term<'tm>,

@@ -24,6 +24,19 @@ fn elaborate_err(src: &str) -> CompileError {
     elaborate(&items).expect_err("expected elaboration to fail")
 }
 
+fn function_def<'a>(
+    items: &'a [SemItem],
+    name: &str,
+) -> &'a cantor::semantics::tree::SemFunctionDef {
+    items
+        .iter()
+        .find_map(|item| match item {
+            SemItem::FunctionDef(def) if def.name.0 == name => Some(def),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no function named `{name}` in elaborated output"))
+}
+
 fn function_body_expr<'a>(
     items: &'a [SemItem],
     name: &str,
@@ -73,6 +86,36 @@ fn multi_param_function_reference_has_tuple_domain() {
             Box::new(Kind::Tuple(vec![Kind::Int, Kind::Int])),
             Box::new(Kind::Int)
         )
+    );
+}
+
+// Regression: `elaborate_binop`'s generic comparisons/logical catch-all
+// used to also handle `BinOp::Arrow` (no dedicated arm existed), silently
+// hardcoding `kind_of: Kind::Bool` for every `Domain -> Range` sub-
+// expression it touched — invisible to every other test here, since those
+// all go through `Ctx::fn_sigs`'s separately-computed `param_kinds` (built
+// via `kind::set_kind` directly on the raw AST, bypassing this bug
+// entirely), not through the function's own *elaborated* `sigs[0].domain`
+// `SemExpr` this test inspects. Caught empirically: `apply`'s domain
+// annotation reached the solver with the wrong Kind, which manifested as
+// an "unsupported domain sort" `Unknown` several layers away rather than
+// a Kind mismatch here.
+#[test]
+fn signature_domain_arrow_subexpression_has_function_kind_not_bool() {
+    let items = elaborate_src(
+        "apply : (Int -> Int) * Int -> Int\n\
+         apply(f, x) = f(x)",
+    );
+    let def = function_def(&items, "apply");
+    let domain = def.sigs[0].domain.as_ref().expect("apply has a domain");
+    let SemExprKind::CartesianProduct(first, _second) = &domain.kind else {
+        panic!("expected CartesianProduct, got {:?}", domain.kind);
+    };
+    assert_eq!(
+        first.kind_of,
+        Kind::Function(Box::new(Kind::Int), Box::new(Kind::Int)),
+        "the `(Int -> Int)` domain part must carry Kind::Function, not the \
+         Bool the old catch-all silently produced"
     );
 }
 

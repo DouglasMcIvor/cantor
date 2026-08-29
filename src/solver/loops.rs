@@ -39,6 +39,10 @@ pub(super) struct LoopCtx<'a, 'tm> {
     pub(super) param_terms: &'a [Term<'tm>],
     pub(super) immutable_names: &'a HashSet<Symbol>,
     pub(super) distinct_preds: &'a SolverPreds<'tm>,
+    /// See `EncodeCtx::param_domain_exprs` — threaded here so a call
+    /// through a function-Kind parameter inside a loop body resolves the
+    /// same way it does outside one.
+    pub(super) param_domain_exprs: &'a HashMap<Symbol, SemExpr>,
     pub(super) has_runtime_assert: &'a mut bool,
     pub(super) overflow_checks: &'a mut HashMap<Span, bool>,
     pub(super) overload_resolutions: &'a mut HashMap<Span, Option<usize>>,
@@ -167,6 +171,7 @@ where
             overflow_obligs: &mut overflow_obligs,
             overload_obligs: &mut overload_obligs,
             distinct_preds: ctx.distinct_preds,
+            param_domain_exprs: ctx.param_domain_exprs,
         };
         let mut block_ctx = BlockCtx {
             encode: encode_ctx,
@@ -322,6 +327,7 @@ pub(super) fn check_inductive_step<'tm>(
     let fn_env = ctx.fn_env;
     let tm = ctx.tm;
     let distinct_preds = ctx.distinct_preds;
+    let param_domain_exprs = ctx.param_domain_exprs;
     check_loop_inductive_step(
         body,
         modified,
@@ -341,6 +347,7 @@ pub(super) fn check_inductive_step<'tm>(
                 overflow_obligs,
                 overload_obligs,
                 distinct_preds,
+                param_domain_exprs,
             };
             match encode_expr(cond, ind_env, &mut encode_ctx, tm.mk_boolean(true), None) {
                 Ok(c) => {

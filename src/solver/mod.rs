@@ -24,6 +24,7 @@ mod disjointness;
 mod encode;
 mod encode_call;
 mod encode_ctrl;
+mod encode_hof;
 mod event_loop;
 mod int64_split;
 mod loops;
@@ -373,6 +374,9 @@ fn check_name_def(
     // `encode_expr` requires the accumulator unconditionally, never decided.
     let mut overload_obligs: Vec<self::obligations::OverloadCallObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
+    // A top-level constant's value expression has no enclosing function
+    // signature/params to seed this from — see `EncodeCtx::param_domain_exprs`.
+    let param_domain_exprs: HashMap<Symbol, SemExpr> = HashMap::new();
 
     let mut encode_ctx = EncodeCtx {
         name_defs,
@@ -384,6 +388,7 @@ fn check_name_def(
         overflow_obligs: &mut overflow_obligs,
         overload_obligs: &mut overload_obligs,
         distinct_preds: &distinct_preds,
+        param_domain_exprs: &param_domain_exprs,
     };
     let value_term = match encode_expr(&def.value, &env, &mut encode_ctx, top_guard, None) {
         Ok(t) => t,

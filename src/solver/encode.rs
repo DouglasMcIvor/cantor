@@ -43,6 +43,15 @@ pub(crate) struct EncodeCtx<'a, 'tm> {
     pub(crate) overflow_obligs: &'a mut Vec<OverflowObligation<'tm>>,
     pub(crate) overload_obligs: &'a mut Vec<OverloadCallObligation<'tm>>,
     pub(crate) distinct_preds: &'a SolverPreds<'tm>,
+    /// Every `Kind::Function`-typed parameter of the function currently
+    /// being checked, name → its declared `Domain -> Range` `SemExpr`
+    /// (higher-order functions v0). Consulted first by `encode_call`'s
+    /// callee resolution — a name found here is a call through a function
+    /// value (`encode_call::encode_function_value_call`), not a globally
+    /// declared function (`fn_env`). Empty wherever there's no enclosing
+    /// function signature to seed it from (e.g. a top-level constant's
+    /// value expression).
+    pub(crate) param_domain_exprs: &'a HashMap<Symbol, SemExpr>,
 }
 
 // ── Expression encoder (compact router) ──────────────────────────────────────

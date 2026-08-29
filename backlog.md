@@ -291,20 +291,49 @@ Algorithm:
   locals-shadow-everything priority) and exact-Kind-checks the argument
   (`CompileError::FunctionValueArgKindMismatch` on mismatch) — no coercion
   story for function values yet.
-  **Known gap, not yet started:** call-site *domain* proof (as opposed to
-  Kind agreement) through a function-Kind parameter. `solver::encode_call`
-  resolves a callee's domain obligation by looking up a global
-  `SemFunctionDef` **by name** (`sig_domain_match`/`sem_param_set_exprs`) —
-  there is no such lookup for a parameter whose value is only known at the
-  call site. The real fix threads the *declared Set expression* for a
-  function-Kind parameter (not just its Kind) from the enclosing signature
-  into the solver-encoding stage, so `f(x)` inside `apply(f, x)` can assert
-  `x` against `f`'s own declared domain-Set the same way an ordinary named
-  call does. Until that lands, any such call reports a clean `unknown`
-  (verified end-to-end, no crash, no false `proved`) — `solver::sort::
-  set_sort` had a raw `unreachable!()` panic on this shape (a `BinOp::Arrow`
-  domain reaching a solver query, e.g. just from *declaring* `apply`'s own
-  signature) that's now a graceful `None`/`Unknown` instead.
+  **Solver, body-side domain proof: DONE.** A call `f(x)` inside the body of
+  the function that declared `f : (Int -> Int)` is now genuinely proved (or
+  disproved with a real counterexample), not just Kind-checked — the
+  enclosing signature's own declared domain/range for `f` (an
+  `EncodeCtx::param_domain_exprs` map, seeded once per function-check from
+  `sem_param_set_exprs`/`domain_parts`, threaded through `LoopCtx` too for
+  calls inside loop bodies) is reused as a synthesized single-signature
+  `SemFunctionSig`, feeding the *same* `sig_domain_match`/
+  `assert_call_contract` machinery an ordinary named call already uses
+  (`solver::encode_hof::encode_function_value_call`, split into its own
+  file to keep `encode_call.rs` under the repo's line-count guideline).
+  `apply : (Int -> Int) * Int -> Int / apply(f, x) = f(x)` now reports
+  `proved`; a narrower declared domain (e.g. `f : NatPos -> Int` called with
+  an unconstrained `Int` `x`) reports a real counterexample. `f`'s own
+  parameter binding needed a placeholder fix too: `sig_check::
+  build_param_terms` unconditionally tried to build a CVC5 constant for
+  every parameter, including function-Kind ones, which have no sort — now
+  an unconstrained fresh Boolean placeholder (never semantically read; a
+  call through it resolves by *name*, not by its term value). Along the
+  way, found and fixed a real, separate bug this surfaced:
+  `semantics::elaborate::binop`'s generic comparisons/logical catch-all
+  silently handled `BinOp::Arrow` too (no dedicated arm existed) and
+  hardcoded `kind_of: Kind::Bool` for every `Domain -> Range` sub-
+  expression — invisible to every prior test (all exercised `kind::
+  set_kind` directly or `Ctx::fn_sigs`'s separately-computed `param_kinds`,
+  never a function's own *elaborated* `sigs[0].domain`), caught only via
+  the solver reporting "unsupported domain sort" on `apply`'s own domain
+  annotation. Now a dedicated arm, Set-position only, matching `Union`/
+  `Intersect`/`SymDiff`'s existing shape.
+  **Still not done — call-site check:** a *caller* passing a concrete
+  function in (`apply(double, 5)`) isn't solver-encodable yet
+  (`Kind::Function` has no CVC5 sort), so that call site still reports a
+  clean `unknown` ("unbound variable `double`") — independently of the
+  body-side proof above, so no false `proved` results from this gap. Per
+  the user's explicit choice (2026-08-29 design discussion): when a
+  function-value argument becomes encodable, close this with an **exact
+  structural Set match** (not real variance/subtyping — deliberately out of
+  scope, avoids new solver machinery) between the passed function's own
+  declared domain/range and the parameter's declared `arrow`, comparing
+  `ast::Expr`s span-insensitively (no such comparator exists yet — `Expr`/
+  `ExprKind` don't derive `PartialEq`). Also open: the counterexample
+  witness line prints the function-Kind placeholder as `f = false` (cosmetic
+  — the Boolean placeholder has no real decode path, not a soundness issue).
   **Codegen: DONE.** A bare function reference compiles to that function's
   address (`ptrtoint`); calling through a function-Kind local/param compiles
   to a genuine indirect call (`inttoptr` + `build_indirect_call`,

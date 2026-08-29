@@ -204,6 +204,38 @@ pub(super) fn elaborate_binop(
             })
         }
 
+        // `Domain -> Range` — function Kind (higher-order functions v0).
+        // Set-position only, same shape as `Union`/`Intersect`/`SymDiff`
+        // just above: without this dedicated arm, `Arrow` fell into the
+        // generic comparisons/logical catch-all further down, which
+        // hardcodes `kind_of: Kind::Bool` — silently wrong (caught via a
+        // solver-level "unsupported domain sort" on `(Int -> Int)` used as
+        // a parameter's own domain, not by any elaboration-level test,
+        // since `kind::set_kind` itself was already correct and every
+        // existing test called it directly rather than through
+        // `elaborate_binop`).
+        BinOp::Arrow => {
+            let (l, r) = (
+                elaborate_expr(lhs, pos, ctx, env)?,
+                elaborate_expr(rhs, pos, ctx, env)?,
+            );
+            let kind_of = match pos {
+                Position::Set => kind_of_for_set()?,
+                Position::Value => {
+                    return Err(not_yet_implemented("`->` in value position", span));
+                }
+            };
+            Ok(SemExpr {
+                kind: SemExprKind::BinOp {
+                    op: BinOp::Arrow,
+                    lhs: Box::new(l),
+                    rhs: Box::new(r),
+                },
+                kind_of,
+                span,
+            })
+        }
+
         BinOp::Concat => {
             let l = elaborate_expr(lhs, Position::Value, ctx, env)?;
             let r = elaborate_expr(rhs, Position::Value, ctx, env)?;

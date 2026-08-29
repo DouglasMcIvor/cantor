@@ -108,7 +108,20 @@ fn build_param_terms<'tm, 'e>(
     let mut param_terms: Vec<Term<'_>> = Vec::new();
     for (n, part) in param_names.iter().zip(domain_parts.iter()) {
         let k = part.kind_of.clone();
-        if matches!(k, ValKind::Tuple(_)) {
+        if matches!(k, ValKind::Function(..)) {
+            // `Kind::Function` has no CVC5 sort (see `solver::sort::
+            // scalar_kind_sort`) — a function-value parameter is never
+            // itself an SMT-meaningful term; a call through it is resolved
+            // structurally, by *name*, via `EncodeCtx::param_domain_exprs`
+            // (`encode_call::encode_function_value_call`), never by reading
+            // this term's value. This is a placeholder purely to keep
+            // `param_terms` parallel to `param_names` — an unconstrained
+            // fresh Boolean constant, so it can never smuggle in a false
+            // fact if something unexpected reads it (e.g. the parameter
+            // used bare, not called — not supported/tested yet, see
+            // backlog.md).
+            param_terms.push(tm.mk_const(tm.boolean_sort(), &n.0));
+        } else if matches!(k, ValKind::Tuple(_)) {
             let (assembled, leaves) =
                 mk_decomposed_tuple(tm, &n.0, part, distinct_preds, name_defs);
             for (leaf, leaf_set) in leaves {
@@ -443,6 +456,16 @@ pub(super) fn check_block_sig(
     let mut has_runtime_assert = false;
     let mut immutable_names: HashSet<Symbol> = HashSet::new();
     let no_step_suppression: HashSet<Symbol> = HashSet::new();
+    // See `EncodeCtx::param_domain_exprs` — every `Kind::Function`-typed
+    // parameter's own declared `Domain -> Range` expression, so a call
+    // through it inside the body resolves as a function-value call instead
+    // of an undeclared-name error.
+    let param_domain_exprs: HashMap<Symbol, SemExpr> = param_names
+        .iter()
+        .zip(domain_parts.iter())
+        .filter(|(_, part)| matches!(part.kind_of, ValKind::Function(..)))
+        .map(|(name, part)| (name.clone(), (*part).clone()))
+        .collect();
 
     let result_sort = set_sort(&tm, &sig.range, &distinct_preds, name_defs);
     let mut block_ctx = BlockCtx {
@@ -456,6 +479,7 @@ pub(super) fn check_block_sig(
             overflow_obligs: &mut overflow_obligs,
             overload_obligs: &mut overload_obligs,
             distinct_preds: &distinct_preds,
+            param_domain_exprs: &param_domain_exprs,
         },
         ssa_counter: &mut ssa_counter,
         param_names,
@@ -593,6 +617,13 @@ pub(super) fn check_sig(
     let mut overload_obligs: Vec<OverloadCallObligation<'_>> = Vec::new();
     let top_guard = tm.mk_boolean(true);
     let range_sort = set_sort(&tm, &sig.range, &distinct_preds, name_defs);
+    // See `EncodeCtx::param_domain_exprs`/`check_block_sig`'s matching seed.
+    let param_domain_exprs: HashMap<Symbol, SemExpr> = param_names
+        .iter()
+        .zip(domain_parts.iter())
+        .filter(|(_, part)| matches!(part.kind_of, ValKind::Function(..)))
+        .map(|(name, part)| (name.clone(), (*part).clone()))
+        .collect();
     let mut encode_ctx = EncodeCtx {
         name_defs,
         fn_env,
@@ -603,6 +634,7 @@ pub(super) fn check_sig(
         overflow_obligs: &mut overflow_obligs,
         overload_obligs: &mut overload_obligs,
         distinct_preds: &distinct_preds,
+        param_domain_exprs: &param_domain_exprs,
     };
     let body_term = match encode_expr(body, &env, &mut encode_ctx, top_guard, range_sort) {
         Ok(t) => t,
