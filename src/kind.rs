@@ -116,51 +116,6 @@ pub enum Kind {
     Vector(Box<Kind>),
 }
 
-/// Whether `kind` is, or structurally contains, `Kind::Float32` — used by
-/// `solver::check_file`'s upstream Float32 gate (see `FLOAT32_UNREACHABLE_MSG`
-/// below) to reject a program touching Float32 anywhere, cleanly, before the
-/// solver/codegen internals that can't handle it yet ever run.
-/// TODO(float32): delete this and the gate once the solver/codegen steps
-/// land — at that point `Kind::Float32` needs no special-casing at all.
-pub fn kind_contains_float32(kind: &Kind) -> bool {
-    match kind {
-        Kind::Float32 => true,
-        Kind::Int
-        | Kind::Int64
-        | Kind::Rational
-        | Kind::Bool
-        | Kind::Fail
-        | Kind::None
-        | Kind::Signed32
-        | Kind::Unsigned32
-        | Kind::Char => false,
-        Kind::Set(elem) | Kind::Vector(elem) => kind_contains_float32(elem),
-        Kind::Tuple(parts) | Kind::TaggedUnion(parts) => parts.iter().any(kind_contains_float32),
-    }
-}
-
-/// TODO(float32): message shared by every solver/codegen-internal site that
-/// must exhaustively match `Kind` but has no real `Kind::Float32` handling
-/// yet (solver/codegen steps not built — see docs/design-decisions.md's
-/// `Float32`/`FiniteFloat32` section). These sites should be unreachable in
-/// practice: `solver::check_file` is meant to reject any program touching
-/// `Kind::Float32` with a clean `CompileError::Unsupported` before the
-/// solver or codegen ever run deep enough to hit one of these — reaching
-/// this message for real means that gate has a hole, hence `Ice` rather
-/// than `Unsupported`.
-const FLOAT32_UNREACHABLE_MSG: &str = "Float32 reached solver/codegen internals with no support yet (TODO(float32) — \
-     should be unreachable; solver::check_file's Float32 gate has a hole)";
-
-/// For `Result`-returning sites — `return Err(kind::float32_ice())`.
-pub fn float32_ice() -> CompileError {
-    CompileError::ice(FLOAT32_UNREACHABLE_MSG)
-}
-
-/// For infallible sites that can't propagate a `CompileError` at all.
-pub fn float32_unreachable() -> ! {
-    panic!("{FLOAT32_UNREACHABLE_MSG}")
-}
-
 /// The Kind of a set-*describing* expression (domain/range annotations, `let`
 /// constraints, the RHS of `in`, …). Value-position expressions (function
 /// bodies, `let` values, …) never call this — `semantics::elaborate`'s
@@ -343,9 +298,11 @@ pub fn is_distinct_basis_representable(kind: &Kind) -> bool {
         | Kind::Unsigned32 => true,
         Kind::Tuple(parts) => parts.iter().all(is_distinct_basis_representable),
         Kind::Vector(elem) => is_distinct_basis_representable(elem),
-        // TODO(float32): solver step — `distinct Float32` needs the same
-        // `mk_D`/`from_D` uninterpreted-function recipe over cvc5's native
-        // FloatingPoint sort as every other basis here, just not built yet.
+        // TODO(float32): `distinct Float32` needs the same `mk_D`/`from_D`
+        // uninterpreted-function recipe over cvc5's native FloatingPoint
+        // sort as every other basis here — a real, separate feature (not
+        // covered by Float32 arithmetic/comparisons/`show` support) that
+        // just hasn't been built yet.
         Kind::TaggedUnion(_) | Kind::Set(_) | Kind::Float32 => false,
     }
 }

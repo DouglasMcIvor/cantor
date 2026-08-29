@@ -286,10 +286,7 @@ fn main() {
 
     if do_run {
         match outcome {
-            CheckOutcome::Proved(tree) => {
-                reject_float32_before_codegen(&tree, path, &src);
-                run_main(tree, path, &src)
-            }
+            CheckOutcome::Proved(tree) => run_main(tree, path, &src),
             CheckOutcome::NotProved(_) => {
                 eprintln!(
                     "error: not running — {} counterexample(s), {} unknown result(s) found above",
@@ -301,7 +298,6 @@ fn main() {
     } else if do_build {
         match outcome {
             CheckOutcome::Proved(tree) => {
-                reject_float32_before_codegen(&tree, path, &src);
                 run_build(tree, path, &src, output_path, keep_temps, target)
             }
             CheckOutcome::NotProved(_) => {
@@ -313,22 +309,6 @@ fn main() {
             }
         }
     } else if n_counter > 0 || n_unknown > 0 {
-        process::exit(1);
-    }
-}
-
-/// TODO(float32): codegen isn't implemented yet (docs/design-decisions.md's
-/// `Float32`/`FiniteFloat32` section) — solver support is DONE, so plain
-/// `cantor <file>` (proof-only, no codegen) already works for Float32
-/// signatures, but both `cantor run` and `cantor build` compile, so both
-/// need this gate. One call site covering both, right where each obtains
-/// its `ConstrainedTree`, rather than deeper inside `run_main`/`run_build`'s
-/// several different codegen entry points (JIT vs AOT-to-object). Delete
-/// once codegen lands — see `solver::reject_float32_for_codegen`'s doc
-/// comment for the matching internal-stub cleanup.
-fn reject_float32_before_codegen(tree: &ConstrainedTree, path: &str, src: &str) {
-    if let Err(e) = cantor::solver::reject_float32_for_codegen(&tree.sem_items) {
-        print_compile_error(path, &e, src);
         process::exit(1);
     }
 }
@@ -469,6 +449,10 @@ fn run_main(tree: ConstrainedTree, path: &str, src: &str) {
                 event_loop::format_char(result)
             } else if main_return_kind == Kind::Vector(Box::new(Kind::Char)) {
                 event_loop::format_char_vector(result)
+            } else if main_return_kind == Kind::Float32 {
+                let ptr = cantor::runtime::cantor_float32_to_string(result);
+                let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::os::raw::c_char) };
+                s.to_string_lossy().into_owned()
             } else {
                 result.to_string()
             };
@@ -632,11 +616,10 @@ fn format_tagged_int(word: i64) -> String {
 fn count_kind_leaves(kind: &Kind) -> usize {
     match kind {
         Kind::Int | Kind::Int64 | Kind::Bool | Kind::Fail | Kind::None | Kind::Set(_) => 1,
-        Kind::Signed32 | Kind::Unsigned32 | Kind::Char | Kind::Rational => 1,
+        Kind::Signed32 | Kind::Unsigned32 | Kind::Char | Kind::Rational | Kind::Float32 => 1,
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
         // TODO: tagged-union IR — count tag field + widest arm
         Kind::TaggedUnion(_) => 1,
-        Kind::Float32 => cantor::kind::float32_unreachable(),
         // A Vector is always a single pointer-as-i64 leaf, regardless of
         // element kind (see `codegen::wire::leaf_count`'s matching arm) —
         // decoding the pointed-to elements (`format_kind_val`) is the part
@@ -711,6 +694,11 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
             let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::os::raw::c_char) };
             s.to_string_lossy().into_owned()
         }
-        Kind::Float32 => cantor::kind::float32_unreachable(),
+        Kind::Float32 => {
+            let ptr = cantor::runtime::cantor_float32_to_string(buf[*offset]);
+            *offset += 1;
+            let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::os::raw::c_char) };
+            s.to_string_lossy().into_owned()
+        }
     }
 }

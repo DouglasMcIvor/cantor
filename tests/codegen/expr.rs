@@ -286,6 +286,116 @@ fn bool_returning_function_negated() {
     );
 }
 
+// ── Float32 ───────────────────────────────────────────────────────────────────
+//
+// `jit_eval` always returns the ABI-widened i64 word (bitcast f32 -> i32,
+// zero-extended — see `codegen::Compiler::widen_scalar_to_i64`), so every
+// assertion here decodes it back via `f32::from_bits(result as u32)`.
+
+fn jit_eval_f32(body: SemExpr) -> f32 {
+    f32::from_bits(jit_eval(body) as u32)
+}
+
+#[test]
+fn float32_literal() {
+    assert_eq!(jit_eval_f32(SemExpr::float32(2.5)), 2.5);
+}
+
+#[test]
+fn float32_literal_nan_bit_exact() {
+    // Built via the raw IEEE bit pattern at codegen time — must round-trip
+    // exactly, not just "some NaN" (see `compile_expr`'s `FloatLit` arm).
+    assert_eq!(
+        jit_eval(SemExpr::float32(f32::NAN)) as u32,
+        f32::NAN.to_bits()
+    );
+}
+
+#[test]
+fn float32_add() {
+    let body = SemExpr::new(
+        SemExprKind::Add(
+            Box::new(SemExpr::float32(1.5)),
+            Box::new(SemExpr::float32(2.25)),
+        ),
+        Kind::Float32,
+        Span::dummy(),
+    );
+    assert_eq!(jit_eval_f32(body), 3.75);
+}
+
+#[test]
+fn float32_div_by_zero_is_infinity_not_a_trap() {
+    // Float32 division is total under IEEE 754 — no runtime guard, unlike Int.
+    let body = SemExpr::new(
+        SemExprKind::Div(
+            Box::new(SemExpr::float32(1.0)),
+            Box::new(SemExpr::float32(0.0)),
+        ),
+        Kind::Float32,
+        Span::dummy(),
+    );
+    assert_eq!(jit_eval_f32(body), f32::INFINITY);
+}
+
+#[test]
+fn float32_neg_is_a_sign_bit_flip_for_negative_zero() {
+    // `-0.0f - x` would give `+0.0f` under real IEEE subtraction — this
+    // must be a genuine `fneg`, not `0.0f - x` (docs/design-decisions.md's
+    // `Float32` section).
+    let body = SemExpr::unop(UnOp::Neg, SemExpr::float32(0.0));
+    let body = SemExpr::new(body.kind, Kind::Float32, Span::dummy());
+    let result = jit_eval(body) as u32;
+    assert_eq!(result, (-0.0f32).to_bits());
+    assert_ne!(result, 0.0f32.to_bits());
+}
+
+#[test]
+fn float32_ordered_comparison_false_for_nan() {
+    let body = SemExpr::new(
+        SemExprKind::BinOp {
+            op: BinOp::Lt,
+            lhs: Box::new(SemExpr::float32(f32::NAN)),
+            rhs: Box::new(SemExpr::float32(f32::NAN)),
+        },
+        Kind::Bool,
+        Span::dummy(),
+    );
+    assert_eq!(jit_eval(body), 0);
+}
+
+#[test]
+fn float32_equality_is_reflexive_for_nan() {
+    // The soundness-critical case: LLVM/IEEE `fcmp oeq` alone would say
+    // false here, which would disagree with what the solver proves about
+    // Cantor's `=` (SMT-LIB FP equality) — see `compile_binop`'s `Eq`/`Ne`
+    // Float32 arm.
+    let body = SemExpr::new(
+        SemExprKind::BinOp {
+            op: BinOp::Eq,
+            lhs: Box::new(SemExpr::float32(f32::NAN)),
+            rhs: Box::new(SemExpr::float32(f32::NAN)),
+        },
+        Kind::Bool,
+        Span::dummy(),
+    );
+    assert_eq!(jit_eval(body), 1);
+}
+
+#[test]
+fn float32_positive_and_negative_zero_are_distinct() {
+    let body = SemExpr::new(
+        SemExprKind::BinOp {
+            op: BinOp::Eq,
+            lhs: Box::new(SemExpr::float32(0.0)),
+            rhs: Box::new(SemExpr::float32(-0.0)),
+        },
+        Kind::Bool,
+        Span::dummy(),
+    );
+    assert_eq!(jit_eval(body), 0);
+}
+
 // ── Cross-function calls ──────────────────────────────────────────────────────
 
 #[test]

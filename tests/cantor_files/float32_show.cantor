@@ -1,0 +1,2 @@
+main : -> Char*
+main() = "pi~{3.14f}, inf~{infinity32}, ninf~{-infinity32}, nan~{nan32}, zero~{0.0f}, negzero~{-0.0f}"

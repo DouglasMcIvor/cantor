@@ -1,0 +1,6 @@
+-- Runtime confirmation of the same SMT-LIB FP equality claims
+-- tests/solver/float32.rs proves symbolically: `=` is reflexive even for
+-- NaN, `+0.0f`/`-0.0f` are distinct, and ordered comparisons are false for
+-- any NaN operand (docs/design-decisions.md's `Float32` section).
+main : -> Bool
+main() = (nan32 == nan32) and (0.0f != -0.0f) and (not (nan32 < nan32)) and (1.0f < 2.0f)

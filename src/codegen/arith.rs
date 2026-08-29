@@ -42,6 +42,29 @@ impl<'ctx> Compiler<'ctx> {
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (lv, lk) = self.compile_expr(lhs, env)?;
         let (rv, rk) = self.compile_expr(rhs, env)?;
+
+        // `Float32`: `fadd`/`fsub`/`fmul`/`fdiv` at ambient (round-nearest-
+        // ties-to-even) rounding — LLVM's default matches the solver's
+        // explicit `RoundNearestTiesToEven` operand (docs/design-
+        // decisions.md's `Float32` section), so no extra rounding-mode
+        // control is needed here. Stays `Float32`, never widens (the
+        // opposite of `Int`'s widen-to-stay-exact story) — intercepted
+        // before `scalarize_to_int` below, which only understands integer-
+        // backed Kinds. Division is total under IEEE 754 (no divisor-
+        // nonzero guard needed, unlike `Int`'s `/`).
+        if lk == Kind::Float32 {
+            let (lf, rf) = (lv.into_float_value(), rv.into_float_value());
+            let v = match op {
+                BinOp::Add => self.builder.build_float_add(lf, rf, "fadd"),
+                BinOp::Sub => self.builder.build_float_sub(lf, rf, "fsub"),
+                BinOp::Mul => self.builder.build_float_mul(lf, rf, "fmul"),
+                BinOp::Div => self.builder.build_float_div(lf, rf, "fdiv"),
+                _ => unreachable!("compile_arith is only called for Add/Sub/Mul/Div"),
+            }
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+            return Ok((v.into(), Kind::Float32));
+        }
+
         let li = self.scalarize_to_int(lv, &lk)?;
         let ri = self.scalarize_to_int(rv, &rk)?;
 
@@ -427,6 +450,18 @@ impl<'ctx> Compiler<'ctx> {
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
         let (val, ty) = self.compile_expr(inner, env)?;
+        // `Float32`: a genuine `fneg` sign-bit flip, never `0.0f - x` — real
+        // IEEE subtraction gives `0.0f - 0.0f = +0.0f`, which would silently
+        // turn `-0.0f` into `0.0f` (see docs/design-decisions.md's `Float32`
+        // section). Intercepted before `scalarize_to_int` below, which only
+        // understands integer-backed Kinds.
+        if matches!(op, UnOp::Neg) && ty == Kind::Float32 {
+            let v = self
+                .builder
+                .build_float_neg(val.into_float_value(), "fneg")
+                .map_err(|e| CompileError::ice(e.to_string()))?;
+            return Ok((v.into(), Kind::Float32));
+        }
         let iv = self.scalarize_to_int(val, &ty)?;
         match op {
             UnOp::Neg => {

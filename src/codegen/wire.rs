@@ -29,10 +29,10 @@ pub fn leaf_count(kind: &Kind) -> usize {
         Kind::TaggedUnion(arms) => 1 + tagged_union_leaf_count(arms),
         // Vector is an i64 pointer (like Set) — one leaf.
         Kind::Vector(_) => 1,
-        // TODO(float32): codegen step — almost certainly 1 (widened into an
-        // i64 leaf like Signed32/Unsigned32/Char), but that ABI choice isn't
-        // decided/tested yet, so this stays a loud gap rather than a guess.
-        Kind::Float32 => crate::kind::float32_unreachable(),
+        // Bitcast to i32 then zero-extended to i64 at the ABI boundary,
+        // same "every value crosses as i64" convention as
+        // Signed32/Unsigned32/Char — one leaf.
+        Kind::Float32 => 1,
     }
 }
 

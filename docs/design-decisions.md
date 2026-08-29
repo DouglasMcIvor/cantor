@@ -2715,15 +2715,18 @@ as an ordinary refinement/subset of `Float32` (the same subset machinery
   touching `nan32`, including `nan32 < nan32`, is false. This is a
   deliberate two-tier split — `=` for decidability, comparisons for IEEE
   numeric meaning — not an oversight.
-- **Solver representation**: cvc5's native FloatingPoint theory,
+- **Solver representation (DONE)**: cvc5's native FloatingPoint theory,
   `mk_fp_sort(8, 24)` (binary32's exponent/significand widths) — a genuine
   leaf sort in its own right, not `Signed32`/`Unsigned32`'s "opaque sort
-  wrapping a BitVec" recipe. `src/solver/sort.rs` already carries a
-  forward-compatibility checklist for exactly this (added as a comment
-  ahead of time): `kind.rs::set_kind` gets a `Kind::Float32` variant,
-  `sort.rs::arm_ctor_name` gets `"ck_F32"`, `membership.rs` gets a
-  `Var("Float32")`/`Var("FiniteFloat32")` arm, and `mod.rs`'s
-  counterexample extraction gets a `ValKind::Float32` case.
+  wrapping a BitVec" recipe. Literals encode via the raw IEEE bit pattern
+  (`mk_bv` + `mk_fp`), which covers `infinity32`/`nan32`/both zeros
+  uniformly with no per-value special casing. `f32::to_bits()`/`from_bits()`
+  round-trips exactly, including every NaN payload — but plain `serde_json`
+  does not (`NaN`/`Infinity` serialize to JSON `null`, which then fails to
+  deserialize back into an `f32` at all), which matters because every
+  `FloatLit` crosses `solver::worker`'s subprocess boundary as JSON; fixed
+  with a `span::float32_bits` serde module that round-trips via the raw
+  `u32` bits instead of the default float encoding.
 - **Arithmetic closure is the opposite of `Int`'s.** `IntN + IntN → Int2N`
   widens to stay exact, because Int arithmetic *is* exact until it
   overflows a fixed width. Floats are the opposite mental model — every
@@ -2740,11 +2743,30 @@ as an ordinary refinement/subset of `Float32` (the same subset machinery
   rounding (round toward `±∞`) is the mechanism verified/interval-numerics
   libraries use to get sound enclosures — a real, deliberate future
   feature, not a gap being silently dropped now.
-- **Codegen note (for when this reaches codegen): `neg` must be a genuine
-  sign-bit flip** (LLVM `fneg` / cvc5 `fp.neg`), never `0.0f - x` — real
-  IEEE subtraction gives `0.0f - 0.0f = +0.0f`, which would silently turn
-  `-0.0f` into `0.0f` and break the literal-syntax claim above that
-  `-0.0f` needs no dedicated token.
+- **Codegen (DONE).** `neg` is a genuine `fneg` sign-bit flip, never
+  `0.0f - x` — real IEEE subtraction gives `0.0f - 0.0f = +0.0f`, which
+  would silently turn `-0.0f` into `0.0f` and break the literal-syntax
+  claim above that `-0.0f` needs no dedicated token. `+ - * /` compile to
+  plain `fadd`/`fsub`/`fmul`/`fdiv` at LLVM's ambient rounding (round-
+  nearest-ties-to-even by default on every backend Cantor targets, matching
+  the solver's explicit `RNE` operand with no extra control needed).
+  Comparisons use LLVM's *ordered* `fcmp` predicates (`olt`/`ole`/`ogt`/
+  `oge`), which are already false whenever either operand is NaN — the same
+  real-IEEE semantics `fp.lt`-family proves. **`==`/`!=` cannot be a plain
+  `fcmp`, and this is soundness-critical, not a style choice**: LLVM/IEEE
+  float equality says `NaN == NaN` is false and `+0.0f == -0.0f` is true —
+  the *opposite* of both facts the solver proves about Cantor's `=`. A
+  runtime `==` that disagreed with what got proved would mean the compiler
+  proves something false. So codegen instead computes bit-pattern equality
+  (correctly distinguishes the two zeros) OR both-operands-NaN (correctly
+  reflexive regardless of which specific NaN payload each operand carries)
+  — exactly the SMT-LIB FP equality the solver already assumes. Every value
+  crosses the ABI boundary as one widened `i64` leaf (bitcast to `i32`, then
+  zero-extended), the same convention `Signed32`/`Unsigned32`/`Char` use.
+  `show`/CLI display go through two small runtime functions,
+  `cantor_show_float32`/`cantor_float32_to_string`
+  (`cantor-runtime/src/float32.rs`) — arithmetic and comparisons need no
+  runtime support at all, unlike `Rational`'s boxed `BigRational`.
 - **`/` is total, unlike `Int`'s.** IEEE 754 division is defined for every
   `Float32` pair, including by zero (`1.0f / 0.0f = infinity32`,
   `0.0f / 0.0f = nan32`) — so unlike `Int`'s `/` (which needs `NonZeroInt`),
@@ -2755,12 +2777,15 @@ as an ordinary refinement/subset of `Float32` (the same subset machinery
   domain restriction the *programmer* chose, not something division itself
   demands.
 - **Scope of this slice**: `Float32` and `FiniteFloat32` only (no `Float64`
-  yet); `+ - * / neg`, comparisons, and `=`/`!=`; `require FiniteFloat32`.
-  No transcendental functions (`sqrt`, trig, …), no `Float64`, and no
-  Int↔Float32 conversion of any kind — conversion is deliberately left for
-  a later, explicit-only feature, matching the original motivation for
-  keeping `Float32` distinct from a future bare-decimal `Float64` in the
-  first place (never silently lose precision).
+  yet); `+ - * / neg`, comparisons, `=`/`!=`, `require FiniteFloat32`, and
+  `show`/interpolation — all DONE end to end (parser → semantics → solver →
+  codegen). No transcendental functions (`sqrt`, trig, …), no `Float64`, no
+  `distinct Float32` (needs its own `mk_D`/`from_D` uninterpreted-function
+  recipe, not built), and no Int↔Float32 conversion of any kind —
+  conversion is deliberately left for a later, explicit-only feature,
+  matching the original motivation for keeping `Float32` distinct from a
+  future bare-decimal `Float64` in the first place (never silently lose
+  precision).
 
 ### Narrowing back to IntN
 

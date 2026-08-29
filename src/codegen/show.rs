@@ -131,7 +131,10 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Vector(ek) => self.compile_show_vector(ek, val, span),
             Kind::Set(ek) => self.compile_show_set(ek, val, span),
             Kind::TaggedUnion(arms) => self.compile_show_tagged_union(arms, val, span),
-            Kind::Float32 => Err(crate::kind::float32_ice()),
+            Kind::Float32 => {
+                let wide = self.widen_scalar_to_i64(val, kind, "show_f32")?;
+                self.call_runtime_i64("cantor_show_float32", &[wide.into_int_value()], "show_f32")
+            }
         }
     }
 

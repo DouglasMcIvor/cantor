@@ -280,5 +280,14 @@ impl<'ctx> Compiler<'ctx> {
         ] {
             self.module.add_function(name, i64t.fn_type(i, false), None);
         }
+
+        // `Float32` (docs/design-decisions.md's `Float32`/`FiniteFloat32`
+        // section): arithmetic/comparisons need no runtime support at all
+        // (plain LLVM `fadd`/`fcmp`/…) — only `show`/CLI display do, same
+        // `i64 -> i64` shape as the `Rational` pair above (the widened ABI
+        // leaf in, an encoded/`CString` pointer out).
+        for name in ["cantor_float32_to_string", "cantor_show_float32"] {
+            self.module.add_function(name, i64t.fn_type(i, false), None);
+        }
     }
 }

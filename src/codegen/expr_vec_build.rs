@@ -415,7 +415,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(err)?;
                 Ok(vec![wide.into()])
             }
-            Kind::Float32 => Err(crate::kind::float32_ice()),
+            Kind::Float32 => Ok(vec![self.widen_scalar_to_i64(val, kind, "ul_f32")?]),
             Kind::Tuple(elems) => {
                 let sv = AggregateValueEnum::StructValue(val.into_struct_value());
                 let mut leaves = Vec::new();

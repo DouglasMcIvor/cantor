@@ -1,5 +1,5 @@
 use inkwell::{
-    IntPredicate,
+    FloatPredicate, IntPredicate,
     values::{AggregateValueEnum, BasicValueEnum},
 };
 
@@ -38,10 +38,20 @@ impl<'ctx> Compiler<'ctx> {
                 let v = self.context.i32_type().const_int(*c as u32 as u64, false);
                 Ok((v.into(), Kind::Char))
             }
-            // TODO(float32): codegen step. Should be unreachable today:
-            // `solver::check_file` rejects any Float32-touching program
-            // before codegen ever runs.
-            SemExprKind::FloatLit(_) => Err(crate::kind::float32_ice()),
+            // Built via the raw IEEE bit pattern (int constant, bitcast to
+            // f32) rather than `FloatType::const_float(x as f64)` — exact
+            // for every value including `nan32`'s specific payload, whereas
+            // routing through an f64 intermediate has no bit-exactness
+            // guarantee for NaN. Matches how the solver encodes the same
+            // literal (`mk_bv` + `mk_fp`, see `solver::encode`).
+            SemExprKind::FloatLit(x) => {
+                let bits = self.context.i32_type().const_int(x.to_bits() as u64, false);
+                let v = self
+                    .builder
+                    .build_bit_cast(bits, self.context.f32_type(), "flit")
+                    .map_err(|e| CompileError::ice(e.to_string()))?;
+                Ok((v, Kind::Float32))
+            }
             SemExprKind::Var(sym) => env.get(sym).map(|(v, t)| (*v, t.clone())).ok_or_else(|| {
                 CompileError::UndefinedVariable {
                     name: sym.0.clone(),
@@ -376,6 +386,76 @@ impl<'ctx> Compiler<'ctx> {
 
         let (lv, lk) = self.compile_expr(lhs, env)?;
         let (rv, rk) = self.compile_expr(rhs, env)?;
+
+        // `Float32`: intercepted before `scalarize_to_int` below, which only
+        // understands integer-backed Kinds. `<`/`<=`/`>`/`>=` use LLVM's
+        // *ordered* `fcmp` predicates (`o*`), which are already false
+        // whenever either operand is NaN — the same real-IEEE "unordered
+        // with NaN" semantics the solver's `fp.lt`-family proves. `==`/`!=`
+        // are the one place this can't be a plain `fcmp`: LLVM/IEEE
+        // equality treats `NaN == NaN` as false and `+0.0f == -0.0f` as
+        // true, the *opposite* of both facts the solver proves about
+        // Cantor's `=` (SMT-LIB FP equality — reflexive, distinct zeros;
+        // see docs/design-decisions.md's `Float32` section). A runtime `==`
+        // that disagreed with what got proved would be a real soundness
+        // bug, not just a style choice — so this is bit-pattern equality
+        // (correctly distinguishes the two zeros) OR both-NaN (correctly
+        // reflexive, regardless of which of the two operands' NaN payloads
+        // differ).
+        if lk == Kind::Float32 {
+            let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+            let (lf, rf) = (lv.into_float_value(), rv.into_float_value());
+            let b = &self.builder;
+            let v = match op {
+                BinOp::Lt => b
+                    .build_float_compare(FloatPredicate::OLT, lf, rf, "folt")
+                    .map_err(err)?,
+                BinOp::Le => b
+                    .build_float_compare(FloatPredicate::OLE, lf, rf, "fole")
+                    .map_err(err)?,
+                BinOp::Gt => b
+                    .build_float_compare(FloatPredicate::OGT, lf, rf, "fogt")
+                    .map_err(err)?,
+                BinOp::Ge => b
+                    .build_float_compare(FloatPredicate::OGE, lf, rf, "foge")
+                    .map_err(err)?,
+                BinOp::Eq | BinOp::Ne => {
+                    let i32t = self.context.i32_type();
+                    let li = b
+                        .build_bit_cast(lf, i32t, "fbits")
+                        .map_err(err)?
+                        .into_int_value();
+                    let ri = b
+                        .build_bit_cast(rf, i32t, "fbits")
+                        .map_err(err)?
+                        .into_int_value();
+                    let bits_eq = b
+                        .build_int_compare(IntPredicate::EQ, li, ri, "fbits_eq")
+                        .map_err(err)?;
+                    let l_nan = b
+                        .build_float_compare(FloatPredicate::UNO, lf, lf, "l_nan")
+                        .map_err(err)?;
+                    let r_nan = b
+                        .build_float_compare(FloatPredicate::UNO, rf, rf, "r_nan")
+                        .map_err(err)?;
+                    let both_nan = b.build_and(l_nan, r_nan, "both_nan").map_err(err)?;
+                    let eq = b.build_or(bits_eq, both_nan, "smtlib_fp_eq").map_err(err)?;
+                    if op == BinOp::Ne {
+                        b.build_not(eq, "fne").map_err(err)?
+                    } else {
+                        eq
+                    }
+                }
+                _ => {
+                    return Err(CompileError::ice(format!(
+                        "`{op}` on Float32 reached codegen — the solver should have \
+                         already rejected this at compile time"
+                    )));
+                }
+            };
+            return Ok((v.into(), Kind::Bool));
+        }
+
         let li = self.scalarize_to_int(lv, &lk)?;
         let ri = self.scalarize_to_int(rv, &rk)?;
         let b = &self.builder;

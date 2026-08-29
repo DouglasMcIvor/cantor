@@ -331,6 +331,14 @@ impl<'ctx> Compiler<'ctx> {
                     "cantor_show_rational",
                     runtime::cantor_show_rational as *const () as usize,
                 ),
+                (
+                    "cantor_float32_to_string",
+                    runtime::cantor_float32_to_string as *const () as usize,
+                ),
+                (
+                    "cantor_show_float32",
+                    runtime::cantor_show_float32 as *const () as usize,
+                ),
             ];
             rt.iter()
                 .filter_map(|&(name, addr)| self.module.get_function(name).map(|f| (f, addr)))

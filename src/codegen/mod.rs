@@ -380,7 +380,14 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(err)?;
                 *field_idx += 1;
             }
-            Kind::Float32 => return Err(crate::kind::float32_ice()),
+            Kind::Float32 => {
+                let wide = self.widen_scalar_to_i64(val, arm_kind, "tu_lf32")?;
+                *agg = self
+                    .builder
+                    .build_insert_value(*agg, wide, *field_idx, "tu_l")
+                    .map_err(err)?;
+                *field_idx += 1;
+            }
         }
         Ok(())
     }
@@ -460,7 +467,14 @@ impl<'ctx> Compiler<'ctx> {
             Kind::TaggedUnion(_) => Err(CompileError::ice(
                 "extract_kind_from_leaves: nested TaggedUnion not yet supported",
             )),
-            Kind::Float32 => Err(crate::kind::float32_ice()),
+            Kind::Float32 => {
+                let leaf = self
+                    .builder
+                    .build_extract_value(agg, *field_idx, "tu_dl")
+                    .map_err(err)?;
+                *field_idx += 1;
+                self.narrow_i64_param(leaf, arm_kind, "tu_df32")
+            }
         }
     }
 
@@ -566,6 +580,21 @@ impl<'ctx> Compiler<'ctx> {
                 .build_int_z_extend(val.into_int_value(), i64t, name)
                 .map_err(err)?
                 .into(),
+            // `Float32`: bitcast to i32 (same bits, integer-typed) then
+            // zero-extend — same "every value crosses as i64" convention as
+            // Unsigned32/Char, just with an extra bitcast step since the
+            // native register is f32, not an integer type to begin with.
+            Kind::Float32 => {
+                let bits = self
+                    .builder
+                    .build_bit_cast(val.into_float_value(), self.context.i32_type(), name)
+                    .map_err(err)?
+                    .into_int_value();
+                self.builder
+                    .build_int_z_extend(bits, i64t, name)
+                    .map_err(err)?
+                    .into()
+            }
             _ => val,
         })
     }
@@ -595,6 +624,15 @@ impl<'ctx> Compiler<'ctx> {
                 .build_int_truncate(val.into_int_value(), self.context.i32_type(), name)
                 .map_err(err)?
                 .into(),
+            Kind::Float32 => {
+                let bits = self
+                    .builder
+                    .build_int_truncate(val.into_int_value(), self.context.i32_type(), name)
+                    .map_err(err)?;
+                self.builder
+                    .build_bit_cast(bits, self.context.f32_type(), name)
+                    .map_err(err)?
+            }
             _ => val,
         })
     }

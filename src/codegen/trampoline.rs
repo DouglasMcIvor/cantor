@@ -330,7 +330,10 @@ impl<'ctx> Compiler<'ctx> {
             Kind::TaggedUnion(_) => Err(CompileError::ice(
                 "trampoline_load_leaves: TaggedUnion input not yet supported",
             )),
-            Kind::Float32 => Err(crate::kind::float32_ice()),
+            Kind::Float32 => {
+                let word = load_word(leaf_idx)?;
+                self.narrow_i64_param(word.into(), kind, "ld_f32")
+            }
         }
     }
 
@@ -417,7 +420,33 @@ impl<'ctx> Compiler<'ctx> {
                     "trampoline_store_leaves: TaggedUnion output not yet supported",
                 ));
             }
-            Kind::Float32 => return Err(crate::kind::float32_ice()),
+            // `Float32`: bitcast to i32 then zero-extend — same convention
+            // as `Compiler::widen_scalar_to_i64` (this is a plain
+            // associated fn, not a `Compiler` method, so it's inlined
+            // rather than shared).
+            Kind::Float32 => {
+                let i32t = i64t.get_context().i32_type();
+                let bits = builder
+                    .build_bit_cast(val.into_float_value(), i32t, "st_bits")
+                    .map_err(err)?
+                    .into_int_value();
+                let wide = builder
+                    .build_int_z_extend(bits, i64t, "st_f32")
+                    .map_err(err)?;
+                let ptr = if *leaf_idx == 0 {
+                    out_ptr
+                } else {
+                    let idx = i64t.const_int(*leaf_idx as u64, false);
+                    // Safety: same as above.
+                    unsafe {
+                        builder
+                            .build_gep(i64t, out_ptr, &[idx], "gp")
+                            .map_err(err)?
+                    }
+                };
+                builder.build_store(ptr, wide).map_err(err)?;
+                *leaf_idx += 1;
+            }
             // Vector is an i64 pointer — store it like any other i64 leaf.
             Kind::Vector(_) => {
                 let ptr = if *leaf_idx == 0 {

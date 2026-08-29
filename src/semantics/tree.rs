@@ -623,6 +623,10 @@ impl SemExpr {
         Self::new(SemExprKind::BoolLit(b), Kind::Bool, Span::dummy())
     }
 
+    pub fn float32(x: f32) -> Self {
+        Self::new(SemExprKind::FloatLit(x), Kind::Float32, Span::dummy())
+    }
+
     pub fn char_lit(c: char) -> Self {
         Self::new(SemExprKind::CharLit(c), Kind::Char, Span::dummy())
     }
