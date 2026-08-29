@@ -66,6 +66,30 @@ fn make_binop(op: BinOp, lhs: Expr, rhs: Expr, _op_span: Span) -> Expr {
 impl<'src> Parser<'src> {
     // ── Expression (Pratt) ────────────────────────────────────────────────────
 
+    /// Parse the range side of a parenthesized function Kind, right-
+    /// associating any further `->`s: `A -> B -> C` (inside the enclosing
+    /// parens) means `A -> (B -> C)`. Only called from the `LParen` arm of
+    /// `parse_prefix` — see its comment for why `->` isn't a generic infix
+    /// operator.
+    fn parse_arrow_range(&mut self) -> Result<Expr, CompileError> {
+        let lhs = self.parse_expr(0)?;
+        if self.peek() == &Token::Arrow {
+            self.advance()?;
+            let rhs = self.parse_arrow_range()?;
+            let span = Span::new(lhs.span.start, rhs.span.end);
+            Ok(Expr::new(
+                ExprKind::BinOp {
+                    op: BinOp::Arrow,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            ))
+        } else {
+            Ok(lhs)
+        }
+    }
+
     /// Parse an expression with at least the given minimum left-binding power.
     pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr, CompileError> {
         let mut lhs = self.parse_prefix()?;
@@ -362,6 +386,29 @@ impl<'src> Parser<'src> {
                         ExprKind::Tuple(elems),
                         Span::new(span.start, end_span.end),
                     ))
+                } else if self.peek() == &Token::Arrow {
+                    // Nested function Kind: (Domain -> Range), e.g. as one
+                    // term of a product (`(Int -> Int) * Int -> Int`) or a
+                    // range (`Int -> (Int -> Int)`). Only reachable via
+                    // explicit parens — the bare top-level `->` in a
+                    // signature is deliberately not a generic infix operator
+                    // (see `parse_set_expr`), so this is the one place
+                    // `->` nests. `parse_arrow_range` right-associates a
+                    // chain (`(A -> B -> C)` == `A -> (B -> C)`).
+                    self.advance()?;
+                    let range = self.parse_arrow_range()?;
+                    let arrow_span = Span::new(first.span.start, range.span.end);
+                    let arrow = Expr::new(
+                        ExprKind::BinOp {
+                            op: BinOp::Arrow,
+                            lhs: Box::new(first),
+                            rhs: Box::new(range),
+                        },
+                        arrow_span,
+                    );
+                    let end_span = self.peek_span();
+                    self.expect(&Token::RParen)?;
+                    Ok(Expr::new(arrow.kind, Span::new(span.start, end_span.end)))
                 } else {
                     // Plain grouping: (expr)
                     let end_span = self.peek_span();

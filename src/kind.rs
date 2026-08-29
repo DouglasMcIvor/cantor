@@ -18,6 +18,7 @@ use crate::ast::{
 };
 use crate::error::CompileError;
 use crate::semantics::builtins;
+use crate::span::Span;
 
 /// All the possible fundamental Cantor values
 ///
@@ -407,6 +408,17 @@ fn binop_kind(
                  rejected this in Position::Set before calling set_kind"
                     .to_string(),
             ));
+        }
+
+        // `A -> B` — function Kind. Parsing already supports nested `->`
+        // (`parser::expr`'s `LParen` arm), but `Kind::Function` itself
+        // doesn't exist yet — first-class function values land in a
+        // follow-up step (see backlog.md's higher-order-functions entry).
+        BinOp::Arrow => {
+            return Err(CompileError::Unsupported {
+                feature: "function values (`Domain -> Range` as a Kind)".to_string(),
+                span: Span::new(lhs.span.start, rhs.span.end),
+            });
         }
     })
 }

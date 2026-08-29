@@ -168,7 +168,12 @@ pub(crate) fn encode_comp_expr<'tm>(
                 ),
                 BinOp::Rem => Kind::IntsModulus,
                 BinOp::Quot => Kind::IntsDivision,
-                BinOp::Union | BinOp::Intersect | BinOp::SymDiff | BinOp::Concat => return None,
+                // `Arrow` is set-position only (a function Kind) and never
+                // elaborated into a value-producing `SemExprKind::BinOp` —
+                // see `solver::encode`'s matching arm.
+                BinOp::Union | BinOp::Intersect | BinOp::SymDiff | BinOp::Concat | BinOp::Arrow => {
+                    return None;
+                }
             };
             Some(tm.mk_term(kind, &[l, r]))
         }

@@ -697,6 +697,12 @@ fn encode_binop<'tm>(
         BinOp::Union | BinOp::Intersect | BinOp::SymDiff => {
             return Err(format!("set operation `{op:?}` not yet encodable"));
         }
+        // Set-position only (a function Kind, `Domain -> Range`) — never
+        // elaborated into a value-producing `SemExprKind::BinOp`, so this
+        // encoder should never actually be reached with it.
+        BinOp::Arrow => {
+            return Err("`->` is a set-position-only construct and has no value encoding".into());
+        }
     };
 
     // cvc5 implicitly widens Int to Real for arithmetic and ordering

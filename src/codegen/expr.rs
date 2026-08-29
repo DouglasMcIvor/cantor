@@ -592,6 +592,13 @@ impl<'ctx> Compiler<'ctx> {
                 Err(CompileError::ice("set operations not yet implemented"))
             }
             BinOp::Concat => unreachable!("handled above, before scalarize_to_int"),
+            // Set-position only (function Kind `Domain -> Range`) — never
+            // elaborated into a value-producing `SemExprKind::BinOp`, so
+            // codegen should never see one. See `solver::encode`'s matching
+            // arm for the same reasoning.
+            BinOp::Arrow => Err(CompileError::ice(
+                "`->` is a set-position-only construct and has no codegen",
+            )),
         }
     }
 

@@ -295,6 +295,13 @@ pub enum BinOp {
     // Logical (expect Bool operands)
     And,
     Or,
+    // Function-Kind constructor (set position only): `Domain -> Range`.
+    // Never produced by the general Pratt loop — only by the dedicated
+    // parenthesized-arrow grammar in `parser::expr` (see its module doc),
+    // since the bare top-level `->` in a signature is consumed separately
+    // by `parse_item`/`parse_sig_tail`. Right-associative, lowest
+    // precedence — see `binop_prec` and `needs_parens_left`'s special case.
+    Arrow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -833,6 +840,14 @@ fn needs_parens_left(parent: &BinOp, child: &ExprKind) -> bool {
     let ExprKind::BinOp { op: child_op, .. } = child else {
         return false;
     };
+    // `Arrow` is right-associative (unlike every other BinOp here), so an
+    // `Arrow` directly on the left of another `Arrow` came from an explicit
+    // `(A -> B) -> C` and must keep its parens even though the two have
+    // equal precedence — the generic "strictly looser binds looser" rule
+    // below only holds for left-associative operators.
+    if matches!(parent, BinOp::Arrow) && matches!(child_op, BinOp::Arrow) {
+        return true;
+    }
     binop_prec(child_op) < binop_prec(parent)
 }
 
@@ -849,6 +864,7 @@ fn needs_parens_right(parent: &BinOp, child: &ExprKind) -> bool {
 /// Precedence tier — higher number binds tighter.
 fn binop_prec(op: &BinOp) -> u8 {
     match op {
+        BinOp::Arrow => 0,
         BinOp::Or => 1,
         BinOp::And => 2,
         BinOp::Eq
@@ -890,6 +906,7 @@ impl fmt::Display for BinOp {
             Self::And => "and",
             Self::Or => "or",
             Self::Concat => "++",
+            Self::Arrow => "->",
         })
     }
 }

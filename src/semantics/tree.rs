@@ -730,6 +730,7 @@ impl std::fmt::Display for SemExpr {
 /// same tier as `+`/`-`/`*`/`/` since they're the same source operator.
 fn sem_binop_prec(op: &BinOp) -> u8 {
     match op {
+        BinOp::Arrow => 0,
         BinOp::Or => 1,
         BinOp::And => 2,
         BinOp::Eq

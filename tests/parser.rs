@@ -6,6 +6,8 @@ mod collections;
 mod comprehensions;
 #[path = "parser/errors.rs"]
 mod errors;
+#[path = "parser/function_kind.rs"]
+mod function_kind;
 #[path = "parser/helpers.rs"]
 mod helpers;
 #[path = "parser/items.rs"]
