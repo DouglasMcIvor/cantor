@@ -42,9 +42,36 @@ fn overloaded_functions_are_mangled_by_index() {
         ir.contains("@classify__ov1("),
         "expected the second overload mangled by index 1:\n{ir}"
     );
+    // An *ordinary* call still dispatches inline via the mangled names, not
+    // by calling through the bare name — the bare `@classify` now legitimately
+    // exists too (higher-order functions v0: a same-Kind-bucket overloaded
+    // name gets its own dispatch-chain wrapper so it can be taken as a
+    // function value, `compile_overload_value_wrappers`), but `main`'s own
+    // call site must not route through it.
     assert!(
-        !ir.contains("@classify("),
-        "the bare overloaded name must never be used as an LLVM function name:\n{ir}"
+        !ir.contains("call i64 @classify("),
+        "an ordinary call must dispatch inline via the mangled names, not by \
+         calling the value wrapper:\n{ir}"
+    );
+}
+
+#[test]
+fn same_bucket_overloaded_name_gets_a_dispatch_wrapper_under_its_bare_name() {
+    // Higher-order functions v0: `classify`'s two overloads share Kind
+    // `Int -> Int` (both `Nat`/`Int - Nat` domains elaborate to `Kind::Int`),
+    // so it's eligible to be taken as a value — codegen must give it a
+    // standalone entry point under the bare name.
+    let ir = ir_for_src(
+        "classify : Nat -> Int\n\
+         classify(x) = x\n\
+         classify : Int - Nat -> Int\n\
+         classify(x) = -x\n\
+         main : -> Int\n\
+         main() = classify(5)",
+    );
+    assert!(
+        ir.contains("define i64 @classify(i64"),
+        "expected a dispatch-chain wrapper defined under the bare name:\n{ir}"
     );
 }
 

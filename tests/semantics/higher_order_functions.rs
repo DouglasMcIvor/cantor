@@ -154,6 +154,8 @@ fn signature_domain_arrow_subexpression_has_function_kind_not_bool() {
 
 #[test]
 fn overloaded_function_name_cannot_be_used_as_a_value() {
+    // Different Kind buckets (Nat -> Nat is Kind::Int, Bool -> Bool is
+    // Kind::Bool) — genuinely ambiguous, no single Kind::Function fits.
     let err = elaborate_err(
         "f : Nat -> Nat\n\
          f(x) = x + 1\n\
@@ -165,6 +167,28 @@ fn overloaded_function_name_cannot_be_used_as_a_value() {
     assert!(
         matches!(err, CompileError::Unsupported { .. }),
         "expected Unsupported, got {err:?}"
+    );
+}
+
+#[test]
+fn same_kind_bucket_overloaded_function_can_be_used_as_a_value() {
+    // Both overloads elaborate to Kind::Int -> Kind::Int (Nat and
+    // Int - Nat both elaborate to Kind::Int) — one Kind bucket, so the
+    // name has exactly one well-defined Kind::Function and is eligible
+    // (codegen gives it a dispatch-chain wrapper, see
+    // codegen::overload_dispatch::compile_overload_value_wrappers).
+    let items = elaborate_src(
+        "classify : Nat -> Int\n\
+         classify(x) = x\n\
+         classify : Int - Nat -> Int\n\
+         classify(x) = -x\n\
+         holder : -> (Int -> Int)\n\
+         holder() = classify",
+    );
+    let body = function_body_expr(&items, "holder");
+    assert_eq!(
+        body.kind_of,
+        Kind::Function(vec![Kind::Int], Box::new(Kind::Int))
     );
 }
 

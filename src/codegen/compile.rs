@@ -331,6 +331,19 @@ pub(super) fn compile_elaborated<'ctx>(
         })
         .collect();
 
+    // Higher-order functions v0: give every overloaded name whose
+    // candidates share one Kind bucket its own dispatch-chain entry point,
+    // so it can be taken as a `Kind::Function` value — see
+    // `compile_overload_value_wrappers`'s doc comment. Must run before pass
+    // 2 below (not after): an ordinary function's own body, compiled in
+    // pass 2, may itself reference the wrapper as a bare value (`expr.rs`'s
+    // `Var` fallback looks it up by name), which needs it to already exist.
+    // `overload_dispatch` (read by this call) is already fully populated by
+    // pass 1 above; the wrapper's own body only calls already-*declared*
+    // (not yet necessarily compiled) mangled candidates, same as any
+    // ordinary forward call.
+    compiler.compile_overload_value_wrappers(sem_items)?;
+
     // Pass 2 — compile bodies with constants available. Borrows `decls`
     // (both elements are `Copy`) rather than consuming it, so the MVP event
     // loop's trampoline emission below can still look functions up by name/

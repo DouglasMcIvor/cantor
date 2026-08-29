@@ -5,13 +5,15 @@
 //! that file under the repo's line-count guideline — mirrors phase 1's own
 //! `encode.rs` → `encode_call.rs` split.
 
+use std::collections::HashMap;
+
 use inkwell::values::{BasicValue, BasicValueEnum, IntValue};
 
 use crate::{
-    ast::BinOp,
+    ast::{BinOp, Param},
     error::CompileError,
     kind::Kind,
-    semantics::tree::{SemExpr, SemExprKind},
+    semantics::tree::{SemExpr, SemExprKind, SemFunctionDef, SemItem},
     span::{Span, Symbol},
 };
 
@@ -431,5 +433,92 @@ impl<'ctx> Compiler<'ctx> {
             }
             None => msg,
         }
+    }
+
+    /// Higher-order functions v0 (backlog.md): compile a standalone
+    /// dispatch-chain wrapper for every overloaded name whose candidates
+    /// all agree on `(param_kinds, return_kind)` — the same "one Kind
+    /// bucket" condition `semantics::elaborate::expr`'s `Var` arm already
+    /// requires before assigning the name a `Kind::Function` at all
+    /// (checked again here independently, since codegen never sees
+    /// elaboration's verdict directly — same "recompute, don't trust a
+    /// side channel" precedent as this file's other checks). Declared
+    /// under the bare name (never used by an overload set otherwise — see
+    /// `compile_items`'s mangling comment), so a bare reference
+    /// (`expr.rs`'s `Var` fallback, `self.module.get_function(&sym.0)`)
+    /// finds it with no special-casing. Reuses `compile_overload_dispatch`
+    /// verbatim as the wrapper's whole body — the *same* runtime
+    /// membership-test chain an ordinary unresolved call already inlines
+    /// at its call site, just given its own entry point instead.
+    ///
+    /// Purely additive: the ordinary call path (`resolve_overload_call_target`/
+    /// `compile_overload_dispatch` inlined at a call site) never references
+    /// the bare name for an overloaded set and is unchanged by this.
+    pub(crate) fn compile_overload_value_wrappers(
+        &mut self,
+        sem_items: &[SemItem],
+    ) -> Result<(), CompileError> {
+        let mut groups: HashMap<&Symbol, Vec<&SemFunctionDef>> = HashMap::new();
+        for item in sem_items {
+            if let SemItem::FunctionDef(def) = item {
+                groups.entry(&def.name).or_default().push(def);
+            }
+        }
+        for (name, defs) in groups {
+            let [first, rest @ ..] = defs.as_slice() else {
+                continue;
+            };
+            if rest.is_empty() {
+                // Not an overload set — the bare name is already the
+                // ordinary declared function, nothing to add.
+                continue;
+            }
+            let one_bucket = rest
+                .iter()
+                .all(|d| d.param_kinds == first.param_kinds && d.return_kind == first.return_kind);
+            if !one_bucket {
+                continue;
+            }
+            let Some(candidates) = self.overload_dispatch.get(&name.0).cloned() else {
+                continue;
+            };
+            self.compile_one_overload_value_wrapper(
+                &name.0,
+                &candidates,
+                &first.params,
+                &first.param_kinds,
+                first.return_kind.clone(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn compile_one_overload_value_wrapper(
+        &mut self,
+        name: &str,
+        candidates: &[OverloadEntry],
+        params: &[Param],
+        param_kinds: &[Kind],
+        return_kind: Kind,
+    ) -> Result<(), CompileError> {
+        let function = self.declare_function(name, params, param_kinds, return_kind);
+        self.current_fn = Some(function);
+        self.fail_bb = None;
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let arg_values: Vec<BasicValueEnum<'ctx>> = function.get_param_iter().collect();
+        let candidate_refs: Vec<&OverloadEntry> = candidates.iter().collect();
+        let result = self.compile_overload_dispatch(
+            name,
+            &candidate_refs,
+            &arg_values,
+            param_kinds,
+            Span::dummy(),
+        )?;
+        self.builder
+            .build_return(Some(&result))
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        self.current_fn = None;
+        Ok(())
     }
 }

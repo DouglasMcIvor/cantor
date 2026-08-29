@@ -128,6 +128,7 @@ pub struct Compiler<'ctx> {
 }
 
 /// One candidate in an overload set — see `Compiler::overload_dispatch`.
+#[derive(Clone)]
 struct OverloadEntry {
     /// The LLVM function name this candidate was declared under
     /// (`{name}__ov{index}`).

@@ -55,3 +55,26 @@ fn function_value_stored_in_a_local_still_calls_correctly() {
     );
     assert_eq!(result, 42);
 }
+
+// ── Overloaded name as a value (same Kind bucket) ────────────────────────────
+
+#[test]
+fn overloaded_name_as_a_value_dispatches_to_the_matching_arm_at_runtime() {
+    // `classify`'s two overloads (Nat -> Int, (Int - Nat) -> Int) share Kind
+    // Int -> Int, so the name is eligible as a value — codegen must give it
+    // a dispatch-chain wrapper (`compile_overload_value_wrappers`) that
+    // picks the right arm at runtime, exercised for *both* branches through
+    // one indirect call site.
+    let result = jit_src_zero_arg(
+        "classify : Nat -> Int\n\
+         classify(x) = x\n\
+         classify : Int - Nat -> Int\n\
+         classify(x) = -x\n\
+         apply : (Int -> Int) * Int -> Int\n\
+         apply(f, x) = f(x)\n\
+         main : -> Int\n\
+         main() = apply(classify, 5) + apply(classify, -5)",
+    );
+    // classify(5) = 5 (Nat arm), classify(-5) = 5 (negated Int-Nat arm)
+    assert_eq!(result, 10);
+}

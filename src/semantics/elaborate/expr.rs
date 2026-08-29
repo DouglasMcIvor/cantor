@@ -82,24 +82,43 @@ pub(super) fn elaborate_expr(
                         // Not a local, not a named constant/set — a bare
                         // reference to a top-level *function* name, taken as
                         // a first-class value (higher-order functions v0).
-                        // Only a non-overloaded name has a single well-
-                        // defined Kind here: an overloaded name compiles to
-                        // several distinct LLVM functions with no one entry
-                        // point to take the address of (see
-                        // `codegen::overload_dispatch`), so it can't be a
-                        // value yet — a synthesized runtime-dispatch wrapper
-                        // is the planned follow-up (backlog.md).
+                        // A single-signature name has one obvious Kind; an
+                        // *overloaded* name (2+ `FunctionDef`s) also has one
+                        // whenever every candidate agrees exactly on
+                        // `(param_kinds, return_kind)` — the same "one Kind
+                        // bucket" condition `check_overload_kind_agreement`
+                        // already enforces *within* a bucket, checked again
+                        // here across the *whole* name (different-arity or
+                        // different-Kind-bucket overloads have no single
+                        // Kind, so stay `Unsupported`). Codegen compiles a
+                        // dedicated dispatch-chain wrapper under the bare
+                        // name for exactly this case
+                        // (`codegen::compile::compile_overload_value_wrappers`),
+                        // reusing `overload_dispatch`'s existing runtime
+                        // membership-test chain as a standalone entry point.
                         None => match ctx.fn_sigs.get(sym).map(Vec::as_slice) {
                             Some([only]) => Kind::Function(
                                 only.param_kinds.clone(),
                                 Box::new(only.return_kind.clone()),
                             ),
+                            Some([first, rest @ ..])
+                                if rest.iter().all(|s| {
+                                    s.param_kinds == first.param_kinds
+                                        && s.return_kind == first.return_kind
+                                }) =>
+                            {
+                                Kind::Function(
+                                    first.param_kinds.clone(),
+                                    Box::new(first.return_kind.clone()),
+                                )
+                            }
                             Some(_overloaded) => {
                                 return Err(CompileError::Unsupported {
                                     feature: format!(
-                                        "using overloaded function `{}` as a value — only \
-                                         a non-overloaded (single-signature) function can \
-                                         be referenced as a first-class value today",
+                                        "using overloaded function `{}` as a value — every \
+                                         overload must share the same parameter/return Kind \
+                                         (differing only in domain), since a function value \
+                                         has exactly one Kind",
                                         sym.0
                                     ),
                                     span,

@@ -91,3 +91,30 @@ fn calling_through_a_function_kind_param_out_of_its_declared_domain_is_a_real_co
         out.stdout
     );
 }
+
+#[test]
+fn same_kind_bucket_overloaded_name_as_a_value_does_not_crash() {
+    // `classify`'s two overloads share Kind Int -> Int, so it's eligible
+    // as a value (semantics::elaborate::expr's `Var` arm) and codegen
+    // gives it a dispatch-chain wrapper — end-to-end pin that this doesn't
+    // crash the CLI. Same as `double`, the call site passing `classify` in
+    // isn't solver-encodable yet, so `main` stays `unknown`, not a crash
+    // and not a false `proved`.
+    let out = run_file("higher_order_functions_v0_overload.cantor");
+    assert!(
+        !out.stdout.contains("panicked") && !out.stderr.contains("panicked"),
+        "must not panic:\nstdout: {}\nstderr: {}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        out.stdout.contains("proved          apply"),
+        "expected apply proved:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("proved          main"),
+        "main must not be falsely proved:\n{}",
+        out.stdout
+    );
+}

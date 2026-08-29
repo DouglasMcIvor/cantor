@@ -371,9 +371,33 @@ Algorithm:
   `single_tuple_param_function_has_a_different_domain_from_two_scalar_params`
   pins the Kind distinction directly since no full program can exercise it
   end-to-end yet.
-  **Still open:** overloaded names as values (synthesized runtime-dispatch
-  wrapper, see above) is the agreed next step, then `>>` composition
-  (design-decisions.md §10).
+  **Overloaded names as values: DONE.** An overloaded name (2+
+  `FunctionDef`s) can now be taken as a value too, whenever every candidate
+  agrees exactly on `(param_kinds, return_kind)` — the same "one Kind
+  bucket" condition `check_overload_kind_agreement` already enforces
+  *within* a bucket, checked again independently across the *whole* name in
+  both `semantics::elaborate::expr`'s `Var` arm (elaboration-time
+  eligibility/Kind) and `codegen::overload_dispatch::
+  compile_overload_value_wrappers` (codegen-time: recomputed from
+  `SemFunctionDef`s directly, not trusted from a side channel — same
+  precedent as everywhere else in this file). Different-arity or
+  different-Kind-bucket overloads stay `Unsupported` — no single Kind fits.
+  Codegen compiles a standalone dispatch-chain wrapper under the bare name
+  (never used by an overload set otherwise, so no collision) by reusing
+  `compile_overload_dispatch` verbatim — the *same* runtime membership-test
+  chain an ordinary unresolved call already inlines at its call site, just
+  given its own entry point; purely additive, the ordinary call path never
+  references the bare name and is unchanged. Wrappers are built eagerly for
+  every eligible overloaded name (not lazily on first value-reference) —
+  simpler, small constant cost, no separate usage-scanning pass needed.
+  Must run *before* pass 2 (body compilation), not after: an ordinary
+  function's own body may itself reference the wrapper as a bare value,
+  which needs it to already exist (a real ordering bug caught empirically,
+  fixed by moving the call). Verified by JIT-executing both dispatch
+  branches through one indirect call site
+  (`tests/codegen/higher_order_functions.rs`), not just inspecting IR.
+  **Still open:** `>>` composition (design-decisions.md §10) and the
+  call-site check above.
 - partial application via `_` as a placeholder `add(_, 1)` or `sub(1, _)` or `f(x, _, y, _)`
 - infix operators as named functions `(+)(1, 2)`, combines nicely `_` with as a placeholder 
 - once we have higher order functions we can add 'Litre = distinct Float32 deriving Ordered + Arithmetic + Printable' 

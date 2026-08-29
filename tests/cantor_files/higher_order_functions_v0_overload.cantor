@@ -1,0 +1,16 @@
+-- Higher-order functions v0 (backlog.md): an overloaded name whose
+-- candidates share one Kind bucket (both arms elaborate to Kind::Int ->
+-- Kind::Int) can be taken as a first-class value, same as a plain
+-- non-overloaded function -- codegen gives it a dispatch-chain wrapper
+-- under its own bare name (compile_overload_value_wrappers).
+
+classify : Nat -> Int
+classify(x) = x
+classify : Int - Nat -> Int
+classify(x) = -x
+
+apply : (Int -> Int) * Int -> Int
+apply(f, x) = f(x)
+
+main : -> Int
+main() = apply(classify, 5) + apply(classify, -5)
