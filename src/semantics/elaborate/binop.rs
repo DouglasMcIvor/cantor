@@ -236,6 +236,98 @@ pub(super) fn elaborate_binop(
             })
         }
 
+        // `f >> g` — function composition (design-decisions.md §10,
+        // higher-order functions v0). Value position only. Same catch-all
+        // hazard `Arrow` had just above, so a dedicated arm here too:
+        // without one, the generic comparisons/logical fallback would
+        // hardcode `kind_of: Kind::Bool`.
+        //
+        // **v0 restriction**: both operands must be *compile-time
+        // composable* — a bare reference to a real top-level function
+        // (`env.get(sym)` absent, i.e. not a local/param) or another `>>`
+        // node (checked recursively simply by having already passed this
+        // same arm). Composing a runtime-only function value (a parameter,
+        // a call result) would need a genuine closure capturing it at
+        // composition time — deliberately out of scope alongside general
+        // lambdas (see backlog.md); rejected here with a clear diagnostic,
+        // not deferred to a codegen-side ICE (`codegen::expr_call::
+        // compose_operand_name`'s ICE is a backstop for this invariant,
+        // not the primary check).
+        BinOp::Compose => {
+            if pos == Position::Set {
+                return Err(not_yet_implemented("`>>` in set position", span));
+            }
+            let l = elaborate_expr(lhs, Position::Value, ctx, env)?;
+            let r = elaborate_expr(rhs, Position::Value, ctx, env)?;
+            let compile_time_composable = |e: &SemExpr| {
+                matches!(&e.kind, SemExprKind::Var(sym) if env.get(sym).is_none())
+                    || matches!(
+                        &e.kind,
+                        SemExprKind::BinOp {
+                            op: BinOp::Compose,
+                            ..
+                        }
+                    )
+            };
+            if !compile_time_composable(&l) {
+                return Err(CompileError::Unsupported {
+                    feature: "`>>` composing a runtime-only function value (a parameter or \
+                              call result) — only a reference to a real top-level function, \
+                              or another `>>` composition of such, can be composed today"
+                        .to_string(),
+                    span: l.span,
+                });
+            }
+            if !compile_time_composable(&r) {
+                return Err(CompileError::Unsupported {
+                    feature: "`>>` composing a runtime-only function value (a parameter or \
+                              call result) — only a reference to a real top-level function, \
+                              or another `>>` composition of such, can be composed today"
+                        .to_string(),
+                    span: r.span,
+                });
+            }
+            let Kind::Function(l_domain, l_range) = &l.kind_of else {
+                return Err(CompileError::Unsupported {
+                    feature: format!(
+                        "`>>` requires a function value on the left, got Kind {:?}",
+                        l.kind_of
+                    ),
+                    span: l.span,
+                });
+            };
+            let Kind::Function(r_domain, r_range) = &r.kind_of else {
+                return Err(CompileError::Unsupported {
+                    feature: format!(
+                        "`>>` requires a function value on the right, got Kind {:?}",
+                        r.kind_of
+                    ),
+                    span: r.span,
+                });
+            };
+            let compatible = matches!(r_domain.as_slice(), [single] if
+                super::canonical_bucket_kind(single) == super::canonical_bucket_kind(l_range));
+            if !compatible {
+                return Err(CompileError::Unsupported {
+                    feature: format!(
+                        "`>>` requires the left function's range to match the right function's \
+                         single parameter — got range {l_range:?} and parameter(s) {r_domain:?}"
+                    ),
+                    span,
+                });
+            }
+            let result_kind_of = Kind::Function(l_domain.clone(), r_range.clone());
+            Ok(SemExpr {
+                kind: SemExprKind::BinOp {
+                    op: BinOp::Compose,
+                    lhs: Box::new(l),
+                    rhs: Box::new(r),
+                },
+                kind_of: result_kind_of,
+                span,
+            })
+        }
+
         BinOp::Concat => {
             let l = elaborate_expr(lhs, Position::Value, ctx, env)?;
             let r = elaborate_expr(rhs, Position::Value, ctx, env)?;

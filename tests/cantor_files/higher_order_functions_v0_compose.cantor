@@ -1,0 +1,18 @@
+-- Higher-order functions v0 (backlog.md), `>>` composition (design-
+-- decisions.md §10): `f >> g` synthesizes a standalone wrapper function
+-- computing g(f(x)) at codegen time (codegen::expr_call::
+-- ensure_compose_wrapper) -- verified via JIT execution in
+-- tests/codegen/higher_order_functions.rs; this fixture just pins the
+-- honest end-to-end CLI behavior (no crash, no false proved).
+
+double : Int -> Int
+double(x) = x + x
+
+inc : Int -> Int
+inc(x) = x + 1
+
+apply : (Int -> Int) * Int -> Int
+apply(f, x) = f(x)
+
+main : -> Int
+main() = apply(double >> inc, 5)

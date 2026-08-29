@@ -218,6 +218,10 @@ pub(crate) fn binary_builtin_domain(op: &BinOp, arg_idx: usize) -> Vec<(SemExpr,
         // `Arrow` (function Kind, set-position only) is never a binary
         // built-in operating on values — see `solver::encode`'s matching arm.
         (BinOp::Arrow, _) => vec![],
+        // `f >> g` — composition; each operand's "domain" is a Kind-level
+        // fact (must be `Kind::Function`), checked once at elaboration
+        // time, not a value-membership proof obligation.
+        (BinOp::Compose, _) => vec![],
         // ── Vector operations ─────────────────────────────────────────────────
         // `++` operands must be vectors; their element sorts are checked by CVC5.
         (BinOp::Concat, _) => vec![],

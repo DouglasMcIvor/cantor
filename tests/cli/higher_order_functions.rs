@@ -172,3 +172,31 @@ fn call_site_passing_an_overloaded_function_is_honestly_unknown_not_falsely_reje
         out.stdout
     );
 }
+
+#[test]
+fn compose_does_not_crash_and_apply_still_proves() {
+    // `apply(double >> inc, 5)` — `>>` composition (design-decisions.md
+    // §10). `apply` itself has nothing to do with composition (its own
+    // proof only trusts `f`'s declared contract, same as ever) so it must
+    // stay proved; `main`'s call site passes a *composed* value, not a
+    // bare function reference, which the structural check doesn't
+    // recognize yet (same honest-`unknown` boundary as an overloaded
+    // argument) — never a crash, never a false `proved`.
+    let out = run_file("higher_order_functions_v0_compose.cantor");
+    assert!(
+        !out.stdout.contains("panicked") && !out.stderr.contains("panicked"),
+        "must not panic:\nstdout: {}\nstderr: {}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        out.stdout.contains("proved          apply"),
+        "expected apply proved:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("proved          main"),
+        "main must not be falsely proved:\n{}",
+        out.stdout
+    );
+}

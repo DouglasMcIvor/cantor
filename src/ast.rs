@@ -302,6 +302,11 @@ pub enum BinOp {
     // by `parse_item`/`parse_sig_tail`. Right-associative, lowest
     // precedence — see `binop_prec` and `needs_parens_left`'s special case.
     Arrow,
+    // `f >> g` — left-to-right function composition (design-decisions.md
+    // §10, higher-order functions v0): value position only, `x -> g(f(x))`.
+    // A genuine Pratt operator (unlike `Arrow`), lowest precedence, left-
+    // associative.
+    Compose,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -865,6 +870,7 @@ fn needs_parens_right(parent: &BinOp, child: &ExprKind) -> bool {
 fn binop_prec(op: &BinOp) -> u8 {
     match op {
         BinOp::Arrow => 0,
+        BinOp::Compose => 0,
         BinOp::Or => 1,
         BinOp::And => 2,
         BinOp::Eq
@@ -907,6 +913,7 @@ impl fmt::Display for BinOp {
             Self::Or => "or",
             Self::Concat => "++",
             Self::Arrow => "->",
+            Self::Compose => ">>",
         })
     }
 }

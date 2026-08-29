@@ -438,8 +438,70 @@ Algorithm:
   `higher_order_functions_v0_conservative_reject.cantor` pins this so a
   future variance-checking change has a test that must flip from
   counterexample to proved, not silently regress the other way.
-  **Still open:** `>>` composition (design-decisions.md §10) is the only
-  remaining item from the original plan.
+  **`>>` composition: DONE** (design-decisions.md §10) — the last item
+  from the original plan. `f >> g` (`BinOp::Compose`, a genuine Pratt
+  operator — unlike `Arrow`, reachable anywhere in value-position
+  expression parsing, not just via a dedicated parenthesized grammar;
+  lowest precedence, left-associative — inserting it required shifting
+  every other operator's binding power in `peek_infix_op` by a uniform +2,
+  which broke three call sites that had hardcoded the *old* absolute
+  numbers instead of relative order: the labeled-union-arm parser's
+  `parse_expr(8)` (now 10, stopping before `|`), `!!`'s desugaring
+  (now 8/8, was 6/6), and `not`'s prefix binding power `PREFIX_BP_NOT`
+  (now 6, was 4) — all three caught by the existing test suite, not new
+  tests, a good reminder that "just shift all values uniformly" isn't
+  actually risk-free.
+  **v0 restriction**: both operands must be *compile-time composable* — a
+  bare reference to a real top-level function (single-signature, or an
+  eligible overloaded name) or another `>>` node, checked at elaboration
+  time (`semantics::elaborate::binop`'s `Compose` arm) with a clear
+  diagnostic, never deferred to a codegen-side ICE. Composing a
+  runtime-only value (a parameter, a call result) would need a genuine
+  closure capturing it at composition time — out of scope alongside
+  general lambdas, same boundary as everywhere else in this feature.
+  Codegen synthesizes a standalone wrapper per `>>` node
+  (`codegen::expr_call::ensure_compose_wrapper`/`build_compose_wrapper`,
+  a pre-pass mirroring the overload-value-wrapper one exactly, including
+  the same "must run before pass 2" ordering bug/fix) whose body is two
+  plain **direct** calls (not indirect — both callees are compile-time
+  known, per the restriction above), chaining `f`'s raw un-narrowed ABI-
+  form result straight into `g` with no widen/narrow in between (both
+  follow the same "everything crosses as i64 unless Tuple/TaggedUnion"
+  convention) and narrowing only the final result. Nested composition
+  (`f >> g >> h`) is handled by recursing into a `Compose` operand's own
+  wrapper-build first. `compile_expr`'s `BinOp::Compose` arm only *reads*
+  `self.compose_wrappers` (keyed by the node's span) — `compile_expr` is
+  `&self`, so it can't itself build a new function mid-compile, which is
+  what forces the pre-pass design in the first place (discovered the hard
+  way: the original design tried to synthesize the wrapper lazily inside
+  `compile_expr` and doesn't compile).
+  Verified by JIT-executing a stored composition, a three-way chain, and
+  a composed value passed through a function-Kind parameter — not just
+  inspecting IR (`tests/codegen/higher_order_functions.rs`).
+  **Split `semantics/tree.rs` → `tree_collect.rs`** (pure refactor, no
+  behaviour change) to stay under the repo's line-count guideline: the
+  new `collect_compose_nodes*` tree-walkers (used by the codegen pre-pass
+  to find every `>>` node in a body) joined the pre-existing
+  `collect_try_calls*` family, pushing the file over 1000 lines together;
+  moved both families out, re-exported via `pub use` from `tree.rs` so
+  every existing `semantics::tree::collect_*` call site keeps working
+  unchanged.
+  **Not covered by the call-site structural check** (documented, not a
+  regression — same honest-`unknown` boundary as an overloaded-function
+  argument): passing a `>>`-composed value into an ordinary call's
+  function-Kind parameter, e.g. `apply(double >> inc, 5)` — `
+  function_value_arg_membership` only recognizes a bare `Var` argument
+  today, so this stays `unknown`, never a false `proved`
+  (`tests/cli/higher_order_functions.rs`).
+  **Higher-order-functions v0 is now feature-complete** against the
+  original 4-item follow-up plan (call-site check, overloaded names as
+  values, the `Kind::Function` domain-representation fix, `>>`
+  composition) — see design-decisions.md §10 and this whole entry's
+  history for the full story. Remaining, more speculative follow-ons:
+  partial application (`_` placeholder), real variance/subtyping instead
+  of exact structural matching, extending the call-site check to
+  recognize a `>>` argument, and closures/lambdas (which would also
+  unlock composing runtime-only function values).
 - partial application via `_` as a placeholder `add(_, 1)` or `sub(1, _)` or `f(x, _, y, _)`
 - infix operators as named functions `(+)(1, 2)`, combines nicely `_` with as a placeholder 
 - once we have higher order functions we can add 'Litre = distinct Float32 deriving Ordered + Arithmetic + Printable' 

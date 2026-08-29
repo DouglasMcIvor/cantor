@@ -3,9 +3,10 @@ use inkwell::types::BasicType;
 use inkwell::values::BasicValueEnum;
 
 use crate::{
+    ast::{BinOp, Param},
     error::CompileError,
     kind::Kind,
-    semantics::tree::SemExpr,
+    semantics::tree::{SemExpr, SemExprKind, SemItem},
     span::{Span, Symbol},
 };
 
@@ -554,5 +555,214 @@ impl<'ctx> Compiler<'ctx> {
             _ => self.narrow_i64_param(result, range, "hof_call_narrow")?,
         };
         Ok((result, range.clone()))
+    }
+
+    /// `f >> g` (function composition, higher-order functions v0):
+    /// pre-built by `ensure_compose_wrapper` (`compile.rs`'s pre-pass,
+    /// mirroring `overload_dispatch::compile_overload_value_wrappers`) into
+    /// a standalone wrapper function under a synthesized name, recorded in
+    /// `self.compose_wrappers` keyed by this `>>` node's span (unique per
+    /// syntactic occurrence). `compile_expr`'s `Var` arm can't be reused
+    /// directly here since there's no `Symbol` to look up — this mirrors
+    /// its shape exactly (find the declared function, take its address),
+    /// just keyed by span. `&self`-only: `compile_expr` itself can't
+    /// mutate `self` to build a new function mid-compile (see
+    /// `ensure_compose_wrapper`'s doc comment for why the wrapper must
+    /// already exist by the time this runs).
+    pub(super) fn compile_compose_ref(
+        &self,
+        span: Span,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let name = self.compose_wrappers.get(&span).ok_or_else(|| {
+            CompileError::ice("compose wrapper not pre-built for this `>>` node (internal error)")
+        })?;
+        let function = self
+            .module
+            .get_function(name)
+            .ok_or_else(|| CompileError::ice(format!("compose wrapper `{name}` not declared")))?;
+        let ptr = function.as_global_value().as_pointer_value();
+        let as_i64 = self
+            .builder
+            .build_ptr_to_int(ptr, self.context.i64_type(), "compose_ptr")
+            .map_err(|e| CompileError::ice(e.to_string()))?;
+        let param_kinds = self.fn_param_kinds.get(name).cloned().ok_or_else(|| {
+            CompileError::ice(format!("compose wrapper `{name}` has no param_kinds"))
+        })?;
+        let return_kind = self.fn_return_kinds.get(name).cloned().ok_or_else(|| {
+            CompileError::ice(format!("compose wrapper `{name}` has no return_kind"))
+        })?;
+        Ok((
+            as_i64.into(),
+            Kind::Function(param_kinds, Box::new(return_kind)),
+        ))
+    }
+
+    /// Build `span`'s `>>` wrapper if it doesn't already exist: a small
+    /// standalone function whose body chains two ordinary direct calls,
+    /// `g(f(x))`, under a fresh synthesized name. `f_name`/`g_name` are
+    /// already-resolved LLVM function names (a real top-level function's
+    /// bare name, or another `>>` node's own wrapper name — see
+    /// `ensure_compose_wrapper`'s recursive pre-pass, which guarantees
+    /// nested composition's own wrapper exists first) — direct calls
+    /// suffice, no indirect call/address-taking needed, since both callees
+    /// are known at compile time.
+    ///
+    /// The two calls chain their raw (un-narrowed) results directly with
+    /// no widen/narrow step in between: `f`'s raw ABI-form result is
+    /// already exactly the ABI-form `g`'s call expects for its one
+    /// parameter (both follow the same "everything crosses as i64 unless
+    /// Tuple/TaggedUnion" convention) — only the *final* result (`g`'s) is
+    /// narrowed, once, before `build_return`.
+    pub(super) fn build_compose_wrapper(
+        &mut self,
+        wrapper_name: &str,
+        f_name: &str,
+        g_name: &str,
+    ) -> Result<(), CompileError> {
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+        let f = self
+            .module
+            .get_function(f_name)
+            .ok_or_else(|| CompileError::ice(format!("compose: `{f_name}` not declared")))?;
+        let g = self
+            .module
+            .get_function(g_name)
+            .ok_or_else(|| CompileError::ice(format!("compose: `{g_name}` not declared")))?;
+        let f_domain =
+            self.fn_param_kinds.get(f_name).cloned().ok_or_else(|| {
+                CompileError::ice(format!("compose: `{f_name}` has no param_kinds"))
+            })?;
+        let g_range =
+            self.fn_return_kinds.get(g_name).cloned().ok_or_else(|| {
+                CompileError::ice(format!("compose: `{g_name}` has no return_kind"))
+            })?;
+
+        let wrapper_params: Vec<Param> = (0..f_domain.len())
+            .map(|i| Param::new(&format!("a{i}")))
+            .collect();
+        let wrapper =
+            self.declare_function(wrapper_name, &wrapper_params, &f_domain, g_range.clone());
+
+        let saved_fn = self.current_fn;
+        let saved_fail_bb = self.fail_bb;
+        let saved_block = self.builder.get_insert_block();
+
+        self.current_fn = Some(wrapper);
+        self.fail_bb = None;
+        let entry = self.context.append_basic_block(wrapper, "entry");
+        self.builder.position_at_end(entry);
+
+        let wrapper_args: Vec<_> = wrapper.get_param_iter().map(Into::into).collect();
+        let f_call = self
+            .builder
+            .build_call(f, &wrapper_args, "compose_f")
+            .map_err(err)?;
+        let f_result = f_call
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::ice("compose: void return from f"))?;
+        let g_call = self
+            .builder
+            .build_call(g, &[f_result.into()], "compose_g")
+            .map_err(err)?;
+        let g_result = g_call
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::ice("compose: void return from g"))?;
+        let g_result_narrowed = match &g_range {
+            Kind::Tuple(_) | Kind::TaggedUnion(_) | Kind::Vector(_) | Kind::Set(_) => g_result,
+            k => self.narrow_i64_param(g_result, k, "compose_result_narrow")?,
+        };
+        self.builder
+            .build_return(Some(&g_result_narrowed))
+            .map_err(err)?;
+
+        self.current_fn = saved_fn;
+        self.fail_bb = saved_fail_bb;
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        Ok(())
+    }
+
+    /// Pre-build every `>>` composition wrapper reachable from any
+    /// function body in the file — `compile.rs`'s pre-pass, run after pass
+    /// 1 (declarations) and after `compile_overload_value_wrappers` (a
+    /// composed operand might itself be an eligible overloaded name,
+    /// needing *its* wrapper to already exist) but before pass 2 (body
+    /// compilation): an ordinary function's own body may reference a `>>`
+    /// value, which needs the wrapper to already exist by then, same
+    /// ordering reason as the overload wrappers.
+    pub(crate) fn ensure_all_compose_wrappers(
+        &mut self,
+        sem_items: &[SemItem],
+    ) -> Result<(), CompileError> {
+        for item in sem_items {
+            if let SemItem::FunctionDef(def) = item {
+                for node in crate::semantics::tree::collect_compose_nodes(&def.body) {
+                    self.ensure_compose_wrapper(node)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Build `expr`'s wrapper if it doesn't already exist (checked by span,
+    /// so re-visiting the same node — e.g. as another node's already-
+    /// resolved operand — is a cheap no-op, not a duplicate build).
+    /// Recurses into a `Compose` operand that's itself a `Compose` node
+    /// first, so nested composition (`f >> g >> h`) always has its inner
+    /// wrapper built before the outer one tries to call it.
+    fn ensure_compose_wrapper(&mut self, expr: &SemExpr) -> Result<(), CompileError> {
+        if self.compose_wrappers.contains_key(&expr.span) {
+            return Ok(());
+        }
+        let SemExprKind::BinOp {
+            op: BinOp::Compose,
+            lhs,
+            rhs,
+        } = &expr.kind
+        else {
+            return Err(CompileError::ice(
+                "ensure_compose_wrapper: not a Compose node (internal error)",
+            ));
+        };
+        let f_name = self.compose_operand_name(lhs)?;
+        let g_name = self.compose_operand_name(rhs)?;
+        self.compose_counter += 1;
+        let wrapper_name = format!("__compose_{}", self.compose_counter);
+        self.build_compose_wrapper(&wrapper_name, &f_name, &g_name)?;
+        self.compose_wrappers.insert(expr.span, wrapper_name);
+        Ok(())
+    }
+
+    /// The already-declared LLVM name behind a `>>` operand — a bare
+    /// function reference (`Var`, including an eligible overloaded name's
+    /// dispatch wrapper, already built by `compile_overload_value_wrappers`
+    /// before this pre-pass runs) or another `Compose` node (built here,
+    /// recursively, if not already). Any other shape is an elaborator
+    /// invariant violation: `semantics::elaborate::binop`'s `Compose` arm
+    /// only accepts these two.
+    fn compose_operand_name(&mut self, operand: &SemExpr) -> Result<String, CompileError> {
+        match &operand.kind {
+            SemExprKind::Var(sym) => Ok(sym.0.clone()),
+            SemExprKind::BinOp {
+                op: BinOp::Compose, ..
+            } => {
+                self.ensure_compose_wrapper(operand)?;
+                self.compose_wrappers
+                    .get(&operand.span)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CompileError::ice(
+                            "compose wrapper missing right after building it (internal error)",
+                        )
+                    })
+            }
+            other => Err(CompileError::ice(format!(
+                "compose operand {other:?} is neither a bare function reference nor another \
+                 `>>` node (elaborator invariant)"
+            ))),
+        }
     }
 }

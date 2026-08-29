@@ -235,3 +235,58 @@ fn parse_and_tighter_than_or() {
     assert_eq!(op, BinOp::Or);
     assert!(matches!(rhs.kind, ExprKind::BinOp { op: BinOp::And, .. }));
 }
+
+// ── `>>` function composition (design-decisions.md §10) ──────────────────────
+
+#[test]
+fn parse_compose() {
+    assert!(matches!(
+        parse("f >> g"),
+        ExprKind::BinOp {
+            op: BinOp::Compose,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn parse_compose_is_left_assoc() {
+    // f >> g >> h  →  Compose(Compose(f, g), h)
+    assert_eq!(
+        inorder_ops(&parse("f >> g >> h")),
+        vec![BinOp::Compose, BinOp::Compose]
+    );
+    let ExprKind::BinOp { lhs, .. } = parse("f >> g >> h") else {
+        panic!()
+    };
+    assert!(matches!(
+        lhs.kind,
+        ExprKind::BinOp {
+            op: BinOp::Compose,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn parse_compose_binds_looser_than_or() {
+    // a or b >> c  →  Compose(Or(a, b), c) -- `>>` is the loosest operator
+    let ExprKind::BinOp { op, lhs, .. } = parse("a or b >> c") else {
+        panic!()
+    };
+    assert_eq!(op, BinOp::Compose);
+    assert!(matches!(lhs.kind, ExprKind::BinOp { op: BinOp::Or, .. }));
+}
+
+#[test]
+fn parse_gt_still_parses_as_a_single_gt_not_two() {
+    // Regression: `>>`'s lexer must not swallow a lone `>` (or a `>=`).
+    assert!(matches!(
+        parse("a > b"),
+        ExprKind::BinOp { op: BinOp::Gt, .. }
+    ));
+    assert!(matches!(
+        parse("a >= b"),
+        ExprKind::BinOp { op: BinOp::Ge, .. }
+    ));
+}

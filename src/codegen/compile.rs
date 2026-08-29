@@ -344,6 +344,13 @@ pub(super) fn compile_elaborated<'ctx>(
     // ordinary forward call.
     compiler.compile_overload_value_wrappers(sem_items)?;
 
+    // `>>` composition (design-decisions.md §10): after the overload
+    // wrappers above (a composed operand may itself be an eligible
+    // overloaded name, needing its own wrapper first) and before pass 2
+    // (same "an ordinary body may reference this as a bare value" ordering
+    // reason as the overload wrappers).
+    compiler.ensure_all_compose_wrappers(sem_items)?;
+
     // Pass 2 — compile bodies with constants available. Borrows `decls`
     // (both elements are `Copy`) rather than consuming it, so the MVP event
     // loop's trampoline emission below can still look functions up by name/

@@ -334,6 +334,21 @@ pub(crate) fn encode_expr<'tm>(
             path_cond.clone(),
         ),
 
+        // `f >> g` — function composition (higher-order functions v0):
+        // like a bare function-name reference, this produces a
+        // `Kind::Function` value with no CVC5 sort — an unconstrained
+        // fresh placeholder, same trick as `Var`'s function-value fallback
+        // above, never semantically read (see this match's `Var` arm).
+        SemExprKind::BinOp {
+            op: BinOp::Compose, ..
+        } => {
+            *ctx.call_counter += 1;
+            Ok(ctx.tm.mk_const(
+                ctx.tm.boolean_sort(),
+                &format!("_compose_{}", *ctx.call_counter),
+            ))
+        }
+
         SemExprKind::BinOp { op, lhs, rhs } => {
             encode_binop(op, lhs, rhs, expr.span, env, ctx, path_cond.clone())
         }
@@ -724,6 +739,9 @@ fn encode_binop<'tm>(
         BinOp::Arrow => {
             return Err("`->` is a set-position-only construct and has no value encoding".into());
         }
+        // Intercepted earlier in `encode_expr`, before this function is
+        // ever called with it — see that match arm.
+        BinOp::Compose => unreachable!("Compose is intercepted in encode_expr before encode_binop"),
     };
 
     // cvc5 implicitly widens Int to Real for arithmetic and ordering

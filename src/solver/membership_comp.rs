@@ -171,7 +171,12 @@ pub(crate) fn encode_comp_expr<'tm>(
                 // `Arrow` is set-position only (a function Kind) and never
                 // elaborated into a value-producing `SemExprKind::BinOp` —
                 // see `solver::encode`'s matching arm.
-                BinOp::Union | BinOp::Intersect | BinOp::SymDiff | BinOp::Concat | BinOp::Arrow => {
+                BinOp::Union
+                | BinOp::Intersect
+                | BinOp::SymDiff
+                | BinOp::Concat
+                | BinOp::Arrow
+                | BinOp::Compose => {
                     return None;
                 }
             };

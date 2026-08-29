@@ -125,6 +125,17 @@ pub struct Compiler<'ctx> {
     /// `compile_items`/`compile_file`/REPL/`llvm-ir` (no solver-verified
     /// tree), same "no tree ⇒ conservative" default as `overflow_checks`.
     overload_resolution: HashMap<Span, usize>,
+    /// Higher-order functions v0 (`>>` composition): span of the `>>` node
+    /// → its pre-built standalone wrapper's LLVM name
+    /// (`expr_call::ensure_compose_wrapper`/`build_compose_wrapper`,
+    /// `compile.rs`'s pre-pass). `compile_expr`'s `BinOp::Compose` arm only
+    /// reads this (it's `&self`, can't build a new function mid-compile —
+    /// see `ensure_compose_wrapper`'s doc comment).
+    compose_wrappers: HashMap<Span, String>,
+    /// Unique-name counter for `>>` wrappers (`__compose_N`) — distinct
+    /// `f >> g` nodes never collide on the same LLVM name even when `f`/`g`
+    /// repeat across them.
+    compose_counter: usize,
 }
 
 /// One candidate in an overload set — see `Compiler::overload_dispatch`.
@@ -168,6 +179,8 @@ impl<'ctx> Compiler<'ctx> {
             overflow_ctx: None,
             overload_dispatch: HashMap::new(),
             overload_resolution: HashMap::new(),
+            compose_wrappers: HashMap::new(),
+            compose_counter: 0,
         }
     }
 

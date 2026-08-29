@@ -11,4 +11,5 @@
 pub mod builtins;
 pub mod elaborate;
 pub mod tree;
+mod tree_collect;
 mod wellfounded;

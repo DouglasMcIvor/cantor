@@ -276,12 +276,12 @@ impl<'src> Parser<'src> {
         loop {
             let label = self.expect_ident()?;
             self.expect(&Token::Colon)?;
-            // min_bp 8 stops the arm expression right before a following `|`
-            // arm separator (lbp 7, see `peek_infix_op`) instead of
+            // min_bp 10 stops the arm expression right before a following `|`
+            // arm separator (lbp 9, see `peek_infix_op`) instead of
             // swallowing it as an ordinary union operator — still binds
             // tighter operators like `*`/`+`/`&` (all higher lbp) normally,
             // so `Rect: Nat * Nat` still parses `Nat * Nat` as one arm.
-            let arm = self.parse_expr(8)?;
+            let arm = self.parse_expr(10)?;
             labels.push(label);
             arms.push(arm);
             if self.peek() == &Token::Pipe {

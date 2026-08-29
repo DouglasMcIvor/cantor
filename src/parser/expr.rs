@@ -42,7 +42,7 @@ fn token_starts_expr_after_star(tok: &Token) -> bool {
 
 // ── Binding powers ────────────────────────────────────────────────────────────
 
-const PREFIX_BP_NOT: u8 = 4; // absorbs comparisons: `not x == y` → `not (x == y)`
+const PREFIX_BP_NOT: u8 = 6; // absorbs comparisons: `not x == y` → `not (x == y)`
 const PREFIX_BP_NEG: u8 = 17; // tighter than `*`/`/`: `-x * y` → `(-x) * y`
 
 fn infix_bp_not_in() -> (u8, u8) {
@@ -182,15 +182,16 @@ impl<'src> Parser<'src> {
                 continue;
             }
 
-            // `!!` desugars to `lhs | (Fail * rhs)` — same precedences as before:
-            // lbp=6 so `A | B !! C` = `(A | B) !! C`, rbp=6 so `A !! B | C` = `A !! (B | C)`.
+            // `!!` desugars to `lhs | (Fail * rhs)` — sits one below `|`'s own
+            // lbp (see `peek_infix_op`, currently 9): lbp=8 so `A | B !! C` =
+            // `(A | B) !! C`, rbp=8 so `A !! B | C` = `A !! (B | C)`.
             if self.peek() == &Token::BangBang {
-                if 6 <= min_bp {
+                if 8 <= min_bp {
                     break;
                 }
                 let op_span = self.peek_span();
                 self.advance()?;
-                let rhs = self.parse_expr(6)?;
+                let rhs = self.parse_expr(8)?;
                 let fail_var = Expr::new(ExprKind::Var(Symbol::new("Fail")), op_span);
                 let fail_product = make_binop(BinOp::Mul, fail_var, rhs, op_span);
                 lhs = make_binop(BinOp::Union, lhs, fail_product, op_span);
@@ -539,25 +540,31 @@ impl<'src> Parser<'src> {
 
     fn peek_infix_op(&self) -> Option<(u8, u8, BinOp)> {
         let (lbp, rbp, op) = match self.peek() {
-            Token::Or => (1, 2, BinOp::Or),
-            Token::And => (3, 4, BinOp::And),
-            Token::EqEq => (5, 6, BinOp::Eq),
-            Token::BangEq => (5, 6, BinOp::Ne),
-            Token::Lt => (5, 6, BinOp::Lt),
-            Token::LtEq => (5, 6, BinOp::Le),
-            Token::Gt => (5, 6, BinOp::Gt),
-            Token::GtEq => (5, 6, BinOp::Ge),
-            Token::In => (5, 6, BinOp::In),
-            Token::Pipe => (7, 8, BinOp::Union),
-            Token::Caret => (9, 10, BinOp::SymDiff),
-            Token::Amp => (11, 12, BinOp::Intersect),
-            Token::Plus => (13, 14, BinOp::Add),
-            Token::Minus => (13, 14, BinOp::Sub),
-            Token::PlusPlus => (13, 14, BinOp::Concat),
-            Token::Star => (15, 16, BinOp::Mul),
-            Token::Slash => (15, 16, BinOp::Div),
-            Token::Rem => (15, 16, BinOp::Rem),
-            Token::Quot => (15, 16, BinOp::Quot),
+            // Lowest precedence, left-associative — function composition
+            // operates on function values, a different domain from every
+            // other operator here, so relative precedence against them is
+            // moot in practice; placed loosest since `f >> g >> h` reads
+            // like a top-level pipeline, not a sub-expression of anything.
+            Token::Compose => (1, 2, BinOp::Compose),
+            Token::Or => (3, 4, BinOp::Or),
+            Token::And => (5, 6, BinOp::And),
+            Token::EqEq => (7, 8, BinOp::Eq),
+            Token::BangEq => (7, 8, BinOp::Ne),
+            Token::Lt => (7, 8, BinOp::Lt),
+            Token::LtEq => (7, 8, BinOp::Le),
+            Token::Gt => (7, 8, BinOp::Gt),
+            Token::GtEq => (7, 8, BinOp::Ge),
+            Token::In => (7, 8, BinOp::In),
+            Token::Pipe => (9, 10, BinOp::Union),
+            Token::Caret => (11, 12, BinOp::SymDiff),
+            Token::Amp => (13, 14, BinOp::Intersect),
+            Token::Plus => (15, 16, BinOp::Add),
+            Token::Minus => (15, 16, BinOp::Sub),
+            Token::PlusPlus => (15, 16, BinOp::Concat),
+            Token::Star => (17, 18, BinOp::Mul),
+            Token::Slash => (17, 18, BinOp::Div),
+            Token::Rem => (17, 18, BinOp::Rem),
+            Token::Quot => (17, 18, BinOp::Quot),
             _ => return None,
         };
         Some((lbp, rbp, op))

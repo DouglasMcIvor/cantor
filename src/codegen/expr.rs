@@ -105,6 +105,12 @@ impl<'ctx> Compiler<'ctx> {
                 lhs,
                 rhs,
             } => self.compile_rem_quot(*op, lhs, rhs, env, expr.span),
+            // `f >> g` — pre-built by `ensure_all_compose_wrappers` before
+            // any body compilation runs; this just looks its address up by
+            // span, mirroring `Var`'s own function-value fallback above.
+            SemExprKind::BinOp {
+                op: BinOp::Compose, ..
+            } => self.compile_compose_ref(expr.span),
             SemExprKind::BinOp { op, lhs, rhs } => {
                 self.compile_binop(*op, lhs, rhs, env, expr.span)
             }
@@ -622,6 +628,11 @@ impl<'ctx> Compiler<'ctx> {
             BinOp::Arrow => Err(CompileError::ice(
                 "`->` is a set-position-only construct and has no codegen",
             )),
+            // Intercepted earlier in `compile_expr`'s own `BinOp` dispatch,
+            // before this function is ever called with it — see that arm.
+            BinOp::Compose => {
+                unreachable!("Compose is intercepted in compile_expr before compile_binop")
+            }
         }
     }
 

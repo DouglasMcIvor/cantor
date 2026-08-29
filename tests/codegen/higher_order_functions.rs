@@ -78,3 +78,56 @@ fn overloaded_name_as_a_value_dispatches_to_the_matching_arm_at_runtime() {
     // classify(5) = 5 (Nat arm), classify(-5) = 5 (negated Int-Nat arm)
     assert_eq!(result, 10);
 }
+
+// ── `>>` function composition (design-decisions.md §10) ──────────────────────
+
+#[test]
+fn compose_stored_in_a_local_executes_correctly() {
+    let result = jit_src_zero_arg(
+        "double : Int -> Int\n\
+         double(x) = x + x\n\
+         inc : Int -> Int\n\
+         inc(x) = x + 1\n\
+         main : -> Int\n\
+         main() {\n\
+             mut h : (Int -> Int) = double >> inc\n\
+             h(5)\n\
+         }",
+    );
+    // double(5) = 10, inc(10) = 11
+    assert_eq!(result, 11);
+}
+
+#[test]
+fn compose_chain_of_three_executes_left_to_right() {
+    let result = jit_src_zero_arg(
+        "double : Int -> Int\n\
+         double(x) = x + x\n\
+         inc : Int -> Int\n\
+         inc(x) = x + 1\n\
+         square : Int -> Int\n\
+         square(x) = x * x\n\
+         main : -> Int\n\
+         main() {\n\
+             mut h : (Int -> Int) = double >> inc >> square\n\
+             h(5)\n\
+         }",
+    );
+    // double(5) = 10, inc(10) = 11, square(11) = 121
+    assert_eq!(result, 121);
+}
+
+#[test]
+fn compose_passed_through_a_function_kind_param_executes_correctly() {
+    let result = jit_src_zero_arg(
+        "double : Int -> Int\n\
+         double(x) = x + x\n\
+         inc : Int -> Int\n\
+         inc(x) = x + 1\n\
+         apply : (Int -> Int) * Int -> Int\n\
+         apply(f, x) = f(x)\n\
+         main : -> Int\n\
+         main() = apply(double >> inc, 5)",
+    );
+    assert_eq!(result, 11);
+}

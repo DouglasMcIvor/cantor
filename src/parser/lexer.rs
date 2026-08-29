@@ -81,12 +81,13 @@ pub enum Token {
     Amp,      // &  intersection
 
     // Comparison
-    EqEq,   // ==
-    BangEq, // !=
-    Lt,     // <
-    LtEq,   // <=
-    Gt,     // >
-    GtEq,   // >=
+    EqEq,    // ==
+    BangEq,  // !=
+    Lt,      // <
+    LtEq,    // <=
+    Gt,      // >
+    GtEq,    // >=
+    Compose, // >>  (left-to-right function composition, design-decisions.md §10)
 
     // Definition / assignment
     Eq,      // =   (initial binding, pure-body connector)
@@ -250,6 +251,7 @@ impl fmt::Display for Token {
             Token::LtEq => f.write_str("<="),
             Token::Gt => f.write_str(">"),
             Token::GtEq => f.write_str(">="),
+            Token::Compose => f.write_str(">>"),
             Token::Eq => f.write_str("="),
             Token::ColonEq => f.write_str(":="),
             Token::Arrow => f.write_str("->"),
@@ -808,6 +810,9 @@ impl<'src> Lexer<'src> {
                     if self.peek_char() == Some('=') {
                         self.advance_char();
                         Token::GtEq
+                    } else if self.peek_char() == Some('>') {
+                        self.advance_char();
+                        Token::Compose
                     } else {
                         Token::Gt
                     }

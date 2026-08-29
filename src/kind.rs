@@ -18,6 +18,7 @@ use crate::ast::{
 };
 use crate::error::CompileError;
 use crate::semantics::builtins;
+use crate::span::Span;
 
 /// All the possible fundamental Cantor values
 ///
@@ -115,17 +116,20 @@ pub enum Kind {
     /// Wire type: i64 (pointer-as-i64) to a heap-allocated Apache Arrow array.
     Vector(Box<Kind>),
     /// i64 (function pointer) — a first-class function value, `Domain ->
-    /// Range` (see `BinOp::Arrow`, `set_kind`'s matching arm). No closures:
-    /// the only values of this Kind are references to non-overloaded
-    /// top-level named functions (`semantics::elaborate::expr`'s `Var`
-    /// fallback), so there's never an environment to capture — a plain
-    /// function pointer is the whole representation, reusing every piece of
-    /// scalar-Kind plumbing (tuple leaves, `Fail`/`IfMerge` wire) that
-    /// treats a Kind as "one i64" already, the same trick `Rational`'s
-    /// boxed-pointer representation uses. Overloaded names can't be taken
-    /// as a value yet — no single LLVM entry point exists for them (see
-    /// backlog.md's higher-order-functions entry for the follow-up that
-    /// synthesizes one).
+    /// Range` (see `BinOp::Arrow`, `set_kind`'s matching arm). No general
+    /// closures: the only values of this Kind are references to a real
+    /// top-level named function (`semantics::elaborate::expr`'s `Var`
+    /// fallback — single-signature, or an overloaded name whose candidates
+    /// all agree on Kind, given its own synthesized dispatch-chain wrapper
+    /// by `codegen::overload_dispatch::compile_overload_value_wrappers`) or
+    /// a `>>` composition of such (`BinOp::Compose`, design-decisions.md
+    /// §10 — elaboration restricts both operands to compile-time-known
+    /// functions for exactly this reason, so its own wrapper needs no
+    /// captured environment either). A plain function pointer is always the
+    /// whole representation, reusing every piece of scalar-Kind plumbing
+    /// (tuple leaves, `Fail`/`IfMerge` wire) that treats a Kind as "one
+    /// i64" already, the same trick `Rational`'s boxed-pointer
+    /// representation uses.
     ///
     /// The domain is the **flat per-parameter Kind list** (one entry per
     /// real LLVM parameter — `codegen::declare_function`'s own
@@ -436,6 +440,28 @@ fn binop_kind(
                  rejected this in Position::Set before calling set_kind"
                     .to_string(),
             ));
+        }
+
+        // `f >> g` — function composition, value position only (a set has
+        // no "composition"), same shape as the `rem`/`quot` case just
+        // above: `elaborate::binop`'s `Position::Set` arm rejects this
+        // before `set_kind` is ever called with one.
+        // Unlike `Arrow` just below (a legitimate Set-position Kind
+        // constructor), `Compose` has no set-forming meaning at all —
+        // value position only. Genuinely user-reachable here (not just a
+        // "should never happen" internal check): a domain/range annotation
+        // using `>>` reaches this *first*, via `function_param_kinds`'s
+        // direct `set_kind` call during elaboration's first pass, before
+        // `elaborate_binop`'s own `Position::Set` rejection ever runs (the
+        // same two-pass structure `Arrow`'s doc comment on
+        // `signature_domain_arrow_subexpression_has_function_kind_not_bool`
+        // describes) — confirmed empirically, not a hypothetical, so this
+        // is `Unsupported`, not `Ice`.
+        BinOp::Compose => {
+            return Err(CompileError::Unsupported {
+                feature: "`>>` (function composition) in a domain/range annotation".to_string(),
+                span: Span::new(lhs.span.start, rhs.span.end),
+            });
         }
 
         // `A -> B` — function Kind. `A` flattens through `*` the same way an

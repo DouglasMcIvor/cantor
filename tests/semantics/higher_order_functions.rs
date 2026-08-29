@@ -263,3 +263,100 @@ fn passing_wrong_shaped_function_still_elaborates_by_kind_only() {
     let body = function_body_expr(&items, "main");
     assert_eq!(body.kind_of, Kind::Int);
 }
+
+// ── `>>` function composition (design-decisions.md §10) ──────────────────────
+
+#[test]
+fn compose_of_two_functions_has_domain_of_left_and_range_of_right() {
+    let items = elaborate_src(
+        "double : Int -> Int\n\
+         double(x) = x + x\n\
+         is_even : Int -> Bool\n\
+         is_even(x) = x rem 2 == 0\n\
+         holder : -> (Int -> Bool)\n\
+         holder() = double >> is_even",
+    );
+    let body = function_body_expr(&items, "holder");
+    assert_eq!(
+        body.kind_of,
+        Kind::Function(vec![Kind::Int], Box::new(Kind::Bool))
+    );
+    assert!(matches!(
+        &body.kind,
+        SemExprKind::BinOp {
+            op: cantor::ast::BinOp::Compose,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn compose_chain_of_three_right_range_and_left_domain() {
+    let items = elaborate_src(
+        "double : Int -> Int\n\
+         double(x) = x + x\n\
+         inc : Int -> Int\n\
+         inc(x) = x + 1\n\
+         is_even : Int -> Bool\n\
+         is_even(x) = x rem 2 == 0\n\
+         holder : -> (Int -> Bool)\n\
+         holder() = double >> inc >> is_even",
+    );
+    let body = function_body_expr(&items, "holder");
+    assert_eq!(
+        body.kind_of,
+        Kind::Function(vec![Kind::Int], Box::new(Kind::Bool))
+    );
+}
+
+#[test]
+fn compose_with_mismatched_kind_is_rejected() {
+    let err = elaborate_err(
+        "double : Int -> Int\n\
+         double(x) = x + x\n\
+         is_true : Bool -> Bool\n\
+         is_true(b) = b\n\
+         holder : -> (Int -> Bool)\n\
+         holder() = double >> is_true",
+    );
+    assert!(matches!(err, CompileError::Unsupported { .. }));
+}
+
+#[test]
+fn compose_of_a_runtime_parameter_is_rejected() {
+    let err = elaborate_err(
+        "inc : Int -> Int\n\
+         inc(x) = x + 1\n\
+         bad : (Int -> Int) -> (Int -> Int)\n\
+         bad(f) = f >> inc",
+    );
+    assert!(matches!(err, CompileError::Unsupported { .. }));
+}
+
+#[test]
+fn compose_in_set_position_is_rejected() {
+    // `Compose` has no set-forming meaning at all (unlike `Arrow`, a
+    // legitimate Set-position Kind constructor) — a domain/range
+    // annotation using `>>` is `Unsupported`, caught by `kind::set_kind`'s
+    // own dedicated arm before `elaborate_binop`'s `Position::Set`
+    // rejection would even get a chance to run (`function_param_kinds`
+    // calls `set_kind` directly on the raw domain during elaboration's
+    // first pass — the same two-pass structure the `Arrow`-Kind test
+    // above documents). Confirmed empirically, not a hypothetical: this
+    // used to be a raw `unreachable!()`-style `Ice` here, since a
+    // lowercase function name in a domain position looks like it *should*
+    // be caught by the naming-convention check first, but that check
+    // doesn't recognize a compound `>>` expression as its target shape.
+    let err = elaborate_err(
+        "double : Int -> Int\n\
+         double(x) = x + x\n\
+         inc : Int -> Int\n\
+         inc(x) = x + 1\n\
+         weird : (double >> inc) -> Int\n\
+         weird(x) = 0",
+    );
+    assert!(
+        matches!(err, CompileError::Unsupported { .. }),
+        "expected Unsupported, got {err:?}"
+    );
+}
