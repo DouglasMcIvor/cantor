@@ -124,6 +124,15 @@ pub(crate) struct BlockCtx<'a, 'tm> {
     /// them — see the review note on `check_require`'s previously-missing
     /// `tlimit`.
     pub(crate) timeout_ms: u64,
+    /// Names whose declared-invariant re-check on `Assign` should be skipped
+    /// because they are exactly the enclosing loop step's own `modified` set —
+    /// `check_loop_inductive_step`'s final obligation already verifies them,
+    /// so re-verifying inline would be redundant (and, for an `Unknown`
+    /// result, would abort a step that the combined check could still prove).
+    /// Empty outside a step body. Populated with the *immediately* enclosing
+    /// step's `modified` set only — a nested loop's own step body re-populates
+    /// it with its own `modified` set, it does not inherit this one.
+    pub(crate) suppress_invariant_recheck: &'a HashSet<Symbol>,
 }
 
 /// Process a sequence of statements, threading the SSA environment.
@@ -596,10 +605,12 @@ pub(crate) fn encode_block<'tm>(
                 let eq = ctx.encode.tm.mk_term(Kind::Equal, &[fresh.clone(), val]);
                 ctx.encode.solver.assert_formula(eq.clone());
                 // Verify (not just trust) that the new value satisfies the declared
-                // constraint. Inside loop bodies constraint_env is empty — the
-                // inductive step checker handles loop invariants separately — so
-                // this check only fires for non-loop reassignments.
-                if let Some(constraint) = ctx.constraint_env.get(name).cloned()
+                // constraint. Skipped for names in the enclosing step's own
+                // `modified` set — the inductive step checker's final obligation
+                // handles those — so this check only fires for non-loop
+                // reassignments and for outer-scope names a nested loop assigns.
+                if !ctx.suppress_invariant_recheck.contains(name)
+                    && let Some(constraint) = ctx.constraint_env.get(name).cloned()
                     && let Membership::Constrained(c) = membership_constraint(
                         ctx.encode.tm,
                         fresh.clone(),

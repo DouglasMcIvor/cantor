@@ -102,6 +102,32 @@ fn bool_tuple_lets_prove_and_run() {
     );
 }
 
+// ── Nested loop invariants (end-to-end) ────────────────────────────────────────
+
+#[test]
+fn nested_loop_outer_invariant_proves_and_runs() {
+    // A `mut` declared outside a loop but only reassigned inside a loop
+    // nested inside it used to report a false counterexample — see the
+    // fixture's own header comment and src/solver/loops.rs's
+    // `check_loop_inductive_step`.
+    let out = run_subcommand("nested_loop_outer_invariant.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("2 proved"),
+        "expected '2 proved' in summary:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("main() = 9"),
+        "expected 'main() = 9' (3x3 nested increments) in output:\n{}",
+        out.stdout
+    );
+}
+
 // ── Cross-kind comparison diagnostics (end-to-end) ─────────────────────────────
 
 #[test]

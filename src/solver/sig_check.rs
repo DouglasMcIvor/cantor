@@ -442,6 +442,7 @@ pub(super) fn check_block_sig(
     }
     let mut has_runtime_assert = false;
     let mut immutable_names: HashSet<Symbol> = HashSet::new();
+    let no_step_suppression: HashSet<Symbol> = HashSet::new();
 
     let result_sort = set_sort(&tm, &sig.range, &distinct_preds, name_defs);
     let mut block_ctx = BlockCtx {
@@ -465,6 +466,7 @@ pub(super) fn check_block_sig(
         overflow_checks: channels.overflow_checks,
         overload_resolutions: channels.overload_resolutions,
         timeout_ms,
+        suppress_invariant_recheck: &no_step_suppression,
     };
     let body_term = match encode_block(stmts, &mut env, &mut block_ctx, result_sort) {
         Ok(Some(t)) => t,

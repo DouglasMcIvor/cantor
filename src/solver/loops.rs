@@ -138,11 +138,18 @@ where
         return Some(err);
     }
 
-    // Encode one body iteration with an empty constraint env — we are checking
-    // the invariants, not assuming them.  Carry over immutable names from the
-    // outer scope so the body can't reassign them.
+    // Encode one body iteration. The constraint env is seeded from the full,
+    // already-known set of declared invariants (not left empty) so that a
+    // loop nested inside this body can still see outer-scope declarations —
+    // e.g. its own step check's `constrained` filter and post-loop reset for
+    // a variable declared outside *this* loop entirely. `Assign`'s own inline
+    // recheck of those declarations is suppressed instead via `modified`
+    // (this step's own set), since this step's final obligation below already
+    // verifies them — see `suppress_invariant_recheck` on `BlockCtx`.
+    // Carry over immutable names from the outer scope so the body can't
+    // reassign them.
     let mut body_env = ind_env;
-    let mut empty_cenv: HashMap<Symbol, SemExpr> = HashMap::new();
+    let mut body_cenv: HashMap<Symbol, SemExpr> = ctx.constraint_env.clone();
     let mut step_imm: HashSet<Symbol> = ctx.immutable_names.clone();
     let mut cc = 0usize;
     let mut obligs: Vec<BuiltinObligation<'tm>> = Vec::new();
@@ -166,12 +173,13 @@ where
             ssa_counter: &mut step_ssa,
             param_names: ctx.param_names,
             param_terms: ctx.param_terms,
-            constraint_env: &mut empty_cenv,
+            constraint_env: &mut body_cenv,
             has_runtime_assert: ctx.has_runtime_assert,
             immutable_names: &mut step_imm,
             overflow_checks: ctx.overflow_checks,
             overload_resolutions: ctx.overload_resolutions,
             timeout_ms: ctx.timeout_ms,
+            suppress_invariant_recheck: modified,
         };
         encode_block(body, &mut body_env, &mut block_ctx, None)
     };

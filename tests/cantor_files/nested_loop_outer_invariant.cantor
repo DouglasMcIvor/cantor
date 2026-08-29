@@ -1,0 +1,26 @@
+-- Regression fixture: a `mut` declared outside a loop, reassigned only
+-- inside a loop *nested* inside it, used to report a false counterexample.
+-- The outer loop's own inductive-step body encoding threaded an empty
+-- constraint env into the nested loop, so the nested loop's step check
+-- silently skipped verifying `acc`'s Nat invariant, and its post-loop
+-- "fresh value" carried no constraint at all — leaving the outer step to see
+-- a totally unconstrained value and falsely fail. See src/solver/loops.rs's
+-- `check_loop_inductive_step` (the `body_cenv`/`suppress_invariant_recheck`
+-- split) and src/solver/blocks.rs's `BlockCtx::suppress_invariant_recheck`.
+count_up : Nat -> Nat
+count_up(n) {
+    mut acc: Nat = 0
+    mut i: Nat = 0
+    while i < n {
+        mut j: Nat = 0
+        while j < n {
+            acc := acc + 1
+            j := j + 1
+        }
+        i := i + 1
+    }
+    acc
+}
+
+main : -> Nat
+main() = count_up(3)

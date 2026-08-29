@@ -569,3 +569,60 @@ f(n) {
 ",
     );
 }
+
+// ── Nested loops modifying an outer-scope invariant ────────────────────────────
+//
+// A `mut` declared outside a loop, but only ever reassigned inside a loop
+// *nested* inside it, used to report a false counterexample: the outer step's
+// body encoding threaded an empty constraint env into the nested loop, so the
+// nested loop's own step check silently skipped verifying the outer variable's
+// invariant, and its post-loop "fresh value" carried no constraint at all —
+// leaving the outer step to see a totally unconstrained value and falsely fail.
+// The identical single-loop version always proved fine.
+
+#[test]
+fn nested_while_loop_outer_invariant_proved() {
+    proved(
+        "
+count_up : Nat -> Nat
+count_up(n) {
+    mut acc: Nat = 0
+    mut i: Nat = 0
+    while i < n {
+        mut j: Nat = 0
+        while j < n {
+            acc := acc + 1
+            j := j + 1
+        }
+        i := i + 1
+    }
+    acc
+}
+",
+    );
+}
+
+#[test]
+fn nested_while_loop_outer_invariant_counterexample_when_genuinely_violated() {
+    let src = r#"
+count_down : Nat -> Nat
+count_down(n) {
+    mut acc: Nat = 3
+    mut i: Nat = 0
+    while i < n {
+        mut j: Nat = 0
+        while j < n {
+            acc := acc - 1
+            j := j + 1
+        }
+        i := i + 1
+    }
+    acc
+}"#;
+    let results = check(src);
+    assert!(
+        matches!(results[0].1, CheckResult::Counterexample { .. }),
+        "expected a genuine Counterexample (acc can go negative), got {:?}",
+        results[0].1
+    );
+}

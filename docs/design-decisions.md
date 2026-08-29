@@ -1655,6 +1655,28 @@ reachable iteration, so obligations proved there hold on all of them.
 while cond { stmts }
 ```
 
+**Nested loops and an outer-scope invariant — FIXED (2026-08-29)**: a `mut`
+declared outside a loop but only ever reassigned inside a loop *nested*
+inside it used to report a false counterexample, even though the identical
+single-loop version always proved. Root cause: the inductive-step body
+encoder deliberately threads an empty constraint env into the body it's
+checking (so a reassignment inside that body doesn't redundantly re-verify
+its own invariant — the step's own final obligation already does that). A
+*nested* loop's own step check reused that same emptied env for its `constraint_env`,
+so it could no longer see the outer variable's declared invariant at all —
+it silently skipped verifying it, and produced a post-loop "fresh value"
+with no constraint whatsoever. That unconstrained value then flowed back
+into the *outer* step's own (correctly wired) final check, which found no
+reason it should stay in-range and reported a spurious counterexample.
+Fixed by splitting the one overloaded map into two: the constraint env seen
+by a nested loop is now the full, real set of known declared invariants
+(so it can verify and re-constrain any outer-scope variable it touches),
+while the "don't redundantly re-verify on reassignment" behaviour is now a
+separate exclusion set scoped to exactly the *immediately* enclosing step's
+own modified variables (`BlockCtx::suppress_invariant_recheck` in
+src/solver/blocks.rs; the split lives in
+`check_loop_inductive_step` in src/solver/loops.rs).
+
 **`for x in S` loops** — iterates over a set, binding `x` to each element.
 Works for compile-time set literals, comprehensions, runtime `Set(T)` values,
 and runtime `Vector(T)` (`X*`) values. Loop invariant semantics are identical
