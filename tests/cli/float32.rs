@@ -1,22 +1,49 @@
 //! `Float32`/`FiniteFloat32` (design-decisions.md §13, "`Float32` /
-//! `FiniteFloat32`"). Semantics step DONE: `Float32`/`FiniteFloat32` are
-//! registered builtin sets and Kind inference (literals, arithmetic,
-//! comparisons, `neg`) works — see tests/semantics/elaborate_tests.rs and
-//! tests/kind_tests.rs for that coverage directly. Solver/codegen are not
-//! implemented yet, so `solver::mod::reject_float32` (an upstream gate,
-//! TODO(float32): delete once those steps land) rejects any program that
-//! elaborates a `Kind::Float32` anywhere, cleanly, before the solver or
-//! codegen ever run.
-//!
-//! None of these prove a Float32 program usable yet — that's future work —
-//! this is purely "reject cleanly instead of crashing," end to end through
-//! the CLI.
+//! `FiniteFloat32`"). Semantics and solver steps DONE: `cantor <file>`
+//! (bare check-only mode, no codegen) elaborates and *proves* Float32
+//! signatures for real — see tests/semantics/elaborate_tests.rs and
+//! tests/solver/float32.rs for that coverage directly. Codegen isn't
+//! implemented yet, so `cantor run`/`cantor build` — which both compile —
+//! are rejected cleanly by `main::reject_float32_before_codegen` (an
+//! upstream gate, TODO(float32): delete once the codegen step lands)
+//! instead of crashing trying to compile a `Kind::Float32` value.
 
 use super::helpers::*;
 
 #[test]
-fn float32_in_value_position_is_rejected_by_the_upstream_gate() {
-    let out = run_file("float32_value_position_not_yet_supported.cantor");
+fn float32_check_only_mode_proves_the_signature() {
+    // Bare `cantor <file>` never reaches codegen at all — proof-only.
+    let out = run_file("float32_value_position.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("1 proved"),
+        "expected '1 proved' in summary:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn float32_in_signature_domain_check_only_mode_proves() {
+    let out = run_file("float32_domain_position.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("1 proved"),
+        "expected '1 proved' in summary:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn float32_in_value_position_is_rejected_before_run_codegen() {
+    let out = run_subcommand("float32_value_position.cantor");
     assert_ne!(
         out.code, 0,
         "expected non-zero exit\nstdout: {}\nstderr: {}",
@@ -35,8 +62,8 @@ fn float32_in_value_position_is_rejected_by_the_upstream_gate() {
 }
 
 #[test]
-fn float32_in_signature_domain_is_rejected_by_the_upstream_gate() {
-    let out = run_file("float32_domain_position_not_yet_supported.cantor");
+fn float32_in_signature_domain_is_rejected_before_run_codegen() {
+    let out = run_subcommand("float32_domain_position.cantor");
     assert_ne!(
         out.code, 0,
         "expected non-zero exit\nstdout: {}\nstderr: {}",

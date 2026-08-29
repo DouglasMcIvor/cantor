@@ -41,6 +41,32 @@ pub mod span_keyed_map {
     }
 }
 
+/// `#[serde(with = "float32_bits")]` for an `f32` field that can hold
+/// `nan32`/`infinity32` — plain `serde_json` serializes non-finite floats as
+/// JSON `null` (JSON's number grammar has no NaN/Infinity), which then fails
+/// to deserialize back into an `f32` at all ("invalid type: null, expected
+/// f32"). Every `Cantor` `ExprKind::FloatLit`/`SemExprKind::FloatLit` value
+/// crosses `solver::worker`'s subprocess boundary as JSON, so this round-
+/// trips via the raw IEEE bit pattern instead — lossless for every value,
+/// finite or not.
+pub mod float32_bits {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(x: &f32, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        s.serialize_u32(x.to_bits())
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(f32::from_bits(u32::deserialize(d)?))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Symbol(pub String);
 

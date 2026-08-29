@@ -12,7 +12,9 @@ use crate::{
 
 use super::NameDefs;
 use super::encode_call::{CallSite, encode_call};
-use super::encode_ctrl::{encode_if, encode_proj, encode_wrapping_binop, wrapping_info_for_sort};
+use super::encode_ctrl::{
+    encode_float32_binop, encode_if, encode_proj, encode_wrapping_binop, wrapping_info_for_sort,
+};
 use super::membership::{Membership, SolverPreds, membership_constraint};
 use super::obligations::{
     BuiltinObligation, OverflowObligation, OverloadCallObligation, binary_builtin_domain,
@@ -175,12 +177,15 @@ pub(crate) fn encode_expr<'tm>(
 
     let term = match &expr.kind {
         SemExprKind::IntLit(n) => Ok(ctx.tm.mk_integer(*n)),
-        // TODO(float32): solver step — should be `ctx.tm.mk_fp(8, 24, ...)`
-        // (cvc5's native FloatingPoint theory). Should be unreachable today:
-        // `solver::check_file` rejects any Float32-touching program before
-        // expression encoding ever runs.
-        SemExprKind::FloatLit(_) => {
-            Err("Float32 solver encoding not yet implemented (TODO(float32))".to_string())
+        // `mk_fp` takes the raw IEEE bit pattern packed into a 32-bit
+        // bitvector — covers every value uniformly (`infinity32`, `nan32`,
+        // `0.0f`/`-0.0f`, …), no separate constructor needed per special
+        // value the way `mk_fp_nan`/`mk_fp_pos_inf`/etc. would require.
+        SemExprKind::FloatLit(x) => {
+            let bits = ctx.tm.mk_bv(32, x.to_bits() as u64);
+            Ok(ctx
+                .tm
+                .mk_fp(super::sort::FLOAT32_EXP, super::sort::FLOAT32_SIG, bits))
         }
         SemExprKind::BoolLit(b) => Ok(ctx.tm.mk_boolean(*b)),
 
@@ -439,6 +444,13 @@ fn encode_unop<'tm>(
         let neg = ctx.tm.mk_term(Kind::BitvectorNeg, &[bv]);
         return Ok(ctx.tm.mk_term(Kind::ApplyUf, &[info.mk.clone(), neg]));
     }
+    // `fp.neg` — a genuine sign-bit flip (unlike `0.0f - x`, which would
+    // give the wrong answer for `-0.0f`; see docs/design-decisions.md's
+    // `Float32` section). No overflow obligation: IEEE 754 negation never
+    // leaves the format.
+    if matches!(op, UnOp::Neg) && t.sort().is_fp() {
+        return Ok(ctx.tm.mk_term(Kind::FloatingpointNeg, &[t]));
+    }
     for (domain, reason) in unary_builtin_domain(op) {
         if let Membership::Constrained(c) = membership_constraint(
             ctx.tm,
@@ -622,6 +634,9 @@ fn encode_binop<'tm>(
     // correct with no wrapping-specific code — see the module comment above
     // `encode_wrapping_binop`).
     if let Some(result) = encode_wrapping_binop(op, &l, &r, ctx) {
+        return result;
+    }
+    if let Some(result) = encode_float32_binop(op, &l, &r, ctx) {
         return result;
     }
 
@@ -826,6 +841,24 @@ pub(crate) fn model_value_string(term: &Term<'_>) -> String {
     }
     if term.sort().is_boolean() {
         return boolean_value(term).to_string();
+    }
+    if term.sort().is_fp() && term.is_fp_value() {
+        // `fp_value()` gives back the raw IEEE bits as a bitvector term —
+        // the exact inverse of how `SemExprKind::FloatLit` encodes a
+        // literal above (`mk_bv(32, x.to_bits())` then `mk_fp`).
+        let (_, _, bits) = term.fp_value();
+        let x = f32::from_bits(bits.bv_value(10).parse().unwrap_or(0));
+        return if x.is_nan() {
+            "nan32".to_string()
+        } else if x.is_infinite() {
+            if x.is_sign_positive() {
+                "infinity32".to_string()
+            } else {
+                "-infinity32".to_string()
+            }
+        } else {
+            format!("{x}f")
+        };
     }
     integer_value(term).to_string()
 }

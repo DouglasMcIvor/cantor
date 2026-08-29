@@ -178,6 +178,19 @@ fn literal_element_predicate<'tm>(
                 tm.mk_boolean(false)
             }
         }
+        // `Float32` needs no round-trip UF the way `Char` does below — it's
+        // a genuine cvc5 FloatingPoint-sorted value directly, not an
+        // opaque distinct sort wrapping an integer payload — so a plain
+        // `t == mk_fp(...)` (cvc5's native FP equality) is already exact.
+        SemExprKind::FloatLit(x) => {
+            if t.sort().is_fp() {
+                let bits = tm.mk_bv(32, x.to_bits() as u64);
+                let lit = tm.mk_fp(super::sort::FLOAT32_EXP, super::sort::FLOAT32_SIG, bits);
+                tm.mk_term(Kind::Equal, &[t, lit])
+            } else {
+                tm.mk_boolean(false)
+            }
+        }
         // `'c'` — compare via `from_Char(t) == n`, *not* `t == mk_Char(n)`.
         // This function has no `&mut Solver` to assert onto, so it can't
         // give this specific literal its own `from(mk_Char(n)) == n`

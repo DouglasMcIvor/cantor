@@ -16,6 +16,8 @@ mod distinct_basis;
 mod encode;
 #[path = "solver/event_loop.rs"]
 mod event_loop;
+#[path = "solver/float32.rs"]
+mod float32;
 #[path = "solver/helpers.rs"]
 mod helpers;
 #[path = "solver/heterogeneous_named_unions.rs"]

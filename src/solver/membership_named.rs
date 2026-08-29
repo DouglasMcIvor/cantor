@@ -12,7 +12,7 @@ use cvc5::{Kind, Term, TermManager};
 
 use crate::ast::DefKind;
 use crate::kind::Kind as ValKind;
-use crate::semantics::builtins::{self, IntBound};
+use crate::semantics::builtins::{self, FloatBound, IntBound};
 use crate::span::Symbol;
 
 use super::NameDefs;
@@ -291,6 +291,28 @@ pub(crate) fn membership_constraint_for_named<'tm>(
                 }
                 IntBound::NonNeg | IntBound::Positive => Membership::Unsupported,
                 IntBound::Bounded(..) | IntBound::Outside(..) => Membership::Unsupported,
+            }
+        }
+        // `Float32`/`FiniteFloat32` — a genuine cvc5 FloatingPoint sort
+        // (`sort::scalar_kind_sort`), same "own sort ⇒ trivially a member"
+        // rule as `Char`/`Signed32` above for plain `Float32`.
+        // `FiniteFloat32` additionally excludes `±infinity32`/`nan32` — a
+        // value-range refinement of the same sort (mirrors `Nat`⊆`Int`
+        // being a bound on the same integer sort), not a second opaque
+        // sort, so this is the one builtin family whose bound lives in
+        // `FloatBound` rather than `IntBound`.
+        Some(b) if b.kind == ValKind::Float32 => {
+            if !t.sort().is_fp() {
+                return Membership::Constrained(tm.mk_boolean(false));
+            }
+            match b.float_bound {
+                FloatBound::Any => Membership::Unconstrained,
+                FloatBound::Finite => {
+                    let is_inf = tm.mk_term(Kind::FloatingpointIsInf, std::slice::from_ref(&t));
+                    let is_nan = tm.mk_term(Kind::FloatingpointIsNan, &[t]);
+                    let not_finite = tm.mk_term(Kind::Or, &[is_inf, is_nan]);
+                    Membership::Constrained(tm.mk_term(Kind::Not, &[not_finite]))
+                }
             }
         }
         // `Int` and its named integer subsets (Nat, NatPos, NonZeroInt,

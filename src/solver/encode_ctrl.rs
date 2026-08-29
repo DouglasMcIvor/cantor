@@ -113,6 +113,56 @@ pub(super) fn encode_wrapping_binop<'tm>(
     Some(Ok(result))
 }
 
+// ── `Float32` ─────────────────────────────────────────────────────────────────
+//
+// A genuine cvc5 FloatingPoint-sorted term (see `sort::scalar_kind_sort`),
+// not an opaque-sort-wrapping-a-BitVec like Signed32/Unsigned32 above — so
+// `+ - * /` need no unwrap/rewrap, just the matching `fp.*` operator plus an
+// explicit rounding-mode operand (round-nearest-ties-to-even, the only mode
+// exposed at the Cantor source level so far — see docs/design-decisions.md's
+// `Float32` section). `==`/`!=` need no special-casing at all: cvc5's native
+// `=`/`distinct` on FP sort already gives the SMT-LIB FP equality Cantor
+// wants (single NaN equivalence class, distinct `+0.0f`/`-0.0f`) — the
+// generic path in `encode_binop` handles them unchanged, same as every
+// other sort.
+
+/// `+ - * /` and `< <= > >=` between two `Float32` operands. Returns `None`
+/// when `l`/`r` aren't both FP-sorted (caller falls through to the ordinary
+/// numeric-sort path). `Float32`'s `/` is *total* under IEEE 754 (`1.0f /
+/// 0.0f = infinity32`, `0.0f / 0.0f = nan32`) — unlike `Int`'s `/`, there is
+/// no divisor-nonzero domain obligation to push here.
+pub(super) fn encode_float32_binop<'tm>(
+    op: &BinOp,
+    l: &Term<'tm>,
+    r: &Term<'tm>,
+    ctx: &EncodeCtx<'_, 'tm>,
+) -> Option<Result<Term<'tm>, String>> {
+    if !l.sort().is_fp() || !r.sort().is_fp() {
+        return None;
+    }
+    let tm = ctx.tm;
+    let rm = || tm.mk_rm(cvc5::RoundingMode::RoundNearestTiesToEven);
+    let result = match op {
+        BinOp::Add => tm.mk_term(Kind::FloatingpointAdd, &[rm(), l.clone(), r.clone()]),
+        BinOp::Sub => tm.mk_term(Kind::FloatingpointSub, &[rm(), l.clone(), r.clone()]),
+        BinOp::Mul => tm.mk_term(Kind::FloatingpointMult, &[rm(), l.clone(), r.clone()]),
+        BinOp::Div => tm.mk_term(Kind::FloatingpointDiv, &[rm(), l.clone(), r.clone()]),
+        BinOp::Lt => tm.mk_term(Kind::FloatingpointLt, &[l.clone(), r.clone()]),
+        BinOp::Le => tm.mk_term(Kind::FloatingpointLeq, &[l.clone(), r.clone()]),
+        BinOp::Gt => tm.mk_term(Kind::FloatingpointGt, &[l.clone(), r.clone()]),
+        BinOp::Ge => tm.mk_term(Kind::FloatingpointGeq, &[l.clone(), r.clone()]),
+        // `==`/`!=` fall through to the generic path (see module comment).
+        BinOp::Eq | BinOp::Ne => return None,
+        _ => {
+            return Some(Err(format!(
+                "`{op}` is not yet supported between Float32 values — only `+ - * /`, \
+                 negation, and comparisons are implemented so far"
+            )));
+        }
+    };
+    Some(Ok(result))
+}
+
 // ── `if`/`.N` projection arms ─────────────────────────────────────────────────
 
 pub(super) fn encode_if<'tm>(

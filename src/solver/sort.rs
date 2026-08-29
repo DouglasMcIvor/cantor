@@ -20,6 +20,13 @@ use crate::{
 use super::NameDefs;
 use super::membership::{DistinctPreds, SolverPreds};
 
+/// IEEE 754 binary32's exponent/significand widths, as cvc5's
+/// `mk_fp_sort`/`mk_fp` expect them — the significand width here is cvc5's
+/// convention of counting the implicit leading bit (24), not the 23 stored
+/// mantissa bits binary32's own name suggests.
+pub(crate) const FLOAT32_EXP: u32 = 8;
+pub(crate) const FLOAT32_SIG: u32 = 24;
+
 /// Map a scalar element `ValKind` to its CVC5 sort — used by `set_sort`'s
 /// `SetLit` arm so a domain literal's sort follows its elaborated element
 /// Kind (`kind::set_kind`'s `SetLit` arm) instead of assuming integer.
@@ -53,11 +60,10 @@ fn scalar_kind_sort<'tm>(
         ValKind::Tuple(_) | ValKind::TaggedUnion(_) | ValKind::Vector(_) | ValKind::Set(_) => {
             return None;
         }
-        // TODO(float32): solver step — should be `tm.mk_fp_sort(8, 24)`
-        // (cvc5's native FloatingPoint theory), not built yet. `None` here
-        // follows this function's own existing "not-yet-representable ->
-        // Unknown" convention rather than guessing.
-        ValKind::Float32 => return None,
+        // cvc5's native FloatingPoint theory — a genuine leaf sort, not the
+        // opaque-sort-wrapping-a-BitVec recipe `Signed32`/`Unsigned32` use
+        // above (see docs/design-decisions.md's `Float32` section).
+        ValKind::Float32 => tm.mk_fp_sort(FLOAT32_EXP, FLOAT32_SIG),
     })
 }
 
@@ -99,11 +105,7 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
             format!("ck_TU_{s}")
         }
         ValKind::Vector(elem) => format!("ck_V_{}", arm_ctor_name(elem)),
-        // TODO(float32): solver step — "ck_F32", per the forward-
-        // compatibility checklist above. Should be unreachable today:
-        // `solver::check_file` rejects any Float32-touching program before
-        // union-arm construction ever runs.
-        ValKind::Float32 => crate::kind::float32_unreachable(),
+        ValKind::Float32 => "ck_F32".to_string(),
     }
 }
 
@@ -308,6 +310,13 @@ pub(crate) fn set_sort<'tm>(
         // an integer-sorted parameter would silently restrict the domain to
         // the whole numbers and turn a genuine counterexample into a proof.
         SemExprKind::Var(_) if set_expr.kind_of == ValKind::Rational => tm.real_sort(),
+        // `Float32`/`FiniteFloat32` → cvc5's native FloatingPoint sort —
+        // same reasoning as `Rational` just above: a parameter/range
+        // declared over Float32 must be *declared* at FP sort, not
+        // defaulted to integer below.
+        SemExprKind::Var(_) if set_expr.kind_of == ValKind::Float32 => {
+            tm.mk_fp_sort(FLOAT32_EXP, FLOAT32_SIG)
+        }
         // A plain `alias` (`Name = Expr`, the default `DefKind` — see the
         // alias/distinct design doc section) is transparent to the solver,
         // so its sort is whatever the aliased expression's own sort is —

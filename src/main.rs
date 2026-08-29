@@ -286,7 +286,10 @@ fn main() {
 
     if do_run {
         match outcome {
-            CheckOutcome::Proved(tree) => run_main(tree, path, &src),
+            CheckOutcome::Proved(tree) => {
+                reject_float32_before_codegen(&tree, path, &src);
+                run_main(tree, path, &src)
+            }
             CheckOutcome::NotProved(_) => {
                 eprintln!(
                     "error: not running — {} counterexample(s), {} unknown result(s) found above",
@@ -298,6 +301,7 @@ fn main() {
     } else if do_build {
         match outcome {
             CheckOutcome::Proved(tree) => {
+                reject_float32_before_codegen(&tree, path, &src);
                 run_build(tree, path, &src, output_path, keep_temps, target)
             }
             CheckOutcome::NotProved(_) => {
@@ -309,6 +313,22 @@ fn main() {
             }
         }
     } else if n_counter > 0 || n_unknown > 0 {
+        process::exit(1);
+    }
+}
+
+/// TODO(float32): codegen isn't implemented yet (docs/design-decisions.md's
+/// `Float32`/`FiniteFloat32` section) — solver support is DONE, so plain
+/// `cantor <file>` (proof-only, no codegen) already works for Float32
+/// signatures, but both `cantor run` and `cantor build` compile, so both
+/// need this gate. One call site covering both, right where each obtains
+/// its `ConstrainedTree`, rather than deeper inside `run_main`/`run_build`'s
+/// several different codegen entry points (JIT vs AOT-to-object). Delete
+/// once codegen lands — see `solver::reject_float32_for_codegen`'s doc
+/// comment for the matching internal-stub cleanup.
+fn reject_float32_before_codegen(tree: &ConstrainedTree, path: &str, src: &str) {
+    if let Err(e) = cantor::solver::reject_float32_for_codegen(&tree.sem_items) {
+        print_compile_error(path, &e, src);
         process::exit(1);
     }
 }

@@ -157,16 +157,19 @@ pub fn check_file(
     worker::supervise(items, timeout_ms)
 }
 
-/// TODO(float32): upstream gate for the semantics/solver/codegen split —
-/// `Kind::Float32` elaborates successfully (docs/design-decisions.md's
-/// `Float32`/`FiniteFloat32` section), but nothing past elaboration handles
-/// it yet, so every solver/codegen-internal `Kind`/`SemExprKind::FloatLit`
-/// match arm panics or ICEs rather than silently doing something wrong (see
-/// `kind::float32_ice`/`kind::float32_unreachable`). Reject cleanly here,
-/// before any of that runs, instead of letting a real program hit one of
-/// those internal panics. Delete this whole function (and the internal
-/// stubs it protects) once the solver/codegen steps land.
-fn reject_float32(sem_items: &[SemItem]) -> Result<(), crate::error::CompileError> {
+/// TODO(float32): upstream gate for the semantics/codegen split — solver
+/// support for `Kind::Float32` is DONE (see `encode_ctrl::encode_float32_binop`,
+/// `membership_named`'s `Float32`/`FiniteFloat32` arm, `sort::scalar_kind_sort`),
+/// so `check_file`/plain `cantor <file>` now proves/disproves Float32
+/// signatures for real — this function is deliberately *not* called there
+/// anymore. Codegen isn't implemented yet, though, so every codegen-internal
+/// `Kind`/`SemExprKind::FloatLit` match arm still panics or ICEs rather than
+/// silently doing something wrong (see `kind::float32_ice`/
+/// `kind::float32_unreachable`) — `main.rs` calls this immediately before
+/// each `codegen::compile_constrained` call (the only path that reaches
+/// those internals) to reject cleanly instead. Delete this whole function
+/// (and the internal codegen stubs it protects) once the codegen step lands.
+pub fn reject_float32_for_codegen(sem_items: &[SemItem]) -> Result<(), crate::error::CompileError> {
     fn bail(span: Span) -> crate::error::CompileError {
         crate::error::CompileError::Unsupported {
             feature: "Float32 (semantics/solver/codegen support isn't implemented \
@@ -316,7 +319,6 @@ fn check_file_in_process(
     timeout_ms: u64,
 ) -> Result<CheckOutcome, crate::error::CompileError> {
     let sem_items = elaborate(items)?;
-    reject_float32(&sem_items)?;
 
     let name_defs: NameDefs = sem_items
         .iter()

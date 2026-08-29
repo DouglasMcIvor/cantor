@@ -1,6 +1,0 @@
--- A Float32 literal directly in domain position (inside a set literal)
--- elaborates fine now (semantics step, DONE) — this exercises the upstream
--- solver gate's *signature*-domain-walking path specifically, distinct
--- from float32_value_position_not_yet_supported.cantor's body-walking path.
-f : {0.0f, 1.0f} -> Int
-f(x) = 0

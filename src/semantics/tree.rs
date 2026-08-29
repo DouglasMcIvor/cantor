@@ -34,7 +34,7 @@ pub enum SemExprKind {
     /// An IEEE 754 binary32 value — see `ast::ExprKind::FloatLit`'s doc
     /// comment (`infinity32`/`nan32` are already folded into this by parse
     /// time, so there's nothing further to resolve here).
-    FloatLit(f32),
+    FloatLit(#[serde(with = "crate::span::float32_bits")] f32),
     BoolLit(bool),
     /// `'c'` — always valid by construction (Rust's `char` excludes
     /// surrogates), so unlike `char(n)` it carries no basis obligation.

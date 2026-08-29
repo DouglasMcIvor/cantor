@@ -1,0 +1,7 @@
+-- Float32 elaborates AND proves fine now (semantics + solver steps DONE) —
+-- `cantor <file>` (bare check mode) verifies this signature for real. But
+-- codegen isn't implemented yet, so `cantor run`/`cantor build` on this same
+-- file must still be rejected cleanly (see tests/cli/float32.rs), never
+-- crash trying to compile it.
+main : -> Float32
+main() = 3.14f

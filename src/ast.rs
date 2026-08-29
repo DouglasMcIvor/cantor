@@ -200,7 +200,7 @@ pub enum ExprKind {
     /// SMT-LIB FP equality (a single NaN equivalence class, distinct
     /// `+0.0f`/`-0.0f`) rather than IEEE `==` — not yet implemented at the
     /// semantics/solver layer, this is parser scope only.
-    FloatLit(f32),
+    FloatLit(#[serde(with = "crate::span::float32_bits")] f32),
     BoolLit(bool),
     /// `'c'` — a single Unicode scalar value. Always valid by construction
     /// (the lexer only ever produces a Rust `char`, which excludes
