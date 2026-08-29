@@ -550,10 +550,11 @@ pub(super) fn sig_domain_match<'tm>(
     args: &[SemExpr],
     arg_terms: &[Term<'tm>],
     callee: &Symbol,
-    tm: &'tm TermManager,
-    name_defs: &NameDefs,
-    distinct_preds: &SolverPreds<'tm>,
+    ctx: &EncodeCtx<'_, 'tm>,
 ) -> Result<DomainMatch<'tm>, String> {
+    let tm = ctx.tm;
+    let name_defs = ctx.name_defs;
+    let distinct_preds = ctx.distinct_preds;
     let parts = match sem_param_set_exprs(sig.domain.as_ref(), arg_terms.len()) {
         Ok(p) => p,
         Err(_) => return Ok(DomainMatch::Mismatch),
@@ -571,7 +572,19 @@ pub(super) fn sig_domain_match<'tm>(
                 callee.0, arg
             ));
         }
-        match membership_constraint(tm, term.clone(), part, name_defs, distinct_preds) {
+        // A function-Kind parameter has no CVC5 sort (`membership_constraint`
+        // would hit `Unsupported` unconditionally) — the argument's own
+        // declared domain/range must instead be compared *structurally*
+        // against the parameter's, see `encode_hof::
+        // function_value_arg_membership`'s doc comment for why this is the
+        // sound counterpart to `encode_function_value_call` trusting `f`'s
+        // contract inside the body that received it.
+        let membership = if matches!(part.kind_of, ValKind::Function(..)) {
+            super::encode_hof::function_value_arg_membership(tm, arg, part, ctx.fn_env)
+        } else {
+            membership_constraint(tm, term.clone(), part, name_defs, distinct_preds)
+        };
+        match membership {
             Membership::Unconstrained => {}
             Membership::Constrained(c) => conjuncts.push(c),
             Membership::Unsupported => {
@@ -609,15 +622,7 @@ fn push_call_domain_obligation<'tm>(
     let mut arms: Vec<Term<'_>> = Vec::new();
     for (_, def) in candidates {
         for sig in &def.sigs {
-            match sig_domain_match(
-                sig,
-                args,
-                arg_terms,
-                callee,
-                ctx.tm,
-                ctx.name_defs,
-                ctx.distinct_preds,
-            )? {
+            match sig_domain_match(sig, args, arg_terms, callee, ctx)? {
                 DomainMatch::Mismatch => {}
                 DomainMatch::Trivial => return Ok(()),
                 DomainMatch::Constrained(c) => arms.push(c),
@@ -672,15 +677,7 @@ fn candidate_domain_term<'tm>(
 ) -> Result<Term<'tm>, String> {
     let mut arms: Vec<Term<'_>> = Vec::new();
     for sig in &def.sigs {
-        match sig_domain_match(
-            sig,
-            args,
-            arg_terms,
-            callee,
-            ctx.tm,
-            ctx.name_defs,
-            ctx.distinct_preds,
-        )? {
+        match sig_domain_match(sig, args, arg_terms, callee, ctx)? {
             DomainMatch::Mismatch => {}
             DomainMatch::Trivial => return Ok(ctx.tm.mk_boolean(true)),
             DomainMatch::Constrained(c) => arms.push(c),

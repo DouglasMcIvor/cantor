@@ -263,6 +263,18 @@ pub(crate) fn encode_expr<'tm>(
             } else if let Some(def) = ctx.name_defs.get(sym) {
                 let def_value = def.value.clone();
                 encode_expr(&def_value, &Env::new(), ctx, path_cond.clone(), None)
+            } else if matches!(expr.kind_of, crate::kind::Kind::Function(..)) {
+                // A bare reference to a top-level function name, taken as a
+                // value (higher-order functions v0) — `Kind::Function` has
+                // no CVC5 sort (see `sort::scalar_kind_sort`), so this can
+                // never be a real, semantically-meaningful term. An
+                // unconstrained fresh Boolean placeholder (never read as a
+                // value — see `encode_call::function_value_arg_match`,
+                // which checks a Function-Kind call *argument* structurally
+                // by name instead) keeps this from being a hard "unbound
+                // variable" error, matching `sig_check::build_param_terms`'s
+                // identical placeholder for a function-Kind *parameter*.
+                Ok(ctx.tm.mk_const(ctx.tm.boolean_sort(), &sym.0))
             } else {
                 Err(format!("unbound variable `{}`", sym.0))
             }

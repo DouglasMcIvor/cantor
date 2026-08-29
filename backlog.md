@@ -396,8 +396,50 @@ Algorithm:
   fixed by moving the call). Verified by JIT-executing both dispatch
   branches through one indirect call site
   (`tests/codegen/higher_order_functions.rs`), not just inspecting IR.
-  **Still open:** `>>` composition (design-decisions.md §10) and the
-  call-site check above.
+  **Call-site check: DONE.** `apply(double, 5)` is now genuinely `proved`
+  end to end, not just Kind-checked — closes the soundness story
+  `encode_function_value_call` (above) started. Two pieces:
+  (1) `solver::encode::encode_expr`'s `Var` arm gains the same
+  unconstrained-fresh-Boolean-placeholder fallback `sig_check::
+  build_param_terms` already uses for a function-Kind *parameter*, now also
+  for a bare function-*name* reference — `Kind::Function` still has no CVC5
+  sort, so this is never semantically read, only present so encoding a
+  Function-Kind argument doesn't hit "unbound variable" before the real
+  check below even runs. (2) `solver::encode_hof::
+  function_value_arg_membership` — `sig_domain_match`'s per-position loop
+  (now threading `ctx: &EncodeCtx` instead of 4 separate params, to stay
+  under clippy's argument-count limit) special-cases a `Kind::Function`
+  domain part: instead of `membership_constraint` (which would hit
+  `Unsupported` unconditionally, no sort), it structurally compares the
+  argument's own declared domain/range (looked up by name in `fn_env`)
+  against the parameter's declared `arrow`, via `sem_expr_structural_eq` — a
+  hand-rolled span-insensitive `SemExpr` structural (not semantic)
+  equality, per the user's explicit choice (2026-08-29): exact match, not
+  real variance/subtyping, avoiding new subset-proof solver machinery for
+  what both sides already know statically. A decidable mismatch becomes a
+  real counterexample (`tm.mk_boolean(false)`, reusing the existing
+  "arguments not in declared domain" obligation machinery verbatim); an
+  incomparable shape (anything but a bare single-signature function
+  reference) is `Unsupported`/`Unknown`.
+  **Found and fixed a real bug during development, not just a design
+  choice:** the first version compared an overloaded-but-eligible argument
+  (e.g. `classify`, from the overload work above) against only its *first*
+  candidate's domain, producing a **false counterexample** for an
+  otherwise-safe call — an overloaded name's candidates agree on *Kind*,
+  never on their individually declared domain *Sets* (that's what makes
+  them different overloads), so comparing against any one alone compares
+  against the wrong thing. Fixed by restricting the structural check to
+  single-signature functions only; an overloaded argument now correctly
+  stays `Unknown` (verified: neither falsely `proved` nor falsely
+  rejected — `tests/cli/higher_order_functions.rs`).
+  **Known, accepted conservatism (not a bug):** exact-match means a
+  genuinely *safe* covariant narrowing (e.g. passing a `NatPos`-returning
+  function where `Int` was declared) is still rejected —
+  `higher_order_functions_v0_conservative_reject.cantor` pins this so a
+  future variance-checking change has a test that must flip from
+  counterexample to proved, not silently regress the other way.
+  **Still open:** `>>` composition (design-decisions.md §10) is the only
+  remaining item from the original plan.
 - partial application via `_` as a placeholder `add(_, 1)` or `sub(1, _)` or `f(x, _, y, _)`
 - infix operators as named functions `(+)(1, 2)`, combines nicely `_` with as a placeholder 
 - once we have higher order functions we can add 'Litre = distinct Float32 deriving Ordered + Arithmetic + Printable' 

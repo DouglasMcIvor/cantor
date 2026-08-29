@@ -1,0 +1,14 @@
+-- Higher-order functions v0 (backlog.md): the call-site structural check
+-- (solver::encode_hof::function_value_arg_membership) must catch a real
+-- domain mismatch -- weird's real domain (NatPos) is strictly narrower
+-- than what apply declares for f (Int) -- as a genuine counterexample, not
+-- silently accept it (which would make apply's body-side proof unearned).
+
+weird : NatPos -> Int
+weird(x) = x
+
+apply : (Int -> Int) * Int -> Int
+apply(f, x) = f(x)
+
+main : -> Int
+main() = apply(weird, 5)

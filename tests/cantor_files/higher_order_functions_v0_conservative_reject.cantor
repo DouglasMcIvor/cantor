@@ -1,0 +1,18 @@
+-- Higher-order functions v0 (backlog.md): a real, accepted limitation of
+-- the "exact structural Set match" scope (not variance/subtyping) chosen
+-- for the call-site check -- weird_range's range (NatPos) is *narrower*
+-- than what apply declares for f (Int), which would be safe to accept
+-- under real covariant return-type variance, but the exact-match check
+-- rejects it anyway since NatPos != Int structurally. Not a bug: this is
+-- the deliberate v0 tradeoff (see solver::encode_hof's module doc), pinned
+-- here so a future variance-checking change has a test that must flip from
+-- counterexample to proved, not silently regress the other way.
+
+weird_range : Int -> NatPos
+weird_range(x) = 1
+
+apply : (Int -> Int) * Int -> Int
+apply(f, x) = f(x)
+
+main : -> Int
+main() = apply(weird_range, 5)
