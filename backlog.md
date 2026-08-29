@@ -304,8 +304,30 @@ Algorithm:
   (verified end-to-end, no crash, no false `proved`) — `solver::sort::
   set_sort` had a raw `unreachable!()` panic on this shape (a `BinOp::Arrow`
   domain reaching a solver query, e.g. just from *declaring* `apply`'s own
-  signature) that's now a graceful `None`/`Unknown` instead; codegen for an
-  indirect call through a function value hasn't been started at all.
+  signature) that's now a graceful `None`/`Unknown` instead.
+  **Codegen: DONE.** A bare function reference compiles to that function's
+  address (`ptrtoint`); calling through a function-Kind local/param compiles
+  to a genuine indirect call (`inttoptr` + `build_indirect_call`,
+  `codegen::expr_call::compile_indirect_call`) — verified by actually
+  JIT-executing (not just inspecting IR), including a two-function case that
+  confirms the indirect call dispatches to whichever address was actually
+  passed, and a `mut g : (Int -> Int) = double` local. Since `cantor run`
+  requires a full proof first and this shape is still solver-`unknown` (see
+  above), these run via `compile_file` (the unverified/no-solver path
+  `tests/codegen` already uses for other JIT fixtures), not the CLI —
+  `tests/codegen/higher_order_functions.rs`. **Known ambiguity, not fixed:**
+  `compile_indirect_call` degrades a multi-argument call's `Kind::Function`
+  domain to a flat per-parameter list via "`args.len() > 1` ⇒ domain is a
+  `Tuple`, one part per param" (mirroring how `Var`'s elaboration built it),
+  which can't distinguish a function with *one* tuple-typed parameter
+  (`f : (Int * Int) -> Int`) from a *two*-scalar-parameter function of the
+  same element Kinds — both collapse to the same `Kind::Function` domain.
+  Not reachable by any test so far (single-scalar-parameter functions only);
+  a real fix likely means `Kind::Function` storing the flat per-parameter
+  list directly instead of a collapsed domain Kind.
+  **Still open:** overloaded names as values (synthesized runtime-dispatch
+  wrapper, see above) is the agreed next step, then `>>` composition
+  (design-decisions.md §10).
 - partial application via `_` as a placeholder `add(_, 1)` or `sub(1, _)` or `f(x, _, y, _)`
 - infix operators as named functions `(+)(1, 2)`, combines nicely `_` with as a placeholder 
 - once we have higher order functions we can add 'Litre = distinct Float32 deriving Ordered + Arithmetic + Printable' 

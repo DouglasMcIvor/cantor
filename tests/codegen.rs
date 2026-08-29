@@ -6,6 +6,8 @@ mod expr;
 mod fail_and_return;
 #[path = "codegen/helpers.rs"]
 mod helpers;
+#[path = "codegen/higher_order_functions.rs"]
+mod higher_order_functions;
 #[path = "codegen/let_bindings.rs"]
 mod let_bindings;
 #[path = "codegen/loops.rs"]

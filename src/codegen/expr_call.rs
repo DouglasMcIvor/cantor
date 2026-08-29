@@ -1,3 +1,5 @@
+use inkwell::AddressSpace;
+use inkwell::types::BasicType;
 use inkwell::values::BasicValueEnum;
 
 use crate::{
@@ -19,6 +21,17 @@ impl<'ctx> Compiler<'ctx> {
         env: &Env<'ctx>,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        // A call through a first-class function value (higher-order
+        // functions v0): `callee` is a local/param bound to a `Kind::
+        // Function` value, not a top-level declared name. Checked first,
+        // mirroring `semantics::elaborate::expr`'s `Call` arm, which
+        // resolves a function-Kind local/param before any builtin/declared-
+        // name dispatch — a param shadowing an unrelated top-level name
+        // (`from`, `char`, …) must still call through the param.
+        if let Some((fn_ptr_val, Kind::Function(domain, range))) = env.get(callee) {
+            return self.compile_indirect_call(*fn_ptr_val, domain, range, args, env);
+        }
+
         // `from(x)` — built-in destructor. Identity at runtime for `distinct`
         // values (preserves the argument's actual Kind, Int or Int64,
         // whichever it already is — a pure pass-through, not a fresh value).
@@ -475,5 +488,88 @@ impl<'ctx> Compiler<'ctx> {
             // would make every downstream consumer treat it as tagged.
             _ => Ok((result_i64, return_kind)),
         }
+    }
+
+    /// Call through a `Kind::Function` value: `fn_ptr_val` is the i64
+    /// function-pointer word (from a bare top-level function reference —
+    /// `expr.rs`'s `Var` arm — or, once closures/lambdas/overloaded-name
+    /// wrappers exist, whatever else produces one). Builds the LLVM
+    /// function type from `domain`/`range` and issues an indirect call —
+    /// there is no compiled-in name to look up, unlike an ordinary call.
+    ///
+    /// `domain` → flat per-parameter Kind list: `args.len() > 1` means
+    /// `domain` is `Kind::Tuple(parts)` (multi-scalar-param — see
+    /// `Kind::Function`'s doc comment and `semantics::elaborate::expr`'s
+    /// `Var` arm, which builds it this way), one part per parameter;
+    /// otherwise `domain` itself is the (possibly zero- or one-parameter)
+    /// shape. **Known ambiguity, not yet resolved:** a single parameter
+    /// whose own declared Kind is itself a `Tuple` (`f : (Int * Int) ->
+    /// Int` with *one* tuple-typed parameter) is indistinguishable here
+    /// from a *two*-scalar-parameter function of the same element Kinds —
+    /// both collapse to the same `Kind::Function` domain. Not reachable by
+    /// today's tests (single-scalar-parameter functions only); tracked in
+    /// backlog.md.
+    fn compile_indirect_call(
+        &self,
+        fn_ptr_val: BasicValueEnum<'ctx>,
+        domain: &Kind,
+        range: &Kind,
+        args: &[SemExpr],
+        env: &Env<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
+        let param_kinds: Vec<Kind> = match args.len() {
+            0 => vec![],
+            1 => vec![domain.clone()],
+            _ => match domain {
+                Kind::Tuple(parts) => parts.clone(),
+                other => vec![other.clone()],
+            },
+        };
+
+        let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
+        let param_types: Vec<_> = param_kinds
+            .iter()
+            .map(|k| match k {
+                Kind::Tuple(_) | Kind::TaggedUnion(_) => self.kind_to_llvm_type(k).into(),
+                _ => self.context.i64_type().into(),
+            })
+            .collect();
+        let ret_type = self.kind_to_llvm_type(range);
+        let fn_type = match range {
+            Kind::Tuple(_) | Kind::TaggedUnion(_) => ret_type.fn_type(&param_types, false),
+            _ => self.context.i64_type().fn_type(&param_types, false),
+        };
+
+        let mut compiled_args = Vec::with_capacity(args.len());
+        for (arg, param_kind) in args.iter().zip(&param_kinds) {
+            let (v, arg_kind) = self.compile_expr(arg, env)?;
+            let v = match param_kind {
+                Kind::Tuple(_) | Kind::TaggedUnion(_) => v,
+                _ => self.widen_scalar_to_i64(v, &arg_kind, "hof_arg_ext")?,
+            };
+            compiled_args.push(v);
+        }
+        let compiled_args_meta: Vec<_> = compiled_args.iter().map(|&v| v.into()).collect();
+
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let fn_ptr = self
+            .builder
+            .build_int_to_ptr(fn_ptr_val.into_int_value(), ptr_t, "hof_fn_ptr")
+            .map_err(err)?;
+
+        let call = self
+            .builder
+            .build_indirect_call(fn_type, fn_ptr, &compiled_args_meta, "hof_call")
+            .map_err(err)?;
+        let result = call
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| CompileError::ice("void return in expression position"))?;
+
+        let result = match range {
+            Kind::Tuple(_) | Kind::TaggedUnion(_) | Kind::Vector(_) | Kind::Set(_) => result,
+            _ => self.narrow_i64_param(result, range, "hof_call_narrow")?,
+        };
+        Ok((result, range.clone()))
     }
 }

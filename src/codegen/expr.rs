@@ -52,12 +52,35 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(|e| CompileError::ice(e.to_string()))?;
                 Ok((v, Kind::Float32))
             }
-            SemExprKind::Var(sym) => env.get(sym).map(|(v, t)| (*v, t.clone())).ok_or_else(|| {
-                CompileError::UndefinedVariable {
+            SemExprKind::Var(sym) => match env.get(sym) {
+                Some((v, t)) => Ok((*v, t.clone())),
+                // A bare reference to a top-level function name, taken as a
+                // first-class value (higher-order functions v0). Elaboration
+                // only ever assigns `Kind::Function` to a `Var` when it
+                // already resolved `sym` to a real, non-overloaded, declared
+                // function (`semantics::elaborate::expr`'s `Var` fallback),
+                // so `sym` is trusted to name an already-declared LLVM
+                // function here — no re-checking arity/overload status.
+                None if matches!(expr.kind_of, Kind::Function(..)) => {
+                    let function = self.module.get_function(&sym.0).ok_or_else(|| {
+                        CompileError::ice(format!(
+                            "function value `{}` has no declared LLVM function",
+                            sym.0
+                        ))
+                    })?;
+                    let ptr = function.as_global_value().as_pointer_value();
+                    let i64t = self.context.i64_type();
+                    let as_i64 = self
+                        .builder
+                        .build_ptr_to_int(ptr, i64t, "fn_ptr")
+                        .map_err(|e| CompileError::ice(e.to_string()))?;
+                    Ok((as_i64.into(), expr.kind_of.clone()))
+                }
+                None => Err(CompileError::UndefinedVariable {
                     name: sym.0.clone(),
                     span: expr.span,
-                }
-            }),
+                }),
+            },
             SemExprKind::Add(lhs, rhs) => self.compile_arith(BinOp::Add, lhs, rhs, env, expr.span),
             SemExprKind::Sub(lhs, rhs) => self.compile_arith(BinOp::Sub, lhs, rhs, env, expr.span),
             SemExprKind::Mul(lhs, rhs) => self.compile_arith(BinOp::Mul, lhs, rhs, env, expr.span),
