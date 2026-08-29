@@ -4,39 +4,18 @@ You probably don't want to read this unless you're me.
 # To do
 
 - End goal: quantum paper bag using WASM and WebGL backend for Cantor
-  - **WASM half DONE 2026-08-25** — `examples/quantum_paper_bag.cantor` +
-    `web/paper-bag.html`. Fixed-point Visscher leapfrog, phase-as-hue
-    rendering, measurement/collapse driven by host entropy, ESCAPED drawn
-    into the bitmap in a 3x5 font. The WebGL/WebGPU half is still open; the
-    thing that would make it worth doing is below (vector append), not the
-    shader work.
-  - **The resolution ceiling was `v := v ++ [x]`, not wasm — DONE
-    2026-08-25.** `cantor_vec_concat_i64` copied the whole vector and
-    arena-allocated per element, so building an NxN grid a cell at a time
-    was O(N^4). `src/codegen/accumulator.rs` now recognises the
-    loop-accumulator idiom and lowers it onto the existing O(1)-push
-    builder. Micro-benchmark (N appends): 3.6ms -> 0.4ms at N=1000,
-    47.5ms -> 1.4ms at N=4000, and the growth is linear rather than
-    quadratic. Paper bag: 32x32 63 -> 102fps, 48x48 16 -> 33fps,
-    64x64 6 -> 13fps.
-    - Remaining: `acc ++ [x]` still allocates a one-element Arrow array per
-      iteration, because the lowering reuses `coerce_value_to_vector` to
-      inherit its per-element tagging rules exactly. Pushing the single
-      element straight onto the builder would remove that allocation — the
-      asymptotics are already fixed, so this is a constant factor.
-    - The analysis is deliberately conservative: it bails on any read of the
-      accumulator inside the nest, on a `return`, and on nested-loop
-      re-entry. `for ... in` loops are not covered yet, only `while`.
-- **False counterexample: a `mut` loses its declared-set invariant across a
-  *nested* loop.** A `mut acc : Int32` declared outside a loop and
-  reassigned inside an inner loop fails "loop invariant not maintained"
-  even when every assigned value is clamped into `Int32`; the identical
-  single-loop version proves. Minimal repro: two functions, one flat and
-  one nested, both doing `acc := clamp32(acc + 1)`. The reported
-  counterexample is impossible (`k = 1` gives `acc = 1`). Errs safe — it
-  rejects a correct program rather than accepting a wrong one — but it
-  forces widening to unbounded `Int` as a workaround, which is exactly the
-  annotation you didn't want to give up.
+  (WASM half done — `examples/quantum_paper_bag.cantor` + `web/paper-bag.html`).
+  Remaining:
+  - The WebGL/WebGPU shader half is still open.
+  - `acc ++ [x]` still allocates a one-element Arrow array per iteration —
+    the loop-accumulator lowering (`src/codegen/accumulator.rs`) reuses
+    `coerce_value_to_vector` to inherit its per-element tagging rules, and
+    that path allocates per element. Pushing the single element straight
+    onto the builder would remove it; the asymptotics are already fixed
+    (O(1)-push builder), so this is just a constant factor.
+  - The analysis is deliberately conservative: it bails on any read of the
+    accumulator inside the nest, on a `return`, and on nested-loop
+    re-entry. `for ... in` loops are not covered yet, only `while`.
 - **`quot`/`rem` are unavailable in more places than expected.** They only
   codegen inside an Int64-promoted function, and promotion additionally
   requires the *range* to be an integer — a `-> Bool` predicate that wants
@@ -123,7 +102,11 @@ You probably don't want to read this unless you're me.
     let the user try and write it.
 - more basic values:
   - `Int32`, `Int(32)` and their Nat cousins as LLVM iN values, right now all are i64.
-  - `Float32` and `Float64` as distinct sets, `FiniteFloat32` and explicit `posZero`, `negZero`, `nan` values
+  - `Float64` as a distinct set (`Float32`/`FiniteFloat32` DONE 2026-08-29:
+    lexing, parsing, Kind inference, cvc5 FloatingPoint encoding, LLVM f32
+    codegen). Also still need raw decimal literals like `3.14` (currently
+    no float literal syntax at all) and explicit `posZero`/`negZero`/`nan`
+    values.
   - `SignedN`, `UnsignedN` for N != 32
   - `Char` ordering comparisons
   - a packed UTF-8 representation for `Char*` (currently a boxed-i64-per-character)
@@ -149,8 +132,6 @@ You probably don't want to read this unless you're me.
 - more operators:
   - bitwise ops on bytes
   - comparison operators (they are in the lexer but I don't think they are implemented)
-  - adding `quot` and `rem` to keep `Int` inside `Int`
-  - division soundness issue for ints, need to ensure cvc5 and codegen agree
 - operator overloading for things like `List(Byte)`?
   - custom operator overloading syntax like with haskell? I don't care for inventing new ops but supporting existing ones might be important
   - automatic operator overloading for disinct sets, like allowing arithmetic on Litre. See `deriving` below.
@@ -191,17 +172,6 @@ You probably don't want to read this unless you're me.
     `tests/solver/vectors.rs:539`'s ignored fixture and
     design-decisions.md's Kleene-star note.
   - counterexample printing TODOs
-- run cvc5 out-of-process. Three problems, one change: (a) `--timeout` becomes
-  *enforceable* — cvc5's own `tlimit` is advisory and demonstrably ignored on
-  the two known hangs, so today a roof-hit is an indefinite hang rather than
-  an honest `Unknown`, which violates the never-silently-assume principle
-  more badly than a plain `Unknown` would; (b) it retires the process-wide
-  `Mutex` in `check_file` that works around cvc5's concurrency segfaults; and
-  (c) with (b) gone, per-function checks can run in parallel (see "SMT solvers
-  are branch heavy" under *Things that surprised me* — the parallelism has to
-  come from running many solvers, not from one faster solver). Cost is
-  serializing queries to a worker process. Not urgent, but it's the structural
-  fix underneath several separate symptoms.
 - recursive set definitions: **Is this already done?**
   ```
   Tree = Int | Tree * Tree
