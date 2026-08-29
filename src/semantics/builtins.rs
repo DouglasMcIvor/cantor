@@ -23,7 +23,8 @@ pub const SET_CONSTRUCTOR: &str = "Set";
 /// The value-range predicate for a numeric built-in set. `Kind::Int` uses
 /// every variant; `Kind::Rational` uses only `Any` and `NonZero` (see
 /// `lookup`'s `Rational` entry). Meaningless for the non-numeric builtins
-/// (`Bool`, `Fail`, `None`, `Char`, `Signed32`, `Unsigned32`).
+/// (`Bool`, `Fail`, `None`, `Char`, `Signed32`, `Unsigned32`, `Float32`/
+/// `FiniteFloat32` — the latter two use `FloatBound` instead, below).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntBound {
     /// All of `Int` — no constraint beyond "is an integer".
@@ -43,14 +44,30 @@ pub enum IntBound {
     Outside(i64, i64),
 }
 
+/// The value-range predicate for `Kind::Float32`. A separate enum from
+/// `IntBound` rather than a shoehorned variant of it — "excludes
+/// ±infinity/NaN" isn't a numeric bound in any sense `IntBound::Bounded`/
+/// `Outside` share, it's a finiteness predicate — see `solver::membership`'s
+/// `Var("FiniteFloat32")` arm for the actual `fp.isInfinite`/`fp.isNaN`
+/// encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatBound {
+    /// All of `Float32`, including `±infinity32`/`nan32`.
+    Any,
+    /// Excludes `±infinity32`/`nan32` — `FiniteFloat32`.
+    Finite,
+}
+
 // `Kind` dropped `Copy` when `Tuple(Vec<Kind>)` was added, so `BuiltinSet` can
 // only be `Clone` — every variant used here (`Int`/`Bool`/`Fail`) is cheap to
 // clone regardless.
 #[derive(Debug, Clone)]
 pub struct BuiltinSet {
     pub kind: Kind,
-    /// Only meaningful when `kind == Kind::Int`.
+    /// Only meaningful when `kind == Kind::Int` or `Kind::Rational`.
     pub bound: IntBound,
+    /// Only meaningful when `kind == Kind::Float32`.
+    pub float_bound: FloatBound,
 }
 
 /// Look up a built-in set by name. Returns `None` for user-defined names,
@@ -60,20 +77,24 @@ pub fn lookup(name: &str) -> Option<BuiltinSet> {
         Some(BuiltinSet {
             kind: Kind::Int,
             bound,
+            float_bound: FloatBound::Any,
         })
     };
     match name {
         "Bool" => Some(BuiltinSet {
             kind: Kind::Bool,
             bound: IntBound::Any,
+            float_bound: FloatBound::Any,
         }),
         "Fail" => Some(BuiltinSet {
             kind: Kind::Fail,
             bound: IntBound::Any,
+            float_bound: FloatBound::Any,
         }),
         "None" => Some(BuiltinSet {
             kind: Kind::None,
             bound: IntBound::Any,
+            float_bound: FloatBound::Any,
         }),
         "Int" => int(IntBound::Any),
         "Nat" => int(IntBound::NonNeg),
@@ -97,10 +118,12 @@ pub fn lookup(name: &str) -> Option<BuiltinSet> {
         "Signed32" => Some(BuiltinSet {
             kind: Kind::Signed32,
             bound: IntBound::Any,
+            float_bound: FloatBound::Any,
         }),
         "Unsigned32" => Some(BuiltinSet {
             kind: Kind::Unsigned32,
             bound: IntBound::Any,
+            float_bound: FloatBound::Any,
         }),
         // ℚ — the one builtin family that is a strict *superset* of `Int`
         // rather than a subset or a disjoint sort. Membership of an
@@ -119,10 +142,12 @@ pub fn lookup(name: &str) -> Option<BuiltinSet> {
         "Rational" => Some(BuiltinSet {
             kind: Kind::Rational,
             bound: IntBound::Any,
+            float_bound: FloatBound::Any,
         }),
         "NonZeroRational" => Some(BuiltinSet {
             kind: Kind::Rational,
             bound: IntBound::NonZero,
+            float_bound: FloatBound::Any,
         }),
         // A Unicode scalar value — a builtin *distinct* sort (like `Fail`),
         // not an `Int` subset, so `bound` is meaningless filler here too.
@@ -133,6 +158,23 @@ pub fn lookup(name: &str) -> Option<BuiltinSet> {
         "Char" => Some(BuiltinSet {
             kind: Kind::Char,
             bound: IntBound::Any,
+            float_bound: FloatBound::Any,
+        }),
+        // IEEE 754 binary32 — `FiniteFloat32` is a value-range refinement of
+        // the same `Kind::Float32` (excludes `±infinity32`/`nan32`), not a
+        // second sort, mirroring `Nat`/`Int` above rather than `Signed32`/
+        // `Unsigned32`. `bound` is meaningless filler here (`Kind::Float32`,
+        // not `Kind::Int`); `float_bound` carries the real predicate. See
+        // docs/design-decisions.md's `Float32`/`FiniteFloat32` section.
+        "Float32" => Some(BuiltinSet {
+            kind: Kind::Float32,
+            bound: IntBound::Any,
+            float_bound: FloatBound::Any,
+        }),
+        "FiniteFloat32" => Some(BuiltinSet {
+            kind: Kind::Float32,
+            bound: IntBound::Any,
+            float_bound: FloatBound::Finite,
         }),
         _ => None,
     }

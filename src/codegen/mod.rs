@@ -254,6 +254,11 @@ impl<'ctx> Compiler<'ctx> {
             }
             // Vector is an i64 pointer-as-i64 (same wire type as Set).
             Kind::Vector(_) => self.context.i64_type().into(),
+            // A plain f32 register — see docs/design-decisions.md's
+            // `Float32`/`FiniteFloat32` section. Just the type mapping;
+            // Float32 value-producing codegen (literals, arithmetic, the
+            // ABI leaf-widening convention) isn't implemented yet.
+            Kind::Float32 => self.context.f32_type().into(),
         }
     }
 
@@ -375,6 +380,7 @@ impl<'ctx> Compiler<'ctx> {
                     .map_err(err)?;
                 *field_idx += 1;
             }
+            Kind::Float32 => return Err(crate::kind::float32_ice()),
         }
         Ok(())
     }
@@ -454,6 +460,7 @@ impl<'ctx> Compiler<'ctx> {
             Kind::TaggedUnion(_) => Err(CompileError::ice(
                 "extract_kind_from_leaves: nested TaggedUnion not yet supported",
             )),
+            Kind::Float32 => Err(crate::kind::float32_ice()),
         }
     }
 

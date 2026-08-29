@@ -331,8 +331,17 @@ pub(super) fn elaborate_binop(
 /// rejected, just later, by the solver's existing sort-mismatch guard
 /// (`Membership::Constrained(false)`), exactly like today's `distinct`
 /// values in raw arithmetic (docs/wrapping-and-quotient-sets-plan.md).
+///
+/// `Float32` joins `Signed32`/`Unsigned32` in staying within its own family
+/// rather than widening — the opposite of `Rational`'s implicit ℤ ⊂ ℚ
+/// coercion, deliberately: every `Float32` op rounds once, at `Float32`
+/// precision, same as real hardware; there is no implicit `Int -> Float32`
+/// coercion either (that's the whole point of keeping `Float32` a distinct
+/// Kind rather than a numeric-tower member — see docs/design-decisions.md's
+/// `Float32` section), so `Float32 + Int` falls through to the same
+/// deferred-to-the-solver rejection as `Signed32 + Int` above.
 fn arith_value_kind(l: &Kind, r: &Kind) -> Kind {
-    if l == r && matches!(l, Kind::Signed32 | Kind::Unsigned32) {
+    if l == r && matches!(l, Kind::Signed32 | Kind::Unsigned32 | Kind::Float32) {
         l.clone()
     } else if matches!(l, Kind::Rational) || matches!(r, Kind::Rational) {
         // ℤ ⊂ ℚ, so a mixed operand pair widens rather than being rejected —
@@ -348,11 +357,19 @@ fn arith_value_kind(l: &Kind, r: &Kind) -> Kind {
 /// `bvslt`/`bvult` per family at the solver layer) but mutually disjoint —
 /// `Signed32 < Unsigned32` is rejected here just like `Bool < Int` always
 /// was, not silently accepted by falling back to `Int`'s comparison.
+///
+/// `Float32 < Float32` etc. route to cvc5's `fp.lt`-family, which carries
+/// real IEEE "unordered" semantics — any comparison touching `nan32`,
+/// including `nan32 < nan32`, is false (unlike `=`, which uses SMT-LIB FP
+/// equality's single-NaN-equivalence-class convention instead — see
+/// docs/design-decisions.md's `Float32` section). No `Int`/`Float32` pair
+/// here either, same "no implicit numeric-tower coercion" reasoning as
+/// `arith_value_kind`.
 fn is_ordered_pair(l: &Kind, r: &Kind) -> bool {
     (l == r
         && matches!(
             l,
-            Kind::Int | Kind::Rational | Kind::Signed32 | Kind::Unsigned32
+            Kind::Int | Kind::Rational | Kind::Signed32 | Kind::Unsigned32 | Kind::Float32
         ))
         || is_numeric_tower_pair(l, r)
 }

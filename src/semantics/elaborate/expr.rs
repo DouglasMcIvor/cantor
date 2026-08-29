@@ -29,14 +29,11 @@ pub(super) fn elaborate_expr(
             kind_of: Kind::Int,
             span,
         }),
-        // TODO(float32): parser-only slice so far (see docs/design-
-        // decisions.md's `Float32`/`FiniteFloat32` section) — no
-        // `Kind::Float32`/`SemExprKind::FloatLit` yet, so this fails loudly
-        // rather than being silently mistyped as `Kind::Int`.
-        ExprKind::FloatLit(_) => Err(not_yet_implemented(
-            "Float32 (parsed, but semantics/solver/codegen support isn't implemented yet)",
+        ExprKind::FloatLit(x) => Ok(SemExpr {
+            kind: SemExprKind::FloatLit(*x),
+            kind_of: Kind::Float32,
             span,
-        )),
+        }),
         ExprKind::BoolLit(b) => Ok(SemExpr {
             kind: SemExprKind::BoolLit(*b),
             kind_of: Kind::Bool,
@@ -133,12 +130,15 @@ pub(super) fn elaborate_expr(
             // Matches set_kind (passes through) in set position. In value
             // position, negation stays within the operand's own family —
             // `Signed32`/`Unsigned32` negate via `bvneg` and never become a
-            // tagged `Kind::Int` (docs/wrapping-and-quotient-sets-plan.md) —
-            // and defaults to `Int` otherwise, same as always.
+            // tagged `Kind::Int` (docs/wrapping-and-quotient-sets-plan.md),
+            // `Float32` stays `Float32` (codegen: a genuine sign-bit flip,
+            // never `0.0f - x` — see docs/design-decisions.md's `Float32`
+            // section on why `-0.0f` depends on this) — and defaults to
+            // `Int` otherwise, same as always.
             let kind_of = match pos {
                 Position::Set => kind_of_for_set()?,
                 Position::Value => match e.kind_of {
-                    Kind::Signed32 | Kind::Unsigned32 => e.kind_of.clone(),
+                    Kind::Signed32 | Kind::Unsigned32 | Kind::Float32 => e.kind_of.clone(),
                     _ => Kind::Int,
                 },
             };

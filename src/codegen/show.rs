@@ -131,6 +131,7 @@ impl<'ctx> Compiler<'ctx> {
             Kind::Vector(ek) => self.compile_show_vector(ek, val, span),
             Kind::Set(ek) => self.compile_show_set(ek, val, span),
             Kind::TaggedUnion(arms) => self.compile_show_tagged_union(arms, val, span),
+            Kind::Float32 => Err(crate::kind::float32_ice()),
         }
     }
 

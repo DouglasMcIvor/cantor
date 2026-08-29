@@ -175,6 +175,13 @@ pub(crate) fn encode_expr<'tm>(
 
     let term = match &expr.kind {
         SemExprKind::IntLit(n) => Ok(ctx.tm.mk_integer(*n)),
+        // TODO(float32): solver step — should be `ctx.tm.mk_fp(8, 24, ...)`
+        // (cvc5's native FloatingPoint theory). Should be unreachable today:
+        // `solver::check_file` rejects any Float32-touching program before
+        // expression encoding ever runs.
+        SemExprKind::FloatLit(_) => {
+            Err("Float32 solver encoding not yet implemented (TODO(float32))".to_string())
+        }
         SemExprKind::BoolLit(b) => Ok(ctx.tm.mk_boolean(*b)),
 
         // `'c'` — always a valid Unicode scalar value by construction (Rust's

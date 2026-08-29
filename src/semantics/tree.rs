@@ -31,6 +31,10 @@ pub struct SemExpr {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SemExprKind {
     IntLit(i64),
+    /// An IEEE 754 binary32 value — see `ast::ExprKind::FloatLit`'s doc
+    /// comment (`infinity32`/`nan32` are already folded into this by parse
+    /// time, so there's nothing further to resolve here).
+    FloatLit(f32),
     BoolLit(bool),
     /// `'c'` — always valid by construction (Rust's `char` excludes
     /// surrogates), so unlike `char(n)` it carries no basis obligation.
@@ -495,6 +499,7 @@ fn collect_try_calls_stmt<'a>(stmt: &'a SemStmt, out: &mut Vec<(&'a Symbol, Span
 pub fn collect_try_calls_expr<'a>(expr: &'a SemExpr, out: &mut Vec<(&'a Symbol, Span)>) {
     match &expr.kind {
         SemExprKind::IntLit(_)
+        | SemExprKind::FloatLit(_)
         | SemExprKind::BoolLit(_)
         | SemExprKind::CharLit(_)
         | SemExprKind::Var(_)
@@ -776,6 +781,19 @@ impl std::fmt::Display for SemExprKind {
         }
         match self {
             SemExprKind::IntLit(n) => write!(f, "{n}"),
+            SemExprKind::FloatLit(x) => {
+                if x.is_nan() {
+                    f.write_str("nan32")
+                } else if x.is_infinite() {
+                    f.write_str(if x.is_sign_positive() {
+                        "infinity32"
+                    } else {
+                        "-infinity32"
+                    })
+                } else {
+                    write!(f, "{x}f")
+                }
+            }
             SemExprKind::BoolLit(b) => write!(f, "{b}"),
             SemExprKind::CharLit(c) => write!(f, "{c:?}"),
             SemExprKind::Var(sym) => write!(f, "{sym}"),

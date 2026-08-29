@@ -835,3 +835,98 @@ fn check_ordered_group_placement_is_ok_for_ordinary_disjoint_overloads() {
     let items = elaborate_src("f : {0} -> Int\nf(x) = 0\nf : NatPos -> Int\nf(x) = x");
     assert!(check_ordered_group_placement(&items).is_ok());
 }
+
+// ── Float32 (semantics step — Kind inference only, solver/codegen deferred) ──
+
+#[test]
+fn float32_literal_elaborates_to_float32_kind() {
+    let def = only_function("f : -> Float32\nf() = 2.5f");
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert!(matches!(body.kind, SemExprKind::FloatLit(x) if x == 2.5));
+    assert_eq!(body.kind_of, Kind::Float32);
+    assert_eq!(def.return_kind, Kind::Float32);
+}
+
+#[test]
+fn finite_float32_elaborates_to_the_same_float32_kind() {
+    // FiniteFloat32 is a value-range refinement of Float32 (excludes
+    // ±infinity32/nan32), not a second sort — same Kind as Float32 itself,
+    // mirroring Nat/Int.
+    let def = only_function("f : -> FiniteFloat32\nf() = 2.5f");
+    assert_eq!(def.return_kind, Kind::Float32);
+}
+
+#[test]
+fn infinity32_and_nan32_desugar_to_float_lit() {
+    let def = only_function("f : -> Float32\nf() = infinity32");
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert!(
+        matches!(body.kind, SemExprKind::FloatLit(x) if x.is_infinite() && x.is_sign_positive())
+    );
+
+    let def = only_function("f : -> Float32\nf() = nan32");
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert!(matches!(body.kind, SemExprKind::FloatLit(x) if x.is_nan()));
+}
+
+#[test]
+fn negative_infinity32_is_unary_neg_stays_float32_kind() {
+    let def = only_function("f : -> Float32\nf() = -infinity32");
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert!(matches!(&body.kind, SemExprKind::UnOp { op, .. } if *op == cantor::ast::UnOp::Neg));
+    assert_eq!(body.kind_of, Kind::Float32);
+}
+
+#[test]
+fn float32_arithmetic_stays_float32_no_widening() {
+    // Unlike Int (IntN + IntN -> Int2N widens) or Rational (Int widens into
+    // it), Float32 arithmetic stays Float32 — every op rounds once, at
+    // Float32 precision, same as real hardware.
+    let def = only_function("f : Float32 * Float32 -> Float32\nf(a, b) = a + b");
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert!(matches!(body.kind, SemExprKind::Add(_, _)));
+    assert_eq!(body.kind_of, Kind::Float32);
+    assert_eq!(def.param_kinds, vec![Kind::Float32, Kind::Float32]);
+}
+
+#[test]
+fn float32_unary_neg_stays_float32() {
+    let def = only_function("f : Float32 -> Float32\nf(a) = -a");
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert_eq!(body.kind_of, Kind::Float32);
+}
+
+#[test]
+fn float32_comparison_is_bool() {
+    let def = only_function("f : Float32 * Float32 -> Bool\nf(a, b) = a < b");
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert_eq!(body.kind_of, Kind::Bool);
+}
+
+#[test]
+fn float32_equality_is_bool() {
+    // `=`/`!=` on Float32 use SMT-LIB FP equality (single NaN equivalence
+    // class, distinct +0.0f/-0.0f) rather than IEEE `==` — a solver-encoding
+    // decision, invisible at the Kind-inference layer tested here (both
+    // operands already agree on Kind, so the existing same-Kind rule
+    // accepts it with no Float32-specific code).
+    let def = only_function("f : Float32 * Float32 -> Bool\nf(a, b) = a == b");
+    let SemFunctionBody::Expr(body) = &def.body else {
+        panic!("expected expr body")
+    };
+    assert_eq!(body.kind_of, Kind::Bool);
+}

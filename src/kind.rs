@@ -86,6 +86,14 @@ pub enum Kind {
     /// trap when unproved). Disjoint from `Int` and every other Kind — no
     /// arithmetic, no implicit coercion. See docs/design-decisions.md §13.
     Char,
+    /// f32 — an IEEE 754 binary32 value, `Kind::Float32`'s runtime shape at
+    /// codegen time (`f32` register, not the tagged `i64` `Kind::Int` gets).
+    /// Both `Float32` and `FiniteFloat32` elaborate to this one Kind — like
+    /// `Nat ⊆ Int`, `FiniteFloat32` is a value-range refinement of the same
+    /// Kind (excluding `±infinity32`/`nan32`), not a second opaque sort —
+    /// see docs/design-decisions.md's `Float32`/`FiniteFloat32` section and
+    /// `semantics::builtins::lookup`'s `Float32`/`FiniteFloat32` entries.
+    Float32,
     /// i64 (pointer-as-i64) — heap-allocated sorted array of the boxed
     /// element Kind. Only single-i64-word Kinds (`Int`, `Int64`, `Bool`,
     /// `Fail`) can appear here today — `set_kind`'s `Set(X)` arm is the
@@ -108,6 +116,51 @@ pub enum Kind {
     Vector(Box<Kind>),
 }
 
+/// Whether `kind` is, or structurally contains, `Kind::Float32` — used by
+/// `solver::check_file`'s upstream Float32 gate (see `FLOAT32_UNREACHABLE_MSG`
+/// below) to reject a program touching Float32 anywhere, cleanly, before the
+/// solver/codegen internals that can't handle it yet ever run.
+/// TODO(float32): delete this and the gate once the solver/codegen steps
+/// land — at that point `Kind::Float32` needs no special-casing at all.
+pub fn kind_contains_float32(kind: &Kind) -> bool {
+    match kind {
+        Kind::Float32 => true,
+        Kind::Int
+        | Kind::Int64
+        | Kind::Rational
+        | Kind::Bool
+        | Kind::Fail
+        | Kind::None
+        | Kind::Signed32
+        | Kind::Unsigned32
+        | Kind::Char => false,
+        Kind::Set(elem) | Kind::Vector(elem) => kind_contains_float32(elem),
+        Kind::Tuple(parts) | Kind::TaggedUnion(parts) => parts.iter().any(kind_contains_float32),
+    }
+}
+
+/// TODO(float32): message shared by every solver/codegen-internal site that
+/// must exhaustively match `Kind` but has no real `Kind::Float32` handling
+/// yet (solver/codegen steps not built — see docs/design-decisions.md's
+/// `Float32`/`FiniteFloat32` section). These sites should be unreachable in
+/// practice: `solver::check_file` is meant to reject any program touching
+/// `Kind::Float32` with a clean `CompileError::Unsupported` before the
+/// solver or codegen ever run deep enough to hit one of these — reaching
+/// this message for real means that gate has a hole, hence `Ice` rather
+/// than `Unsupported`.
+const FLOAT32_UNREACHABLE_MSG: &str = "Float32 reached solver/codegen internals with no support yet (TODO(float32) — \
+     should be unreachable; solver::check_file's Float32 gate has a hole)";
+
+/// For `Result`-returning sites — `return Err(kind::float32_ice())`.
+pub fn float32_ice() -> CompileError {
+    CompileError::ice(FLOAT32_UNREACHABLE_MSG)
+}
+
+/// For infallible sites that can't propagate a `CompileError` at all.
+pub fn float32_unreachable() -> ! {
+    panic!("{FLOAT32_UNREACHABLE_MSG}")
+}
+
 /// The Kind of a set-*describing* expression (domain/range annotations, `let`
 /// constraints, the RHS of `in`, …). Value-position expressions (function
 /// bodies, `let` values, …) never call this — `semantics::elaborate`'s
@@ -116,16 +169,7 @@ pub enum Kind {
 pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileError> {
     Ok(match &set_expr.kind {
         ExprKind::IntLit { .. } => Kind::Int,
-        // TODO(float32): parser-only slice so far — no `Kind::Float32` yet
-        // (see docs/design-decisions.md's `Float32`/`FiniteFloat32` section).
-        ExprKind::FloatLit(_) => {
-            return Err(CompileError::Unsupported {
-                feature: "Float32 in set/domain position (semantics/solver/codegen \
-                    support isn't implemented yet)"
-                    .to_owned(),
-                span: set_expr.span,
-            });
-        }
+        ExprKind::FloatLit(_) => Kind::Float32,
         ExprKind::BoolLit { .. } => Kind::Bool,
         // A Char domain-literal set (`{'a', 'b'}` in signature position) —
         // `solver::sort::set_sort`'s `SetLit` arm and `membership_constraint`'s
@@ -299,7 +343,10 @@ pub fn is_distinct_basis_representable(kind: &Kind) -> bool {
         | Kind::Unsigned32 => true,
         Kind::Tuple(parts) => parts.iter().all(is_distinct_basis_representable),
         Kind::Vector(elem) => is_distinct_basis_representable(elem),
-        Kind::TaggedUnion(_) | Kind::Set(_) => false,
+        // TODO(float32): solver step — `distinct Float32` needs the same
+        // `mk_D`/`from_D` uninterpreted-function recipe over cvc5's native
+        // FloatingPoint sort as every other basis here, just not built yet.
+        Kind::TaggedUnion(_) | Kind::Set(_) | Kind::Float32 => false,
     }
 }
 

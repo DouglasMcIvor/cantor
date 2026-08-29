@@ -320,6 +320,7 @@ fn walk_expr(expr: &SemExpr, f: &mut impl FnMut(&SemExpr)) {
     f(expr);
     match &expr.kind {
         SemExprKind::IntLit(_)
+        | SemExprKind::FloatLit(_)
         | SemExprKind::BoolLit(_)
         | SemExprKind::CharLit(_)
         | SemExprKind::Var(_)

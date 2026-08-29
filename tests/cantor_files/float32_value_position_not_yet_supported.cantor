@@ -1,6 +1,6 @@
--- Float32 literals lex and parse today, but semantics/solver/codegen
--- support isn't implemented yet (see docs/design-decisions.md's
--- `Float32`/`FiniteFloat32` section) — this must fail loudly as
--- "not yet supported", never silently misclassified as `Int` or crash.
-main : -> Int
+-- Float32 elaborates fine now (Kind inference: semantics step, DONE) — but
+-- solver/codegen support isn't implemented yet (see docs/design-decisions.md's
+-- `Float32`/`FiniteFloat32` section), so `solver::check_file`'s upstream gate
+-- rejects this cleanly before the solver or codegen ever run.
+main : -> Float32
 main() = 3.14f

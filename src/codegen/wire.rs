@@ -29,6 +29,10 @@ pub fn leaf_count(kind: &Kind) -> usize {
         Kind::TaggedUnion(arms) => 1 + tagged_union_leaf_count(arms),
         // Vector is an i64 pointer (like Set) — one leaf.
         Kind::Vector(_) => 1,
+        // TODO(float32): codegen step — almost certainly 1 (widened into an
+        // i64 leaf like Signed32/Unsigned32/Char), but that ABI choice isn't
+        // decided/tested yet, so this stays a loud gap rather than a guess.
+        Kind::Float32 => crate::kind::float32_unreachable(),
     }
 }
 
@@ -163,6 +167,14 @@ pub fn state_leaf_shape(kind: &Kind, span: Span) -> Result<LeafShape, CompileErr
             return Err(CompileError::Unsupported {
                 feature: "event-loop State containing a Rational — arena deep-copy \
                           doesn't support boxed rationals yet"
+                    .to_string(),
+                span,
+            });
+        }
+        Kind::Float32 => {
+            return Err(CompileError::Unsupported {
+                feature: "event-loop State containing a Float32 — Float32 codegen \
+                          isn't implemented yet"
                     .to_string(),
                 span,
             });

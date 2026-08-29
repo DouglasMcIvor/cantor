@@ -616,6 +616,7 @@ fn count_kind_leaves(kind: &Kind) -> usize {
         Kind::Tuple(elems) => elems.iter().map(count_kind_leaves).sum(),
         // TODO: tagged-union IR — count tag field + widest arm
         Kind::TaggedUnion(_) => 1,
+        Kind::Float32 => cantor::kind::float32_unreachable(),
         // A Vector is always a single pointer-as-i64 leaf, regardless of
         // element kind (see `codegen::wire::leaf_count`'s matching arm) —
         // decoding the pointed-to elements (`format_kind_val`) is the part
@@ -690,5 +691,6 @@ fn format_kind_val(kind: &Kind, buf: &[i64], offset: &mut usize) -> String {
             let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::os::raw::c_char) };
             s.to_string_lossy().into_owned()
         }
+        Kind::Float32 => cantor::kind::float32_unreachable(),
     }
 }

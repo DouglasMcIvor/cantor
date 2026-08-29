@@ -38,6 +38,10 @@ impl<'ctx> Compiler<'ctx> {
                 let v = self.context.i32_type().const_int(*c as u32 as u64, false);
                 Ok((v.into(), Kind::Char))
             }
+            // TODO(float32): codegen step. Should be unreachable today:
+            // `solver::check_file` rejects any Float32-touching program
+            // before codegen ever runs.
+            SemExprKind::FloatLit(_) => Err(crate::kind::float32_ice()),
             SemExprKind::Var(sym) => env.get(sym).map(|(v, t)| (*v, t.clone())).ok_or_else(|| {
                 CompileError::UndefinedVariable {
                     name: sym.0.clone(),

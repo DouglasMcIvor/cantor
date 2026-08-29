@@ -53,6 +53,11 @@ fn scalar_kind_sort<'tm>(
         ValKind::Tuple(_) | ValKind::TaggedUnion(_) | ValKind::Vector(_) | ValKind::Set(_) => {
             return None;
         }
+        // TODO(float32): solver step — should be `tm.mk_fp_sort(8, 24)`
+        // (cvc5's native FloatingPoint theory), not built yet. `None` here
+        // follows this function's own existing "not-yet-representable ->
+        // Unknown" convention rather than guessing.
+        ValKind::Float32 => return None,
     })
 }
 
@@ -94,6 +99,11 @@ pub(crate) fn arm_ctor_name(k: &ValKind) -> String {
             format!("ck_TU_{s}")
         }
         ValKind::Vector(elem) => format!("ck_V_{}", arm_ctor_name(elem)),
+        // TODO(float32): solver step — "ck_F32", per the forward-
+        // compatibility checklist above. Should be unreachable today:
+        // `solver::check_file` rejects any Float32-touching program before
+        // union-arm construction ever runs.
+        ValKind::Float32 => crate::kind::float32_unreachable(),
     }
 }
 
@@ -513,6 +523,7 @@ pub(crate) fn set_sort<'tm>(
             return set_sort(tm, lhs, distinct_preds, name_defs);
         }
         SemExprKind::IntLit(_)
+        | SemExprKind::FloatLit(_)
         | SemExprKind::BoolLit(_)
         | SemExprKind::CharLit(_)
         | SemExprKind::Add(..)

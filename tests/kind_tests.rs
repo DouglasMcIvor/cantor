@@ -62,6 +62,32 @@ fn set_kind_of_set_fail() {
 }
 
 #[test]
+fn set_kind_of_float32() {
+    assert_eq!(
+        set_kind(&Expr::var("Float32"), &NameDefs::new()).unwrap(),
+        Kind::Float32
+    );
+}
+
+#[test]
+fn set_kind_of_finite_float32_is_the_same_kind_as_float32() {
+    // A value-range refinement of Float32 (excludes ±infinity32/nan32), not
+    // a second sort — mirrors Nat/Int sharing Kind::Int.
+    assert_eq!(
+        set_kind(&Expr::var("FiniteFloat32"), &NameDefs::new()).unwrap(),
+        Kind::Float32
+    );
+}
+
+#[test]
+fn set_kind_of_float32_literal() {
+    assert_eq!(
+        set_kind(&Expr::float32(2.5), &NameDefs::new()).unwrap(),
+        Kind::Float32
+    );
+}
+
+#[test]
 fn set_kind_of_set_tuple_is_unsupported_not_a_panic() {
     // `Set(Int * Int)` — a Tuple element kind needs structural equality/
     // ordering the compiler doesn't implement yet (see kind::is_scalar_word_kind).

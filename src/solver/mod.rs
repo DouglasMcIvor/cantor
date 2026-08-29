@@ -48,7 +48,9 @@ use crate::{
     ast::Item,
     semantics::{
         elaborate::elaborate,
-        tree::{SemExpr, SemFunctionBody, SemFunctionDef, SemItem, SemNameDef},
+        tree::{
+            SemExpr, SemExprKind, SemFunctionBody, SemFunctionDef, SemItem, SemNameDef, SemStmt,
+        },
     },
     span::{Span, Symbol},
 };
@@ -155,6 +157,157 @@ pub fn check_file(
     worker::supervise(items, timeout_ms)
 }
 
+/// TODO(float32): upstream gate for the semantics/solver/codegen split —
+/// `Kind::Float32` elaborates successfully (docs/design-decisions.md's
+/// `Float32`/`FiniteFloat32` section), but nothing past elaboration handles
+/// it yet, so every solver/codegen-internal `Kind`/`SemExprKind::FloatLit`
+/// match arm panics or ICEs rather than silently doing something wrong (see
+/// `kind::float32_ice`/`kind::float32_unreachable`). Reject cleanly here,
+/// before any of that runs, instead of letting a real program hit one of
+/// those internal panics. Delete this whole function (and the internal
+/// stubs it protects) once the solver/codegen steps land.
+fn reject_float32(sem_items: &[SemItem]) -> Result<(), crate::error::CompileError> {
+    fn bail(span: Span) -> crate::error::CompileError {
+        crate::error::CompileError::Unsupported {
+            feature: "Float32 (semantics/solver/codegen support isn't implemented \
+                      yet — see docs/design-decisions.md's Float32/FiniteFloat32 section)"
+                .to_string(),
+            span,
+        }
+    }
+
+    fn expr(e: &SemExpr) -> Option<Span> {
+        if crate::kind::kind_contains_float32(&e.kind_of) {
+            return Some(e.span);
+        }
+        match &e.kind {
+            SemExprKind::IntLit(_)
+            | SemExprKind::FloatLit(_)
+            | SemExprKind::BoolLit(_)
+            | SemExprKind::CharLit(_)
+            | SemExprKind::Var(_)
+            | SemExprKind::FailLit
+            | SemExprKind::NoneLit => None,
+            SemExprKind::Add(l, r)
+            | SemExprKind::DisjointUnion(l, r)
+            | SemExprKind::Sub(l, r)
+            | SemExprKind::SetDifference(l, r)
+            | SemExprKind::Mul(l, r)
+            | SemExprKind::CartesianProduct(l, r)
+            | SemExprKind::Div(l, r)
+            | SemExprKind::BinOp { lhs: l, rhs: r, .. }
+            | SemExprKind::Index { base: l, index: r } => expr(l).or_else(|| expr(r)),
+            SemExprKind::SetQuotient(inner, _)
+            | SemExprKind::UnOp { expr: inner, .. }
+            | SemExprKind::Try(inner)
+            | SemExprKind::FailWith(inner)
+            | SemExprKind::Proj { base: inner, .. }
+            | SemExprKind::KleeneStar(inner) => expr(inner),
+            SemExprKind::Call { args, .. } => args.iter().find_map(expr),
+            SemExprKind::If {
+                cond,
+                then_expr,
+                else_expr,
+            } => expr(cond)
+                .or_else(|| expr(then_expr))
+                .or_else(|| expr(else_expr)),
+            SemExprKind::Tuple(elems) | SemExprKind::SetLit(elems) => elems.iter().find_map(expr),
+            SemExprKind::Comprehension {
+                output,
+                source,
+                filter,
+                ..
+            } => expr(output)
+                .or_else(|| expr(source))
+                .or_else(|| filter.as_deref().and_then(expr)),
+        }
+    }
+
+    fn stmts(body: &[SemStmt]) -> Option<Span> {
+        body.iter().find_map(stmt)
+    }
+
+    fn stmt(s: &SemStmt) -> Option<Span> {
+        match s {
+            SemStmt::Let {
+                constraint, value, ..
+            }
+            | SemStmt::MutLet {
+                constraint, value, ..
+            } => expr(constraint).or_else(|| expr(value)),
+            SemStmt::Assign { value, .. } => expr(value),
+            SemStmt::DestructLet {
+                bindings,
+                tuple_constraint,
+                value,
+                ..
+            }
+            | SemStmt::DestructMutLet {
+                bindings,
+                tuple_constraint,
+                value,
+                ..
+            } => bindings
+                .iter()
+                .find_map(|b| b.constraint.as_ref().and_then(expr))
+                .or_else(|| tuple_constraint.as_ref().and_then(expr))
+                .or_else(|| expr(value)),
+            SemStmt::DestructAssign { value, .. } => expr(value),
+            SemStmt::Require { predicate, .. } | SemStmt::Assume { predicate, .. } => {
+                expr(predicate)
+            }
+            SemStmt::Assert {
+                predicate,
+                else_clause,
+                ..
+            } => expr(predicate).or_else(|| match else_clause {
+                Some(crate::semantics::tree::SemAssertElse::FailWith(e)) => expr(e),
+                Some(crate::semantics::tree::SemAssertElse::Return(e)) => expr(e),
+                None => None,
+            }),
+            SemStmt::Expr(e) => expr(e),
+            SemStmt::Block(body) => stmts(body),
+            SemStmt::While { cond, body, .. } => expr(cond).or_else(|| stmts(body)),
+            SemStmt::ForIn { set, body, .. } => expr(set).or_else(|| stmts(body)),
+            SemStmt::Return { value, .. } => expr(value),
+        }
+    }
+
+    for item in sem_items {
+        let hit = match item {
+            SemItem::FunctionDef(def) => {
+                if def
+                    .param_kinds
+                    .iter()
+                    .any(crate::kind::kind_contains_float32)
+                    || crate::kind::kind_contains_float32(&def.return_kind)
+                {
+                    Some(def.span)
+                } else {
+                    def.sigs
+                        .iter()
+                        .find_map(|sig| {
+                            sig.domain
+                                .as_ref()
+                                .and_then(expr)
+                                .or_else(|| expr(&sig.range))
+                        })
+                        .or_else(|| match &def.body {
+                            SemFunctionBody::Expr(e) => expr(e),
+                            SemFunctionBody::Block(body) => stmts(body),
+                        })
+                }
+            }
+            SemItem::NameDef(def) => def.ty.as_ref().and_then(expr).or_else(|| expr(&def.value)),
+            SemItem::EquivDecl { .. } => None,
+        };
+        if let Some(span) = hit {
+            return Err(bail(span));
+        }
+    }
+    Ok(())
+}
+
 /// The check itself, with no process management around it. Split out from
 /// [`check_file`] so the worker can call it directly, and so
 /// `CANTOR_INPROCESS_SOLVER` can bypass the split for debugging.
@@ -163,6 +316,7 @@ fn check_file_in_process(
     timeout_ms: u64,
 ) -> Result<CheckOutcome, crate::error::CompileError> {
     let sem_items = elaborate(items)?;
+    reject_float32(&sem_items)?;
 
     let name_defs: NameDefs = sem_items
         .iter()

@@ -330,6 +330,7 @@ impl<'ctx> Compiler<'ctx> {
             Kind::TaggedUnion(_) => Err(CompileError::ice(
                 "trampoline_load_leaves: TaggedUnion input not yet supported",
             )),
+            Kind::Float32 => Err(crate::kind::float32_ice()),
         }
     }
 
@@ -416,6 +417,7 @@ impl<'ctx> Compiler<'ctx> {
                     "trampoline_store_leaves: TaggedUnion output not yet supported",
                 ));
             }
+            Kind::Float32 => return Err(crate::kind::float32_ice()),
             // Vector is an i64 pointer — store it like any other i64 leaf.
             Kind::Vector(_) => {
                 let ptr = if *leaf_idx == 0 {
