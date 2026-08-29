@@ -90,13 +90,10 @@ pub(super) fn elaborate_expr(
                         // value yet — a synthesized runtime-dispatch wrapper
                         // is the planned follow-up (backlog.md).
                         None => match ctx.fn_sigs.get(sym).map(Vec::as_slice) {
-                            Some([only]) => {
-                                let domain = match only.param_kinds.as_slice() {
-                                    [single] => single.clone(),
-                                    params => Kind::Tuple(params.to_vec()),
-                                };
-                                Kind::Function(Box::new(domain), Box::new(only.return_kind.clone()))
-                            }
+                            Some([only]) => Kind::Function(
+                                only.param_kinds.clone(),
+                                Box::new(only.return_kind.clone()),
+                            ),
                             Some(_overloaded) => {
                                 return Err(CompileError::Unsupported {
                                     feature: format!(
@@ -225,18 +222,20 @@ pub(super) fn elaborate_expr(
             // `Kind::Function`'s doc comment), unlike an ordinary
             // single-signature callee.
             let kind_of = if let Some(Kind::Function(domain, range)) = env.get(callee) {
-                let domain = domain.as_ref().clone();
+                let domain = domain.clone();
                 let range = range.as_ref().clone();
-                let arg_kind = match sem_args.as_slice() {
-                    [single] => single.kind_of.clone(),
-                    many => Kind::Tuple(many.iter().map(|a| a.kind_of.clone()).collect()),
-                };
-                if canonical_bucket_kind(&arg_kind) != canonical_bucket_kind(&domain) {
+                let arg_kinds: Vec<Kind> = sem_args.iter().map(|a| a.kind_of.clone()).collect();
+                let matches = domain.len() == arg_kinds.len()
+                    && domain
+                        .iter()
+                        .zip(&arg_kinds)
+                        .all(|(p, a)| canonical_bucket_kind(p) == canonical_bucket_kind(a));
+                if !matches {
                     return Err(CompileError::FunctionValueArgKindMismatch {
                         name: callee.0.clone(),
                         detail: format!(
-                            "`{}` expects an argument of Kind {domain:?}, but this call \
-                             passes {arg_kind:?}",
+                            "`{}` expects argument(s) of Kind {domain:?}, but this call \
+                             passes {arg_kinds:?}",
                             callee.0
                         ),
                         span,

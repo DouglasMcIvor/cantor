@@ -126,7 +126,20 @@ pub enum Kind {
     /// as a value yet — no single LLVM entry point exists for them (see
     /// backlog.md's higher-order-functions entry for the follow-up that
     /// synthesizes one).
-    Function(Box<Kind>, Box<Kind>),
+    ///
+    /// The domain is the **flat per-parameter Kind list** (one entry per
+    /// real LLVM parameter — `codegen::declare_function`'s own
+    /// `param_kinds: &[Kind]` shape), never a single collapsed Kind. This
+    /// matters for exactly one case: a function with *one* tuple-typed
+    /// parameter (`f : (Int * Int) -> Int`, arity 1) is otherwise
+    /// indistinguishable from a *two*-scalar-parameter function of the same
+    /// element Kinds (`add2 : Int * Int -> Int`, arity 2) — both would
+    /// collapse to the same domain if it were a single `Kind::Tuple`, which
+    /// is exactly wrong for reconstructing an indirect call's real LLVM
+    /// signature (one struct argument vs. two scalar arguments). Storing
+    /// the flat list keeps `vec![Tuple([Int, Int])]` (arity 1) and
+    /// `vec![Int, Int]` (arity 2) distinct.
+    Function(Vec<Kind>, Box<Kind>),
 }
 
 /// The Kind of a set-*describing* expression (domain/range annotations, `let`
@@ -425,13 +438,19 @@ fn binop_kind(
             ));
         }
 
-        // `A -> B` — function Kind. `A`/`B` are each parsed the same way an
-        // ordinary domain/range term is, so a multi-param domain still uses
-        // `*` (`(Int * Int -> Int)`), collapsing via `Mul`'s own Cartesian-
-        // product handling above into a single `Kind::Tuple` domain — no
-        // separate currying grammar needed.
+        // `A -> B` — function Kind. `A` flattens through `*` the same way an
+        // ordinary function's own domain does (`flatten_domain`, same as
+        // `Mul`'s own Cartesian-product handling above) into the flat
+        // per-parameter list `Kind::Function` stores — so `(Int * Int ->
+        // Int)` always means two scalar parameters, matching the
+        // convention every real multi-param `FunctionDef` already uses (no
+        // way to write "one tuple parameter" inline here — see
+        // `Kind::Function`'s doc comment).
         BinOp::Arrow => Kind::Function(
-            Box::new(set_kind(lhs, name_defs)?),
+            flatten_domain(lhs)
+                .into_iter()
+                .map(|p| set_kind(p, name_defs))
+                .collect::<Result<Vec<_>, _>>()?,
             Box::new(set_kind(rhs, name_defs)?),
         ),
     })

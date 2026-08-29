@@ -66,13 +66,13 @@ fn bare_reference_to_single_signature_function_is_a_function_kind() {
     let body = function_body_expr(&items, "holder");
     assert_eq!(
         body.kind_of,
-        Kind::Function(Box::new(Kind::Int), Box::new(Kind::Int))
+        Kind::Function(vec![Kind::Int], Box::new(Kind::Int))
     );
     assert!(matches!(&body.kind, SemExprKind::Var(sym) if sym.0 == "double"));
 }
 
 #[test]
-fn multi_param_function_reference_has_tuple_domain() {
+fn multi_param_function_reference_has_flat_param_list_domain() {
     let items = elaborate_src(
         "add2 : Int * Int -> Int\n\
          add2(a, b) = a + b\n\
@@ -82,11 +82,44 @@ fn multi_param_function_reference_has_tuple_domain() {
     let body = function_body_expr(&items, "holder");
     assert_eq!(
         body.kind_of,
-        Kind::Function(
-            Box::new(Kind::Tuple(vec![Kind::Int, Kind::Int])),
-            Box::new(Kind::Int)
-        )
+        Kind::Function(vec![Kind::Int, Kind::Int], Box::new(Kind::Int))
     );
+}
+
+// Regression: `Kind::Function`'s domain used to collapse a multi-param
+// signature into a single `Kind::Tuple`, making a *one*-tuple-parameter
+// function (`pair_sum` here) indistinguishable from a *two*-scalar-
+// parameter function of the same element Kinds (`add2` above) — a real
+// codegen ABI-mismatch hazard (one real LLVM struct argument vs. two
+// scalar arguments), not just a cosmetic quirk. Now the flat per-parameter
+// list keeps them apart: `vec![Tuple([Int, Int])]` (arity 1, `pair_sum`)
+// vs. `vec![Int, Int]` (arity 2, `add2`) — the same distinction
+// `codegen::declare_function`'s own `param_kinds: &[Kind]` already makes
+// for the real LLVM signature, which is exactly what `compile_indirect_call`
+// needs to reconstruct correctly for an indirect call.
+//
+// No test exercises `pair_sum` actually *being* referenced as a value: no
+// arrow-type annotation can express a one-tuple-param slot today (an
+// inline `Domain -> Range` annotation always flattens `*` into separate
+// params, see `Kind::Function`'s doc comment) — a real, narrow, honestly-
+// scoped follow-on gap, not silently miscompiled.
+#[test]
+fn single_tuple_param_function_has_a_different_domain_from_two_scalar_params() {
+    let pair_sum_items = elaborate_src(
+        "pair_sum : (Int * Int) -> Int\n\
+         pair_sum(t) = t.0 + t.1",
+    );
+    let pair_sum = function_def(&pair_sum_items, "pair_sum");
+    assert_eq!(
+        pair_sum.param_kinds,
+        vec![Kind::Tuple(vec![Kind::Int, Kind::Int])]
+    );
+
+    let add2_items = elaborate_src("add2 : Int * Int -> Int\nadd2(a, b) = a + b");
+    let add2 = function_def(&add2_items, "add2");
+    assert_eq!(add2.param_kinds, vec![Kind::Int, Kind::Int]);
+
+    assert_ne!(pair_sum.param_kinds, add2.param_kinds);
 }
 
 // Regression: `elaborate_binop`'s generic comparisons/logical catch-all
@@ -113,7 +146,7 @@ fn signature_domain_arrow_subexpression_has_function_kind_not_bool() {
     };
     assert_eq!(
         first.kind_of,
-        Kind::Function(Box::new(Kind::Int), Box::new(Kind::Int)),
+        Kind::Function(vec![Kind::Int], Box::new(Kind::Int)),
         "the `(Int -> Int)` domain part must carry Kind::Function, not the \
          Bool the old catch-all silently produced"
     );

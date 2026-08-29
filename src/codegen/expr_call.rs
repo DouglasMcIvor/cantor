@@ -497,35 +497,18 @@ impl<'ctx> Compiler<'ctx> {
     /// function type from `domain`/`range` and issues an indirect call —
     /// there is no compiled-in name to look up, unlike an ordinary call.
     ///
-    /// `domain` → flat per-parameter Kind list: `args.len() > 1` means
-    /// `domain` is `Kind::Tuple(parts)` (multi-scalar-param — see
-    /// `Kind::Function`'s doc comment and `semantics::elaborate::expr`'s
-    /// `Var` arm, which builds it this way), one part per parameter;
-    /// otherwise `domain` itself is the (possibly zero- or one-parameter)
-    /// shape. **Known ambiguity, not yet resolved:** a single parameter
-    /// whose own declared Kind is itself a `Tuple` (`f : (Int * Int) ->
-    /// Int` with *one* tuple-typed parameter) is indistinguishable here
-    /// from a *two*-scalar-parameter function of the same element Kinds —
-    /// both collapse to the same `Kind::Function` domain. Not reachable by
-    /// today's tests (single-scalar-parameter functions only); tracked in
-    /// backlog.md.
+    /// `domain` is already the flat per-parameter Kind list (`Kind::
+    /// Function`'s own representation, one entry per real LLVM parameter —
+    /// see its doc comment for why that's not just a single, possibly-
+    /// `Tuple`, Kind).
     fn compile_indirect_call(
         &self,
         fn_ptr_val: BasicValueEnum<'ctx>,
-        domain: &Kind,
+        param_kinds: &[Kind],
         range: &Kind,
         args: &[SemExpr],
         env: &Env<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, Kind), CompileError> {
-        let param_kinds: Vec<Kind> = match args.len() {
-            0 => vec![],
-            1 => vec![domain.clone()],
-            _ => match domain {
-                Kind::Tuple(parts) => parts.clone(),
-                other => vec![other.clone()],
-            },
-        };
-
         let err = |e: inkwell::builder::BuilderError| CompileError::ice(e.to_string());
         let param_types: Vec<_> = param_kinds
             .iter()
@@ -541,7 +524,7 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         let mut compiled_args = Vec::with_capacity(args.len());
-        for (arg, param_kind) in args.iter().zip(&param_kinds) {
+        for (arg, param_kind) in args.iter().zip(param_kinds) {
             let (v, arg_kind) = self.compile_expr(arg, env)?;
             let v = match param_kind {
                 Kind::Tuple(_) | Kind::TaggedUnion(_) => v,

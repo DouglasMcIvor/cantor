@@ -158,21 +158,19 @@ fn set_kind_of_simple_arrow() {
     let expr = Expr::binop(BinOp::Arrow, Expr::var("Int"), Expr::var("Nat"));
     assert_eq!(
         set_kind(&expr, &NameDefs::new()).unwrap(),
-        Kind::Function(Box::new(Kind::Int), Box::new(Kind::Int))
+        Kind::Function(vec![Kind::Int], Box::new(Kind::Int))
     );
 }
 
 #[test]
-fn set_kind_of_arrow_with_tuple_domain() {
-    // (Int * Bool) -> Bool
+fn set_kind_of_arrow_with_product_domain_flattens_to_two_params() {
+    // (Int * Bool) -> Bool — always two scalar params (see Kind::Function's
+    // doc comment: no inline syntax for "one tuple-typed param" today).
     let domain = Expr::binop(BinOp::Mul, Expr::var("Int"), Expr::var("Bool"));
     let expr = Expr::binop(BinOp::Arrow, domain, Expr::var("Bool"));
     assert_eq!(
         set_kind(&expr, &NameDefs::new()).unwrap(),
-        Kind::Function(
-            Box::new(Kind::Tuple(vec![Kind::Int, Kind::Bool])),
-            Box::new(Kind::Bool)
-        )
+        Kind::Function(vec![Kind::Int, Kind::Bool], Box::new(Kind::Bool))
     );
 }
 
@@ -184,8 +182,8 @@ fn set_kind_of_curried_arrow_right_associates() {
     assert_eq!(
         set_kind(&expr, &NameDefs::new()).unwrap(),
         Kind::Function(
-            Box::new(Kind::Int),
-            Box::new(Kind::Function(Box::new(Kind::Int), Box::new(Kind::Int)))
+            vec![Kind::Int],
+            Box::new(Kind::Function(vec![Kind::Int], Box::new(Kind::Int)))
         )
     );
 }

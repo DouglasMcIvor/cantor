@@ -344,16 +344,33 @@ Algorithm:
   requires a full proof first and this shape is still solver-`unknown` (see
   above), these run via `compile_file` (the unverified/no-solver path
   `tests/codegen` already uses for other JIT fixtures), not the CLI —
-  `tests/codegen/higher_order_functions.rs`. **Known ambiguity, not fixed:**
-  `compile_indirect_call` degrades a multi-argument call's `Kind::Function`
-  domain to a flat per-parameter list via "`args.len() > 1` ⇒ domain is a
-  `Tuple`, one part per param" (mirroring how `Var`'s elaboration built it),
-  which can't distinguish a function with *one* tuple-typed parameter
-  (`f : (Int * Int) -> Int`) from a *two*-scalar-parameter function of the
-  same element Kinds — both collapse to the same `Kind::Function` domain.
-  Not reachable by any test so far (single-scalar-parameter functions only);
-  a real fix likely means `Kind::Function` storing the flat per-parameter
-  list directly instead of a collapsed domain Kind.
+  `tests/codegen/higher_order_functions.rs`.
+  **Domain-representation ambiguity: FIXED.** `Kind::Function` now stores
+  the domain as `Vec<Kind>` — the flat per-parameter list, matching
+  `codegen::declare_function`'s own `param_kinds: &[Kind]` shape — instead
+  of a single, sometimes-collapsed-into-`Tuple` Kind. This closed a real
+  latent hazard, not just a cosmetic one: a function with *one* tuple-typed
+  parameter (`pair_sum : (Int * Int) -> Int`, real LLVM ABI = one struct
+  argument) used to be *indistinguishable* at the Kind level from a
+  *two*-scalar-parameter function of the same element Kinds (`add2 : Int *
+  Int -> Int`, real ABI = two i64 arguments) — both collapsed to the same
+  `Kind::Function` domain, so nothing would have stopped a caller from
+  passing `pair_sum` somewhere `add2`'s shape was expected and calling it
+  with 2 separate args, building an indirect-call function type that
+  doesn't match the real callee's LLVM signature (a genuine ABI mismatch —
+  undefined behaviour at runtime, not just a wrong answer). Now
+  `vec![Tuple([Int, Int])]` (arity 1) and `vec![Int, Int]` (arity 2) are
+  distinct, and `compile_indirect_call` just uses the declared list
+  directly — no more `args.len() > 1` inference. An inline `Domain ->
+  Range` Kind annotation (`set_kind`'s `Arrow` arm) always flattens `*`
+  into separate params via `flatten_domain` (same as an ordinary function's
+  own domain) — so a one-tuple-param function like `pair_sum` still can't
+  be *declared into* a function-Kind parameter today (no syntax expresses
+  that shape), a real but narrow, honestly-scoped gap:
+  `tests/semantics/higher_order_functions.rs`'s
+  `single_tuple_param_function_has_a_different_domain_from_two_scalar_params`
+  pins the Kind distinction directly since no full program can exercise it
+  end-to-end yet.
   **Still open:** overloaded names as values (synthesized runtime-dispatch
   wrapper, see above) is the agreed next step, then `>>` composition
   (design-decisions.md §10).
