@@ -24,6 +24,8 @@ mod equiv;
 mod error_handling;
 #[path = "cli/event_loop.rs"]
 mod event_loop;
+#[path = "cli/float32.rs"]
+mod float32;
 #[path = "cli/helpers.rs"]
 mod helpers;
 #[path = "cli/heterogeneous_named_unions.rs"]

@@ -2651,6 +2651,117 @@ a value of any currently-supported Kind into its `Char*` display form.
     runs, so a genuine multi-arm union's arms can never themselves be the
     fallible-wire shape.
 
+### `Float32` / `FiniteFloat32` — IEEE 754 binary32 (DECIDED for this slice)
+
+Cantor's first floating-point feature. `Float32` is *all* IEEE 754 binary32
+bit patterns — both zeros, both infinities, and NaN included.
+`FiniteFloat32` is the subset excluding `±infinity32` and `nan32`, wired up
+as an ordinary refinement/subset of `Float32` (the same subset machinery
+`Nat ⊆ Int` already uses), not a second opaque sort.
+
+- **Literal syntax**: `3.14f`, `0.0f`, `-0.0f` (the last is just unary `neg`
+  applied to the `0.0f` literal — no dedicated negative-zero literal is
+  needed, *provided* `neg` compiles to a genuine sign-bit flip rather than
+  `0.0f - x`; see codegen note below). The literal text (minus the `f`) is
+  parsed with Rust's `f32::from_str`, which is itself a correctly-rounded
+  decimal→binary32 conversion — exactly the IEEE 754 semantics we want, no
+  custom parsing needed.
+- **Bare decimal literals (`3.14`) stay reserved**, per the existing
+  "Decimal literals deliberately do not lex" note above — they are not
+  silently treated as `Float32`. The lexer only ever commits to a `Float32`
+  token when it finds a trailing `f` suffix at a word boundary; a
+  fraction/exponent with no `f` backtracks entirely, falling back to the
+  pre-existing `Int`/`Dot`/`Int` tokenization rather than erroring at the
+  lexer level. This is required, not a missed nicety: chained tuple
+  projection (`t.0.1`) is lexically indistinguishable from an unsuffixed
+  decimal (`0.1`) at the point the lexer sees the second `.`, so an eager
+  "no `f` suffix ⇒ error" rule would have broken `t.0.1`. A bare `3.14`
+  still cannot compile (elaboration hits `Proj { base: IntLit(3), index: 14
+  }` and rejects projecting into a non-tuple `Int`) — just via that generic
+  Kind error rather than a bespoke "did you mean `3.14f`?" diagnostic; a
+  friendlier message is left for a later parser-polish pass. Once `Float64`
+  exists, a bare literal will mean `Float64` and widen to `Float32` only
+  where the compiler can prove no precision is lost. Widening `Float32 →
+  Float64` (when it exists) is always exact — every binary32 value
+  round-trips losslessly into binary64 — so that direction needs no proof
+  obligation, mirroring `Int ⊆ Rational`. The lossy direction (`Float64 →
+  Float32`, or narrowing a bare literal) is exactly the kind of narrowing
+  that already has a proof-obligation idiom (`docs` — "Narrowing back to
+  IntN", below) to reuse.
+- **`infinity32` and `nan32`** are reserved words (same
+  `reserved_words!` lexer macro as `true`/`false`/`fail`/`none`), but desugar
+  straight into `ExprKind::FloatLit(f32::INFINITY)`/`FloatLit(f32::NAN)` at
+  parse time rather than getting their own `ExprKind` variants — there is no
+  behavioural difference from a decimal `Float32` literal once parsed, so
+  there is nothing a dedicated variant would need to represent.
+  `-infinity32` is unary `neg` of `infinity32` — again no dedicated token.
+  There is exactly **one** `nan32` value (quiet). IEEE 754 technically
+  distinguishes signaling from quiet NaN and allows many payload bit
+  patterns for each, but no mainstream language surfaces sNaN — it is a
+  hardware trap-on-touch relic — and cvc5's own FloatingPoint theory agrees:
+  its API has a single `mk_fp_nan`, no signaling variant. Payload bits are
+  untracked; only bit-exact round-tripping of raw float bytes would ever
+  need them back, and nothing in this slice does that.
+- **`=`/`!=` use SMT-LIB FloatingPoint equality, not IEEE `==`.** IEEE 754
+  defines `==` such that `NaN == NaN` is false (not even reflexive) and
+  `+0.0 == -0.0` is true. That is incompatible with every other Cantor set,
+  where `=` must be a decidable congruence (reflexive, usable for pattern
+  matching and set membership). So `Float32`'s `=` instead follows the
+  SMT-LIB FP theory convention cvc5 already implements: `nan32 = nan32` is
+  true (one NaN equivalence class), and `0.0f ≠ -0.0f` (distinct values) —
+  which is also what naming *both* zeros already implies. Ordered
+  comparisons (`< <= > >=`) route to `fp.lt`/`fp.leq`/`fp.gt`/`fp.geq`
+  instead, which carry real IEEE "unordered" semantics: any comparison
+  touching `nan32`, including `nan32 < nan32`, is false. This is a
+  deliberate two-tier split — `=` for decidability, comparisons for IEEE
+  numeric meaning — not an oversight.
+- **Solver representation**: cvc5's native FloatingPoint theory,
+  `mk_fp_sort(8, 24)` (binary32's exponent/significand widths) — a genuine
+  leaf sort in its own right, not `Signed32`/`Unsigned32`'s "opaque sort
+  wrapping a BitVec" recipe. `src/solver/sort.rs` already carries a
+  forward-compatibility checklist for exactly this (added as a comment
+  ahead of time): `kind.rs::set_kind` gets a `Kind::Float32` variant,
+  `sort.rs::arm_ctor_name` gets `"ck_F32"`, `membership.rs` gets a
+  `Var("Float32")`/`Var("FiniteFloat32")` arm, and `mod.rs`'s
+  counterexample extraction gets a `ValKind::Float32` case.
+- **Arithmetic closure is the opposite of `Int`'s.** `IntN + IntN → Int2N`
+  widens to stay exact, because Int arithmetic *is* exact until it
+  overflows a fixed width. Floats are the opposite mental model — every
+  value is already an approximation — so `Float32 op Float32 → Float32`,
+  full stop, no widening. Every operator rounds once, in `Float32`, at
+  `Float32` precision. Computing in a wider format and rounding down
+  afterwards (double rounding) would silently produce a *different* result
+  than a real hardware `f32` operation — reaching for the `Int` widening
+  idiom here would be a bug, not a simplification.
+- **Rounding mode**: hardcoded to round-nearest-ties-to-even (`RNE`), the
+  universal default across hardware and every mainstream language. cvc5's
+  API (`mk_rm`) supports all four IEEE rounding modes, but the other three
+  are not exposed at the Cantor source level in this slice. Directed
+  rounding (round toward `±∞`) is the mechanism verified/interval-numerics
+  libraries use to get sound enclosures — a real, deliberate future
+  feature, not a gap being silently dropped now.
+- **Codegen note (for when this reaches codegen): `neg` must be a genuine
+  sign-bit flip** (LLVM `fneg` / cvc5 `fp.neg`), never `0.0f - x` — real
+  IEEE subtraction gives `0.0f - 0.0f = +0.0f`, which would silently turn
+  `-0.0f` into `0.0f` and break the literal-syntax claim above that
+  `-0.0f` needs no dedicated token.
+- **`/` is total, unlike `Int`'s.** IEEE 754 division is defined for every
+  `Float32` pair, including by zero (`1.0f / 0.0f = infinity32`,
+  `0.0f / 0.0f = nan32`) — so unlike `Int`'s `/` (which needs `NonZeroInt`),
+  `Float32`'s `/` needs no domain obligation at all. A function whose
+  *domain* is `FiniteFloat32` still requires the caller to prove the
+  argument excludes `±infinity32`/`nan32` — same `BuiltinObligation`
+  machinery `NonZeroInt` already uses for `/` on `Int` — but that is a
+  domain restriction the *programmer* chose, not something division itself
+  demands.
+- **Scope of this slice**: `Float32` and `FiniteFloat32` only (no `Float64`
+  yet); `+ - * / neg`, comparisons, and `=`/`!=`; `require FiniteFloat32`.
+  No transcendental functions (`sqrt`, trig, …), no `Float64`, and no
+  Int↔Float32 conversion of any kind — conversion is deliberately left for
+  a later, explicit-only feature, matching the original motivation for
+  keeping `Float32` distinct from a future bare-decimal `Float64` in the
+  first place (never silently lose precision).
+
 ### Narrowing back to IntN
 
 Three mechanisms in order of increasing programmer responsibility:

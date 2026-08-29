@@ -27,6 +27,10 @@ impl Expr {
         Self::new(ExprKind::BoolLit(b), Span::dummy())
     }
 
+    pub fn float32(x: f32) -> Self {
+        Self::new(ExprKind::FloatLit(x), Span::dummy())
+    }
+
     pub fn char_lit(c: char) -> Self {
         Self::new(ExprKind::CharLit(c), Span::dummy())
     }
@@ -130,6 +134,7 @@ impl Expr {
         self.span.end += offset;
         match &mut self.kind {
             ExprKind::IntLit(_)
+            | ExprKind::FloatLit(_)
             | ExprKind::BoolLit(_)
             | ExprKind::CharLit(_)
             | ExprKind::Var(_)
@@ -186,6 +191,16 @@ impl Expr {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExprKind {
     IntLit(i64),
+    /// An IEEE 754 binary32 value, `3.14f`/`3f`/`1e10f`. `infinity32` and
+    /// `nan32` desugar straight to this at parse time
+    /// (`FloatLit(f32::INFINITY)`/`FloatLit(f32::NAN)`) rather than getting
+    /// their own variants — `-infinity32` then falls out of ordinary unary
+    /// `neg` with no special-casing. See docs/design-decisions.md's
+    /// `Float32` section for why Cantor's `=` on this Kind ends up using
+    /// SMT-LIB FP equality (a single NaN equivalence class, distinct
+    /// `+0.0f`/`-0.0f`) rather than IEEE `==` — not yet implemented at the
+    /// semantics/solver layer, this is parser scope only.
+    FloatLit(f32),
     BoolLit(bool),
     /// `'c'` — a single Unicode scalar value. Always valid by construction
     /// (the lexer only ever produces a Rust `char`, which excludes
@@ -715,6 +730,19 @@ impl fmt::Display for ExprKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::IntLit(n) => write!(f, "{n}"),
+            Self::FloatLit(x) => {
+                if x.is_nan() {
+                    f.write_str("nan32")
+                } else if x.is_infinite() {
+                    f.write_str(if x.is_sign_positive() {
+                        "infinity32"
+                    } else {
+                        "-infinity32"
+                    })
+                } else {
+                    write!(f, "{x}f")
+                }
+            }
             Self::BoolLit(b) => write!(f, "{b}"),
             Self::CharLit(c) => write!(f, "{c:?}"),
             Self::Var(sym) => write!(f, "{sym}"),

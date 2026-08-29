@@ -7,6 +7,11 @@ use crate::{error::CompileError, span::Span};
 pub enum Token {
     // Literals
     Int(i64),
+    /// `3.14f` / `3f` / `1e10f` — an IEEE 754 binary32 literal. The trailing
+    /// `f` is mandatory; a bare decimal (`3.14`, no suffix) is a lexer-level
+    /// `Unsupported` error rather than silently meaning `Float32` — see
+    /// docs/design-decisions.md's `Float32`/`FiniteFloat32` section.
+    Float32(f32),
     Char(char),
     Str(String),
     /// `"a{expr}b"` — an interpolated string with at least one `{expr}`
@@ -48,6 +53,11 @@ pub enum Token {
     Fail,
     // Absence — the `None` singleton, mirrors `Fail` but carries no payload.
     NoneLit,
+    // `Float32` constants — both spell directly into `ExprKind::FloatLit`
+    // at parse time (`infinity32` → `FloatLit(f32::INFINITY)`, `nan32` →
+    // `FloatLit(f32::NAN)`), so no dedicated AST node is needed for either.
+    Infinity32,
+    Nan32,
     // Built-in functions (reserved — cannot be shadowed by user definitions)
     From,
     Size,
@@ -172,6 +182,8 @@ reserved_words! {
     "for" => For,
     "fail" => Fail,
     "none" => NoneLit,
+    "infinity32" => Infinity32,
+    "nan32" => Nan32,
     "return" => Return,
     "from" => From,
     "size" => Size,
@@ -209,6 +221,8 @@ impl fmt::Display for Token {
             | Token::For
             | Token::Fail
             | Token::NoneLit
+            | Token::Infinity32
+            | Token::Nan32
             | Token::From
             | Token::Size
             | Token::Underscore => f.write_str(
@@ -216,6 +230,7 @@ impl fmt::Display for Token {
                     .expect("every variant listed here is in the reserved_words! table"),
             ),
             Token::Int(n) => write!(f, "{n}"),
+            Token::Float32(x) => write!(f, "{x}f"),
             Token::Char(c) => write!(f, "{c:?}"),
             Token::Str(s) => write!(f, "{s:?}"),
             Token::InterpStr(_) => f.write_str("interpolated string"),
@@ -287,10 +302,84 @@ impl<'src> Lexer<'src> {
         }
     }
 
-    fn scan_int(&mut self, start: usize) -> Result<(Token, Span), CompileError> {
+    /// Scans an integer, or a `Float32` literal (`3.14f` / `3f` / `1e10f`),
+    /// starting at a digit already known to be present at `start`.
+    ///
+    /// Grammar: `digit+ ('.' digit+)? (('e'|'E') ('+'|'-')? digit+)? 'f'`.
+    /// The trailing `f` is the *only* thing that commits this to being a
+    /// `Float32` token: a fractional/exponent part is scanned tentatively,
+    /// but the moment there is no `f` suffix at a word boundary, the lexer
+    /// backtracks all the way to the plain integer and leaves everything
+    /// after it — `.`, digits, `e`, all of it — for the next token(s).
+    ///
+    /// This is deliberate, not an oversight: `t.0.1` (chained tuple
+    /// projection) needs `0.1` to lex as `Int(0)`, `Dot`, `Int(1)`, which
+    /// looks locally identical to an unsuffixed decimal literal at the
+    /// point the lexer sees the `.`. Committing only on `f` means a bare
+    /// decimal (`3.14`, no suffix) silently falls back to the pre-existing
+    /// `Int`/`Dot`/`Int` tokenization (see "Decimal literals deliberately
+    /// do not lex" above) instead of being misread as one broken token —
+    /// it still fails to compile (there's no tuple to project into), just
+    /// via a generic downstream Kind error rather than a bespoke "did you
+    /// mean `3.14f`?" diagnostic. A trailing `f` is only treated as the
+    /// `Float32` suffix at a word boundary, so `3fahrenheit` still lexes as
+    /// `Int(3)` followed by `Ident("fahrenheit")` rather than silently
+    /// truncating the identifier.
+    fn scan_number(&mut self, start: usize) -> Result<(Token, Span), CompileError> {
         while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
             self.advance_char();
         }
+        let int_only_end = self.pos;
+
+        if self.peek_char() == Some('.') {
+            let save = self.pos;
+            self.advance_char();
+            if matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
+                while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
+                    self.advance_char();
+                }
+            } else {
+                self.pos = save;
+            }
+        }
+
+        if matches!(self.peek_char(), Some('e' | 'E')) {
+            let save = self.pos;
+            self.advance_char();
+            if matches!(self.peek_char(), Some('+' | '-')) {
+                self.advance_char();
+            }
+            if matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
+                while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
+                    self.advance_char();
+                }
+            } else {
+                self.pos = save;
+            }
+        }
+
+        if self.peek_char() == Some('f') {
+            let save = self.pos;
+            self.advance_char();
+            let at_word_boundary =
+                !matches!(self.peek_char(), Some(c) if c.is_alphanumeric() || c == '_');
+            if at_word_boundary {
+                let text = &self.src[start..save];
+                let value: f32 = text
+                    .parse()
+                    .expect("scan_number only ever builds a valid decimal/exponent literal");
+                return Ok((
+                    Token::Float32(value),
+                    Span::new(start as u32, self.pos as u32),
+                ));
+            }
+            self.pos = save;
+        }
+
+        // No `f` suffix found — this was never a `Float32` literal, however
+        // far the tentative fraction/exponent scan got. Back out entirely.
+        self.pos = int_only_end;
+
         let text = &self.src[start..self.pos];
         let n = text
             .parse::<i64>()
@@ -623,7 +712,7 @@ impl<'src> Lexer<'src> {
             };
 
             let tok = match ch {
-                '0'..='9' => return self.scan_int(start),
+                '0'..='9' => return self.scan_number(start),
                 c if c.is_alphabetic() || c == '_' => {
                     return Ok(self.scan_ident_or_keyword(start));
                 }

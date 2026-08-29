@@ -99,6 +99,7 @@ pub fn check_well_founded(items: &[Item], name_defs: &NameDefs) -> Result<(), Co
 fn for_each_var(expr: &Expr, f: &mut impl FnMut(&Symbol)) {
     match &expr.kind {
         ExprKind::IntLit(_)
+        | ExprKind::FloatLit(_)
         | ExprKind::BoolLit(_)
         | ExprKind::CharLit(_)
         | ExprKind::FailLit

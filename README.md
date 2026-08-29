@@ -711,9 +711,10 @@ The compiler proves `[1, 2, 3]` satisfies the `Nat * 3` range, and that `t[1]` o
 These are keywords and cannot be used as function, set, or variable names — note that several of them (`size`, `from`, `for`, `in`) read like perfectly ordinary names, so `size : Nat -> Nat` is a parse error, not a definition:
 
 ```
-alias  and     assert  assume  distinct  else  equiv  fail  false
-for    from    if      in      mut       none  not    or    quot
-rem    require return  size    then      true  while  _
+alias  and     assert  assume  distinct  else       equiv  fail  false
+for    from    if      in      infinity32  mut       nan32  none  not
+or     quot    rem     require return    size       then   true
+while  _
 ```
 
 ## Features (working today)

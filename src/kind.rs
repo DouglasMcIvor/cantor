@@ -116,6 +116,16 @@ pub enum Kind {
 pub fn set_kind(set_expr: &Expr, name_defs: &NameDefs) -> Result<Kind, CompileError> {
     Ok(match &set_expr.kind {
         ExprKind::IntLit { .. } => Kind::Int,
+        // TODO(float32): parser-only slice so far — no `Kind::Float32` yet
+        // (see docs/design-decisions.md's `Float32`/`FiniteFloat32` section).
+        ExprKind::FloatLit(_) => {
+            return Err(CompileError::Unsupported {
+                feature: "Float32 in set/domain position (semantics/solver/codegen \
+                    support isn't implemented yet)"
+                    .to_owned(),
+                span: set_expr.span,
+            });
+        }
         ExprKind::BoolLit { .. } => Kind::Bool,
         // A Char domain-literal set (`{'a', 'b'}` in signature position) —
         // `solver::sort::set_sort`'s `SetLit` arm and `membership_constraint`'s

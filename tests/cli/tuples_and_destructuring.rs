@@ -74,6 +74,26 @@ fn tuple_run_proves_all_sigs() {
 }
 
 #[test]
+fn tuple_chained_projection_end_to_end() {
+    // `.0.1` — regression coverage from the Float32 lexer work: `0.1` here
+    // is lexically identical to an unsuffixed decimal at the point the
+    // lexer sees the second `.`, so this only stays a chain of Int
+    // projections because the number scanner backtracks to a plain
+    // integer whenever it doesn't find a trailing `f` suffix.
+    let out = run_subcommand("tuple_chained_projection.cantor");
+    assert_eq!(
+        out.code, 0,
+        "expected exit 0\nstdout: {}\nstderr: {}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.stdout.contains("main() = 2"),
+        "expected 'main() = 2' in output:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
 fn tuple_bad_counterexample() {
     // overflow_pair : Int16 * Int16 -> Int16 overflows when both elements are large.
     let out = run_file("tuple_bad.cantor");

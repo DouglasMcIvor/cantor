@@ -1,0 +1,5 @@
+-- A Float32 literal directly in domain position (inside a set literal)
+-- must also fail loudly rather than silently taking on some other Kind —
+-- see kind.rs::set_kind's `ExprKind::FloatLit` arm.
+f : {0.0f, 1.0f} -> Int
+f(x) = 0

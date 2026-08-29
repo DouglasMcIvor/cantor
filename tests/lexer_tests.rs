@@ -42,6 +42,117 @@ fn lex_large_integer() {
     assert_eq!(lex_all("1000000"), vec![Token::Int(1_000_000), Token::Eof]);
 }
 
+// ── Float32 literals ──────────────────────────────────────────────────────────
+
+#[test]
+fn lex_float32_literal() {
+    assert_eq!(lex_all("2.5f"), vec![Token::Float32(2.5), Token::Eof]);
+}
+
+#[test]
+fn lex_float32_integer_valued() {
+    // No decimal point needed — the `f` suffix alone disambiguates from `Int`.
+    assert_eq!(lex_all("3f"), vec![Token::Float32(3.0), Token::Eof]);
+}
+
+#[test]
+fn lex_float32_zero_and_negative_zero() {
+    // `-0.0f` is unary `Minus` + `Float32(0.0)` at the token level — the
+    // lexer has no dedicated negative-zero literal, see parser::expr.
+    assert_eq!(lex_all("0.0f"), vec![Token::Float32(0.0), Token::Eof]);
+    assert_eq!(
+        lex_all("-0.0f"),
+        vec![Token::Minus, Token::Float32(0.0), Token::Eof]
+    );
+}
+
+#[test]
+fn lex_float32_exponent() {
+    assert_eq!(lex_all("1e10f"), vec![Token::Float32(1e10), Token::Eof]);
+    assert_eq!(lex_all("1.5e-3f"), vec![Token::Float32(1.5e-3), Token::Eof]);
+    assert_eq!(lex_all("1E+2f"), vec![Token::Float32(1E+2), Token::Eof]);
+}
+
+#[test]
+fn lex_infinity32_and_nan32_keywords() {
+    assert_eq!(lex_all("infinity32"), vec![Token::Infinity32, Token::Eof]);
+    assert_eq!(lex_all("nan32"), vec![Token::Nan32, Token::Eof]);
+    // `-infinity32` is unary `Minus` + `Infinity32` — no dedicated token.
+    assert_eq!(
+        lex_all("-infinity32"),
+        vec![Token::Minus, Token::Infinity32, Token::Eof]
+    );
+}
+
+#[test]
+fn lex_float32_suffix_requires_word_boundary() {
+    // `3fahrenheit` must not silently truncate an identifier down to `f` —
+    // it stays `Int(3)` followed by `Ident("fahrenheit")`, exactly the
+    // (pre-existing) tokenization of `3abc`.
+    assert_eq!(
+        lex_all("3fahrenheit"),
+        vec![Token::Int(3), Token::Ident("fahrenheit".into()), Token::Eof]
+    );
+}
+
+#[test]
+fn lex_tuple_projection_after_int_is_unaffected() {
+    // `t.0` (tuple projection) must still lex as three tokens, not a float:
+    // the lexer tentatively scans a fraction/exponent after any digit run,
+    // but backtracks to a plain `Int` whenever there's no `f` suffix.
+    assert_eq!(
+        lex_all("t.0"),
+        vec![
+            Token::Ident("t".into()),
+            Token::Dot,
+            Token::Int(0),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn lex_chained_tuple_projection_is_unaffected_by_float_scanning() {
+    // `t.0.1` (chained projection) is lexically indistinguishable from an
+    // unsuffixed decimal `0.1` at the point the lexer sees the second `.` —
+    // this is exactly why an unsuffixed fraction backtracks to plain `Int`
+    // rather than erroring, instead of the (rejected) alternative design of
+    // eagerly flagging a bare decimal as an `Unsupported: Float64` error.
+    assert_eq!(
+        lex_all("t.0.1"),
+        vec![
+            Token::Ident("t".into()),
+            Token::Dot,
+            Token::Int(0),
+            Token::Dot,
+            Token::Int(1),
+            Token::Eof
+        ]
+    );
+}
+
+#[test]
+fn lex_bare_decimal_without_f_suffix_falls_back_to_int_dot_int() {
+    // No `f` suffix -> not a `Float32` literal at all, per the chained-
+    // projection reasoning above. `3.14` still isn't valid Cantor (there's
+    // nothing to project field 14 out of), but that surfaces later, as a
+    // generic Kind error during elaboration, not a lexer-level diagnostic.
+    assert_eq!(
+        lex_all("3.14"),
+        vec![Token::Int(3), Token::Dot, Token::Int(14), Token::Eof]
+    );
+}
+
+#[test]
+fn lex_bare_exponent_without_f_suffix_falls_back_to_int() {
+    // No `f` suffix -> the tentative exponent scan is fully discarded, same
+    // backtracking rule as the fractional-part case above.
+    assert_eq!(
+        lex_all("1e10"),
+        vec![Token::Int(1), Token::Ident("e10".into()), Token::Eof]
+    );
+}
+
 // ── Char/string literals ──────────────────────────────────────────────────────
 
 #[test]

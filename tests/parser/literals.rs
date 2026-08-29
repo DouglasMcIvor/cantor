@@ -1,4 +1,4 @@
-use cantor::ast::{BinOp, ExprKind};
+use cantor::ast::{BinOp, ExprKind, UnOp};
 use cantor::parser::parse_expr;
 
 use super::helpers::*;
@@ -8,6 +8,76 @@ use super::helpers::*;
 #[test]
 fn parse_int_literal() {
     assert!(matches!(parse("42"), ExprKind::IntLit(42)));
+}
+
+#[test]
+fn parse_float32_literal() {
+    let ExprKind::FloatLit(x) = parse("2.5f") else {
+        panic!("expected FloatLit");
+    };
+    assert_eq!(x, 2.5f32);
+}
+
+#[test]
+fn parse_float32_integer_valued_literal() {
+    let ExprKind::FloatLit(x) = parse("3f") else {
+        panic!("expected FloatLit");
+    };
+    assert_eq!(x, 3.0f32);
+}
+
+#[test]
+fn parse_infinity32_desugars_to_float_lit() {
+    // `infinity32` gets no dedicated ExprKind — it spells directly into
+    // `FloatLit(f32::INFINITY)` at parse time.
+    let ExprKind::FloatLit(x) = parse("infinity32") else {
+        panic!("expected FloatLit");
+    };
+    assert!(x.is_infinite() && x.is_sign_positive());
+}
+
+#[test]
+fn parse_negative_infinity32_is_unary_neg_of_infinity32() {
+    // No dedicated negative-infinity token — `-infinity32` is ordinary
+    // unary `neg` applied to the `infinity32` literal.
+    let ExprKind::UnOp {
+        op: UnOp::Neg,
+        expr,
+    } = parse("-infinity32")
+    else {
+        panic!("expected UnOp Neg");
+    };
+    let ExprKind::FloatLit(x) = expr.kind else {
+        panic!("expected FloatLit");
+    };
+    assert!(x.is_infinite() && x.is_sign_positive());
+}
+
+#[test]
+fn parse_nan32_desugars_to_float_lit() {
+    let ExprKind::FloatLit(x) = parse("nan32") else {
+        panic!("expected FloatLit");
+    };
+    assert!(x.is_nan());
+}
+
+#[test]
+fn parse_negative_zero_is_unary_neg_of_float_lit() {
+    // No dedicated `-0.0f` literal — see docs/design-decisions.md's
+    // `Float32` section on why this relies on `neg` compiling to a genuine
+    // sign-bit flip once codegen exists.
+    let ExprKind::UnOp {
+        op: UnOp::Neg,
+        expr,
+    } = parse("-0.0f")
+    else {
+        panic!("expected UnOp Neg");
+    };
+    let ExprKind::FloatLit(x) = expr.kind else {
+        panic!("expected FloatLit");
+    };
+    assert_eq!(x, 0.0f32);
+    assert!(x.is_sign_positive());
 }
 
 #[test]

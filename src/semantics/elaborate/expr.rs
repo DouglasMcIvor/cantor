@@ -29,6 +29,14 @@ pub(super) fn elaborate_expr(
             kind_of: Kind::Int,
             span,
         }),
+        // TODO(float32): parser-only slice so far (see docs/design-
+        // decisions.md's `Float32`/`FiniteFloat32` section) — no
+        // `Kind::Float32`/`SemExprKind::FloatLit` yet, so this fails loudly
+        // rather than being silently mistyped as `Kind::Int`.
+        ExprKind::FloatLit(_) => Err(not_yet_implemented(
+            "Float32 (parsed, but semantics/solver/codegen support isn't implemented yet)",
+            span,
+        )),
         ExprKind::BoolLit(b) => Ok(SemExpr {
             kind: SemExprKind::BoolLit(*b),
             kind_of: Kind::Bool,

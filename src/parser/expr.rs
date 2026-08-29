@@ -19,6 +19,9 @@ fn token_starts_expr_after_star(tok: &Token) -> bool {
     matches!(
         tok,
         Token::Int(_)
+            | Token::Float32(_)
+            | Token::Infinity32
+            | Token::Nan32
             | Token::Char(_)
             | Token::Str(_)
             | Token::InterpStr(_)
@@ -273,6 +276,20 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 Ok(Expr::new(ExprKind::IntLit(n), span))
             }
+            Token::Float32(x) => {
+                self.advance()?;
+                Ok(Expr::new(ExprKind::FloatLit(x), span))
+            }
+            // `-infinity32` needs no dedicated token — `parse_prefix`'s
+            // `Token::Minus` arm applies ordinary unary `neg` on top of this.
+            Token::Infinity32 => {
+                self.advance()?;
+                Ok(Expr::new(ExprKind::FloatLit(f32::INFINITY), span))
+            }
+            Token::Nan32 => {
+                self.advance()?;
+                Ok(Expr::new(ExprKind::FloatLit(f32::NAN), span))
+            }
             Token::True => {
                 self.advance()?;
                 Ok(Expr::new(ExprKind::BoolLit(true), span))
@@ -506,6 +523,9 @@ impl<'src> Parser<'src> {
         matches!(
             self.peek(),
             Token::Int(_)
+                | Token::Float32(_)
+                | Token::Infinity32
+                | Token::Nan32
                 | Token::Char(_)
                 | Token::Str(_)
                 | Token::InterpStr(_)

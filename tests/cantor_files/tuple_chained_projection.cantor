@@ -1,0 +1,7 @@
+-- `.0.1` chained tuple projection — regression coverage for the Float32
+-- lexer work: `0.1` here is lexically identical to an unsuffixed decimal
+-- literal at the point the lexer sees the second `.`, so this only stays
+-- Int/Dot/Int/Dot/Int (not a broken float-shaped token) because `scan_number`
+-- backtracks to a plain integer whenever there's no `f` suffix.
+main : -> Int
+main() = ((1, 2), (3, 4)).0.1
